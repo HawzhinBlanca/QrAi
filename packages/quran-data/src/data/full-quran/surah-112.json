@@ -1,0 +1,63 @@
+{
+  "id": "112",
+  "surahNumber": 112,
+  "name": "سُورَةُ الإِخۡلَاصِ",
+  "englishName": "Al-Ikhlaas",
+  "englishNameTranslation": "Sincerity",
+  "revelationType": "Meccan",
+  "numberOfAyahs": 4,
+  "totalWords": 19,
+  "ayahs": [
+    {
+      "surahNumber": 112,
+      "ayahNumber": 1,
+      "text": "بِسْمِ ٱللَّهِ ٱلرَّحْمَٰنِ ٱلرَّحِيمِ قُلْ هُوَ ٱللَّهُ أَحَدٌ",
+      "words": [
+        "بِسْمِ",
+        "ٱللَّهِ",
+        "ٱلرَّحْمَٰنِ",
+        "ٱلرَّحِيمِ",
+        "قُلْ",
+        "هُوَ",
+        "ٱللَّهُ",
+        "أَحَدٌ"
+      ],
+      "wordCount": 8
+    },
+    {
+      "surahNumber": 112,
+      "ayahNumber": 2,
+      "text": "ٱللَّهُ ٱلصَّمَدُ",
+      "words": [
+        "ٱللَّهُ",
+        "ٱلصَّمَدُ"
+      ],
+      "wordCount": 2
+    },
+    {
+      "surahNumber": 112,
+      "ayahNumber": 3,
+      "text": "لَمْ يَلِدْ وَلَمْ يُولَدْ",
+      "words": [
+        "لَمْ",
+        "يَلِدْ",
+        "وَلَمْ",
+        "يُولَدْ"
+      ],
+      "wordCount": 4
+    },
+    {
+      "surahNumber": 112,
+      "ayahNumber": 4,
+      "text": "وَلَمْ يَكُن لَّهُۥ كُفُوًا أَحَدٌۢ",
+      "words": [
+        "وَلَمْ",
+        "يَكُن",
+        "لَّهُۥ",
+        "كُفُوًا",
+        "أَحَدٌۢ"
+      ],
+      "wordCount": 5
+    }
+  ]
+}

@@ -1,0 +1,8 @@
+{
+  "tenantId": "test-direct",
+  "learnerId": "learner-direct",
+  "sessionId": "session-direct",
+  "chunkId": "chunk-direct",
+  "storedAt": "2026-06-28T18:32:27.859Z",
+  "objectKey": "test-direct/learner-direct/chunk-direct.bin"
+}

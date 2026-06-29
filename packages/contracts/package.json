@@ -1,0 +1,22 @@
+{
+  "name": "@quran-ai/contracts",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./src/index.ts",
+      "default": "./src/index.ts"
+    }
+  },
+  "scripts": {
+    "build": "pnpm typecheck",
+    "test": "vitest run",
+    "typecheck": "tsc -p tsconfig.json --pretty false"
+  },
+  "devDependencies": {
+    "@types/node": "^24.10.2",
+    "typescript": "^6.0.3",
+    "vitest": "^4.1.9"
+  }
+}

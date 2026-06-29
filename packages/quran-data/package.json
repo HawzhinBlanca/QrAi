@@ -1,0 +1,30 @@
+{
+  "name": "@quran-ai/quran-data",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./src/index.ts",
+      "default": "./src/index.ts"
+    }
+  },
+  "scripts": {
+    "build": "pnpm typecheck",
+    "seed:all": "pnpm seed:sql && pnpm seed:json",
+    "seed:json": "jiti scripts/write-json-seed.mjs",
+    "seed:sql": "jiti scripts/write-sql-seed.mjs",
+    "fetch:quran": "node scripts/fetch-full-quran.mjs",
+    "test": "vitest run",
+    "typecheck": "tsc -p tsconfig.json --pretty false"
+  },
+  "dependencies": {
+    "@quran-ai/contracts": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/node": "^24.10.2",
+    "jiti": "^2.6.1",
+    "typescript": "^6.0.3",
+    "vitest": "^4.1.9"
+  }
+}

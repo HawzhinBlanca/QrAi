@@ -1,0 +1,12 @@
+{
+  "tenantId": "hikmah-pilot-erbil",
+  "learnerId": "learner-1",
+  "sessionId": "smoke-session-1782672232211",
+  "chunkId": "smoke-session-1782672232211-ws-0000",
+  "sampleRate": 16000,
+  "startMs": 0,
+  "endMs": 480,
+  "audioSize": 4,
+  "storedAt": "2026-06-28T18:43:52.232Z",
+  "objectKey": "hikmah-pilot-erbil/learner-1/smoke-session-1782672232211-ws-0000.bin"
+}

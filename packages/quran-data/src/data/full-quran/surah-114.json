@@ -1,0 +1,84 @@
+{
+  "id": "114",
+  "surahNumber": 114,
+  "name": "سُورَةُ النَّاسِ",
+  "englishName": "An-Naas",
+  "englishNameTranslation": "Mankind",
+  "revelationType": "Meccan",
+  "numberOfAyahs": 6,
+  "totalWords": 24,
+  "ayahs": [
+    {
+      "surahNumber": 114,
+      "ayahNumber": 1,
+      "text": "بِسْمِ ٱللَّهِ ٱلرَّحْمَٰنِ ٱلرَّحِيمِ قُلْ أَعُوذُ بِرَبِّ ٱلنَّاسِ",
+      "words": [
+        "بِسْمِ",
+        "ٱللَّهِ",
+        "ٱلرَّحْمَٰنِ",
+        "ٱلرَّحِيمِ",
+        "قُلْ",
+        "أَعُوذُ",
+        "بِرَبِّ",
+        "ٱلنَّاسِ"
+      ],
+      "wordCount": 8
+    },
+    {
+      "surahNumber": 114,
+      "ayahNumber": 2,
+      "text": "مَلِكِ ٱلنَّاسِ",
+      "words": [
+        "مَلِكِ",
+        "ٱلنَّاسِ"
+      ],
+      "wordCount": 2
+    },
+    {
+      "surahNumber": 114,
+      "ayahNumber": 3,
+      "text": "إِلَٰهِ ٱلنَّاسِ",
+      "words": [
+        "إِلَٰهِ",
+        "ٱلنَّاسِ"
+      ],
+      "wordCount": 2
+    },
+    {
+      "surahNumber": 114,
+      "ayahNumber": 4,
+      "text": "مِن شَرِّ ٱلْوَسْوَاسِ ٱلْخَنَّاسِ",
+      "words": [
+        "مِن",
+        "شَرِّ",
+        "ٱلْوَسْوَاسِ",
+        "ٱلْخَنَّاسِ"
+      ],
+      "wordCount": 4
+    },
+    {
+      "surahNumber": 114,
+      "ayahNumber": 5,
+      "text": "ٱلَّذِى يُوَسْوِسُ فِى صُدُورِ ٱلنَّاسِ",
+      "words": [
+        "ٱلَّذِى",
+        "يُوَسْوِسُ",
+        "فِى",
+        "صُدُورِ",
+        "ٱلنَّاسِ"
+      ],
+      "wordCount": 5
+    },
+    {
+      "surahNumber": 114,
+      "ayahNumber": 6,
+      "text": "مِنَ ٱلْجِنَّةِ وَٱلنَّاسِ",
+      "words": [
+        "مِنَ",
+        "ٱلْجِنَّةِ",
+        "وَٱلنَّاسِ"
+      ],
+      "wordCount": 3
+    }
+  ]
+}

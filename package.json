@@ -1,0 +1,24 @@
+{
+  "name": "quran-ai-platform",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "pnpm --filter @quran-ai/web dev",
+    "gateway:dev": "cargo run --manifest-path services/realtime-gateway/Cargo.toml",
+    "api:dev": "cargo run --manifest-path services/platform-api/Cargo.toml",
+    "smoke:gateway": "node scripts/smoke-gateway.mjs",
+    "smoke:api": "node scripts/smoke-api.mjs",
+    "smoke:ml": "node scripts/smoke-ml.mjs",
+    "smoke:browser": "node scripts/smoke-browser.mjs",
+    "smoke:privacy": "node scripts/smoke-privacy.mjs",
+    "smoke:sql": "node scripts/smoke-sql.mjs",
+    "smoke:all": "node scripts/smoke-all.mjs",
+    "build": "pnpm --filter @quran-ai/contracts build && pnpm --filter @quran-ai/quran-data build && pnpm --filter @quran-ai/web build",
+    "preview": "pnpm --filter @quran-ai/web preview",
+    "test": "pnpm --filter @quran-ai/contracts test && pnpm --filter @quran-ai/quran-data test && pnpm --filter @quran-ai/web test && cargo test --manifest-path services/realtime-gateway/Cargo.toml && DATABASE_URL=\"${DATABASE_URL:-postgresql://hawzhin@localhost:5432/quran_ai}\" cargo test --manifest-path services/platform-api/Cargo.toml -- --include-ignored",
+    "typecheck": "pnpm --filter @quran-ai/contracts typecheck && pnpm --filter @quran-ai/quran-data typecheck && pnpm --filter @quran-ai/web typecheck",
+    "proof": "bash scripts/proof.sh"
+  },
+  "packageManager": "pnpm@11.7.0"
+}

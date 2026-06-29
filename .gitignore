@@ -1,0 +1,26 @@
+# Dependencies / build output
+node_modules/
+dist/
+target/
+out/
+
+apps/*/node_modules/
+apps/*/dist/
+packages/*/node_modules/
+packages/*/dist/
+services/*/target/
+
+# Secrets / env — never commit (see AGENTS.md hard boundaries)
+.env
+.env.*
+!.env.example
+secrets/
+*.pem
+scripts/stack.env
+
+# Tooling / OS
+.DS_Store
+*.log
+.serena/
+.claude/launch.json
+.cocoindex_code/

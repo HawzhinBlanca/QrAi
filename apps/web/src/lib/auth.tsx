@@ -1,0 +1,110 @@
+import { createContext, useContext, useState, useEffect, type ReactNode } from "react";
+
+interface AuthUser {
+  userId: string;
+  tenantId: string;
+  role: string;
+  displayName: string;
+  token: string;
+}
+
+interface AuthContextValue {
+  user: AuthUser | null;
+  login: (userId: string, tenantId: string, password: string) => Promise<boolean>;
+  register: (tenantId: string, displayName: string, role: string, language: string, password: string, email?: string) => Promise<boolean>;
+  logout: () => void;
+  loading: boolean;
+}
+
+const AuthContext = createContext<AuthContextValue | null>(null);
+
+const STORAGE_KEY = "quran-ai-auth";
+
+export function AuthProvider({ children }: { children: ReactNode }) {
+  const [user, setUser] = useState<AuthUser | null>(null);
+  const [loading, setLoading] = useState(false);
+
+  useEffect(() => {
+    const stored = localStorage.getItem(STORAGE_KEY);
+    if (stored) {
+      try {
+        setUser(JSON.parse(stored));
+      } catch {
+        localStorage.removeItem(STORAGE_KEY);
+      }
+    }
+  }, []);
+
+  async function login(userId: string, tenantId: string, password: string): Promise<boolean> {
+    setLoading(true);
+    try {
+      const apiBase = import.meta.env.VITE_PLATFORM_API_URL || "http://127.0.0.1:8080";
+      const response = await fetch(`${apiBase}/v1/auth/login`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ userId, tenantId, password }),
+      });
+      if (!response.ok) return false;
+      const data = await response.json();
+      const authUser: AuthUser = {
+        userId: data.userId,
+        tenantId: data.tenantId,
+        role: data.role,
+        displayName: data.displayName,
+        token: data.token,
+      };
+      setUser(authUser);
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(authUser));
+      return true;
+    } catch {
+      return false;
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function register(tenantId: string, displayName: string, role: string, language: string, password: string, email?: string): Promise<boolean> {
+    setLoading(true);
+    try {
+      const apiBase = import.meta.env.VITE_PLATFORM_API_URL || "http://127.0.0.1:8080";
+      const response = await fetch(`${apiBase}/v1/auth/register`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ tenantId, displayName, role, language, password, email }),
+      });
+      if (!response.ok) return false;
+      const data = await response.json();
+      const authUser: AuthUser = {
+        userId: data.userId,
+        tenantId: data.tenantId,
+        role: data.role,
+        displayName,
+        token: data.token,
+      };
+      setUser(authUser);
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(authUser));
+      return true;
+    } catch {
+      return false;
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  function logout() {
+    setUser(null);
+    localStorage.removeItem(STORAGE_KEY);
+  }
+
+  return (
+    <AuthContext.Provider value={{ user, login, register, logout, loading }}>
+      {children}
+    </AuthContext.Provider>
+  );
+}
+
+export function useAuth(): AuthContextValue {
+  const ctx = useContext(AuthContext);
+  if (!ctx) throw new Error("useAuth must be used within AuthProvider");
+  return ctx;
+}

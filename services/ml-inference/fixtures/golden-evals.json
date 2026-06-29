@@ -1,0 +1,110 @@
+{
+  "datasetVersion": "fatihah-juz-amma-smoke-v1",
+  "modelVersion": "ml-local-v0.1",
+  "thresholds": {
+    "wordAlignmentF1": 0.9,
+    "tajweedF1": 0.82,
+    "falsePositiveRate": 0.08,
+    "teacherAgreementRate": 0.9,
+    "unsourcedLearnerOutputs": 0
+  },
+  "metrics": {
+    "wordAlignmentF1": 0.93,
+    "tajweedF1": 0.86,
+    "falsePositiveRate": 0.05,
+    "teacherAgreementRate": 0.92,
+    "unsourcedLearnerOutputs": 0,
+    "caseCount": 2,
+    "sourceBackedFindings": 2
+  },
+  "cases": [
+    {
+      "id": "fatihah-1-1-7-smoke",
+      "display": "Al-Fatihah 1:1-7",
+      "quranRef": {
+        "surahNumber": 1,
+        "ayahStart": 1,
+        "ayahEnd": 7,
+        "display": "Al-Fatihah 1:1-7"
+      },
+      "sourceChecksum": "fnv1a32:fatihah-smoke",
+      "evidenceIds": ["evidence-smoke-golden-fatihah-audio"],
+      "alignment": {
+        "confidence": 0.94,
+        "fallbackConfidence": 0.62,
+        "localConfidence": 0.86,
+        "needsReviewFromIndex": 6,
+        "words": [
+          { "wordId": "fatihah-1-1-1", "canonicalText": "بسم", "startMs": 0, "endMs": 360 },
+          { "wordId": "fatihah-1-1-2", "canonicalText": "الله", "startMs": 420, "endMs": 780 },
+          { "wordId": "fatihah-1-1-3", "canonicalText": "الرحمن", "startMs": 840, "endMs": 1200 },
+          { "wordId": "fatihah-1-1-4", "canonicalText": "الرحيم", "startMs": 1260, "endMs": 1620 },
+          { "wordId": "fatihah-1-2-1", "canonicalText": "الحمد", "startMs": 1680, "endMs": 2040 },
+          { "wordId": "fatihah-1-2-2", "canonicalText": "لله", "startMs": 2100, "endMs": 2460 },
+          { "wordId": "fatihah-1-2-3", "canonicalText": "رب", "startMs": 2520, "endMs": 2880 },
+          { "wordId": "fatihah-1-2-4", "canonicalText": "العالمين", "startMs": 2940, "endMs": 3300 }
+        ]
+      },
+      "tajweedFindings": [
+        {
+          "id": "fixture-finding-fatihah-madd",
+          "wordId": "fatihah-1-1-3",
+          "rule": "madd-tabii",
+          "severity": "practice",
+          "explanation": "Hold the natural madd for two counts while keeping the recitation anchored to the reviewed ayah text.",
+          "confidence": 0.85,
+          "sources": [
+            {
+              "id": "tajweed-source-madd-tabii",
+              "title": "Reviewed Tajweed Fixture: Natural Madd",
+              "citation": "Golden eval fixture fatihah-juz-amma-smoke-v1, madd-tabii"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "juz-amma-114-1-6-smoke",
+      "display": "Juz Amma - An-Nas 114:1-6",
+      "quranRef": {
+        "surahNumber": 114,
+        "ayahStart": 1,
+        "ayahEnd": 6,
+        "display": "Juz Amma - An-Nas 114:1-6"
+      },
+      "sourceChecksum": "fnv1a32:juz-amma-nas-smoke",
+      "evidenceIds": ["evidence-smoke-golden-juz-amma-audio"],
+      "alignment": {
+        "confidence": 0.92,
+        "fallbackConfidence": 0.61,
+        "localConfidence": 0.84,
+        "needsReviewFromIndex": 5,
+        "words": [
+          { "wordId": "nas-114-1-1", "canonicalText": "قل", "startMs": 0, "endMs": 330 },
+          { "wordId": "nas-114-1-2", "canonicalText": "أعوذ", "startMs": 390, "endMs": 760 },
+          { "wordId": "nas-114-1-3", "canonicalText": "برب", "startMs": 820, "endMs": 1160 },
+          { "wordId": "nas-114-1-4", "canonicalText": "الناس", "startMs": 1220, "endMs": 1600 },
+          { "wordId": "nas-114-2-1", "canonicalText": "ملك", "startMs": 1660, "endMs": 2020 },
+          { "wordId": "nas-114-2-2", "canonicalText": "الناس", "startMs": 2080, "endMs": 2460 }
+        ]
+      },
+      "tajweedFindings": [
+        {
+          "id": "fixture-finding-nas-ghunnah",
+          "wordId": "nas-114-2-2",
+          "rule": "ghunnah",
+          "severity": "practice",
+          "explanation": "Keep the nasal sound clear and measured when practicing the reviewed Juz Amma smoke passage.",
+          "confidence": 0.84,
+          "sources": [
+            {
+              "id": "tajweed-source-ghunnah",
+              "title": "Reviewed Tajweed Fixture: Ghunnah",
+              "citation": "Golden eval fixture fatihah-juz-amma-smoke-v1, ghunnah"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,923 @@
+{
+  "source": "alquran.cloud",
+  "edition": "quran-uthmani",
+  "apiUrl": "https://api.alquran.cloud/v1/surah",
+  "importVersion": "full-quran-2026-06-26",
+  "surahCount": 114,
+  "totalAyahs": 6236,
+  "totalWords": 82456,
+  "surahs": [
+    {
+      "surahNumber": 1,
+      "name": "سُورَةُ ٱلْفَاتِحَةِ",
+      "englishName": "Al-Faatiha",
+      "ayahCount": 7,
+      "wordCount": 29,
+      "filePath": "surah-001.json"
+    },
+    {
+      "surahNumber": 2,
+      "name": "سُورَةُ البَقَرَةِ",
+      "englishName": "Al-Baqara",
+      "ayahCount": 286,
+      "wordCount": 6610,
+      "filePath": "surah-002.json"
+    },
+    {
+      "surahNumber": 3,
+      "name": "سُورَةُ آلِ عِمۡرَانَ",
+      "englishName": "Aal-i-Imraan",
+      "ayahCount": 200,
+      "wordCount": 3701,
+      "filePath": "surah-003.json"
+    },
+    {
+      "surahNumber": 4,
+      "name": "سُورَةُ النِّسَاءِ",
+      "englishName": "An-Nisaa",
+      "ayahCount": 176,
+      "wordCount": 4017,
+      "filePath": "surah-004.json"
+    },
+    {
+      "surahNumber": 5,
+      "name": "سُورَةُ المَائـِدَةِ",
+      "englishName": "Al-Maaida",
+      "ayahCount": 120,
+      "wordCount": 3018,
+      "filePath": "surah-005.json"
+    },
+    {
+      "surahNumber": 6,
+      "name": "سُورَةُ الأَنۡعَامِ",
+      "englishName": "Al-An'aam",
+      "ayahCount": 165,
+      "wordCount": 3302,
+      "filePath": "surah-006.json"
+    },
+    {
+      "surahNumber": 7,
+      "name": "سُورَةُ الأَعۡرَافِ",
+      "englishName": "Al-A'raaf",
+      "ayahCount": 206,
+      "wordCount": 3534,
+      "filePath": "surah-007.json"
+    },
+    {
+      "surahNumber": 8,
+      "name": "سُورَةُ الأَنفَالِ",
+      "englishName": "Al-Anfaal",
+      "ayahCount": 75,
+      "wordCount": 1315,
+      "filePath": "surah-008.json"
+    },
+    {
+      "surahNumber": 9,
+      "name": "سُورَةُ التَّوۡبَةِ",
+      "englishName": "At-Tawba",
+      "ayahCount": 129,
+      "wordCount": 2667,
+      "filePath": "surah-009.json"
+    },
+    {
+      "surahNumber": 10,
+      "name": "سُورَةُ يُونُسَ",
+      "englishName": "Yunus",
+      "ayahCount": 109,
+      "wordCount": 1962,
+      "filePath": "surah-010.json"
+    },
+    {
+      "surahNumber": 11,
+      "name": "سُورَةُ هُودٍ",
+      "englishName": "Hud",
+      "ayahCount": 123,
+      "wordCount": 2058,
+      "filePath": "surah-011.json"
+    },
+    {
+      "surahNumber": 12,
+      "name": "سُورَةُ يُوسُفَ",
+      "englishName": "Yusuf",
+      "ayahCount": 111,
+      "wordCount": 1898,
+      "filePath": "surah-012.json"
+    },
+    {
+      "surahNumber": 13,
+      "name": "سُورَةُ الرَّعۡدِ",
+      "englishName": "Ar-Ra'd",
+      "ayahCount": 43,
+      "wordCount": 932,
+      "filePath": "surah-013.json"
+    },
+    {
+      "surahNumber": 14,
+      "name": "سُورَةُ إِبۡرَاهِيمَ",
+      "englishName": "Ibrahim",
+      "ayahCount": 52,
+      "wordCount": 889,
+      "filePath": "surah-014.json"
+    },
+    {
+      "surahNumber": 15,
+      "name": "سُورَةُ الحِجۡرِ",
+      "englishName": "Al-Hijr",
+      "ayahCount": 99,
+      "wordCount": 668,
+      "filePath": "surah-015.json"
+    },
+    {
+      "surahNumber": 16,
+      "name": "سُورَةُ النَّحۡلِ",
+      "englishName": "An-Nahl",
+      "ayahCount": 128,
+      "wordCount": 1967,
+      "filePath": "surah-016.json"
+    },
+    {
+      "surahNumber": 17,
+      "name": "سُورَةُ الإِسۡرَاءِ",
+      "englishName": "Al-Israa",
+      "ayahCount": 111,
+      "wordCount": 1646,
+      "filePath": "surah-017.json"
+    },
+    {
+      "surahNumber": 18,
+      "name": "سُورَةُ الكَهۡفِ",
+      "englishName": "Al-Kahf",
+      "ayahCount": 110,
+      "wordCount": 1657,
+      "filePath": "surah-018.json"
+    },
+    {
+      "surahNumber": 19,
+      "name": "سُورَةُ مَرۡيَمَ",
+      "englishName": "Maryam",
+      "ayahCount": 98,
+      "wordCount": 1006,
+      "filePath": "surah-019.json"
+    },
+    {
+      "surahNumber": 20,
+      "name": "سُورَةُ طه",
+      "englishName": "Taa-Haa",
+      "ayahCount": 135,
+      "wordCount": 1395,
+      "filePath": "surah-020.json"
+    },
+    {
+      "surahNumber": 21,
+      "name": "سُورَةُ الأَنبِيَاءِ",
+      "englishName": "Al-Anbiyaa",
+      "ayahCount": 112,
+      "wordCount": 1235,
+      "filePath": "surah-021.json"
+    },
+    {
+      "surahNumber": 22,
+      "name": "سُورَةُ الحَجِّ",
+      "englishName": "Al-Hajj",
+      "ayahCount": 78,
+      "wordCount": 1355,
+      "filePath": "surah-022.json"
+    },
+    {
+      "surahNumber": 23,
+      "name": "سُورَةُ المُؤۡمِنُونَ",
+      "englishName": "Al-Muminoon",
+      "ayahCount": 118,
+      "wordCount": 1091,
+      "filePath": "surah-023.json"
+    },
+    {
+      "surahNumber": 24,
+      "name": "سُورَةُ النُّورِ",
+      "englishName": "An-Noor",
+      "ayahCount": 64,
+      "wordCount": 1416,
+      "filePath": "surah-024.json"
+    },
+    {
+      "surahNumber": 25,
+      "name": "سُورَةُ الفُرۡقَانِ",
+      "englishName": "Al-Furqaan",
+      "ayahCount": 77,
+      "wordCount": 933,
+      "filePath": "surah-025.json"
+    },
+    {
+      "surahNumber": 26,
+      "name": "سُورَةُ الشُّعَرَاءِ",
+      "englishName": "Ash-Shu'araa",
+      "ayahCount": 227,
+      "wordCount": 1355,
+      "filePath": "surah-026.json"
+    },
+    {
+      "surahNumber": 27,
+      "name": "سُورَةُ النَّمۡلِ",
+      "englishName": "An-Naml",
+      "ayahCount": 93,
+      "wordCount": 1211,
+      "filePath": "surah-027.json"
+    },
+    {
+      "surahNumber": 28,
+      "name": "سُورَةُ القَصَصِ",
+      "englishName": "Al-Qasas",
+      "ayahCount": 88,
+      "wordCount": 1516,
+      "filePath": "surah-028.json"
+    },
+    {
+      "surahNumber": 29,
+      "name": "سُورَةُ العَنكَبُوتِ",
+      "englishName": "Al-Ankaboot",
+      "ayahCount": 69,
+      "wordCount": 1046,
+      "filePath": "surah-029.json"
+    },
+    {
+      "surahNumber": 30,
+      "name": "سُورَةُ الرُّومِ",
+      "englishName": "Ar-Room",
+      "ayahCount": 60,
+      "wordCount": 872,
+      "filePath": "surah-030.json"
+    },
+    {
+      "surahNumber": 31,
+      "name": "سُورَةُ لُقۡمَانَ",
+      "englishName": "Luqman",
+      "ayahCount": 34,
+      "wordCount": 586,
+      "filePath": "surah-031.json"
+    },
+    {
+      "surahNumber": 32,
+      "name": "سُورَةُ السَّجۡدَةِ",
+      "englishName": "As-Sajda",
+      "ayahCount": 30,
+      "wordCount": 394,
+      "filePath": "surah-032.json"
+    },
+    {
+      "surahNumber": 33,
+      "name": "سُورَةُ الأَحۡزَابِ",
+      "englishName": "Al-Ahzaab",
+      "ayahCount": 73,
+      "wordCount": 1372,
+      "filePath": "surah-033.json"
+    },
+    {
+      "surahNumber": 34,
+      "name": "سُورَةُ سَبَإٍ",
+      "englishName": "Saba",
+      "ayahCount": 54,
+      "wordCount": 943,
+      "filePath": "surah-034.json"
+    },
+    {
+      "surahNumber": 35,
+      "name": "سُورَةُ فَاطِرٍ",
+      "englishName": "Faatir",
+      "ayahCount": 45,
+      "wordCount": 845,
+      "filePath": "surah-035.json"
+    },
+    {
+      "surahNumber": 36,
+      "name": "سُورَةُ يسٓ",
+      "englishName": "Yaseen",
+      "ayahCount": 83,
+      "wordCount": 753,
+      "filePath": "surah-036.json"
+    },
+    {
+      "surahNumber": 37,
+      "name": "سُورَةُ الصَّافَّاتِ",
+      "englishName": "As-Saaffaat",
+      "ayahCount": 182,
+      "wordCount": 881,
+      "filePath": "surah-037.json"
+    },
+    {
+      "surahNumber": 38,
+      "name": "سُورَةُ صٓ",
+      "englishName": "Saad",
+      "ayahCount": 88,
+      "wordCount": 776,
+      "filePath": "surah-038.json"
+    },
+    {
+      "surahNumber": 39,
+      "name": "سُورَةُ الزُّمَرِ",
+      "englishName": "Az-Zumar",
+      "ayahCount": 75,
+      "wordCount": 1258,
+      "filePath": "surah-039.json"
+    },
+    {
+      "surahNumber": 40,
+      "name": "سُورَةُ غَافِرٍ",
+      "englishName": "Ghafir",
+      "ayahCount": 85,
+      "wordCount": 1293,
+      "filePath": "surah-040.json"
+    },
+    {
+      "surahNumber": 41,
+      "name": "سُورَةُ فُصِّلَتۡ",
+      "englishName": "Fussilat",
+      "ayahCount": 54,
+      "wordCount": 842,
+      "filePath": "surah-041.json"
+    },
+    {
+      "surahNumber": 42,
+      "name": "سُورَةُ الشُّورَىٰ",
+      "englishName": "Ash-Shura",
+      "ayahCount": 53,
+      "wordCount": 936,
+      "filePath": "surah-042.json"
+    },
+    {
+      "surahNumber": 43,
+      "name": "سُورَةُ الزُّخۡرُفِ",
+      "englishName": "Az-Zukhruf",
+      "ayahCount": 89,
+      "wordCount": 868,
+      "filePath": "surah-043.json"
+    },
+    {
+      "surahNumber": 44,
+      "name": "سُورَةُ الدُّخَانِ",
+      "englishName": "Ad-Dukhaan",
+      "ayahCount": 59,
+      "wordCount": 368,
+      "filePath": "surah-044.json"
+    },
+    {
+      "surahNumber": 45,
+      "name": "سُورَةُ الجَاثِيَةِ",
+      "englishName": "Al-Jaathiya",
+      "ayahCount": 37,
+      "wordCount": 516,
+      "filePath": "surah-045.json"
+    },
+    {
+      "surahNumber": 46,
+      "name": "سُورَةُ الأَحۡقَافِ",
+      "englishName": "Al-Ahqaf",
+      "ayahCount": 35,
+      "wordCount": 678,
+      "filePath": "surah-046.json"
+    },
+    {
+      "surahNumber": 47,
+      "name": "سُورَةُ مُحَمَّدٍ",
+      "englishName": "Muhammad",
+      "ayahCount": 38,
+      "wordCount": 571,
+      "filePath": "surah-047.json"
+    },
+    {
+      "surahNumber": 48,
+      "name": "سُورَةُ الفَتۡحِ",
+      "englishName": "Al-Fath",
+      "ayahCount": 29,
+      "wordCount": 604,
+      "filePath": "surah-048.json"
+    },
+    {
+      "surahNumber": 49,
+      "name": "سُورَةُ الحُجُرَاتِ",
+      "englishName": "Al-Hujuraat",
+      "ayahCount": 18,
+      "wordCount": 380,
+      "filePath": "surah-049.json"
+    },
+    {
+      "surahNumber": 50,
+      "name": "سُورَةُ قٓ",
+      "englishName": "Qaaf",
+      "ayahCount": 45,
+      "wordCount": 393,
+      "filePath": "surah-050.json"
+    },
+    {
+      "surahNumber": 51,
+      "name": "سُورَةُ الذَّارِيَاتِ",
+      "englishName": "Adh-Dhaariyat",
+      "ayahCount": 60,
+      "wordCount": 375,
+      "filePath": "surah-051.json"
+    },
+    {
+      "surahNumber": 52,
+      "name": "سُورَةُ الطُّورِ",
+      "englishName": "At-Tur",
+      "ayahCount": 49,
+      "wordCount": 328,
+      "filePath": "surah-052.json"
+    },
+    {
+      "surahNumber": 53,
+      "name": "سُورَةُ النَّجۡمِ",
+      "englishName": "An-Najm",
+      "ayahCount": 62,
+      "wordCount": 376,
+      "filePath": "surah-053.json"
+    },
+    {
+      "surahNumber": 54,
+      "name": "سُورَةُ القَمَرِ",
+      "englishName": "Al-Qamar",
+      "ayahCount": 55,
+      "wordCount": 354,
+      "filePath": "surah-054.json"
+    },
+    {
+      "surahNumber": 55,
+      "name": "سُورَةُ الرَّحۡمَٰن",
+      "englishName": "Ar-Rahmaan",
+      "ayahCount": 78,
+      "wordCount": 358,
+      "filePath": "surah-055.json"
+    },
+    {
+      "surahNumber": 56,
+      "name": "سُورَةُ الوَاقِعَةِ",
+      "englishName": "Al-Waaqia",
+      "ayahCount": 96,
+      "wordCount": 384,
+      "filePath": "surah-056.json"
+    },
+    {
+      "surahNumber": 57,
+      "name": "سُورَةُ الحَدِيدِ",
+      "englishName": "Al-Hadid",
+      "ayahCount": 29,
+      "wordCount": 621,
+      "filePath": "surah-057.json"
+    },
+    {
+      "surahNumber": 58,
+      "name": "سُورَةُ المُجَادلَةِ",
+      "englishName": "Al-Mujaadila",
+      "ayahCount": 22,
+      "wordCount": 517,
+      "filePath": "surah-058.json"
+    },
+    {
+      "surahNumber": 59,
+      "name": "سُورَةُ الحَشۡرِ",
+      "englishName": "Al-Hashr",
+      "ayahCount": 24,
+      "wordCount": 480,
+      "filePath": "surah-059.json"
+    },
+    {
+      "surahNumber": 60,
+      "name": "سُورَةُ المُمۡتَحنَةِ",
+      "englishName": "Al-Mumtahana",
+      "ayahCount": 13,
+      "wordCount": 377,
+      "filePath": "surah-060.json"
+    },
+    {
+      "surahNumber": 61,
+      "name": "سُورَةُ الصَّفِّ",
+      "englishName": "As-Saff",
+      "ayahCount": 14,
+      "wordCount": 237,
+      "filePath": "surah-061.json"
+    },
+    {
+      "surahNumber": 62,
+      "name": "سُورَةُ الجُمُعَةِ",
+      "englishName": "Al-Jumu'a",
+      "ayahCount": 11,
+      "wordCount": 188,
+      "filePath": "surah-062.json"
+    },
+    {
+      "surahNumber": 63,
+      "name": "سُورَةُ المُنَافِقُونَ",
+      "englishName": "Al-Munaafiqoon",
+      "ayahCount": 11,
+      "wordCount": 198,
+      "filePath": "surah-063.json"
+    },
+    {
+      "surahNumber": 64,
+      "name": "سُورَةُ التَّغَابُنِ",
+      "englishName": "At-Taghaabun",
+      "ayahCount": 18,
+      "wordCount": 267,
+      "filePath": "surah-064.json"
+    },
+    {
+      "surahNumber": 65,
+      "name": "سُورَةُ الطَّلَاقِ",
+      "englishName": "At-Talaaq",
+      "ayahCount": 12,
+      "wordCount": 315,
+      "filePath": "surah-065.json"
+    },
+    {
+      "surahNumber": 66,
+      "name": "سُورَةُ التَّحۡرِيمِ",
+      "englishName": "At-Tahrim",
+      "ayahCount": 12,
+      "wordCount": 267,
+      "filePath": "surah-066.json"
+    },
+    {
+      "surahNumber": 67,
+      "name": "سُورَةُ المُلۡكِ",
+      "englishName": "Al-Mulk",
+      "ayahCount": 30,
+      "wordCount": 352,
+      "filePath": "surah-067.json"
+    },
+    {
+      "surahNumber": 68,
+      "name": "سُورَةُ القَلَمِ",
+      "englishName": "Al-Qalam",
+      "ayahCount": 52,
+      "wordCount": 311,
+      "filePath": "surah-068.json"
+    },
+    {
+      "surahNumber": 69,
+      "name": "سُورَةُ الحَاقَّةِ",
+      "englishName": "Al-Haaqqa",
+      "ayahCount": 52,
+      "wordCount": 266,
+      "filePath": "surah-069.json"
+    },
+    {
+      "surahNumber": 70,
+      "name": "سُورَةُ المَعَارِجِ",
+      "englishName": "Al-Ma'aarij",
+      "ayahCount": 44,
+      "wordCount": 226,
+      "filePath": "surah-070.json"
+    },
+    {
+      "surahNumber": 71,
+      "name": "سُورَةُ نُوحٍ",
+      "englishName": "Nooh",
+      "ayahCount": 28,
+      "wordCount": 233,
+      "filePath": "surah-071.json"
+    },
+    {
+      "surahNumber": 72,
+      "name": "سُورَةُ الجِنِّ",
+      "englishName": "Al-Jinn",
+      "ayahCount": 28,
+      "wordCount": 296,
+      "filePath": "surah-072.json"
+    },
+    {
+      "surahNumber": 73,
+      "name": "سُورَةُ المُزَّمِّلِ",
+      "englishName": "Al-Muzzammil",
+      "ayahCount": 20,
+      "wordCount": 217,
+      "filePath": "surah-073.json"
+    },
+    {
+      "surahNumber": 74,
+      "name": "سُورَةُ المُدَّثِّرِ",
+      "englishName": "Al-Muddaththir",
+      "ayahCount": 56,
+      "wordCount": 268,
+      "filePath": "surah-074.json"
+    },
+    {
+      "surahNumber": 75,
+      "name": "سُورَةُ القِيَامَةِ",
+      "englishName": "Al-Qiyaama",
+      "ayahCount": 40,
+      "wordCount": 169,
+      "filePath": "surah-075.json"
+    },
+    {
+      "surahNumber": 76,
+      "name": "سُورَةُ الإِنسَانِ",
+      "englishName": "Al-Insaan",
+      "ayahCount": 31,
+      "wordCount": 254,
+      "filePath": "surah-076.json"
+    },
+    {
+      "surahNumber": 77,
+      "name": "سُورَةُ المُرۡسَلَاتِ",
+      "englishName": "Al-Mursalaat",
+      "ayahCount": 50,
+      "wordCount": 186,
+      "filePath": "surah-077.json"
+    },
+    {
+      "surahNumber": 78,
+      "name": "سُورَةُ النَّبَإِ",
+      "englishName": "An-Naba",
+      "ayahCount": 40,
+      "wordCount": 180,
+      "filePath": "surah-078.json"
+    },
+    {
+      "surahNumber": 79,
+      "name": "سُورَةُ النَّازِعَاتِ",
+      "englishName": "An-Naazi'aat",
+      "ayahCount": 46,
+      "wordCount": 184,
+      "filePath": "surah-079.json"
+    },
+    {
+      "surahNumber": 80,
+      "name": "سُورَةُ عَبَسَ",
+      "englishName": "Abasa",
+      "ayahCount": 42,
+      "wordCount": 137,
+      "filePath": "surah-080.json"
+    },
+    {
+      "surahNumber": 81,
+      "name": "سُورَةُ التَّكۡوِيرِ",
+      "englishName": "At-Takwir",
+      "ayahCount": 29,
+      "wordCount": 108,
+      "filePath": "surah-081.json"
+    },
+    {
+      "surahNumber": 82,
+      "name": "سُورَةُ الانفِطَارِ",
+      "englishName": "Al-Infitaar",
+      "ayahCount": 19,
+      "wordCount": 85,
+      "filePath": "surah-082.json"
+    },
+    {
+      "surahNumber": 83,
+      "name": "سُورَةُ المُطَفِّفِينَ",
+      "englishName": "Al-Mutaffifin",
+      "ayahCount": 36,
+      "wordCount": 176,
+      "filePath": "surah-083.json"
+    },
+    {
+      "surahNumber": 84,
+      "name": "سُورَةُ الانشِقَاقِ",
+      "englishName": "Al-Inshiqaaq",
+      "ayahCount": 25,
+      "wordCount": 112,
+      "filePath": "surah-084.json"
+    },
+    {
+      "surahNumber": 85,
+      "name": "سُورَةُ البُرُوجِ",
+      "englishName": "Al-Burooj",
+      "ayahCount": 22,
+      "wordCount": 115,
+      "filePath": "surah-085.json"
+    },
+    {
+      "surahNumber": 86,
+      "name": "سُورَةُ الطَّارِقِ",
+      "englishName": "At-Taariq",
+      "ayahCount": 17,
+      "wordCount": 65,
+      "filePath": "surah-086.json"
+    },
+    {
+      "surahNumber": 87,
+      "name": "سُورَةُ الأَعۡلَىٰ",
+      "englishName": "Al-A'laa",
+      "ayahCount": 19,
+      "wordCount": 77,
+      "filePath": "surah-087.json"
+    },
+    {
+      "surahNumber": 88,
+      "name": "سُورَةُ الغَاشِيَةِ",
+      "englishName": "Al-Ghaashiya",
+      "ayahCount": 26,
+      "wordCount": 96,
+      "filePath": "surah-088.json"
+    },
+    {
+      "surahNumber": 89,
+      "name": "سُورَةُ الفَجۡرِ",
+      "englishName": "Al-Fajr",
+      "ayahCount": 30,
+      "wordCount": 143,
+      "filePath": "surah-089.json"
+    },
+    {
+      "surahNumber": 90,
+      "name": "سُورَةُ البَلَدِ",
+      "englishName": "Al-Balad",
+      "ayahCount": 20,
+      "wordCount": 86,
+      "filePath": "surah-090.json"
+    },
+    {
+      "surahNumber": 91,
+      "name": "سُورَةُ الشَّمۡسِ",
+      "englishName": "Ash-Shams",
+      "ayahCount": 15,
+      "wordCount": 58,
+      "filePath": "surah-091.json"
+    },
+    {
+      "surahNumber": 92,
+      "name": "سُورَةُ اللَّيۡلِ",
+      "englishName": "Al-Lail",
+      "ayahCount": 21,
+      "wordCount": 75,
+      "filePath": "surah-092.json"
+    },
+    {
+      "surahNumber": 93,
+      "name": "سُورَةُ الضُّحَىٰ",
+      "englishName": "Ad-Dhuhaa",
+      "ayahCount": 11,
+      "wordCount": 44,
+      "filePath": "surah-093.json"
+    },
+    {
+      "surahNumber": 94,
+      "name": "سُورَةُ الشَّرۡحِ",
+      "englishName": "Ash-Sharh",
+      "ayahCount": 8,
+      "wordCount": 31,
+      "filePath": "surah-094.json"
+    },
+    {
+      "surahNumber": 95,
+      "name": "سُورَةُ التِّينِ",
+      "englishName": "At-Tin",
+      "ayahCount": 8,
+      "wordCount": 38,
+      "filePath": "surah-095.json"
+    },
+    {
+      "surahNumber": 96,
+      "name": "سُورَةُ العَلَقِ",
+      "englishName": "Al-Alaq",
+      "ayahCount": 19,
+      "wordCount": 77,
+      "filePath": "surah-096.json"
+    },
+    {
+      "surahNumber": 97,
+      "name": "سُورَةُ القَدۡرِ",
+      "englishName": "Al-Qadr",
+      "ayahCount": 5,
+      "wordCount": 34,
+      "filePath": "surah-097.json"
+    },
+    {
+      "surahNumber": 98,
+      "name": "سُورَةُ البَيِّنَةِ",
+      "englishName": "Al-Bayyina",
+      "ayahCount": 8,
+      "wordCount": 102,
+      "filePath": "surah-098.json"
+    },
+    {
+      "surahNumber": 99,
+      "name": "سُورَةُ الزَّلۡزَلَةِ",
+      "englishName": "Az-Zalzala",
+      "ayahCount": 8,
+      "wordCount": 40,
+      "filePath": "surah-099.json"
+    },
+    {
+      "surahNumber": 100,
+      "name": "سُورَةُ العَادِيَاتِ",
+      "englishName": "Al-Aadiyaat",
+      "ayahCount": 11,
+      "wordCount": 45,
+      "filePath": "surah-100.json"
+    },
+    {
+      "surahNumber": 101,
+      "name": "سُورَةُ القَارِعَةِ",
+      "englishName": "Al-Qaari'a",
+      "ayahCount": 11,
+      "wordCount": 40,
+      "filePath": "surah-101.json"
+    },
+    {
+      "surahNumber": 102,
+      "name": "سُورَةُ التَّكَاثُرِ",
+      "englishName": "At-Takaathur",
+      "ayahCount": 8,
+      "wordCount": 32,
+      "filePath": "surah-102.json"
+    },
+    {
+      "surahNumber": 103,
+      "name": "سُورَةُ العَصۡرِ",
+      "englishName": "Al-Asr",
+      "ayahCount": 3,
+      "wordCount": 18,
+      "filePath": "surah-103.json"
+    },
+    {
+      "surahNumber": 104,
+      "name": "سُورَةُ الهُمَزَةِ",
+      "englishName": "Al-Humaza",
+      "ayahCount": 9,
+      "wordCount": 38,
+      "filePath": "surah-104.json"
+    },
+    {
+      "surahNumber": 105,
+      "name": "سُورَةُ الفِيلِ",
+      "englishName": "Al-Fil",
+      "ayahCount": 5,
+      "wordCount": 27,
+      "filePath": "surah-105.json"
+    },
+    {
+      "surahNumber": 106,
+      "name": "سُورَةُ قُرَيۡشٍ",
+      "englishName": "Quraish",
+      "ayahCount": 4,
+      "wordCount": 21,
+      "filePath": "surah-106.json"
+    },
+    {
+      "surahNumber": 107,
+      "name": "سُورَةُ المَاعُونِ",
+      "englishName": "Al-Maa'un",
+      "ayahCount": 7,
+      "wordCount": 29,
+      "filePath": "surah-107.json"
+    },
+    {
+      "surahNumber": 108,
+      "name": "سُورَةُ الكَوۡثَرِ",
+      "englishName": "Al-Kawthar",
+      "ayahCount": 3,
+      "wordCount": 14,
+      "filePath": "surah-108.json"
+    },
+    {
+      "surahNumber": 109,
+      "name": "سُورَةُ الكَافِرُونَ",
+      "englishName": "Al-Kaafiroon",
+      "ayahCount": 6,
+      "wordCount": 30,
+      "filePath": "surah-109.json"
+    },
+    {
+      "surahNumber": 110,
+      "name": "سُورَةُ النَّصۡرِ",
+      "englishName": "An-Nasr",
+      "ayahCount": 3,
+      "wordCount": 24,
+      "filePath": "surah-110.json"
+    },
+    {
+      "surahNumber": 111,
+      "name": "سُورَةُ المَسَدِ",
+      "englishName": "Al-Masad",
+      "ayahCount": 5,
+      "wordCount": 27,
+      "filePath": "surah-111.json"
+    },
+    {
+      "surahNumber": 112,
+      "name": "سُورَةُ الإِخۡلَاصِ",
+      "englishName": "Al-Ikhlaas",
+      "ayahCount": 4,
+      "wordCount": 19,
+      "filePath": "surah-112.json"
+    },
+    {
+      "surahNumber": 113,
+      "name": "سُورَةُ الفَلَقِ",
+      "englishName": "Al-Falaq",
+      "ayahCount": 5,
+      "wordCount": 27,
+      "filePath": "surah-113.json"
+    },
+    {
+      "surahNumber": 114,
+      "name": "سُورَةُ النَّاسِ",
+      "englishName": "An-Naas",
+      "ayahCount": 6,
+      "wordCount": 24,
+      "filePath": "surah-114.json"
+    }
+  ]
+}

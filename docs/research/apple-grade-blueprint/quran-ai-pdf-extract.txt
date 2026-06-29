@@ -1,0 +1,253 @@
+--- page 1 ---
+Quran AI
+The best of you are those who learn the 
+Qur'an and teach it. (Prophet Mohammed ﷺ)
+
+--- page 2 ---
+AI-assisted Quranic devotion
+Our app is designed to help individuals improve 
+their Quran recitation using AI technology. The 
+app listens to recitations, detects mistakes and 
+provides real-time feedback for correction, to help 
+users to achieve Quranic perfection.
+
+--- page 3 ---
+The Problem
+➔ 600 million Muslims recite Quran 
+everyday
+➔ Only 16% of Muslim population 
+speak native Arabic
+➔ Limited instructor and assistive 
+tooling
+➔ Few engaging experiences 
+➔ Lack of local heritage and taste
+
+--- page 4 ---
+Value Propositions
+24/7 Dynamic 
+Feedback 
+Get feedback on your 
+recitation day and night
+Data Network
+The more people use it, the 
+better the speech 
+recognition becomes
+Educational Tools 
+& Analytics
+Providing you with insights 
+on your performance
+Inspired by the golden ages on Islamic inventions
+
+--- page 5 ---
+Features
+➔ Incorrect Words
+Perfect that verse. We closely follow along with 
+your recitation and notify you of incorrect words 
+e.g (ﻣؤﻣﻧونinstead of (ﻣﺳﻠﻣون)
+➔ Missed Words
+Avoid the mix-up. We enforce correct sentence 
+structure and detect when you miss a word or 
+recite the wrong verse.
+➔ Mutashabihat
+Unsure of what comes next? We present you 
+with similar verses when you make a mistake so 
+you can understand the distinction between the 
+error and correct verses.
+Tools
+➔ Quran Aid
+Artiﬁcial Intelligence Assistant
+➔ Badges
+Gamiﬁcation and Progress Tracking Experience 
+➔ Novel Quran Reader
+Supercharged Quran Application
+
+--- page 6 ---
+Competition
+Automatic Process
+Dynamic 
+Feedback
+No 
+Feedback
+Manual Process
+Regular Imams
+
+--- page 7 ---
+Market Overview
+2 Billion 600M
+$1.8B Market
+40M
+≈$100M Market
+5M
+≈$10M Market
+Total Number of Muslims Total Number of 
+Practicing Muslims
+Total Number of 
+Muslims in Iraq
+Total Number of 
+Practicing Muslims in 
+Kurdistan
+
+--- page 8 ---
+Growth Strategies
+Establishing 
+Connections with 
+MoERA 
+The Ministry and Mosques
+Leveraging 
+Connections with 
+Quran Institutions 
+Iqra and Hikmah
+Establishing 
+Connections with 
+Islamic parties
+KIU, KJG, KIM and Salaﬁs
+Quotes for illustration purposes only
+
+--- page 9 ---
+Business Model
+Free Premium Enterprise (V2.0)
+Ads $3/User/Month $3/User/Month
+$50/Instructor/Month
+Basic Quran Reader Experience
+Bookmarks, Highlights, Notes, 
+Limited Recitation Correction 
+Trail, Limited Progress Tracking 
+Trail
+Unlimited Recitation Correction 
+Usage 
+User and Group Proﬁles
+Analytics and Recitation 
+Insights
+Learning Management System
+
+--- page 10 ---
+User Acquisition Forecast
+Market Potential: 5 Million Muslims
+Number of Families: 1,000,000 Families
+Subscriptions/Family: 
+1%  = 10,000 Subscriptions (satisfactory for the launch time)
+2% = 20,000 Subscriptions (expected after 3 months)
+4% = 40,000 Subscriptions (our goal in ﬁrst 6 months)
+6% = 60,000 Subscriptions (goal of the ﬁrst year)
+
+--- page 11 ---
+Revenue Projection
+Market Value: $100 Million
+Monthly Subscription Fee: $3 per Family (or maybe a user)
+Projected Monthly Revenue According User Acquisition Forecast: 
+$30K = Launch Campaign
+$60K = After 3 Months
+120K = Goal for the ﬁrst 6 month
+180K = goal for the year after expanding the target market
+
+--- page 12 ---
+Important Note
+Note: These projections are speciﬁcally for Kurdistan region 
+especially during the launch stage, for one month only, and with the 
+expectation of 1%, 2%, 4%, and 6% of families subscribing.
+These ﬁgures are subject to change based on actual market 
+performance and user adoption.
+
+--- page 13 ---
+Scenarios & Expectations
+Worst Case Scenario:
+- Failure of the project at all: $ 40-60K loss
+Expected Scenario (ﬁrst six months):
+- 10,000 subscribers /month and $30,000 Revenue/month
+- $22 estimated recurring cost 
+Exceeding Expectation: (ﬁrst six months) 
+- 40.000 subscribers /month and $120,000 Revenue/month
+- $62  estimated recurring cost 
+WoW Scenario: (ﬁrst year)
+- 60.000 subscribers /month and $180,000 Revenue/month
+- $89 estimated  recurring cost
+
+--- page 14 ---
+Budget & Expenses
+Description Cost / $
+App Development (one time payment) 40K
+Test and troubleshooting (one time payment) 5K
+Marketing Campaign 30K
+Sales/Accounting (recurring fee) 20K/year
+Customer Service (recurring Fee) 6K/year
+Maintenance, Cloud, host, domain (recurring Fee) 12K/year
+continuing marketing campaign using retained earning
+
+--- page 15 ---
+Mobile App and AI Recuurring cost
+Feature Option A Option B Option C
+AI/ML $8K $2.5K $2.5K
+AI/ML Training $1.5k $500 $500
+App Development 
+- Backend
+- Front end
+- UI/UX
+12k 30K 12k
+Time 7 month 4.5 month 6 month
+Total Fixed cost $21.5k $33k $16k
+Product manager 
+cost on Monthly 
+basis 
+$1000 $1.200 $1000
+
+--- page 16 ---
+Mobile App and AI Recurring cost 
+Feature Expected 
+Scenario 10k
+Exceeding 
+Expectation 
+40k
+WoW 
+Scenario 60k
+AWS AI 
+SERVER 
+$12K $38K $56K
+AWS hosting 
+and server 
+$1800 $1800 $1800
+App 
+Maintenance  
+$3000 $3000 $3000
+Product 
+Manager 
+$50 per hour $50 per hour $50 per hour
+AWS AI SERVER estimated on active customer per 4 hour a month
+
+--- page 17 ---
+Appendix
+
+--- page 18 ---
+Recurring App 
+Server 
+AWS 
+server
+s
+Estimation (10k 
+active user , 10k 
+Concurrent)
+Roughly estimated 
+yearly 
+on-de
+mand 
+$100 per hour $52.5k
+Reser
+ved 
+$50 per hour $27K
+Spot $10 per hour $18K
+For ﬁrst year recommend it to have 
+reserved server 
+Once we have trafﬁc of one year we can 
+estimated the on-demand budget  
+Some information to know before deciding  :
+On-demand: With on-demand pricing, you pay for the 
+resources that you use, and you can scale your server 
+up or down as needed.
+Reserved: With reserved pricing, you commit to using 
+a certain amount of resources for a certain amount of 
+time, and you receive a discount on the price of those 
+resources.
+Spot: With spot pricing, you can bid on unused AWS 
+resources, and you only pay for the resources that you 
+use. However, there is no guarantee that you will be 
+able to get the resources that you need, and the price 
+of spot resources can ﬂuctuate wildly.

@@ -1,0 +1,26 @@
+name: ci
+on:
+  pull_request:
+  push: { branches: [main] }
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4          # version from package.json "packageManager"
+      - uses: actions/setup-node@v4
+        with: { node-version: "22", cache: "pnpm" }
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            services/realtime-gateway
+            services/platform-api
+      - run: pnpm install --frozen-lockfile
+      - run: bash scripts/verify.sh         # SAME gate the agent runs locally
+        # platform-api integration tests need live Postgres and are SKIPPED here.
+        # To run the full DB gate in CI, add a postgres:16 service + load infra/sql,
+        # then set DATABASE_URL (see docs/TESTING.md). Kept infra-free so local == CI.

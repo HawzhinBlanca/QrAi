@@ -1,0 +1,8 @@
+{
+  "tenantId": "test-e2e",
+  "learnerId": "learner-e2e",
+  "sessionId": "session-e2e",
+  "chunkId": "chunk-e2e-001",
+  "storedAt": "2026-06-28T18:38:24.306Z",
+  "objectKey": "test-e2e/learner-e2e/chunk-e2e-001.bin"
+}

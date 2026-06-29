@@ -1,0 +1,107 @@
+{
+  "id": "94",
+  "surahNumber": 94,
+  "name": "سُورَةُ الشَّرۡحِ",
+  "englishName": "Ash-Sharh",
+  "englishNameTranslation": "The Consolation",
+  "revelationType": "Meccan",
+  "numberOfAyahs": 8,
+  "totalWords": 31,
+  "ayahs": [
+    {
+      "surahNumber": 94,
+      "ayahNumber": 1,
+      "text": "بِسْمِ ٱللَّهِ ٱلرَّحْمَٰنِ ٱلرَّحِيمِ أَلَمْ نَشْرَحْ لَكَ صَدْرَكَ",
+      "words": [
+        "بِسْمِ",
+        "ٱللَّهِ",
+        "ٱلرَّحْمَٰنِ",
+        "ٱلرَّحِيمِ",
+        "أَلَمْ",
+        "نَشْرَحْ",
+        "لَكَ",
+        "صَدْرَكَ"
+      ],
+      "wordCount": 8
+    },
+    {
+      "surahNumber": 94,
+      "ayahNumber": 2,
+      "text": "وَوَضَعْنَا عَنكَ وِزْرَكَ",
+      "words": [
+        "وَوَضَعْنَا",
+        "عَنكَ",
+        "وِزْرَكَ"
+      ],
+      "wordCount": 3
+    },
+    {
+      "surahNumber": 94,
+      "ayahNumber": 3,
+      "text": "ٱلَّذِىٓ أَنقَضَ ظَهْرَكَ",
+      "words": [
+        "ٱلَّذِىٓ",
+        "أَنقَضَ",
+        "ظَهْرَكَ"
+      ],
+      "wordCount": 3
+    },
+    {
+      "surahNumber": 94,
+      "ayahNumber": 4,
+      "text": "وَرَفَعْنَا لَكَ ذِكْرَكَ",
+      "words": [
+        "وَرَفَعْنَا",
+        "لَكَ",
+        "ذِكْرَكَ"
+      ],
+      "wordCount": 3
+    },
+    {
+      "surahNumber": 94,
+      "ayahNumber": 5,
+      "text": "فَإِنَّ مَعَ ٱلْعُسْرِ يُسْرًا",
+      "words": [
+        "فَإِنَّ",
+        "مَعَ",
+        "ٱلْعُسْرِ",
+        "يُسْرًا"
+      ],
+      "wordCount": 4
+    },
+    {
+      "surahNumber": 94,
+      "ayahNumber": 6,
+      "text": "إِنَّ مَعَ ٱلْعُسْرِ يُسْرًۭا",
+      "words": [
+        "إِنَّ",
+        "مَعَ",
+        "ٱلْعُسْرِ",
+        "يُسْرًۭا"
+      ],
+      "wordCount": 4
+    },
+    {
+      "surahNumber": 94,
+      "ayahNumber": 7,
+      "text": "فَإِذَا فَرَغْتَ فَٱنصَبْ",
+      "words": [
+        "فَإِذَا",
+        "فَرَغْتَ",
+        "فَٱنصَبْ"
+      ],
+      "wordCount": 3
+    },
+    {
+      "surahNumber": 94,
+      "ayahNumber": 8,
+      "text": "وَإِلَىٰ رَبِّكَ فَٱرْغَب",
+      "words": [
+        "وَإِلَىٰ",
+        "رَبِّكَ",
+        "فَٱرْغَب"
+      ],
+      "wordCount": 3
+    }
+  ]
+}

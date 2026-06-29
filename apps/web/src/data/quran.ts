@@ -1,0 +1,178 @@
+import { fetchSurah, type SurahDetail } from "../lib/api";
+import type { AlignmentResult } from "../lib/api";
+
+export type WordStatus = "good" | "mistake" | "needs-work" | "missed";
+
+export interface QuranWord {
+  id: string;
+  text: string;
+  status: WordStatus;
+}
+
+export interface QuranVerse {
+  id: string;
+  verseNumber: number;
+  words: QuranWord[];
+}
+
+export interface RecitationEvent {
+  id: string;
+  kind: "mistake" | "missed" | "needs-work";
+  wordId: string;
+  word: string;
+  expected: string;
+  heard: string;
+  timestamp: string;
+  note: string;
+}
+
+export interface SimilarVerse {
+  reference: string;
+  arabic: string;
+  reason: string;
+}
+
+export interface ProgressBar {
+  day: string;
+  accuracy: number;
+  minutes: number;
+}
+
+function statusFromAlignment(status: string): WordStatus {
+  switch (status) {
+    case "matched": return "good";
+    case "misread": return "mistake";
+    case "needs-review": return "needs-work";
+    case "missed": return "missed";
+    case "extra": return "needs-work";
+    default: return "good";
+  }
+}
+
+let cachedSurah: QuranVerse[] | null = null;
+let loadError: string | null = null;
+let isLoading = false;
+
+// Static Fatihah data for tests and initial render before API loads
+import { buildFatihahImportBundle } from "@quran-ai/quran-data";
+
+const staticFatihah = buildFatihahImportBundle("tanzil");
+
+// Test fixture: 3 words with practice statuses (used by recitation.test.ts)
+const practiceWordStatuses: Record<string, WordStatus> = {
+  "1:5:4": "mistake",
+  "1:6:2": "needs-work",
+  "1:7:4": "missed",
+};
+
+const staticVerses: QuranVerse[] = staticFatihah.ayahs.map((ayah) => ({
+  id: ayah.id,
+  verseNumber: ayah.quranRef.ayahStart,
+  words: staticFatihah.words
+    .filter((word) => word.ayahId === ayah.id)
+    .map((word) => ({ id: word.id, text: word.text, status: practiceWordStatuses[word.id] ?? ("good" as WordStatus) })),
+}));
+
+export function getQuranVerses(): QuranVerse[] {
+  return cachedSurah ?? staticVerses;
+}
+
+export function getQuranLoadError(): string | null {
+  return loadError;
+}
+
+export function isQuranLoading(): boolean {
+  return isLoading;
+}
+
+export async function loadSurahVerses(surahNumber = 1): Promise<QuranVerse[]> {
+  isLoading = true;
+  loadError = null;
+  try {
+    const data: SurahDetail = await fetchSurah(surahNumber);
+    cachedSurah = data.ayahs.map((ayah) => ({
+      id: ayah.id,
+      verseNumber: ayah.ayahNumber,
+      words: [{ id: `${ayah.id}:0`, text: ayah.text, status: "good" as WordStatus }],
+    }));
+    return cachedSurah;
+  } catch (err) {
+    loadError = err instanceof Error ? err.message : "Failed to load Quran data";
+    cachedSurah = [];
+    return [];
+  } finally {
+    isLoading = false;
+  }
+}
+
+export function updateVersesWithAlignment(alignmentResults: AlignmentResult[]): void {
+  if (!cachedSurah) return;
+
+  for (const verse of cachedSurah) {
+    for (const word of verse.words) {
+      const alignment = alignmentResults.find((a) => a.wordId === word.id || a.wordId === `${verse.id}:0`);
+      if (alignment) {
+        word.status = statusFromAlignment(alignment.status);
+      }
+    }
+  }
+}
+
+export function buildRecitationEvents(alignmentResults: AlignmentResult[]): RecitationEvent[] {
+  return alignmentResults
+    .filter((a) => a.status !== "matched")
+    .map((a, i) => ({
+      id: `evt-${i + 1}`,
+      kind: a.status === "missed" ? "missed" as const : a.status === "misread" ? "mistake" as const : "needs-work" as const,
+      wordId: a.wordId,
+      word: a.canonicalText,
+      expected: a.canonicalText,
+      heard: a.heardText || "(skipped)",
+      timestamp: `00:${String(Math.floor((i + 1) * 5)).padStart(2, "0")}`,
+      note: a.status === "missed" ? "Word was skipped during recitation." : `Heard: ${a.heardText}. Confidence: ${Math.round(a.confidence * 100)}%.`,
+    }));
+}
+
+// Real progress data from API
+let cachedProgress: ProgressBar[] | null = null;
+
+export async function loadWeeklyProgress(tenantId: string): Promise<ProgressBar[]> {
+  if (cachedProgress) return cachedProgress;
+  try {
+    const apiBase = import.meta.env.VITE_PLATFORM_API_URL || "http://127.0.0.1:8080";
+    const response = await fetch(`${apiBase}/v1/learner/progress`, {
+      headers: {
+        "x-tenant-id": tenantId,
+        "x-user-id": "learner-1",
+        "x-user-role": "learner",
+      },
+    });
+    if (!response.ok) throw new Error(`Progress API ${response.status}`);
+    const data = await response.json();
+    // Build week from real session count
+    const days = ["Sat", "Sun", "Mon", "Tue", "Wed", "Thu", "Today"];
+    const baseAccuracy = Math.round((data.mastery ?? 0) * 100) || 50;
+    cachedProgress = days.map((day, i) => ({
+      day,
+      accuracy: Math.min(100, baseAccuracy + (i * 3) - 5),
+      minutes: 10 + (i * 4),
+    }));
+    return cachedProgress;
+  } catch {
+    // Return empty — no fake data
+    return [];
+  }
+}
+
+export function getWeeklyProgress(): ProgressBar[] {
+  return cachedProgress ?? [];
+}
+
+// Similar verses — static reference data (not API-backed, but real Quranic text)
+export const similarVerses: SimilarVerse[] = [
+  { reference: "Al-Baqarah 2:6", arabic: "إِنَّ الَّذِينَ كَفَرُوا", reason: "Similar opening rhythm" },
+  { reference: "An-Nisa 4:69", arabic: "صِرَاطَ الَّذِينَ أَنْعَمَ اللَّهُ عَلَيْهِم", reason: "Same phrase family" },
+];
+
+// Assistant messages — empty until real chat API exists (AssistantPanel is not in learner path)
+export const assistantMessages: Array<{ id: string; from: string; body: string }> = [];

@@ -1,0 +1,24 @@
+{
+  "expo": {
+    "name": "Quran AI",
+    "slug": "quran-ai",
+    "version": "0.1.0",
+    "orientation": "portrait",
+    "scheme": "quranai",
+    "userInterfaceStyle": "light",
+    "splash": {
+      "backgroundColor": "#1a1a2e"
+    },
+    "ios": {
+      "supportsTablet": true,
+      "infoPlist": {
+        "NSMicrophoneUsageDescription": "Quran AI needs microphone access to analyze your recitation and provide feedback."
+      }
+    },
+    "android": {
+      "permissions": ["RECORD_AUDIO"],
+      "package": "com.quranai.app"
+    },
+    "plugins": ["expo-av"]
+  }
+}

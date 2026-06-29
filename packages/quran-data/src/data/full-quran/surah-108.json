@@ -1,0 +1,50 @@
+{
+  "id": "108",
+  "surahNumber": 108,
+  "name": "سُورَةُ الكَوۡثَرِ",
+  "englishName": "Al-Kawthar",
+  "englishNameTranslation": "Abundance",
+  "revelationType": "Meccan",
+  "numberOfAyahs": 3,
+  "totalWords": 14,
+  "ayahs": [
+    {
+      "surahNumber": 108,
+      "ayahNumber": 1,
+      "text": "بِسْمِ ٱللَّهِ ٱلرَّحْمَٰنِ ٱلرَّحِيمِ إِنَّآ أَعْطَيْنَٰكَ ٱلْكَوْثَرَ",
+      "words": [
+        "بِسْمِ",
+        "ٱللَّهِ",
+        "ٱلرَّحْمَٰنِ",
+        "ٱلرَّحِيمِ",
+        "إِنَّآ",
+        "أَعْطَيْنَٰكَ",
+        "ٱلْكَوْثَرَ"
+      ],
+      "wordCount": 7
+    },
+    {
+      "surahNumber": 108,
+      "ayahNumber": 2,
+      "text": "فَصَلِّ لِرَبِّكَ وَٱنْحَرْ",
+      "words": [
+        "فَصَلِّ",
+        "لِرَبِّكَ",
+        "وَٱنْحَرْ"
+      ],
+      "wordCount": 3
+    },
+    {
+      "surahNumber": 108,
+      "ayahNumber": 3,
+      "text": "إِنَّ شَانِئَكَ هُوَ ٱلْأَبْتَرُ",
+      "words": [
+        "إِنَّ",
+        "شَانِئَكَ",
+        "هُوَ",
+        "ٱلْأَبْتَرُ"
+      ],
+      "wordCount": 4
+    }
+  ]
+}

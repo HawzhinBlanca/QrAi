@@ -1,0 +1,120 @@
+version: "3.9"
+
+services:
+  # === Database ===
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: hawzhin
+      POSTGRES_DB: quran_ai
+      POSTGRES_HOST_AUTH_METHOD: trust
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./infra/sql/0001_core_schema.sql:/docker-entrypoint-initdb.d/01_schema.sql:ro
+      - ./infra/sql/0002_seed_fatihah.sql:/docker-entrypoint-initdb.d/02_seed.sql:ro
+      - ./infra/sql/0003_tenant_rls.sql:/docker-entrypoint-initdb.d/03_rls.sql:ro
+      - ./infra/sql/0004_add_password_hash.sql:/docker-entrypoint-initdb.d/04_password.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U hawzhin -d quran_ai"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  # === Rust Platform API ===
+  platform-api:
+    build:
+      context: .
+      dockerfile: services/platform-api/Dockerfile
+    environment:
+      DATABASE_URL: "postgresql://hawzhin@postgres:5432/quran_ai"
+      JWT_SECRET: "production-secret-change-me"
+      PLATFORM_API_BIND: "0.0.0.0:8080"
+    ports:
+      - "8080:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
+  # === Rust Realtime Gateway ===
+  realtime-gateway:
+    build:
+      context: .
+      dockerfile: services/realtime-gateway/Dockerfile
+    environment:
+      REALTIME_GATEWAY_BIND: "0.0.0.0:8081"
+      REALTIME_GATEWAY_TICKET_SECRET: "production-secret-change-me"
+      ML_INFERENCE_URL: "http://ml-inference:8090"
+      GATEWAY_TENANT_ID: "hikmah-pilot-erbil"
+    ports:
+      - "8081:8081"
+    depends_on:
+      - platform-api
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8081/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
+  # === ML Inference (Node.js) ===
+  ml-inference:
+    build:
+      context: .
+      dockerfile: services/ml-inference/Dockerfile
+    environment:
+      ML_INFERENCE_PORT: "8090"
+      ASR_SERVICE_URL: "http://asr-inference:8091"
+      AUDIO_STORAGE_DIR: "/data/audio-storage"
+    ports:
+      - "8090:8090"
+    volumes:
+      - audio_storage:/data/audio-storage
+    depends_on:
+      - asr-inference
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8090/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
+  # === ASR Inference (Python/Whisper) ===
+  asr-inference:
+    build:
+      context: .
+      dockerfile: services/asr-inference/Dockerfile
+    environment:
+      ASR_PORT: "8091"
+      ASR_MODEL: "base"
+    ports:
+      - "8091:8091"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8091/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
+  # === Web Frontend ===
+  web:
+    build:
+      context: .
+      dockerfile: apps/web/Dockerfile
+    environment:
+      VITE_PLATFORM_API_URL: "http://localhost:8080"
+      VITE_REALTIME_GATEWAY_URL: "ws://localhost:8081"
+      VITE_ML_INFERENCE_URL: "http://localhost:8090"
+    ports:
+      - "5173:80"
+    depends_on:
+      - platform-api
+      - realtime-gateway
+      - ml-inference
+
+volumes:
+  postgres_data:
+  audio_storage:
