@@ -9,6 +9,12 @@ if [[ $# -lt 2 ]]; then
   exit 2
 fi
 task="$1"; tests="$2"
+# Strict allowlist: the task id is interpolated into a sed program below, so reject any
+# value with sed-significant or shell-significant characters (e.g. `/`, `;`, spaces).
+if [[ ! "$task" =~ ^[A-Za-z0-9_.-]+$ ]]; then
+  echo "REFUSED: task id '${task}' must match ^[A-Za-z0-9_.-]+$ (got unexpected characters)." >&2
+  exit 2
+fi
 if bash scripts/verify.sh; then
   for f in specs/*/tasks.md; do
     [ -e "$f" ] || continue

@@ -132,7 +132,11 @@ impl RealtimeGateway {
         {
             let key = format!("quran-ai:gateway:session:{session_id}");
             let _: Result<(), _> = match action {
-                "start" => redis::cmd("SETEX").arg(&key).arg(300).arg("active").query(&mut conn),
+                "start" => redis::cmd("SETEX")
+                    .arg(&key)
+                    .arg(300)
+                    .arg("active")
+                    .query(&mut conn),
                 "end" => redis::cmd("DEL").arg(&key).query(&mut conn),
                 _ => Ok(()),
             };

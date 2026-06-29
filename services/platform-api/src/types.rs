@@ -352,7 +352,9 @@ impl IntoResponse for ApiError {
             Self::Unauthorized => StatusCode::UNAUTHORIZED,
             Self::Forbidden => StatusCode::FORBIDDEN,
             Self::NotFound => StatusCode::NOT_FOUND,
-            Self::MissingSources | Self::HighRiskApproval | Self::BadRequest(_) => StatusCode::BAD_REQUEST,
+            Self::MissingSources | Self::HighRiskApproval | Self::BadRequest(_) => {
+                StatusCode::BAD_REQUEST
+            }
             Self::Database(_) => StatusCode::INTERNAL_SERVER_ERROR,
         };
         (

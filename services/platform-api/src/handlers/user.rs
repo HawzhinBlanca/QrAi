@@ -40,7 +40,9 @@ pub async fn register(
 
     // Validate password strength
     if req.password.len() < 8 {
-        return Err(ApiError::BadRequest("Password must be at least 8 characters".to_string()));
+        return Err(ApiError::BadRequest(
+            "Password must be at least 8 characters".to_string(),
+        ));
     }
 
     // Check email uniqueness if provided
@@ -135,7 +137,9 @@ pub async fn login(
         .fetch_optional(&state.pool)
         .await?
     } else {
-        return Err(ApiError::BadRequest("Either userId or email is required".to_string()));
+        return Err(ApiError::BadRequest(
+            "Either userId or email is required".to_string(),
+        ));
     };
 
     let row = row.ok_or(ApiError::Unauthorized)?;
@@ -156,9 +160,7 @@ pub async fn login(
 
     tracing::info!(user_id = %user_id, tenant_id = %tenant_id, "user logged in");
 
-    let token = state
-        .jwt_config
-        .issue_token(&user_id, &tenant_id, &role)?;
+    let token = state.jwt_config.issue_token(&user_id, &tenant_id, &role)?;
 
     let audit_id = next_id("audit");
     sqlx::query(

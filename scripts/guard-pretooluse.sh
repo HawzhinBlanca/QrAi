@@ -31,10 +31,21 @@ fi
 
 # Dangerous shell commands (Bash). Any match -> deny.
 if [[ -n "$cmd" ]]; then
+  # Recursive-force rm, detected as recursive AND force INDEPENDENTLY so split flags
+  # (`rm -r -f`, `rm -f -r`, `rm -r --force`, `rm --recursive --force`) cannot bypass it
+  # the way a single-token-only regex (`-rf`) would. Flag tokens must start with `-`
+  # (a leading-dash boundary), so filenames like `my-archive` don't false-positive.
+  if printf '%s' "$cmd" | grep -Eq '(^|[;&|(]|[[:space:]])rm([[:space:]]|$)'; then
+    rec=0; frc=0
+    printf '%s' "$cmd" | grep -Eq '[[:space:]]-[A-Za-z]*r[A-Za-z]*([[:space:]]|$)|[[:space:]]--recursive([[:space:]=]|$)' && rec=1
+    printf '%s' "$cmd" | grep -Eq '[[:space:]]-[A-Za-z]*f[A-Za-z]*([[:space:]]|$)|[[:space:]]--force([[:space:]=]|$)' && frc=1
+    if [[ "$rec" -eq 1 && "$frc" -eq 1 ]]; then
+      echo "BLOCKED: recursive-force rm detected (AGENTS.md hard boundary)." >&2
+      exit 2
+    fi
+  fi
+  # Other dangerous patterns -> deny.
   if printf '%s' "$cmd" | grep -Eq \
-      -e 'rm[[:space:]]+-[a-zA-Z]*([rR][a-zA-Z]*[fF]|[fF][a-zA-Z]*[rR])' \
-      -e 'rm[[:space:]].*--recursive.*--force' \
-      -e 'rm[[:space:]].*--force.*--recursive' \
       -e 'git[[:space:]]+push[[:space:]].*(--force|--force-with-lease)' \
       -e 'git[[:space:]]+push[[:space:]].*[[:space:]]\+' \
       -e 'git[[:space:]]+reset[[:space:]]+--hard' \

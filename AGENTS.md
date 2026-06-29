@@ -10,21 +10,23 @@ scholar/source approval, and model-evaluation proof gates. Polyglot pnpm monorep
 - **Rust** (1.96, cargo): `services/realtime-gateway`, `services/platform-api`
   (Axum; integration tests need live Postgres).
 - **Services**: `services/ml-inference` (Node), `services/asr-inference` (Python),
-  `services/agents` (planned). Driven via `docker compose` + `scripts/smoke-*.mjs`.
+  `services/agents` (stub). Driven via `docker compose` + `scripts/smoke-*.mjs`.
 
 ## Commands (exact)
 - Install:    `pnpm install --frozen-lockfile`
 - Dev:        `pnpm dev`              # serves apps/web
 - Typecheck:  `pnpm typecheck`        # tsc for contracts + quran-data + web
-- Test:       `pnpm test`             # vitest + cargo test (platform-api needs Postgres)
+- Test:       `pnpm test`             # vitest + cargo test; runs platform-api with
+              #                          --include-ignored, so it FAILS (not skips) without a live Postgres
 - Build:      `pnpm build`            # contracts + quran-data + web
-- Proof:      `pnpm proof`            # legacy strict gate (scripts/proof.sh)
+- Proof:      `pnpm proof`            # legacy strict gate (scripts/proof.sh); also requires live Postgres
 - Smoke:      `pnpm smoke:all`        # full smoke incl. SQL/browser/API/ML/privacy
 - **Verify ALL: `bash scripts/verify.sh`**   # the CODYSTEM gate — run before claiming done
 
 `scripts/verify.sh` is the canonical gate (guard + Rust fmt/clippy + TS typecheck +
-TS/Rust tests + build). It SKIPS the Postgres-only platform-api integration tests
-unless a live DB is reachable — it never fakes them. CI runs the same script.
+TS/Rust tests + build). Unlike `pnpm test`/`pnpm proof` (which run the platform-api
+integration tests unconditionally and therefore require a live Postgres), `verify.sh`
+SKIPS those DB tests when no DB is reachable — it never fakes them. CI runs the same script.
 
 ## Workflow (non-negotiable)
 1. RESEARCH before coding. Use Serena (find_symbol, find_referencing_symbols) to map real

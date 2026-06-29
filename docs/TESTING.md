@@ -12,6 +12,11 @@
 
 `bash scripts/verify.sh --fast` runs only lint + typecheck (used by the PostToolUse hook).
 
+> **verify.sh vs `pnpm test` / `pnpm proof`.** The two legacy commands run the platform-api
+> integration tests with `--include-ignored` *unconditionally*, so they **fail** without a
+> live Postgres. `verify.sh` is the gate that **skips** those tests when no DB is reachable
+> (it never fakes them) — that's why CI (which has no DB) stays green on `verify.sh`.
+
 ## Database-gated tests (platform-api)
 `services/platform-api/tests/integration.rs` has tests marked
 `#[ignore = "requires live Postgres"]`. The gate runs the infra-free tests always and runs
@@ -19,7 +24,7 @@ the ignored ones **only** when a live Postgres answers at `$DATABASE_URL` — ot
 prints a SKIP line. They are never faked. To include them:
 
 ```bash
-docker compose up -d postgres          # postgres:16 on :5432, schema auto-loaded
+docker compose up -d postgres          # postgres:16-alpine on :5432, schema auto-loaded
 bash scripts/verify.sh                 # now runs `cargo test ... -- --include-ignored`
 # or point at any DB:
 DATABASE_URL=postgresql://user@host:5432/db bash scripts/verify.sh

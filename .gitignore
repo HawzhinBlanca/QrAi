@@ -19,6 +19,7 @@ secrets/
 scripts/stack.env
 
 # Tooling / OS
+package-lock.json
 .DS_Store
 *.log
 .serena/

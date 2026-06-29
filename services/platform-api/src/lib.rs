@@ -2,10 +2,10 @@ use axum::Router;
 use axum::response::IntoResponse;
 use sqlx::PgPool;
 use std::sync::Arc;
+use tower_governor::GovernorLayer;
+use tower_governor::governor::GovernorConfigBuilder;
 use tower_http::cors::{Any, CorsLayer};
 use tower_http::trace::TraceLayer;
-use tower_governor::governor::GovernorConfigBuilder;
-use tower_governor::GovernorLayer;
 
 pub mod auth;
 pub mod handlers;
@@ -123,7 +123,9 @@ pub fn platform_router_with_rate_limit(state: AppState, rate_limit: bool) -> Rou
             .burst_size(100)
             .finish()
             .unwrap();
-        base_router.layer(GovernorLayer { config: governor_conf.into() })
+        base_router.layer(GovernorLayer {
+            config: governor_conf.into(),
+        })
     } else {
         base_router
     }

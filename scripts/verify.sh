@@ -39,10 +39,15 @@ run() { # run <name> <shell-command>
 }
 
 # --- 0. Guard: no tracked secrets / protected files (anti-leak boundary) ------
+# Allow template files (.env.example/.sample/.template) — they hold no real secrets.
 say "guard: tracked secrets & protected paths"
 if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
-  if git ls-files -z | grep -zqE '(^|/)\.env$|(^|/)\.env\.|(^|/)secrets/|\.pem$'; then
-    echo "    ✗ a secret/protected file is tracked — untrack it (see AGENTS.md)" >&2
+  leaked="$(git ls-files \
+    | grep -E '(^|/)\.env$|(^|/)\.env\.|(^|/)secrets/|\.pem$' \
+    | grep -vE '(^|/)\.env\.(example|sample|template)$' || true)"
+  if [[ -n "$leaked" ]]; then
+    echo "    ✗ secret/protected file(s) tracked — untrack them (see AGENTS.md):" >&2
+    printf '        %s\n' $leaked >&2
     fail=1
   fi
 fi
