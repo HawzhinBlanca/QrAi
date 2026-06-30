@@ -33,10 +33,30 @@ from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
 
 # === Model Loading ===
-MODEL_NAME = os.environ.get("ASR_MODEL", "base")
-print(f"Loading Whisper model: {MODEL_NAME}...")
-model = whisper.load_model(MODEL_NAME)
-print(f"Whisper {MODEL_NAME} loaded. Device: {model.device}")
+# Default to the real Quran-fine-tuned ASR (diacritized Arabic) via HF transformers.
+# If ASR_MODEL is a bare Whisper size (tiny/base/small/...), fall back to openai-whisper.
+ASR_MODEL = os.environ.get("ASR_MODEL", "tarteel-ai/whisper-base-ar-quran")
+MODEL_NAME = ASR_MODEL
+_USE_HF = "/" in ASR_MODEL
+
+if _USE_HF:
+    from transformers import pipeline as hf_pipeline
+
+    DEVICE_STR = (
+        "mps"
+        if torch.backends.mps.is_available()
+        else ("cuda" if torch.cuda.is_available() else "cpu")
+    )
+    print(f"Loading HF Quran ASR model: {ASR_MODEL} on {DEVICE_STR} ...")
+    asr_pipe = hf_pipeline("automatic-speech-recognition", model=ASR_MODEL, device=DEVICE_STR)
+    model = None
+    print(f"HF Quran ASR {ASR_MODEL} loaded on {DEVICE_STR}.")
+else:
+    print(f"Loading Whisper model: {ASR_MODEL}...")
+    model = whisper.load_model(ASR_MODEL)
+    asr_pipe = None
+    DEVICE_STR = str(model.device)
+    print(f"Whisper {ASR_MODEL} loaded. Device: {model.device}")
 
 app = FastAPI(title="Quran AI ASR Inference", version="0.1.0")
 
@@ -115,8 +135,8 @@ async def health():
     return {
         "ok": True,
         "service": "quran-ai-asr-inference",
-        "model": f"whisper-{MODEL_NAME}",
-        "device": str(model.device),
+        "model": MODEL_NAME,
+        "device": DEVICE_STR,
         "supportedLanguages": ["ar", "en", "tr", "ur", "id", "ms", "fr", "de"],
     }
 
@@ -137,6 +157,20 @@ async def transcribe(req: TranscribeRequest):
         tmp_path = tmp.name
 
     try:
+        if asr_pipe is not None:
+            # HF Quran ASR — this checkpoint is fine-tuned for Arabic Quran, so a plain
+            # call returns diacritized Quran text. (Word-level timing comes from the
+            # separate /v1/force-align pass; this 2022 fine-tune lacks timestamp config.)
+            hf = asr_pipe(tmp_path)
+            return TranscribeResponse(
+                text=(hf.get("text") or "").strip(),
+                language=req.language,
+                duration=0.0,
+                words=[],
+                modelVersion=MODEL_NAME,
+                latencyMs=max(1, int((time.time() - start) * 1000)),
+            )
+
         # Run Whisper transcription with word-level timestamps
         result = whisper.transcribe(
             model,
