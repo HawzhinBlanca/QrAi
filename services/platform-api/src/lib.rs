@@ -72,6 +72,14 @@ pub fn platform_router_with_rate_limit(state: AppState, rate_limit: bool) -> Rou
             axum::routing::get(handlers::recitation::get_session),
         )
         .route(
+            "/v1/recitation-sessions/{id}/alignments",
+            axum::routing::get(handlers::recitation::list_session_alignments),
+        )
+        .route(
+            "/v1/tajweed-findings",
+            axum::routing::get(handlers::review::list_tajweed_findings),
+        )
+        .route(
             "/v1/realtime-session-tickets",
             axum::routing::post(handlers::recitation::create_realtime_ticket),
         )

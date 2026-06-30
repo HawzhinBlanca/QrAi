@@ -1,9 +1,8 @@
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   AlertTriangle,
   ArrowRight,
   BadgeCheck,
-  BookOpenCheck,
   Bot,
   CheckCircle2,
   DatabaseZap,
@@ -21,22 +20,30 @@ import {
   UsersRound,
 } from "lucide-react";
 import {
-  activeSession,
-  agentRuns,
-  alignments,
-  benchmarkMetrics,
+  DEPLOYED_MODEL_VERSION,
+  fetchAgentRuns,
+  fetchBenchmarkMetrics,
+  fetchMemorizationPlan,
+  fetchRecitationSessions,
+  fetchScholarApprovals,
+  fetchSessionAlignments,
+  fetchTajweedFindings,
+  fetchTeacherReviewQueue,
   governanceItems,
-  memorizationPlan,
   platformApps,
   platformTabs,
-  scholarApprovals,
   supportedLanguages,
-  tajweedFindings,
-  teacherReviews,
+  type AgentRunSummary,
+  type BenchmarkMetric,
+  type MemorizationPlan,
+  type RecitationSessionSummary,
+  type ScholarApprovalSummary,
+  type SessionAlignment,
+  type TajweedFindingSummary,
+  type TeacherReviewItem,
 } from "../data/platform";
 import { getQuranVerses } from "../data/quran";
 import {
-  createMockAlignmentEvent,
   getConfiguredRealtimeAudioUrl,
   startGatewayAudioUpload,
   startBrowserMicCapture,
@@ -45,7 +52,6 @@ import {
   type GatewayAudioAck,
   type GatewayUploader,
   type GatewayUploadStatus,
-  type LiveAlignmentEvent,
   type MicCaptureController,
   type MicCaptureStatus,
 } from "../lib/liveRecitation";
@@ -60,20 +66,89 @@ import type { SupportedLanguageCode } from "../types/platform";
 import { BrandMark } from "./BrandMark";
 
 interface PlatformCommandProps {
+  tenantId: string;
   activeLanguage: SupportedLanguageCode;
   onLanguageChange: (language: SupportedLanguageCode) => void;
   activeTab: string;
   onTabChange: (tab: string) => void;
 }
 
+interface ConsoleData {
+  agentRuns: AgentRunSummary[];
+  scholarApprovals: ScholarApprovalSummary[];
+  teacherReviews: TeacherReviewItem[];
+  tajweedFindings: TajweedFindingSummary[];
+  benchmarkMetrics: BenchmarkMetric[];
+  memorizationPlan: MemorizationPlan | null;
+  activeSession: RecitationSessionSummary | null;
+  sessionAlignments: SessionAlignment[];
+}
+
+const EMPTY_CONSOLE: ConsoleData = {
+  agentRuns: [],
+  scholarApprovals: [],
+  teacherReviews: [],
+  tajweedFindings: [],
+  benchmarkMetrics: [],
+  memorizationPlan: null,
+  activeSession: null,
+  sessionAlignments: [],
+};
+
 export function PlatformCommand({
+  tenantId,
   activeLanguage,
   activeTab,
   onLanguageChange,
   onTabChange,
 }: PlatformCommandProps) {
-  const selectedLanguage = supportedLanguages.find((language) => language.code === activeLanguage) ?? supportedLanguages[0];
-  const scholarSummary = summarizeScholarQueue(scholarApprovals);
+  const selectedLanguage =
+    supportedLanguages.find((language) => language.code === activeLanguage) ?? supportedLanguages[0];
+  const [data, setData] = useState<ConsoleData>(EMPTY_CONSOLE);
+  const [loaded, setLoaded] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    setLoaded(false);
+
+    async function load() {
+      const [agentRuns, scholarApprovals, teacherReviews, tajweedFindings, benchmarkMetrics, memorizationPlan, sessions] =
+        await Promise.all([
+          fetchAgentRuns(tenantId),
+          fetchScholarApprovals(tenantId),
+          fetchTeacherReviewQueue(tenantId),
+          fetchTajweedFindings(tenantId),
+          fetchBenchmarkMetrics(tenantId),
+          fetchMemorizationPlan(tenantId, "learner-1"),
+          fetchRecitationSessions(tenantId),
+        ]);
+
+      const activeSession = sessions[0] ?? null;
+      const sessionAlignments = activeSession
+        ? await fetchSessionAlignments(tenantId, activeSession.id)
+        : [];
+
+      if (cancelled) return;
+      setData({
+        agentRuns,
+        scholarApprovals,
+        teacherReviews,
+        tajweedFindings,
+        benchmarkMetrics,
+        memorizationPlan,
+        activeSession,
+        sessionAlignments,
+      });
+      setLoaded(true);
+    }
+
+    void load();
+    return () => {
+      cancelled = true;
+    };
+  }, [tenantId]);
+
+  const scholarSummary = summarizeScholarQueue(data.scholarApprovals);
 
   return (
     <section className="platform-command" aria-label="Quran AI Platform Command">
@@ -103,7 +178,7 @@ export function PlatformCommand({
           </div>
           <div className="trust-chip model">
             <Gauge size={16} />
-            {activeSession.modelVersion}
+            {DEPLOYED_MODEL_VERSION}
           </div>
         </div>
       </header>
@@ -141,21 +216,39 @@ export function PlatformCommand({
       </div>
 
       <div className="command-grid">
-        <LiveAlignmentCard selectedLanguage={selectedLanguage.nativeName} />
-        <IntelligenceColumn />
-        <OperationsColumn scholarSummary={scholarSummary} />
+        <LiveAlignmentCard
+          selectedLanguage={selectedLanguage.nativeName}
+          activeSession={data.activeSession}
+          sessionAlignments={data.sessionAlignments}
+        />
+        <IntelligenceColumn agentRuns={data.agentRuns} tajweedFindings={data.tajweedFindings} loaded={loaded} />
+        <OperationsColumn
+          scholarSummary={scholarSummary}
+          scholarApprovals={data.scholarApprovals}
+          teacherReviews={data.teacherReviews}
+          memorizationPlan={data.memorizationPlan}
+          loaded={loaded}
+        />
       </div>
 
       <div className="command-bottom-grid">
         <DataFlywheelCard />
-        <BenchmarkCard />
-        <GovernanceCard />
+        <BenchmarkCard metrics={data.benchmarkMetrics} loaded={loaded} />
+        <GovernanceCard agentRuns={data.agentRuns} />
       </div>
     </section>
   );
 }
 
-function LiveAlignmentCard({ selectedLanguage }: { selectedLanguage: string }) {
+function LiveAlignmentCard({
+  selectedLanguage,
+  activeSession,
+  sessionAlignments,
+}: {
+  selectedLanguage: string;
+  activeSession: RecitationSessionSummary | null;
+  sessionAlignments: SessionAlignment[];
+}) {
   const captureRef = useRef<MicCaptureController | null>(null);
   const uploaderRef = useRef<GatewayUploader | null>(null);
   const [captureStatus, setCaptureStatus] = useState<MicCaptureStatus>("idle");
@@ -164,11 +257,14 @@ function LiveAlignmentCard({ selectedLanguage }: { selectedLanguage: string }) {
   const [gatewayError, setGatewayError] = useState("");
   const [gatewayAcks, setGatewayAcks] = useState<GatewayAudioAck[]>([]);
   const [audioChunks, setAudioChunks] = useState<BrowserAudioChunk[]>([]);
-  const [alignmentEvents, setAlignmentEvents] = useState<LiveAlignmentEvent[]>([]);
-  const liveSummary = summarizeLiveCapture(audioChunks, alignmentEvents);
-  const liveAlignments = alignmentEvents.at(-1)?.alignments ?? alignments;
-  const flaggedCount = liveAlignments.filter((alignment) => alignment.status !== "matched").length;
+  // Live per-word alignment streaming is not wired yet; pass [] so telemetry reflects
+  // captured chunks only (no fabricated alignment events).
+  const liveSummary = summarizeLiveCapture(audioChunks, []);
+  const acceptedAcks = gatewayAcks.filter((ack) => ack.accepted).length;
+  const flaggedCount = sessionAlignments.filter((alignment) => alignment.status !== "matched").length;
   const isRecording = captureStatus === "recording" || captureStatus === "requesting-permission";
+  const sessionId = activeSession?.id ?? "platform-console-preview";
+  const latencyMs = activeSession?.latencyMs ?? 0;
 
   async function handleCaptureToggle() {
     if (captureRef.current) {
@@ -183,16 +279,15 @@ function LiveAlignmentCard({ selectedLanguage }: { selectedLanguage: string }) {
     setGatewayError("");
     setGatewayAcks([]);
     setAudioChunks([]);
-    setAlignmentEvents([]);
     uploaderRef.current = startGatewayAudioUpload({
-      url: getConfiguredRealtimeAudioUrl(activeSession.id),
+      url: getConfiguredRealtimeAudioUrl(sessionId),
       onStatusChange: setGatewayStatus,
       onAck: (ack) => setGatewayAcks((currentAcks) => [...currentAcks, ack]),
       onError: setGatewayError,
     });
 
     captureRef.current = await startBrowserMicCapture({
-      sessionId: activeSession.id,
+      sessionId,
       sampleRate: 16000,
       chunkDurationMs: 480,
       onStatusChange: setCaptureStatus,
@@ -200,22 +295,21 @@ function LiveAlignmentCard({ selectedLanguage }: { selectedLanguage: string }) {
       onChunk: (chunk) => {
         uploaderRef.current?.sendChunk(chunk);
         setAudioChunks((currentChunks) => [...currentChunks, chunk]);
-        setAlignmentEvents((currentEvents) => [
-          ...currentEvents,
-          createMockAlignmentEvent(activeSession, chunk, alignments),
-        ]);
       },
     });
   }
+
+  const sessionTitle = activeSession ? activeSession.quranRef.display : "No recent session";
+  const kbStreamed = (liveSummary.totalBytes / 1024).toFixed(1);
 
   return (
     <article className="command-card live-card">
       <div className="command-card-header">
         <div>
           <p>Live alignment</p>
-          <h2>{activeSession.surah} · {activeSession.ayahRange}</h2>
+          <h2>{sessionTitle}</h2>
         </div>
-        <span className="live-pill"><Radio size={14} /> {activeSession.latencyMs}ms</span>
+        <span className="live-pill"><Radio size={14} /> {latencyMs}ms</span>
       </div>
 
       <div className="live-capture-panel">
@@ -227,21 +321,19 @@ function LiveAlignmentCard({ selectedLanguage }: { selectedLanguage: string }) {
           <strong>{formatCaptureStatus(captureStatus)}</strong>
           <span>
             {captureError ||
-              `${liveSummary.chunkCount} chunks · ${liveSummary.alignedWordCount} aligned words · ${
-                liveSummary.latestLatencyMs || activeSession.latencyMs
-              }ms latest`}
+              `${liveSummary.chunkCount} chunks · ${kbStreamed} KB streamed`}
           </span>
         </div>
         <div className="gateway-state">
           <strong>Gateway {formatGatewayStatus(gatewayStatus)}</strong>
-          <span>{gatewayError || `${gatewayAcks.filter((ack) => ack.accepted).length} accepted acks`}</span>
+          <span>{gatewayError || `${acceptedAcks} accepted acks`}</span>
         </div>
       </div>
 
       <div className="session-meta-grid">
-        <Metric label="Learner" value={activeSession.learnerName} />
+        <Metric label="Learner" value={activeSession?.learnerId ?? "—"} />
         <Metric label="Language" value={selectedLanguage} />
-        <Metric label="Consent" value={activeSession.consent.audioRetention.replace("-", " ")} />
+        <Metric label="Mode" value={(activeSession?.mode ?? "—").replace("-", " ")} />
         <Metric label="Findings" value={`${flaggedCount} review`} />
       </div>
 
@@ -261,13 +353,16 @@ function LiveAlignmentCard({ selectedLanguage }: { selectedLanguage: string }) {
       </div>
 
       <div className="alignment-table" aria-label="Word alignment">
-        {liveAlignments.map((alignment) => (
+        {sessionAlignments.map((alignment) => (
           <div className={`alignment-row ${alignment.status}`} key={alignment.wordId}>
             <span dir="rtl" lang="ar">{alignment.canonicalText}</span>
             <small>{alignment.status.replace("-", " ")}</small>
             <strong>{Math.round(alignment.confidence * 100)}%</strong>
           </div>
         ))}
+        {sessionAlignments.length === 0 && (
+          <p className="panel-empty">No stored word alignments for the latest session yet.</p>
+        )}
       </div>
     </article>
   );
@@ -309,7 +404,15 @@ function formatGatewayStatus(status: GatewayUploadStatus): string {
   }
 }
 
-function IntelligenceColumn() {
+function IntelligenceColumn({
+  agentRuns,
+  tajweedFindings,
+  loaded,
+}: {
+  agentRuns: AgentRunSummary[];
+  tajweedFindings: TajweedFindingSummary[];
+  loaded: boolean;
+}) {
   return (
     <div className="command-column">
       <article className="command-card pipeline-card">
@@ -345,11 +448,12 @@ function IntelligenceColumn() {
               <div>
                 <strong>{run.name}</strong>
                 <p>{run.goal}</p>
-                <small>{run.lastEvent}</small>
+                {run.lastEvent ? <small>{run.lastEvent}</small> : null}
               </div>
               <span>{requiresHumanReview(run) ? "Review" : canShowLearnerFacingAnswer(run) ? "Safe" : "Blocked"}</span>
             </div>
           ))}
+          {loaded && agentRuns.length === 0 && <p className="panel-empty">No agent runs recorded yet.</p>}
         </div>
       </article>
 
@@ -369,13 +473,28 @@ function IntelligenceColumn() {
               <span>{Math.round(finding.confidence * 100)}% · {finding.reviewStatus}</span>
             </div>
           ))}
+          {loaded && tajweedFindings.length === 0 && (
+            <p className="panel-empty">No tajweed findings under review.</p>
+          )}
         </div>
       </article>
     </div>
   );
 }
 
-function OperationsColumn({ scholarSummary }: { scholarSummary: ReturnType<typeof summarizeScholarQueue> }) {
+function OperationsColumn({
+  scholarSummary,
+  scholarApprovals,
+  teacherReviews,
+  memorizationPlan,
+  loaded,
+}: {
+  scholarSummary: ReturnType<typeof summarizeScholarQueue>;
+  scholarApprovals: ScholarApprovalSummary[];
+  teacherReviews: TeacherReviewItem[];
+  memorizationPlan: MemorizationPlan | null;
+  loaded: boolean;
+}) {
   return (
     <div className="command-column">
       <article className="command-card">
@@ -390,21 +509,24 @@ function OperationsColumn({ scholarSummary }: { scholarSummary: ReturnType<typeo
           {teacherReviews.map((review) => (
             <div className="teacher-row" key={review.id}>
               <div>
-                <strong>{review.classroomName}</strong>
-                <span>{review.teacherName}</span>
+                <strong>{review.teacherId}</strong>
+                <span>{review.note}</span>
               </div>
               <dl>
                 <div>
-                  <dt>Pending</dt>
-                  <dd>{review.pendingCount}</dd>
+                  <dt>Finding</dt>
+                  <dd>{review.findingId}</dd>
                 </div>
                 <div>
-                  <dt>Agreement</dt>
-                  <dd>{formatPercent(review.agreementRate)}</dd>
+                  <dt>Decision</dt>
+                  <dd>{review.decision}</dd>
                 </div>
               </dl>
             </div>
           ))}
+          {loaded && teacherReviews.length === 0 && (
+            <p className="panel-empty">No teacher reviews recorded yet.</p>
+          )}
         </div>
       </article>
 
@@ -431,6 +553,9 @@ function OperationsColumn({ scholarSummary }: { scholarSummary: ReturnType<typeo
               </div>
             </div>
           ))}
+          {loaded && scholarApprovals.length === 0 && (
+            <p className="panel-empty">No scholar approvals in the ledger yet.</p>
+          )}
         </div>
       </article>
 
@@ -442,16 +567,22 @@ function OperationsColumn({ scholarSummary }: { scholarSummary: ReturnType<typeo
           </div>
           <Timer size={20} />
         </div>
-        <p className="coach-note">{memorizationPlan.currentFocus}</p>
-        <div className="interval-list">
-          {memorizationPlan.intervals.map((interval) => (
-            <div key={interval.label}>
-              <span>{interval.label}</span>
-              <strong>{interval.dueCount} due</strong>
-              <small>{formatPercent(interval.retention)} retention</small>
+        {memorizationPlan ? (
+          <>
+            <p className="coach-note">{memorizationPlan.currentFocus}</p>
+            <div className="interval-list">
+              {memorizationPlan.intervals.map((interval) => (
+                <div key={interval.label}>
+                  <span>{interval.label}</span>
+                  <strong>{interval.dueCount} due</strong>
+                  <small>{formatPercent(interval.retention)} retention</small>
+                </div>
+              ))}
             </div>
-          ))}
-        </div>
+          </>
+        ) : (
+          <p className="panel-empty">No memorization plan available yet.</p>
+        )}
       </article>
     </div>
   );
@@ -476,7 +607,7 @@ function DataFlywheelCard() {
   );
 }
 
-function BenchmarkCard() {
+function BenchmarkCard({ metrics, loaded }: { metrics: BenchmarkMetric[]; loaded: boolean }) {
   return (
     <article className="command-card bottom-card">
       <div className="command-card-header compact">
@@ -487,19 +618,23 @@ function BenchmarkCard() {
         <Gauge size={20} />
       </div>
       <div className="benchmark-grid">
-        {benchmarkMetrics.map((metric) => (
+        {metrics.map((metric) => (
           <div className={`benchmark ${metric.status}`} key={metric.label}>
             <span>{metric.label}</span>
             <strong>{metric.value}</strong>
             <small>Target {metric.target}</small>
           </div>
         ))}
+        {loaded && metrics.length === 0 && (
+          <p className="panel-empty">No eval run published for the current model.</p>
+        )}
       </div>
     </article>
   );
 }
 
-function GovernanceCard() {
+function GovernanceCard({ agentRuns }: { agentRuns: AgentRunSummary[] }) {
+  const coverage = agentRuns.length > 0 ? getSourceCoverage(agentRuns[0].sources) : "missing";
   return (
     <article className="command-card bottom-card">
       <div className="command-card-header compact">
@@ -522,7 +657,7 @@ function GovernanceCard() {
         })}
       </div>
       <p className="source-line">
-        Source coverage: {getSourceCoverage(agentRuns[0].sources)} · canonical Quran text never machine-modified.
+        Source coverage: {coverage} · canonical Quran text never machine-modified.
       </p>
     </article>
   );

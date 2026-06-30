@@ -209,3 +209,50 @@ pub async fn list_scholar_approvals(
 
     Ok(Json(out))
 }
+
+/// Read-only: tajweed findings for the tenant (internal Command console).
+/// Teacher/Scholar/Admin/Ops only.
+pub async fn list_tajweed_findings(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> Result<Json<Vec<serde_json::Value>>, ApiError> {
+    let actor = actor_from_headers(&headers, &state.jwt_config)?;
+    actor.require_any(&[
+        ActorRole::Teacher,
+        ActorRole::Scholar,
+        ActorRole::Admin,
+        ActorRole::Ops,
+    ])?;
+
+    let rows = sqlx::query(
+        "SELECT tf.id, tf.alignment_id, wa.word_id, tf.rule, tf.severity,
+                tf.confidence::float8 AS confidence, tf.explanation, tf.review_status, tf.source_refs
+         FROM tajweed_findings tf
+         JOIN word_alignments wa ON wa.id = tf.alignment_id
+         WHERE tf.tenant_id = $1
+         ORDER BY tf.confidence DESC",
+    )
+    .bind(&actor.tenant_id)
+    .fetch_all(&state.pool)
+    .await?;
+
+    let out = rows
+        .into_iter()
+        .map(|r| {
+            let sources: serde_json::Value =
+                r.try_get("source_refs").unwrap_or(serde_json::json!([]));
+            serde_json::json!({
+                "id": r.try_get::<String, _>("id").unwrap_or_default(),
+                "wordId": r.try_get::<String, _>("word_id").unwrap_or_default(),
+                "rule": r.try_get::<String, _>("rule").unwrap_or_default(),
+                "severity": r.try_get::<String, _>("severity").unwrap_or_default(),
+                "confidence": r.try_get::<f64, _>("confidence").unwrap_or(0.0),
+                "explanation": r.try_get::<String, _>("explanation").unwrap_or_default(),
+                "reviewStatus": r.try_get::<String, _>("review_status").unwrap_or_default(),
+                "sources": sources,
+            })
+        })
+        .collect();
+
+    Ok(Json(out))
+}

@@ -5,7 +5,11 @@ export function formatPercent(value: number): string {
   return `${Math.round(value * 100)}%`;
 }
 
-export function requiresHumanReview(agentRun: AgentRun): boolean {
+// Narrowed to the fields actually read, so both the rich contract types and the
+// lightweight API-result shapes (see data/platform.ts) satisfy these helpers.
+type AgentRunGate = Pick<AgentRun, "status" | "reviewStatus" | "confidence" | "sources">;
+
+export function requiresHumanReview(agentRun: Pick<AgentRunGate, "status" | "reviewStatus" | "confidence">): boolean {
   return (
     agentRun.status === "needs-human-review" ||
     agentRun.reviewStatus === "ai-suggested" ||
@@ -13,7 +17,7 @@ export function requiresHumanReview(agentRun: AgentRun): boolean {
   );
 }
 
-export function canShowLearnerFacingAnswer(agentRun: AgentRun): boolean {
+export function canShowLearnerFacingAnswer(agentRun: AgentRunGate): boolean {
   if (agentRun.status === "blocked") {
     return false;
   }
@@ -21,7 +25,7 @@ export function canShowLearnerFacingAnswer(agentRun: AgentRun): boolean {
   return canShowLearnerFacingAiOutput(agentRun);
 }
 
-export function summarizeScholarQueue(approvals: ScholarApproval[]) {
+export function summarizeScholarQueue(approvals: Array<Pick<ScholarApproval, "status" | "risk">>) {
   return approvals.reduce(
     (summary, approval) => {
       summary.total += 1;

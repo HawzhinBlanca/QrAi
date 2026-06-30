@@ -20,7 +20,7 @@ pub async fn list_agent_runs(
     ])?;
 
     let rows = sqlx::query(
-        "SELECT id, name, goal, status, confidence, review_status, source_refs
+        "SELECT id, name, goal, status, confidence, review_status, source_refs, trace
          FROM agent_runs WHERE tenant_id = $1 ORDER BY created_at DESC LIMIT 50",
     )
     .bind(&actor.tenant_id)
@@ -32,6 +32,12 @@ pub async fn list_agent_runs(
         .map(|r| {
             let sources: serde_json::Value =
                 r.try_get("source_refs").unwrap_or(serde_json::json!([]));
+            let trace: serde_json::Value = r.try_get("trace").unwrap_or(serde_json::json!({}));
+            let last_event = trace
+                .get("last_event")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_owned();
             serde_json::json!({
                 "id": r.try_get::<String, _>("id").unwrap_or_default(),
                 "name": r.try_get::<String, _>("name").unwrap_or_default(),
@@ -40,6 +46,7 @@ pub async fn list_agent_runs(
                 "confidence": r.try_get::<f64, _>("confidence").unwrap_or(0.0),
                 "reviewStatus": r.try_get::<String, _>("review_status").unwrap_or_default(),
                 "sources": sources,
+                "lastEvent": last_event,
             })
         })
         .collect();

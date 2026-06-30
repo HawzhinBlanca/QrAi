@@ -376,6 +376,7 @@ function AuthenticatedApp({ smokeBypass = false }: { smokeBypass?: boolean }) {
             )
           ) : (
             <InternalSurface
+              tenantId={effectiveUser?.tenantId ?? "hikmah-pilot-erbil"}
               activeLanguage={activeLanguage}
               activeSection={activeSection}
               activeTab={activeTab}
@@ -773,12 +774,14 @@ function CompletePanel({ onReset, memorizationPlan }: { onReset: () => void; mem
 }
 
 function InternalSurface({
+  tenantId,
   activeLanguage,
   activeSection,
   activeTab,
   onLanguageChange,
   onTabChange,
 }: {
+  tenantId: string;
   activeLanguage: SupportedLanguageCode;
   activeSection: AppSection;
   activeTab: string;
@@ -799,6 +802,7 @@ function InternalSurface({
 
   return (
     <PlatformCommand
+      tenantId={tenantId}
       activeLanguage={activeLanguage}
       activeTab={activeTab}
       onLanguageChange={onLanguageChange}

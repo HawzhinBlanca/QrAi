@@ -337,3 +337,44 @@ pub async fn create_realtime_ticket(
         audit_event_id: audit_id,
     }))
 }
+
+/// Read-only: word-level alignments for a session (internal Command console).
+/// Joins canonical_words for the Uthmani text. Teacher/Admin/Ops only.
+pub async fn list_session_alignments(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+) -> Result<Json<Vec<serde_json::Value>>, ApiError> {
+    let actor = actor_from_headers(&headers, &state.jwt_config)?;
+    actor.require_any(&[ActorRole::Teacher, ActorRole::Admin, ActorRole::Ops])?;
+
+    let rows = sqlx::query(
+        "SELECT wa.word_id, cw.text_uthmani, wa.heard_text, wa.start_ms, wa.end_ms,
+                wa.confidence::float8 AS confidence, wa.status
+         FROM word_alignments wa
+         JOIN canonical_words cw ON cw.id = wa.word_id
+         WHERE wa.session_id = $1 AND wa.tenant_id = $2
+         ORDER BY wa.start_ms ASC",
+    )
+    .bind(&id)
+    .bind(&actor.tenant_id)
+    .fetch_all(&state.pool)
+    .await?;
+
+    let out = rows
+        .into_iter()
+        .map(|r| {
+            serde_json::json!({
+                "wordId": r.try_get::<String, _>("word_id").unwrap_or_default(),
+                "canonicalText": r.try_get::<String, _>("text_uthmani").unwrap_or_default(),
+                "heardText": r.try_get::<String, _>("heard_text").unwrap_or_default(),
+                "startMs": r.try_get::<i32, _>("start_ms").unwrap_or(0),
+                "endMs": r.try_get::<i32, _>("end_ms").unwrap_or(0),
+                "confidence": r.try_get::<f64, _>("confidence").unwrap_or(0.0),
+                "status": r.try_get::<String, _>("status").unwrap_or_default(),
+            })
+        })
+        .collect();
+
+    Ok(Json(out))
+}

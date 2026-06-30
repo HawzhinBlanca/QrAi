@@ -1,4 +1,4 @@
-import type { RecitationSession, WordAlignment } from "../types/platform";
+import type { WordAlignment } from "../types/platform";
 
 export type MicCaptureStatus = "idle" | "requesting-permission" | "recording" | "stopped" | "denied" | "unsupported" | "error";
 
@@ -276,22 +276,6 @@ export async function startBrowserMicCapture(
     options.onError(status === "denied" ? "Microphone permission was denied." : "Could not start microphone capture.");
     return null;
   }
-}
-
-export function createMockAlignmentEvent(
-  session: RecitationSession,
-  chunk: Pick<BrowserAudioChunk, "id" | "sequence">,
-  sourceAlignments: WordAlignment[],
-): LiveAlignmentEvent {
-  const count = Math.min(sourceAlignments.length, Math.max(1, chunk.sequence + 1));
-
-  return {
-    id: `${session.id}-alignment-${String(chunk.sequence).padStart(4, "0")}`,
-    chunkId: chunk.id,
-    eventSubject: "recitation.alignment.partial",
-    latencyMs: Math.max(180, session.latencyMs - chunk.sequence * 18),
-    alignments: sourceAlignments.slice(0, count),
-  };
 }
 
 export function summarizeLiveCapture(chunks: BrowserAudioChunk[], alignmentEvents: LiveAlignmentEvent[]) {

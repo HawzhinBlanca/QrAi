@@ -181,7 +181,10 @@ describe("Quran AI app smoke", () => {
 
     expect(document.body.textContent).toContain("Stop live recitation");
     expect(FakeMediaRecorder.instances).toHaveLength(1);
-    expect(FakeWebSocket.instances[0].url).toContain("/v1/recitation-sessions/session-kri-00031/audio");
+    // Without a backend the console falls back to the preview session id; assert the
+    // gateway audio path shape rather than a hardcoded session id.
+    expect(FakeWebSocket.instances[0].url).toContain("/v1/recitation-sessions/");
+    expect(FakeWebSocket.instances[0].url).toContain("/audio");
 
     await act(async () => {
       FakeMediaRecorder.instances[0].emitChunk(new Blob(["audio"], { type: "audio/webm" }));
@@ -200,7 +203,7 @@ describe("Quran AI app smoke", () => {
     });
 
     expect(document.body.textContent).toContain("1 chunks");
-    expect(document.body.textContent).toContain("1 aligned words");
+    expect(document.body.textContent).toContain("KB streamed");
     expect(document.body.textContent).toContain("1 accepted acks");
   });
 });

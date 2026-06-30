@@ -1,15 +1,15 @@
 import { describe, expect, it } from "vitest";
-import { activeSession, alignments } from "../data/platform";
 import {
   buildRealtimeAudioUrl,
   createBrowserAudioChunk,
-  createMockAlignmentEvent,
   isMicCaptureSupported,
   parseGatewayAudioAck,
   startGatewayAudioUpload,
   mapMicCaptureError,
   summarizeLiveCapture,
 } from "./liveRecitation";
+
+const SESSION_ID = "session-test-1";
 
 class FakeWebSocket {
   static OPEN = 1;
@@ -85,24 +85,10 @@ describe("live recitation audio helpers", () => {
     expect(mapMicCaptureError(new Error("device missing"))).toBe("error");
   });
 
-  it("creates deterministic mocked partial alignment events from chunks", () => {
-    const firstEvent = createMockAlignmentEvent(activeSession, { id: "chunk-1", sequence: 0 }, alignments);
-    const thirdEvent = createMockAlignmentEvent(activeSession, { id: "chunk-3", sequence: 2 }, alignments);
-
-    expect(firstEvent).toMatchObject({
-      chunkId: "chunk-1",
-      eventSubject: "recitation.alignment.partial",
-      latencyMs: 428,
-    });
-    expect(firstEvent.alignments).toHaveLength(1);
-    expect(thirdEvent.alignments).toHaveLength(3);
-    expect(thirdEvent.latencyMs).toBe(392);
-  });
-
-  it("summarizes live capture telemetry for the UI", () => {
+  it("summarizes live capture telemetry from real chunks", () => {
     const blob = new Blob(["audio"], { type: "audio/webm" });
     const chunk = createBrowserAudioChunk({
-      sessionId: activeSession.id,
+      sessionId: SESSION_ID,
       sequence: 0,
       blob,
       startedAtMs: 0,
@@ -110,13 +96,13 @@ describe("live recitation audio helpers", () => {
       chunkDurationMs: 500,
       sampleRate: 16000,
     });
-    const event = createMockAlignmentEvent(activeSession, chunk, alignments);
 
-    expect(summarizeLiveCapture([chunk], [event])).toEqual({
+    // No live per-word alignment stream yet, so telemetry reflects captured chunks only.
+    expect(summarizeLiveCapture([chunk], [])).toEqual({
       chunkCount: 1,
       totalBytes: 5,
-      latestLatencyMs: 428,
-      alignedWordCount: 1,
+      latestLatencyMs: 0,
+      alignedWordCount: 0,
     });
   });
 
@@ -177,7 +163,7 @@ describe("live recitation audio helpers", () => {
     );
     const socket = FakeWebSocket.instances[0];
     const chunk = createBrowserAudioChunk({
-      sessionId: activeSession.id,
+      sessionId: SESSION_ID,
       sequence: 0,
       blob: new Blob(["audio"], { type: "audio/webm" }),
       startedAtMs: 0,
@@ -191,7 +177,7 @@ describe("live recitation audio helpers", () => {
     socket.onmessage?.({
       data: JSON.stringify({
         kind: "audio.ack",
-        session_id: activeSession.id,
+        session_id: SESSION_ID,
         chunk_id: chunk.id,
         sequence: 0,
         accepted: true,

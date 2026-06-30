@@ -8,7 +8,6 @@ import {
   requiresHumanReview,
   summarizeScholarQueue,
 } from "./platform";
-import { agentRuns, scholarApprovals } from "../data/platform";
 
 describe("recitation helpers", () => {
   it("summarizes flagged words into a stable coaching score", () => {
@@ -39,17 +38,37 @@ describe("recitation helpers", () => {
   });
 
   it("keeps agent answers behind source and review gates", () => {
-    const approvedRun = agentRuns.find((run) => run.status === "approved");
-    const blockedRun = agentRuns.find((run) => run.status === "blocked");
-    const reviewRun = agentRuns.find((run) => run.status === "needs-human-review");
+    const approvedRun: Parameters<typeof canShowLearnerFacingAnswer>[0] = {
+      status: "approved",
+      reviewStatus: "teacher-reviewed",
+      confidence: 0.86,
+      sources: [{ id: "quran-foundation", title: "Quran Foundation API", citation: "Canonical text" }],
+    };
+    const blockedRun: Parameters<typeof canShowLearnerFacingAnswer>[0] = {
+      status: "blocked",
+      reviewStatus: "blocked",
+      confidence: 0.97,
+      sources: [],
+    };
+    const reviewRun: Parameters<typeof requiresHumanReview>[0] = {
+      status: "needs-human-review",
+      reviewStatus: "ai-suggested",
+      confidence: 0.78,
+    };
 
-    expect(approvedRun && canShowLearnerFacingAnswer(approvedRun)).toBe(true);
-    expect(blockedRun && canShowLearnerFacingAnswer(blockedRun)).toBe(false);
-    expect(reviewRun && requiresHumanReview(reviewRun)).toBe(true);
+    expect(canShowLearnerFacingAnswer(approvedRun)).toBe(true);
+    expect(canShowLearnerFacingAnswer(blockedRun)).toBe(false);
+    expect(requiresHumanReview(reviewRun)).toBe(true);
   });
 
   it("summarizes scholar review state for governance dashboards", () => {
-    expect(summarizeScholarQueue(scholarApprovals)).toEqual({
+    const approvals: Parameters<typeof summarizeScholarQueue>[0] = [
+      { status: "scholar-approved", risk: "low" },
+      { status: "draft", risk: "medium" },
+      { status: "blocked", risk: "high" },
+    ];
+
+    expect(summarizeScholarQueue(approvals)).toEqual({
       total: 3,
       draft: 1,
       "scholar-approved": 1,
