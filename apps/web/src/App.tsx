@@ -3,6 +3,7 @@ import { motion } from "motion/react";
 import { AlertTriangle, ArrowRight, CheckCircle2, Clock3, Headphones, Mic, RotateCcw, Send, ShieldCheck, Sparkles } from "lucide-react";
 import { AudioCoach } from "./components/AudioCoach";
 import { IssuePanel } from "./components/IssuePanel";
+import { TajweedPanel } from "./components/TajweedPanel";
 import { MutashabihatPanel } from "./components/MutashabihatPanel";
 import { PlatformCommand } from "./components/PlatformCommand";
 import { ProgressPanel } from "./components/ProgressPanel";
@@ -355,6 +356,8 @@ function AuthenticatedApp({ smokeBypass = false }: { smokeBypass?: boolean }) {
                 selectedWordId={selectedWordId}
                 quranVerses={quranVerses}
                 recitationEvents={recitationEvents}
+                alignmentResults={alignmentResults}
+                tajweedResults={tajweedResults}
                 weeklyProgress={weeklyProgress}
                 memorizationPlan={memorizationPlan}
                 apiError={apiError}
@@ -541,6 +544,8 @@ function PracticeFlow({
   selectedWordId,
   quranVerses,
   recitationEvents,
+  alignmentResults,
+  tajweedResults,
   weeklyProgress,
   memorizationPlan,
   apiError,
@@ -562,6 +567,8 @@ function PracticeFlow({
   selectedWordId: string;
   quranVerses: QuranVerse[];
   recitationEvents: RecitationEvent[];
+  alignmentResults: AlignmentResult[];
+  tajweedResults: TajweedFinding[];
   weeklyProgress: ProgressBar[];
   memorizationPlan: MemorizationPlan | null;
   apiError: string | null;
@@ -571,6 +578,18 @@ function PracticeFlow({
   const selectedStep = practiceSteps.find((step) => step.id === mode) ?? practiceSteps[0];
   const isComplete = mode === "complete";
   const needsTeacherReview = mode === "correction" || mode === "drill";
+
+  // Real accuracy from live alignment results (replaces the old hardcoded 78/32/3).
+  const correctWords = alignmentResults.filter((a) => a.status === "matched").length;
+  const mistakes = alignmentResults.filter(
+    (a) =>
+      a.status === "misread" ||
+      a.status === "missed" ||
+      a.status === "needs-review" ||
+      a.status === "extra",
+  ).length;
+  const scoredWords = correctWords + mistakes;
+  const accuracy = scoredWords > 0 ? Math.round((correctWords / scoredWords) * 100) : 0;
 
   return (
     <section className="practice-flow" aria-label="Learner practice">
@@ -635,8 +654,14 @@ function PracticeFlow({
           ) : needsTeacherReview ? (
             <IssuePanel events={recitationEvents} onSelectWord={onSelectWord} selectedWordId={selectedWordId} />
           ) : (
-            <ProgressPanel accuracy={78} correctWords={32} mistakes={3} weeklyProgress={weeklyProgress} />
+            <ProgressPanel
+              accuracy={accuracy}
+              correctWords={correctWords}
+              mistakes={mistakes}
+              weeklyProgress={weeklyProgress}
+            />
           )}
+          {tajweedResults.length > 0 && <TajweedPanel findings={tajweedResults} />}
           <MutashabihatPanel verses={similarVerses.slice(0, 2)} />
         </aside>
       </div>

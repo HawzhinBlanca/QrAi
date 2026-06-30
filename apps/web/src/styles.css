@@ -2428,3 +2428,54 @@ button:disabled {
   font-size: 13px;
 }
 .login-hint { text-align: center; color: #8a7e66; font-size: 13px; margin-top: 6px; }
+
+/* ── Tajweed feedback panel ───────────────────────────────────────────────── */
+.tajweed-panel .tajweed-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.tajweed-card {
+  border: 1px solid #e7dfce;
+  border-radius: 12px;
+  padding: 12px 14px;
+  background: #fffdf8;
+}
+.tajweed-card.warning {
+  border-color: #e9c48a;
+  background: #fdf7ea;
+}
+.tajweed-card.critical {
+  border-color: #e7b4ad;
+  background: #fdeeec;
+}
+.tajweed-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 4px;
+}
+.tajweed-head strong {
+  font-size: 14px;
+  color: #2f2716;
+}
+.tajweed-head .arabic-mini {
+  font-size: 18px;
+}
+.tajweed-conf {
+  margin-left: auto;
+  font-size: 12px;
+  color: #8a7e66;
+  font-weight: 600;
+}
+.tajweed-card p {
+  font-size: 13px;
+  color: #5b5340;
+  line-height: 1.5;
+  margin: 0;
+}
+.panel-empty {
+  font-size: 13px;
+  color: #8a7e66;
+  padding: 4px 2px;
+}
