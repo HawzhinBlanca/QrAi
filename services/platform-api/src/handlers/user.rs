@@ -6,6 +6,7 @@ use serde_json::json;
 use sqlx::Row;
 
 use crate::AppState;
+use crate::auth::actor_from_headers;
 use crate::types::*;
 
 #[derive(Debug, Deserialize)]
@@ -21,7 +22,7 @@ pub struct RegisterRequest {
 
 pub async fn register(
     State(state): State<AppState>,
-    _headers: HeaderMap,
+    headers: HeaderMap,
     Json(req): Json<RegisterRequest>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
     // Verify tenant exists
@@ -34,9 +35,14 @@ pub async fn register(
         return Err(ApiError::NotFound);
     }
 
-    // Validate role
+    // Validate role. Self-service registration is learner-only; elevated roles
+    // (teacher/scholar/admin/ops) require an already-authenticated admin/ops caller —
+    // this prevents anyone from self-registering as admin (privilege escalation).
     let role = ActorRole::parse_role(&req.role).ok_or(ApiError::Forbidden)?;
-    let _ = role;
+    if role != ActorRole::Learner {
+        let caller = actor_from_headers(&headers, &state.jwt_config)?;
+        caller.require_any(&[ActorRole::Admin, ActorRole::Ops])?;
+    }
 
     // Validate password strength
     if req.password.len() < 8 {

@@ -55,7 +55,8 @@ pub fn platform_router_with_rate_limit(state: AppState, rate_limit: bool) -> Rou
         .route("/v1/auth/login", axum::routing::post(handlers::user::login))
         .route(
             "/v1/recitation-sessions",
-            axum::routing::post(handlers::recitation::create_session),
+            axum::routing::get(handlers::recitation::list_sessions)
+                .post(handlers::recitation::create_session),
         )
         .route(
             "/v1/recitation-sessions/{id}",
@@ -75,7 +76,12 @@ pub fn platform_router_with_rate_limit(state: AppState, rate_limit: bool) -> Rou
         )
         .route(
             "/v1/scholar-approvals",
-            axum::routing::post(handlers::review::create_scholar_approval),
+            axum::routing::get(handlers::review::list_scholar_approvals)
+                .post(handlers::review::create_scholar_approval),
+        )
+        .route(
+            "/v1/agent-runs",
+            axum::routing::get(handlers::agent::list_agent_runs),
         )
         .route(
             "/v1/eval-runs/{model_version}",

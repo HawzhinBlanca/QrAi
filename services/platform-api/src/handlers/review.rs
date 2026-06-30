@@ -169,3 +169,43 @@ pub async fn create_scholar_approval(
         audit_event_id: audit_id,
     }))
 }
+
+pub async fn list_scholar_approvals(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> Result<Json<Vec<serde_json::Value>>, ApiError> {
+    let actor = actor_from_headers(&headers, &state.jwt_config)?;
+    actor.require_any(&[
+        ActorRole::Scholar,
+        ActorRole::Teacher,
+        ActorRole::Admin,
+        ActorRole::Ops,
+    ])?;
+
+    let rows = sqlx::query(
+        "SELECT id, topic, reviewer_id, status, risk, source_refs
+         FROM scholar_approvals WHERE tenant_id = $1 ORDER BY created_at DESC",
+    )
+    .bind(&actor.tenant_id)
+    .fetch_all(&state.pool)
+    .await?;
+
+    let out = rows
+        .into_iter()
+        .map(|r| {
+            let sources: serde_json::Value =
+                r.try_get("source_refs").unwrap_or(serde_json::json!([]));
+            let source_count = sources.as_array().map(|a| a.len()).unwrap_or(0);
+            serde_json::json!({
+                "id": r.try_get::<String, _>("id").unwrap_or_default(),
+                "topic": r.try_get::<String, _>("topic").unwrap_or_default(),
+                "reviewer": r.try_get::<String, _>("reviewer_id").unwrap_or_default(),
+                "status": r.try_get::<String, _>("status").unwrap_or_default(),
+                "risk": r.try_get::<String, _>("risk").unwrap_or_default(),
+                "sourceCount": source_count,
+            })
+        })
+        .collect();
+
+    Ok(Json(out))
+}

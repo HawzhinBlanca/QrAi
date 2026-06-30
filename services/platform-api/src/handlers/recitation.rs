@@ -197,6 +197,45 @@ pub async fn get_session(
     }))
 }
 
+pub async fn list_sessions(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> Result<Json<Vec<serde_json::Value>>, ApiError> {
+    let actor = actor_from_headers(&headers, &state.jwt_config)?;
+    actor.require_any(&[ActorRole::Teacher, ActorRole::Admin, ActorRole::Ops])?;
+
+    let rows = sqlx::query(
+        "SELECT id, learner_id, quran_ref, mode, confidence, review_status, started_at, latency_ms
+         FROM recitation_sessions WHERE tenant_id = $1 ORDER BY started_at DESC LIMIT 50",
+    )
+    .bind(&actor.tenant_id)
+    .fetch_all(&state.pool)
+    .await?;
+
+    let out = rows
+        .into_iter()
+        .map(|r| {
+            let quran_ref: serde_json::Value =
+                r.try_get("quran_ref").unwrap_or(serde_json::json!({}));
+            let started: chrono::DateTime<chrono::Utc> = r
+                .try_get("started_at")
+                .unwrap_or_else(|_| chrono::Utc::now());
+            serde_json::json!({
+                "id": r.try_get::<String, _>("id").unwrap_or_default(),
+                "learnerId": r.try_get::<String, _>("learner_id").unwrap_or_default(),
+                "quranRef": quran_ref,
+                "mode": r.try_get::<String, _>("mode").unwrap_or_default(),
+                "confidence": r.try_get::<f64, _>("confidence").unwrap_or(0.0),
+                "reviewStatus": r.try_get::<String, _>("review_status").unwrap_or_default(),
+                "startedAt": started.to_rfc3339(),
+                "latencyMs": r.try_get::<i32, _>("latency_ms").unwrap_or(0),
+            })
+        })
+        .collect();
+
+    Ok(Json(out))
+}
+
 pub async fn create_realtime_ticket(
     State(state): State<AppState>,
     headers: HeaderMap,
