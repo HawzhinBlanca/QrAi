@@ -22,8 +22,8 @@ export function MutashabihatPanel({ verses }: MutashabihatPanelProps) {
             </div>
           </article>
         ))}
+        {verses.length === 0 && <p className="panel-empty">No similar-verse confusions detected.</p>}
       </div>
-      <button className="text-action" type="button">View all 12</button>
     </section>
   );
 }

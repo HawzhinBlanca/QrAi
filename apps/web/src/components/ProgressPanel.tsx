@@ -6,10 +6,24 @@ interface ProgressPanelProps {
   accuracy: number;
   correctWords: number;
   mistakes: number;
+  recitations: number;
+  streak: number;
+  mastery: number;
   weeklyProgress: ProgressBar[];
 }
 
-export function ProgressPanel({ accuracy, correctWords, mistakes, weeklyProgress }: ProgressPanelProps) {
+export function ProgressPanel({
+  accuracy,
+  correctWords,
+  mistakes,
+  recitations,
+  streak,
+  mastery,
+  weeklyProgress,
+}: ProgressPanelProps) {
+  const level = Math.floor(mastery * 5) + 1;
+  const badge = mastery >= 0.8 ? "Gold" : mastery >= 0.5 ? "Silver" : "Bronze";
+
   return (
     <section className="panel progress-panel" aria-label="Progress">
       <div className="panel-title">
@@ -24,11 +38,11 @@ export function ProgressPanel({ accuracy, correctWords, mistakes, weeklyProgress
         <dl className="metric-stack">
           <div>
             <dt>Recitations</dt>
-            <dd>18</dd>
+            <dd>{recitations}</dd>
           </div>
           <div>
-            <dt>Time practiced</dt>
-            <dd>2h 45m</dd>
+            <dt>Mastery</dt>
+            <dd>{Math.round(mastery * 100)}%</dd>
           </div>
           <div>
             <dt>Correct words</dt>
@@ -50,9 +64,15 @@ export function ProgressPanel({ accuracy, correctWords, mistakes, weeklyProgress
         </ResponsiveContainer>
       </div>
       <div className="badge-row">
-        <span><Flame size={15} /> 12 days</span>
-        <span><Trophy size={15} /> Gold</span>
-        <span><Award size={15} /> Level 4</span>
+        <span>
+          <Flame size={15} /> {streak} days
+        </span>
+        <span>
+          <Trophy size={15} /> {badge}
+        </span>
+        <span>
+          <Award size={15} /> Level {level}
+        </span>
       </div>
     </section>
   );

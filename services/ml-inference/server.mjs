@@ -27,6 +27,9 @@ const manifest = JSON.parse(readFileSync(join(QURAN_DATA_DIR, "manifest.json"), 
 const MODEL_VERSION = process.env.ML_MODEL_VERSION ?? "ml-aligner-v0.2";
 const DATASET_VERSION = fixtures.datasetVersion;
 const GOLDEN_CASE_IDS = fixtures.cases.map((c) => c.id);
+// Golden fixtures are ONLY for smoke/eval. By default (flag unset) every request
+// computes real alignment/tajweed — even for the golden refs like Al-Fatihah 1:1-7.
+const USE_GOLDEN_FIXTURES = process.env.ML_USE_GOLDEN_FIXTURES === "1";
 // === Audio storage abstraction ===
 // Uses local filesystem now, swappable to MinIO/S3 later via AUDIO_STORAGE_DRIVER env
 const AUDIO_STORAGE_DRIVER = process.env.AUDIO_STORAGE_DRIVER ?? "filesystem";
@@ -277,7 +280,7 @@ async function predictAlignment(requestBody) {
   let confidence;
   let reviewStatus;
 
-  if (fixtureCase) {
+  if (fixtureCase && USE_GOLDEN_FIXTURES) {
     // Return golden fixture alignment data
     const asrActuallyAllowed = asrAllowed && (!childProfile || guardianApproved);
     confidence = asrActuallyAllowed ? fixtureCase.alignment.confidence : fixtureCase.alignment.fallbackConfidence;
@@ -393,7 +396,7 @@ async function predictTajweed(requestBody) {
   let findings;
   let confidence;
 
-  if (fixtureCase) {
+  if (fixtureCase && USE_GOLDEN_FIXTURES) {
     // Return golden fixture tajweed findings
     findings = fixtureCase.tajweedFindings.map((f) => ({
       ...f,

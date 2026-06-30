@@ -14,7 +14,12 @@ import { LoginScreen } from "./components/LoginScreen";
 import { AuthProvider, useAuth } from "./lib/auth";
 import { startAsr, splitTranscript, isAsrSupported, type AsrController } from "./lib/asr";
 import { predictAlignment, predictTajweed, type AlignmentResult, type TajweedFinding } from "./lib/api";
-import { fetchMemorizationPlan, type MemorizationPlan } from "./data/platform";
+import {
+  fetchMemorizationPlan,
+  fetchLearnerProgress,
+  type MemorizationPlan,
+  type LearnerProgress,
+} from "./data/platform";
 import { getQuranVerses, similarVerses, loadSurahVerses, loadWeeklyProgress, getWeeklyProgress, updateVersesWithAlignment, buildRecitationEvents, type QuranVerse, type RecitationEvent, type ProgressBar } from "./data/quran";
 import type { SupportedLanguageCode } from "./types/platform";
 
@@ -93,6 +98,7 @@ function AuthenticatedApp({ smokeBypass = false }: { smokeBypass?: boolean }) {
   const [recitationEvents, setRecitationEvents] = useState<RecitationEvent[]>([]);
   const [weeklyProgress, setWeeklyProgress] = useState<ProgressBar[]>([]);
   const [memorizationPlan, setMemorizationPlan] = useState<MemorizationPlan | null>(null);
+  const [progress, setProgress] = useState<LearnerProgress | null>(null);
   const [apiError, setApiError] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const asrRef = useState<AsrController | null>(null);
@@ -108,6 +114,9 @@ function AuthenticatedApp({ smokeBypass = false }: { smokeBypass?: boolean }) {
     if (effectiveUser) {
       void loadWeeklyProgress(effectiveUser.tenantId).then(setWeeklyProgress);
       void fetchMemorizationPlan(effectiveUser.tenantId, effectiveUser.userId).then(setMemorizationPlan);
+      void fetchLearnerProgress(effectiveUser.tenantId, effectiveUser.userId)
+        .then(setProgress)
+        .catch(() => {});
     }
   }, [effectiveUser]);
 
@@ -337,7 +346,7 @@ function AuthenticatedApp({ smokeBypass = false }: { smokeBypass?: boolean }) {
         >
           {activeSection === "learner" ? (
             practiceMode === "home" ? (
-              <LearnerHome onStartPractice={startPractice} onCheckMic={checkMicPermission} micState={micState} memorizationPlan={memorizationPlan} />
+              <LearnerHome onStartPractice={startPractice} onCheckMic={checkMicPermission} micState={micState} memorizationPlan={memorizationPlan} progress={progress} />
             ) : (
               <PracticeFlow
                 activeStepIndex={activeStepIndex}
@@ -360,6 +369,7 @@ function AuthenticatedApp({ smokeBypass = false }: { smokeBypass?: boolean }) {
                 tajweedResults={tajweedResults}
                 weeklyProgress={weeklyProgress}
                 memorizationPlan={memorizationPlan}
+                progress={progress}
                 apiError={apiError}
                 isLoading={isLoading}
               />
@@ -458,12 +468,15 @@ function LearnerHome({
   onCheckMic,
   onStartPractice,
   memorizationPlan,
+  progress,
 }: {
   micState: MicState;
   onCheckMic: () => void;
   onStartPractice: () => void;
   memorizationPlan: MemorizationPlan | null;
+  progress: LearnerProgress | null;
 }) {
+  const masteryPct = Math.round((progress?.mastery ?? 0) * 100);
   return (
     <section className="learner-home" aria-label="Learner home">
       <div className="mission-hero">
@@ -485,8 +498,8 @@ function LearnerHome({
           <MicNotice micState={micState} />
         </div>
         <div className="mission-card" aria-label="Mastery summary">
-          <div className="mastery-ring" style={{ "--score": "281deg" } as React.CSSProperties}>
-            <strong>78%</strong>
+          <div className="mastery-ring" style={{ "--score": `${masteryPct * 3.6}deg` } as React.CSSProperties}>
+            <strong>{masteryPct}%</strong>
             <span>Mastery</span>
           </div>
           <dl>
@@ -495,12 +508,12 @@ function LearnerHome({
               <dd>{memorizationPlan?.nextReviewAt ?? "Not scheduled"}</dd>
             </div>
             <div>
-              <dt>Focus</dt>
-              <dd>3 words</dd>
+              <dt>Due today</dt>
+              <dd>{memorizationPlan?.intervals?.[0]?.dueCount ?? 0}</dd>
             </div>
             <div>
               <dt>Streak</dt>
-              <dd>12 days</dd>
+              <dd>{progress?.streak ?? 0} days</dd>
             </div>
           </dl>
         </div>
@@ -548,6 +561,7 @@ function PracticeFlow({
   tajweedResults,
   weeklyProgress,
   memorizationPlan,
+  progress,
   apiError,
   isLoading,
 }: {
@@ -571,6 +585,7 @@ function PracticeFlow({
   tajweedResults: TajweedFinding[];
   weeklyProgress: ProgressBar[];
   memorizationPlan: MemorizationPlan | null;
+  progress: LearnerProgress | null;
   apiError: string | null;
   isLoading: boolean;
 }) {
@@ -658,6 +673,9 @@ function PracticeFlow({
               accuracy={accuracy}
               correctWords={correctWords}
               mistakes={mistakes}
+              recitations={progress?.totalSessions ?? 0}
+              streak={progress?.streak ?? 0}
+              mastery={progress?.mastery ?? 0}
               weeklyProgress={weeklyProgress}
             />
           )}
