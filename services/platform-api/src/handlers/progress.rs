@@ -58,7 +58,7 @@ pub fn sm2_update(state: &Sm2State, quality: u32) -> Sm2State {
     }
 }
 
-/// Get learner progress (stored in agent_runs table as a simple progress record)
+/// Real learner progress: aggregates persisted SM-2 state + session history.
 pub async fn get_progress(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -71,28 +71,85 @@ pub async fn get_progress(
         ActorRole::Ops,
     ])?;
 
-    // Count sessions for this learner
-    let session_count = sqlx::query(
-        "SELECT COUNT(*) as count FROM recitation_sessions WHERE tenant_id = $1 AND learner_id = $2",
+    let total_sessions: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM recitation_sessions WHERE tenant_id = $1 AND learner_id = $2",
     )
     .bind(&actor.tenant_id)
     .bind(&actor.user_id)
     .fetch_one(&state.pool)
-    .await?;
+    .await
+    .unwrap_or(0);
 
-    let count: i64 = session_count.try_get("count").unwrap_or(0);
+    // Mastery = mean per-card retention from SM-2 repetitions (4+ reps == mastered).
+    let reps: Vec<i32> = sqlx::query_scalar(
+        "SELECT repetitions FROM learner_progress WHERE tenant_id = $1 AND learner_id = $2",
+    )
+    .bind(&actor.tenant_id)
+    .bind(&actor.user_id)
+    .fetch_all(&state.pool)
+    .await
+    .unwrap_or_default();
+    let mastery = if reps.is_empty() {
+        0.0
+    } else {
+        let sum: f64 = reps.iter().map(|r| (*r as f64 / 4.0).min(1.0)).sum();
+        ((sum / reps.len() as f64) * 1000.0).round() / 1000.0
+    };
+
+    let next_review: Option<chrono::DateTime<chrono::Utc>> = sqlx::query_scalar(
+        "SELECT MIN(next_review_at) FROM learner_progress WHERE tenant_id = $1 AND learner_id = $2",
+    )
+    .bind(&actor.tenant_id)
+    .bind(&actor.user_id)
+    .fetch_one(&state.pool)
+    .await
+    .ok()
+    .flatten();
+
+    let days: Vec<chrono::NaiveDate> = sqlx::query_scalar(
+        "SELECT DISTINCT (started_at AT TIME ZONE 'UTC')::date AS d
+         FROM recitation_sessions WHERE tenant_id = $1 AND learner_id = $2 ORDER BY d DESC",
+    )
+    .bind(&actor.tenant_id)
+    .bind(&actor.user_id)
+    .fetch_all(&state.pool)
+    .await
+    .unwrap_or_default();
+    let streak = compute_streak(&days);
 
     Ok(Json(serde_json::json!({
         "learnerId": actor.user_id,
         "tenantId": actor.tenant_id,
-        "totalSessions": count,
-        "streak": 0,
-        "mastery": 0.0,
-        "nextReviewAt": null,
+        "totalSessions": total_sessions,
+        "streak": streak,
+        "mastery": mastery,
+        "nextReviewAt": next_review.map(|d| d.to_rfc3339()),
     })))
 }
 
-/// Update learner progress after a practice session
+/// Consecutive days (ending today or yesterday) that have >= 1 session.
+fn compute_streak(days_desc: &[chrono::NaiveDate]) -> i32 {
+    if days_desc.is_empty() {
+        return 0;
+    }
+    let today = chrono::Utc::now().date_naive();
+    let yesterday = today.pred_opt().unwrap_or(today);
+    if days_desc[0] != today && days_desc[0] != yesterday {
+        return 0;
+    }
+    let mut streak = 0;
+    let mut expected = days_desc[0];
+    for d in days_desc {
+        if *d == expected {
+            streak += 1;
+            expected = expected.pred_opt().unwrap_or(expected);
+        } else if *d < expected {
+            break;
+        }
+    }
+    streak
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ProgressUpdate {
@@ -100,6 +157,7 @@ pub struct ProgressUpdate {
     pub ayah_ref: String,
 }
 
+/// Persist an SM-2 review for one ayah (upsert), reading the prior state first.
 pub async fn update_progress(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -108,11 +166,47 @@ pub async fn update_progress(
     let actor = actor_from_headers(&headers, &state.jwt_config)?;
     actor.require_self_or_any(&actor.user_id, &[ActorRole::Admin, ActorRole::Ops])?;
 
-    // Run SM-2 update
-    let current = Sm2State::default();
-    let updated = sm2_update(&current, req.quality);
+    let current = sqlx::query(
+        "SELECT easiness_factor, interval_days, repetitions FROM learner_progress
+         WHERE tenant_id = $1 AND learner_id = $2 AND ayah_ref = $3",
+    )
+    .bind(&actor.tenant_id)
+    .bind(&actor.user_id)
+    .bind(&req.ayah_ref)
+    .fetch_optional(&state.pool)
+    .await?;
 
+    let prior = match current {
+        Some(r) => Sm2State {
+            easiness_factor: r.try_get("easiness_factor").unwrap_or(2.5),
+            interval_days: r.try_get("interval_days").unwrap_or(1),
+            repetitions: r.try_get("repetitions").unwrap_or(0),
+        },
+        None => Sm2State::default(),
+    };
+
+    let updated = sm2_update(&prior, req.quality);
     let next_review = chrono::Utc::now() + chrono::Duration::days(updated.interval_days as i64);
+
+    sqlx::query(
+        "INSERT INTO learner_progress
+            (tenant_id, learner_id, ayah_ref, easiness_factor, interval_days, repetitions,
+             last_quality, next_review_at, updated_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, now())
+         ON CONFLICT (tenant_id, learner_id, ayah_ref) DO UPDATE SET
+            easiness_factor = $4, interval_days = $5, repetitions = $6,
+            last_quality = $7, next_review_at = $8, updated_at = now()",
+    )
+    .bind(&actor.tenant_id)
+    .bind(&actor.user_id)
+    .bind(&req.ayah_ref)
+    .bind(updated.easiness_factor)
+    .bind(updated.interval_days)
+    .bind(updated.repetitions)
+    .bind(req.quality as i32)
+    .bind(next_review)
+    .execute(&state.pool)
+    .await?;
 
     Ok(Json(serde_json::json!({
         "learnerId": actor.user_id,

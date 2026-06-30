@@ -128,7 +128,8 @@ pub async fn get_session(
     let row = sqlx::query(
         "SELECT id, tenant_id, learner_id, quran_ref, source_checksum,
                 model_version_id, mode, practice_plan_id,
-                external_processing_allowed, confidence::float8 as confidence, review_status
+                external_processing_allowed, confidence::float8 as confidence, review_status,
+                consent_snapshot, audit_event_id
          FROM recitation_sessions
          WHERE id = $1 AND tenant_id = $2",
     )
@@ -186,14 +187,14 @@ pub async fn get_session(
         external_processing_allowed: row.try_get("external_processing_allowed")?,
         confidence: row.try_get("confidence").unwrap_or(0.0),
         review_status,
-        consent: Consent {
+        consent: serde_json::from_value(row.try_get("consent_snapshot")?).unwrap_or(Consent {
             audio_retention: AudioRetention::Discard,
             anonymized_learning: true,
             external_asr_processing: false,
             guardian_approved: false,
             consent_version: "pilot-v1".to_owned(),
-        },
-        audit_event_id: String::new(),
+        }),
+        audit_event_id: row.try_get("audit_event_id").unwrap_or_default(),
     }))
 }
 
