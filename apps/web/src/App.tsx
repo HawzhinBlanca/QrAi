@@ -204,6 +204,7 @@ function AuthenticatedApp({ smokeBypass = false }: { smokeBypass?: boolean }) {
 
   async function runAlignmentAndTajweed(transcript: string) {
     if (!effectiveUser || !transcript.trim()) return;
+    if (isLoading) return; // an alignment is already in flight — don't pile up requests
     setApiError(null);
     setIsLoading(true);
     try {
@@ -229,7 +230,14 @@ function AuthenticatedApp({ smokeBypass = false }: { smokeBypass?: boolean }) {
       });
       setTajweedResults(tajweed.findings);
     } catch (err) {
-      setApiError(err instanceof Error ? err.message : "ML service unreachable. Make sure the ML service is running on port 8090.");
+      const networkFailure = err instanceof TypeError; // e.g. "Failed to fetch"
+      setApiError(
+        networkFailure
+          ? "Could not reach the alignment service (port 8090). Please try again."
+          : err instanceof Error
+            ? err.message
+            : "ML service unreachable. Make sure the ML service is running on port 8090.",
+      );
     } finally {
       setIsLoading(false);
     }
@@ -249,6 +257,7 @@ function AuthenticatedApp({ smokeBypass = false }: { smokeBypass?: boolean }) {
       return;
     }
     stopPlayback();
+    asrRef[0]?.stop();
     setIsRecording(true);
     setAsrTranscript("");
     const controller = startAsr({
@@ -282,7 +291,9 @@ function AuthenticatedApp({ smokeBypass = false }: { smokeBypass?: boolean }) {
   // "Listen": play Surah Al-Fatihah (global ayahs 1–7) sequentially from the
   // Al Quran Cloud CDN (Mishary Al-Afasy reference recitation).
   function togglePlay() {
-    if (isPlaying) {
+    // audioRef is always current (unlike the isPlaying state), so rapid double
+    // clicks can't start overlapping playback.
+    if (audioRef.current) {
       stopPlayback();
       return;
     }
@@ -301,7 +312,10 @@ function AuthenticatedApp({ smokeBypass = false }: { smokeBypass?: boolean }) {
         setApiError("Could not load recitation audio. Check your connection.");
         stopPlayback();
       };
-      void audio.play().catch(() => {
+      void audio.play().catch((err: unknown) => {
+        // AbortError = play() was interrupted by a stop/pause (e.g. rapid toggling
+        // or starting a recording). Benign — don't surface it as an error.
+        if (err instanceof DOMException && err.name === "AbortError") return;
         setApiError("Audio was blocked — tap play again to allow playback.");
         stopPlayback();
       });
