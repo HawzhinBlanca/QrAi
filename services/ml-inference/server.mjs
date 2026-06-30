@@ -119,16 +119,27 @@ function getCanonicalWords(surahNumber, ayahStart, ayahEnd) {
   return words;
 }
 
+// CORS so the browser web app (served from a different origin) can call this service.
+const CORS_HEADERS = {
+  "access-control-allow-origin": "*",
+  "access-control-allow-methods": "GET, POST, OPTIONS",
+  "access-control-allow-headers": "content-type, x-tenant-id, x-user-id, x-user-role, x-trace-id",
+};
+
 function jsonResponse(response, status, body) {
   response.writeHead(status, {
     "content-type": "application/json; charset=utf-8",
     "cache-control": "no-store",
+    ...CORS_HEADERS,
   });
   response.end(JSON.stringify(body));
 }
 
 function textResponse(response, status, body) {
-  response.writeHead(status, { "content-type": "text/plain; charset=utf-8" });
+  response.writeHead(status, {
+    "content-type": "text/plain; charset=utf-8",
+    ...CORS_HEADERS,
+  });
   response.end(body);
 }
 
@@ -634,6 +645,11 @@ async function route(request, response) {
 }
 
 const server = createServer((request, response) => {
+  if (request.method === "OPTIONS") {
+    response.writeHead(204, CORS_HEADERS);
+    response.end();
+    return;
+  }
   route(request, response).catch((error) => {
     jsonResponse(response, error.status ?? 500, {
       error: error.message,
