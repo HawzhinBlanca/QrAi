@@ -41,7 +41,7 @@ export default function App() {
 }
 
 function AppInner() {
-  const { user, login } = useAuth();
+  const { user, login, loading } = useAuth();
 
   // In smoke test mode, render the authenticated app directly
   // (bypasses login which requires the platform API to be running)
@@ -54,6 +54,17 @@ function AppInner() {
   }
 
   if (!user) {
+    // While the dev auth bypass establishes a session, show a loader instead of
+    // flashing the login screen. In production (no bypass) loading is false here.
+    if (loading) {
+      return (
+        <div className="login-screen">
+          <div className="login-card">
+            <p className="login-hint">Signing in…</p>
+          </div>
+        </div>
+      );
+    }
     return <LoginScreen />;
   }
 
