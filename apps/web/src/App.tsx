@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { motion } from "motion/react";
 import { AlertTriangle, ArrowRight, CheckCircle2, Clock3, Headphones, Mic, RotateCcw, Send, ShieldCheck, Sparkles } from "lucide-react";
 import { AudioCoach } from "./components/AudioCoach";
@@ -95,6 +95,8 @@ function AuthenticatedApp({ smokeBypass = false }: { smokeBypass?: boolean }) {
   const [apiError, setApiError] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const asrRef = useState<AsrController | null>(null);
+  const audioRef = useRef<HTMLAudioElement | null>(null);
+  const [isPlaying, setIsPlaying] = useState(false);
 
   const activeStepIndex = Math.max(0, practiceSteps.findIndex((step) => step.id === practiceMode));
   const isLearnerHome = activeSection === "learner" && practiceMode === "home";
@@ -246,6 +248,7 @@ function AuthenticatedApp({ smokeBypass = false }: { smokeBypass?: boolean }) {
       }
       return;
     }
+    stopPlayback();
     setIsRecording(true);
     setAsrTranscript("");
     const controller = startAsr({
@@ -263,6 +266,47 @@ function AuthenticatedApp({ smokeBypass = false }: { smokeBypass?: boolean }) {
       },
     });
     asrRef[1](controller);
+  }
+
+  function stopPlayback() {
+    const audio = audioRef.current;
+    if (audio) {
+      audio.onended = null;
+      audio.onerror = null;
+      audio.pause();
+      audioRef.current = null;
+    }
+    setIsPlaying(false);
+  }
+
+  // "Listen": play Surah Al-Fatihah (global ayahs 1–7) sequentially from the
+  // Al Quran Cloud CDN (Mishary Al-Afasy reference recitation).
+  function togglePlay() {
+    if (isPlaying) {
+      stopPlayback();
+      return;
+    }
+    setApiError(null);
+    setIsPlaying(true);
+    const LAST_AYAH = 7;
+    const playAyah = (ayah: number) => {
+      if (ayah > LAST_AYAH) {
+        stopPlayback();
+        return;
+      }
+      const audio = new Audio(`https://cdn.islamic.network/quran/audio/128/ar.alafasy/${ayah}.mp3`);
+      audioRef.current = audio;
+      audio.onended = () => playAyah(ayah + 1);
+      audio.onerror = () => {
+        setApiError("Could not load recitation audio. Check your connection.");
+        stopPlayback();
+      };
+      void audio.play().catch(() => {
+        setApiError("Audio was blocked — tap play again to allow playback.");
+        stopPlayback();
+      });
+    };
+    playAyah(1);
   }
 
   return (
@@ -291,7 +335,9 @@ function AuthenticatedApp({ smokeBypass = false }: { smokeBypass?: boolean }) {
                 onSelectMode={setPracticeMode}
                 onSelectWord={setSelectedWordId}
                 onSendToTeacher={() => setPracticeMode("drill")}
-                onToggleRecording={() => setIsRecording((current) => !current)}
+                onToggleRecording={toggleAsrRecording}
+                isPlaying={isPlaying}
+                onTogglePlay={togglePlay}
                 selectedWordId={selectedWordId}
                 quranVerses={quranVerses}
                 recitationEvents={recitationEvents}
@@ -476,6 +522,8 @@ function PracticeFlow({
   onSelectWord,
   onSendToTeacher,
   onToggleRecording,
+  isPlaying,
+  onTogglePlay,
   selectedWordId,
   quranVerses,
   recitationEvents,
@@ -495,6 +543,8 @@ function PracticeFlow({
   onSelectWord: (wordId: string) => void;
   onSendToTeacher: () => void;
   onToggleRecording: () => void;
+  isPlaying: boolean;
+  onTogglePlay: () => void;
   selectedWordId: string;
   quranVerses: QuranVerse[];
   recitationEvents: RecitationEvent[];
@@ -560,7 +610,9 @@ function PracticeFlow({
             activeIndex={isRecording ? 58 : activeStepIndex * 12}
             bars={waveformBars}
             isRecording={isRecording}
+            isPlaying={isPlaying}
             onToggleRecording={onToggleRecording}
+            onTogglePlay={onTogglePlay}
           />
         </div>
         <aside className="learner-insight-column" aria-label="Practice guidance">
