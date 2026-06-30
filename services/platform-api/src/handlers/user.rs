@@ -56,8 +56,12 @@ pub async fn register(
         }
     }
 
-    // Hash password with bcrypt (cost=12 for production)
-    let password_hash = bcrypt::hash(&req.password, 12)
+    // Hash password with bcrypt (cost=12). bcrypt is CPU-bound (~hundreds of ms);
+    // run it on the blocking pool so it never stalls an async worker thread.
+    let password_for_hash = req.password.clone();
+    let password_hash = tokio::task::spawn_blocking(move || bcrypt::hash(&password_for_hash, 12))
+        .await
+        .map_err(|_| ApiError::Database("password hashing task panicked".to_string()))?
         .map_err(|_| ApiError::BadRequest("Password hashing failed".to_string()))?;
 
     tracing::info!(tenant_id = %req.tenant_id, role = %req.role, "user registering");
@@ -150,9 +154,14 @@ pub async fn login(
     let display_name: String = row.try_get("display_name")?;
     let password_hash: Option<String> = row.try_get("password_hash")?;
 
-    // Verify password
+    // Verify password. bcrypt::verify is CPU-bound; keep it off the async workers.
     let stored_hash = password_hash.ok_or(ApiError::Unauthorized)?;
-    let valid = bcrypt::verify(&req.password, &stored_hash).map_err(|_| ApiError::Unauthorized)?;
+    let password_for_verify = req.password.clone();
+    let valid =
+        tokio::task::spawn_blocking(move || bcrypt::verify(&password_for_verify, &stored_hash))
+            .await
+            .map_err(|_| ApiError::Unauthorized)?
+            .map_err(|_| ApiError::Unauthorized)?;
     if !valid {
         tracing::warn!(user_id = ?req.user_id, "failed login attempt");
         return Err(ApiError::Unauthorized);

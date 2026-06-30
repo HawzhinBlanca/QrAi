@@ -137,6 +137,63 @@ async fn gets_eval_run_from_postgres() {
     assert_eq!(body["passed"], true);
 }
 
+#[tokio::test]
+#[ignore = "requires live Postgres"]
+async fn registers_then_logs_in_a_new_user() {
+    let router = platform_router_with_rate_limit(test_state(), false);
+
+    // Register a fresh learner. No email -> unique auto-generated user id each run,
+    // so the test is idempotent against a shared database.
+    let register = send_json(
+        &router,
+        Method::POST,
+        "/v1/auth/register",
+        None,
+        None,
+        json!({
+            "tenantId": "hikmah-pilot-erbil",
+            "displayName": "E2E Test User",
+            "role": "learner",
+            "language": "en",
+            "password": "SmokeTest1234"
+        }),
+    )
+    .await;
+    assert_eq!(register.status(), StatusCode::OK);
+    let reg_body: Value = read_json(register).await;
+    let user_id = reg_body["userId"].as_str().unwrap().to_string();
+    assert!(user_id.starts_with("user-"));
+    assert!(reg_body["token"].as_str().unwrap().len() > 20);
+
+    // Log in with the new credentials.
+    let login = send_json(
+        &router,
+        Method::POST,
+        "/v1/auth/login",
+        None,
+        None,
+        json!({ "userId": user_id, "tenantId": "hikmah-pilot-erbil", "password": "SmokeTest1234" }),
+    )
+    .await;
+    assert_eq!(login.status(), StatusCode::OK);
+    let login_body: Value = read_json(login).await;
+    assert_eq!(login_body["userId"], user_id);
+    assert_eq!(login_body["role"], "learner");
+    assert!(login_body["token"].as_str().unwrap().len() > 20);
+
+    // Wrong password must be rejected.
+    let bad = send_json(
+        &router,
+        Method::POST,
+        "/v1/auth/login",
+        None,
+        None,
+        json!({ "userId": user_id, "tenantId": "hikmah-pilot-erbil", "password": "wrong-password" }),
+    )
+    .await;
+    assert_eq!(bad.status(), StatusCode::UNAUTHORIZED);
+}
+
 #[test]
 fn sm2_spaced_repetition_updates_correctly() {
     use quran_ai_platform_api::handlers::progress::{Sm2State, sm2_update};
