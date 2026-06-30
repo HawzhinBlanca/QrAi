@@ -25,3 +25,10 @@ package-lock.json
 .serena/
 .claude/launch.json
 .cocoindex_code/
+
+# Python artifacts
+__pycache__/
+*.pyc
+
+# Unrelated stray project (kept on disk, not part of the platform)
+UnpredectableGAME/
