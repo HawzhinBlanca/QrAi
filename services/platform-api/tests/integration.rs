@@ -13,7 +13,9 @@ fn test_state() -> AppState {
                 .unwrap_or_else(|_| "postgresql://hawzhin@localhost:5432/quran_ai".to_owned()),
         )
         .expect("failed to create pool");
-    AppState::new(pool, "test-jwt-secret")
+    // Tests exercise the spoofable header-auth path; enable it explicitly so we don't
+    // depend on a process-wide env var. Production reads ALLOW_HEADER_AUTH (default off).
+    AppState::with_header_auth(pool, "test-jwt-secret", true)
 }
 
 async fn send_json(
@@ -58,6 +60,35 @@ async fn read_json<T: serde::de::DeserializeOwned>(response: axum::response::Res
         .await
         .unwrap();
     serde_json::from_slice(&bytes).unwrap()
+}
+
+/// Security regression: when header-auth is OFF (production default), spoofed
+/// x-user-role headers must NOT grant access — a valid Bearer JWT is required.
+/// Auth is rejected before any DB access, so this needs no live Postgres.
+#[tokio::test]
+async fn rejects_spoofed_header_identity_when_header_auth_disabled() {
+    let pool = sqlx::postgres::PgPoolOptions::new()
+        .max_connections(1)
+        .connect_lazy("postgresql://invalid:invalid@127.0.0.1:1/none")
+        .expect("lazy pool");
+    let state = AppState::with_header_auth(pool, "test-jwt-secret", false);
+    let router = platform_router_with_rate_limit(state, false);
+
+    // Spoofed admin headers — must be rejected with 401.
+    let response = send_json(
+        &router,
+        Method::GET,
+        "/v1/scholar-approvals",
+        Some("tenant-quran-ai"),
+        Some("admin"),
+        json!({}),
+    )
+    .await;
+    assert_eq!(
+        response.status(),
+        StatusCode::UNAUTHORIZED,
+        "spoofed header identity must be rejected when ALLOW_HEADER_AUTH is off"
+    );
 }
 
 #[tokio::test]

@@ -20,14 +20,27 @@ pub struct JwtConfig {
     encoding_key: EncodingKey,
     decoding_key: DecodingKey,
     pub token_ttl_hours: i64,
+    /// When true, spoofable x-tenant-id/x-user-id/x-user-role headers are accepted as a
+    /// fallback identity (dev/CI only). Read once at startup from ALLOW_HEADER_AUTH.
+    pub allow_header_auth: bool,
 }
 
 impl JwtConfig {
     pub fn new(secret: &str) -> Self {
+        let allow_header_auth = std::env::var("ALLOW_HEADER_AUTH")
+            .map(|v| v == "1" || v == "true")
+            .unwrap_or(false);
+        Self::with_header_auth(secret, allow_header_auth)
+    }
+
+    /// Explicit-toggle constructor (used by tests / embedders that must not depend on
+    /// process-wide env). Production goes through `new`, which reads ALLOW_HEADER_AUTH.
+    pub fn with_header_auth(secret: &str, allow_header_auth: bool) -> Self {
         Self {
             encoding_key: EncodingKey::from_secret(secret.as_bytes()),
             decoding_key: DecodingKey::from_secret(secret.as_bytes()),
             token_ttl_hours: 24,
+            allow_header_auth,
         }
     }
 
@@ -73,7 +86,13 @@ pub fn actor_from_headers(headers: &HeaderMap, jwt: &JwtConfig) -> Result<Actor,
         });
     }
 
-    // Fallback: header-based auth for dev/testing (x-tenant-id, x-user-id, x-user-role)
+    // Fallback: header-based identity (x-tenant-id/x-user-id/x-user-role). These are
+    // spoofable, so they are honored ONLY when ALLOW_HEADER_AUTH is explicitly enabled
+    // (dev/CI). In production (flag unset) we reject — a valid Bearer JWT is required.
+    if !jwt.allow_header_auth {
+        return Err(ApiError::Unauthorized);
+    }
+
     let tenant_id = extract_header(headers, "x-tenant-id")?;
     let user_id = extract_header(headers, "x-user-id")?;
     let role_str = extract_header(headers, "x-user-role")?;

@@ -30,6 +30,15 @@ impl AppState {
             jwt_config: Arc::new(JwtConfig::new(jwt_secret)),
         }
     }
+
+    /// Construct with an explicit header-auth toggle (tests/embedders that must not
+    /// depend on the process-wide ALLOW_HEADER_AUTH env var).
+    pub fn with_header_auth(pool: PgPool, jwt_secret: &str, allow_header_auth: bool) -> Self {
+        Self {
+            pool,
+            jwt_config: Arc::new(JwtConfig::with_header_auth(jwt_secret, allow_header_auth)),
+        }
+    }
 }
 
 pub fn platform_router(state: AppState) -> Router {
