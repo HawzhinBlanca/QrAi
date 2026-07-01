@@ -367,16 +367,15 @@ async fn audio_ws(
         return StatusCode::UNAUTHORIZED.into_response();
     };
 
-    if validate_realtime_ticket(
+    let claims = match validate_realtime_ticket(
         &session_id,
         ticket,
         &state.config.ticket_secret,
         unix_now_seconds(),
-    )
-    .is_err()
-    {
-        return StatusCode::UNAUTHORIZED.into_response();
-    }
+    ) {
+        Ok(claims) => claims,
+        Err(_) => return StatusCode::UNAUTHORIZED.into_response(),
+    };
 
     {
         let mut consumed_tickets = state.consumed_tickets.write().await;
@@ -393,7 +392,9 @@ async fn audio_ws(
         .map(ToOwned::to_owned);
 
     upgrade
-        .on_upgrade(move |socket| handle_audio_socket(socket, session_id, trace_id, state))
+        .on_upgrade(move |socket| {
+            handle_audio_socket(socket, session_id, claims.learner_id, trace_id, state)
+        })
         .into_response()
 }
 
@@ -585,6 +586,7 @@ fn unix_now_seconds() -> u64 {
 async fn handle_audio_socket(
     mut socket: WebSocket,
     session_id: String,
+    learner_id: String,
     trace_id: Option<String>,
     state: GatewayServerState,
 ) {
@@ -623,7 +625,7 @@ async fn handle_audio_socket(
             let audio_base64 = base64_encode(&chunk.bytes);
             let body = serde_json::json!({
                 "tenantId": tenant_id,
-                "learnerId": "learner-1",
+                "learnerId": learner_id,
                 "sessionId": session_id,
                 "chunkId": chunk_id,
                 "sampleRate": chunk.sample_rate,
