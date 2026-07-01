@@ -4,6 +4,10 @@ dist/
 target/
 out/
 
+# Runtime-generated learner audio (PII) written by ml-inference at request time —
+# never source, never commit. See AGENTS.md privacy boundaries.
+services/ml-inference/audio-storage/
+
 apps/*/node_modules/
 apps/*/dist/
 packages/*/node_modules/
