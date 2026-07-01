@@ -144,6 +144,37 @@ async fn create_privacy_job(
         .bind(&req.learner_id)
         .execute(&state.pool)
         .await?;
+
+        // Remaining session-owned rows must be deleted before the sessions themselves, and
+        // the sessions + consent records before the delete is truly complete (right-to-erasure).
+        for table in ["audio_chunks", "alignment_runs"] {
+            sqlx::query(&format!(
+                "DELETE FROM {table} WHERE tenant_id = $1 AND session_id IN \
+                 (SELECT id FROM recitation_sessions WHERE learner_id = $2)"
+            ))
+            .bind(&actor.tenant_id)
+            .bind(&req.learner_id)
+            .execute(&state.pool)
+            .await?;
+        }
+
+        sqlx::query("DELETE FROM realtime_session_tickets WHERE tenant_id = $1 AND learner_id = $2")
+            .bind(&actor.tenant_id)
+            .bind(&req.learner_id)
+            .execute(&state.pool)
+            .await?;
+
+        sqlx::query("DELETE FROM recitation_sessions WHERE tenant_id = $1 AND learner_id = $2")
+            .bind(&actor.tenant_id)
+            .bind(&req.learner_id)
+            .execute(&state.pool)
+            .await?;
+
+        sqlx::query("DELETE FROM consent_records WHERE tenant_id = $1 AND user_id = $2")
+            .bind(&actor.tenant_id)
+            .bind(&req.learner_id)
+            .execute(&state.pool)
+            .await?;
     }
 
     Ok(Json(PrivacyJob {
