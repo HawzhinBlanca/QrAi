@@ -2,9 +2,9 @@
  * Browser-based ASR using the Web Speech API.
  * Provides real speech-to-text for Quran recitation alignment.
  *
- * Falls back gracefully when Web Speech API is not available
- * (e.g., Firefox), in which case the alignment service uses
- * the canonical text as the recognized text (practice mode).
+ * The app may call this only after external speech-processing consent is present.
+ * When the API is unavailable or not consented, the learner path records locally
+ * instead of sending audio to a browser/vendor speech service.
  */
 
 export type AsrStatus = "idle" | "listening" | "stopped" | "unsupported" | "error";

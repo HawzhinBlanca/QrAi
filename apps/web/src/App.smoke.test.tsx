@@ -110,6 +110,7 @@ describe("Quran AI app smoke", () => {
     expect(document.body.textContent).toContain("Learner Home");
     expect(document.body.textContent).toContain("Today's mission");
     expect(document.body.textContent).toContain("Start Practice");
+    expect(document.body.textContent).toContain("Allow browser or cloud speech processing");
     expect(document.body.textContent).not.toContain("Quran AI intelligence platform");
 
     const startPracticeButton = Array.from(document.querySelectorAll<HTMLButtonElement>("button")).find((button) =>

@@ -14,6 +14,7 @@ import { LoginScreen } from "./components/LoginScreen";
 import { AuthProvider, useAuth } from "./lib/auth";
 import { startAsr, splitTranscript, isAsrSupported, type AsrController } from "./lib/asr";
 import { startLocalAudioRecording, startServerAsr, isServerAsrSupported, type ServerAsrController } from "./lib/serverAsr";
+import { canUseExternalSpeechFallback } from "./lib/consent";
 import { startMicVisualizer, type MicVisualizerStop } from "./lib/micVisualizer";
 import {
   predictAlignment,
@@ -429,9 +430,8 @@ function AuthenticatedApp({ bypassLogin = false }: { bypassLogin?: boolean }) {
         // visualizer is best-effort — never let it break recording
       });
 
-    // The Quran ASR runs LOCALLY on this machine, so recitation feedback works by default.
-    // consent.externalAsrProcessing is recorded on the session and reserved for any future
-    // TRUE third-party / cloud processing — it does not gate the on-device model.
+    // The Quran ASR runs locally, so recitation feedback works by default. Browser
+    // Web Speech is treated as external processing and is gated below.
     if (isServerAsrSupported()) {
       const controller = await startServerAsr({
         language: "ar",
@@ -450,25 +450,32 @@ function AuthenticatedApp({ bypassLogin = false }: { bypassLogin?: boolean }) {
       // Could not start server ASR — fall through.
     }
 
-    // Fallback: browser Web Speech API (generic ar-SA recognition) for feedback.
+    // Fallback: browser Web Speech API (generic ar-SA recognition). Browsers may
+    // process speech remotely, so this path requires explicit external-ASR consent.
     if (isAsrSupported()) {
-      setIsRecording(true);
-      const controller = startAsr({
-        language: "ar-SA",
-        onResult: (result) => {
-          setAsrTranscript((prev) => prev + " " + result.transcript);
-          if (result.isFinal) {
-            void runAlignmentAndTajweed(result.transcript);
-          }
-        },
-        onStatusChange: () => {},
-        onError: () => {
-          setIsRecording(false);
-          setMicState("denied");
-        },
-      });
-      asrRef.current = controller;
-      return;
+      if (!canUseExternalSpeechFallback(consent)) {
+        setApiError(
+          "Local Quran ASR is unavailable. Browser speech recognition may use external processing; enable external ASR consent and guardian approval to use it.",
+        );
+      } else {
+        setIsRecording(true);
+        const controller = startAsr({
+          language: "ar-SA",
+          onResult: (result) => {
+            setAsrTranscript((prev) => prev + " " + result.transcript);
+            if (result.isFinal) {
+              void runAlignmentAndTajweed(result.transcript);
+            }
+          },
+          onStatusChange: () => {},
+          onError: () => {
+            setIsRecording(false);
+            setMicState("denied");
+          },
+        });
+        asrRef.current = controller;
+        return;
+      }
     }
 
     // Last resort: record locally so the learner can at least play their recitation back.
@@ -734,6 +741,14 @@ function ConsentPanel({
           onChange={(event) => onConsentChange({ ...consent, anonymizedLearning: event.target.checked })}
         />
         <span>Help improve the model with anonymized data.</span>
+      </label>
+      <label className="consent-row">
+        <input
+          type="checkbox"
+          checked={consent.externalAsrProcessing}
+          onChange={(event) => onConsentChange({ ...consent, externalAsrProcessing: event.target.checked })}
+        />
+        <span>Allow browser or cloud speech processing if the local Quran ASR is unavailable.</span>
       </label>
       <label className="consent-row">
         <input
