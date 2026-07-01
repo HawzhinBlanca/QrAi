@@ -151,6 +151,13 @@ function AuthenticatedApp({ bypassLogin = false }: { bypassLogin?: boolean }) {
     });
   }
 
+  // Revoke the recorded-audio object URL on change/unmount so it never leaks.
+  useEffect(() => {
+    return () => {
+      if (recordedAudioUrl) URL.revokeObjectURL(recordedAudioUrl);
+    };
+  }, [recordedAudioUrl]);
+
   const activeStepIndex = Math.max(0, practiceSteps.findIndex((step) => step.id === practiceMode));
   const isLearnerHome = activeSection === "learner" && practiceMode === "home";
   const pageTitle = activeSection === "learner" ? (isLearnerHome ? "Learner Home" : "Practice") : "Internal Platform";
@@ -336,7 +343,7 @@ function AuthenticatedApp({ bypassLogin = false }: { bypassLogin?: boolean }) {
         recognizedText: words,
       });
       setAlignmentResults(alignment.alignments);
-      updateVersesWithAlignment(alignment.alignments);
+      setQuranVerses((prev) => updateVersesWithAlignment(prev, alignment.alignments));
       setRecitationEvents(buildRecitationEvents(alignment.alignments));
 
       const tajweed = await predictTajweed({
@@ -414,9 +421,13 @@ function AuthenticatedApp({ bypassLogin = false }: { bypassLogin?: boolean }) {
     setApiError(null);
 
     // Live mic waveform (real signal) for the whole recording, regardless of ASR path.
-    void startMicVisualizer(setLiveBars).then((stop) => {
-      visualizerStopRef.current = stop;
-    });
+    void startMicVisualizer(setLiveBars)
+      .then((stop) => {
+        visualizerStopRef.current = stop;
+      })
+      .catch(() => {
+        // visualizer is best-effort — never let it break recording
+      });
 
     // The Quran ASR runs LOCALLY on this machine, so recitation feedback works by default.
     // consent.externalAsrProcessing is recorded on the session and reserved for any future

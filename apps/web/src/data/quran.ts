@@ -101,17 +101,22 @@ export async function loadSurahVerses(surahNumber = 1): Promise<QuranVerse[]> {
   }
 }
 
-export function updateVersesWithAlignment(alignmentResults: AlignmentResult[]): void {
-  if (!cachedSurah) return;
-
-  for (const verse of cachedSurah) {
-    for (const word of verse.words) {
+/**
+ * Return a NEW verse list with alignment statuses applied — pure, so React re-renders and
+ * the module cache is never mutated (previously it mutated cachedSurah in place, which
+ * polluted the cache and only "worked" because other setState calls forced a re-render).
+ */
+export function updateVersesWithAlignment(
+  verses: QuranVerse[],
+  alignmentResults: AlignmentResult[],
+): QuranVerse[] {
+  return verses.map((verse) => ({
+    ...verse,
+    words: verse.words.map((word) => {
       const alignment = alignmentResults.find((a) => a.wordId === word.id || a.wordId === `${verse.id}:0`);
-      if (alignment) {
-        word.status = statusFromAlignment(alignment.status);
-      }
-    }
-  }
+      return alignment ? { ...word, status: statusFromAlignment(alignment.status) } : word;
+    }),
+  }));
 }
 
 export function buildRecitationEvents(alignmentResults: AlignmentResult[]): RecitationEvent[] {
