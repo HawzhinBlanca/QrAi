@@ -251,6 +251,18 @@ fn sm2_spaced_repetition_updates_correctly() {
     assert_eq!(failed.interval_days, 1);
 }
 
+#[test]
+fn review_status_serializes_teacher_review_required() {
+    use quran_ai_platform_api::types::ReviewStatus;
+
+    let status: ReviewStatus = serde_json::from_str("\"teacher-review-required\"").unwrap();
+    assert_eq!(status, ReviewStatus::TeacherReviewRequired);
+    assert_eq!(
+        serde_json::to_string(&status).unwrap(),
+        "\"teacher-review-required\""
+    );
+}
+
 /// Proves begin_tenant_tx activates the RLS tenant context at runtime: within the
 /// transaction, `current_setting('app.tenant_id')` equals the actor's tenant. Combined with
 /// the SQL RLS smoke (policies enforce GIVEN that setting), this shows runtime RLS works.

@@ -27,6 +27,7 @@ test("gate blocks low confidence and unsourced output", () => {
 test("statusForRun routes blocked and gated runs correctly", () => {
   assert.equal(statusForRun({ reviewStatus: "blocked", confidence: 0.99, sources: [{ id: "s" }] }), "blocked");
   assert.equal(statusForRun({ reviewStatus: "ai-suggested", confidence: 0.99, sources: [{ id: "s" }] }), "needs-human-review");
+  assert.equal(statusForRun({ reviewStatus: "teacher-review-required", confidence: 0.99, sources: [{ id: "s" }] }), "needs-human-review");
   assert.equal(statusForRun({ reviewStatus: "scholar-approved", confidence: 0.9, sources: [{ id: "s" }] }), "approved");
 });
 

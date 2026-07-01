@@ -2,7 +2,7 @@
 // packages/contracts. Agents are supervised tools, NOT religious authorities: a freshly
 // generated answer is never shown to a learner until it is human-reviewed AND sourced.
 
-const BLOCKING_REVIEW_STATES = new Set(["blocked", "draft", "ai-suggested"]);
+const BLOCKING_REVIEW_STATES = new Set(["blocked", "draft", "ai-suggested", "teacher-review-required"]);
 
 /**
  * @param {{ reviewStatus: string, confidence: number, sources: unknown[] }} record

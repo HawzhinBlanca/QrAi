@@ -94,6 +94,10 @@ describe("Quran AI platform contracts", () => {
       ...approvedRun,
       reviewStatus: "draft",
     };
+    const teacherReviewRequiredRun: Pick<AgentRun, "confidence" | "reviewStatus" | "sources"> = {
+      ...approvedRun,
+      reviewStatus: "teacher-review-required",
+    };
     const weakRun: Pick<AgentRun, "confidence" | "reviewStatus" | "sources"> = {
       ...approvedRun,
       confidence: 0.78,
@@ -102,6 +106,7 @@ describe("Quran AI platform contracts", () => {
     expect(canShowLearnerFacingAiOutput(approvedRun)).toBe(true);
     expect(canShowLearnerFacingAiOutput(unsourcedRun)).toBe(false);
     expect(canShowLearnerFacingAiOutput(draftRun)).toBe(false);
+    expect(canShowLearnerFacingAiOutput(teacherReviewRequiredRun)).toBe(false);
     expect(canShowLearnerFacingAiOutput(weakRun)).toBe(false);
   });
 

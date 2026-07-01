@@ -21,6 +21,8 @@ services:
       - ./infra/sql/0008_session_language.sql:/docker-entrypoint-initdb.d/07_session_language.sql:ro
       - ./infra/sql/0006_seed_internal.sql:/docker-entrypoint-initdb.d/08_seed_internal.sql:ro
       - ./infra/sql/0009_learner_progress_rls.sql:/docker-entrypoint-initdb.d/09_learner_progress_rls.sql:ro
+      - ./infra/sql/0010_review_status_check.sql:/docker-entrypoint-initdb.d/10_review_status_check.sql:ro
+      - ./infra/sql/0011_teacher_review_required_status.sql:/docker-entrypoint-initdb.d/11_teacher_review_required_status.sql:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U hawzhin -d quran_ai"]
       interval: 5s

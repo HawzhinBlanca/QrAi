@@ -100,6 +100,7 @@ pub enum AudioRetention {
 pub enum ReviewStatus {
     Draft,
     AiSuggested,
+    TeacherReviewRequired,
     TeacherReviewed,
     ScholarApproved,
     Blocked,

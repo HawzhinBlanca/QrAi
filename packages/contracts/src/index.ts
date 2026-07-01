@@ -2,7 +2,13 @@ export const SUPPORTED_LANGUAGE_CODES = ["ar", "ckb", "en", "tr", "ur", "id", "m
 
 export type SupportedLanguageCode = (typeof SUPPORTED_LANGUAGE_CODES)[number];
 
-export type ReviewStatus = "draft" | "ai-suggested" | "teacher-reviewed" | "scholar-approved" | "blocked";
+export type ReviewStatus =
+  | "draft"
+  | "ai-suggested"
+  | "teacher-review-required"
+  | "teacher-reviewed"
+  | "scholar-approved"
+  | "blocked";
 
 export type AgentName =
   | "Recitation Coach"
@@ -347,7 +353,12 @@ export function hasCanonicalTextChanged(before: CanonicalWordRecord, after: Cano
 }
 
 export function canShowLearnerFacingAiOutput(record: Pick<AgentRun | TajweedFinding, "confidence" | "reviewStatus" | "sources">): boolean {
-  if (record.reviewStatus === "blocked" || record.reviewStatus === "draft" || record.reviewStatus === "ai-suggested") {
+  if (
+    record.reviewStatus === "blocked" ||
+    record.reviewStatus === "draft" ||
+    record.reviewStatus === "ai-suggested" ||
+    record.reviewStatus === "teacher-review-required"
+  ) {
     return false;
   }
 

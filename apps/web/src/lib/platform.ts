@@ -13,6 +13,7 @@ export function requiresHumanReview(agentRun: Pick<AgentRunGate, "status" | "rev
   return (
     agentRun.status === "needs-human-review" ||
     agentRun.reviewStatus === "ai-suggested" ||
+    agentRun.reviewStatus === "teacher-review-required" ||
     agentRun.confidence < 0.82
   );
 }

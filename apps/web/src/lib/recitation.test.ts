@@ -67,10 +67,16 @@ describe("recitation helpers", () => {
       reviewStatus: "ai-suggested",
       confidence: 0.78,
     };
+    const teacherReviewRequiredRun: Parameters<typeof requiresHumanReview>[0] = {
+      status: "approved",
+      reviewStatus: "teacher-review-required",
+      confidence: 0.95,
+    };
 
     expect(canShowLearnerFacingAnswer(approvedRun)).toBe(true);
     expect(canShowLearnerFacingAnswer(blockedRun)).toBe(false);
     expect(requiresHumanReview(reviewRun)).toBe(true);
+    expect(requiresHumanReview(teacherReviewRequiredRun)).toBe(true);
   });
 
   it("summarizes scholar review state for governance dashboards", () => {

@@ -8,6 +8,20 @@ use crate::AppState;
 use crate::auth::actor_from_headers;
 use crate::types::*;
 
+fn parse_review_status(value: &str) -> Result<ReviewStatus, ApiError> {
+    match value {
+        "draft" => Ok(ReviewStatus::Draft),
+        "ai-suggested" => Ok(ReviewStatus::AiSuggested),
+        "teacher-review-required" => Ok(ReviewStatus::TeacherReviewRequired),
+        "teacher-reviewed" => Ok(ReviewStatus::TeacherReviewed),
+        "scholar-approved" => Ok(ReviewStatus::ScholarApproved),
+        "blocked" => Ok(ReviewStatus::Blocked),
+        _ => Err(ApiError::Database(format!(
+            "invalid review_status in database: {value}"
+        ))),
+    }
+}
+
 pub async fn create_session(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -172,14 +186,7 @@ pub async fn get_session(
     };
 
     let rs_str: String = row.try_get("review_status")?;
-    let review_status = match rs_str.as_str() {
-        "draft" => ReviewStatus::Draft,
-        "ai-suggested" => ReviewStatus::AiSuggested,
-        "teacher-reviewed" => ReviewStatus::TeacherReviewed,
-        "scholar-approved" => ReviewStatus::ScholarApproved,
-        "blocked" => ReviewStatus::Blocked,
-        _ => ReviewStatus::Draft,
-    };
+    let review_status = parse_review_status(&rs_str)?;
 
     tx.commit().await?;
 

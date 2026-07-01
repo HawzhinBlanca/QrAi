@@ -25,14 +25,20 @@ const coreSchemaPaths = [
   join("infra", "sql", "0005_learner_progress.sql"),
 ];
 const sessionMigrationPath = join("infra", "sql", "0008_session_language.sql");
+const reviewStatusMigrationPaths = [
+  join("infra", "sql", "0010_review_status_check.sql"),
+  join("infra", "sql", "0011_teacher_review_required_status.sql"),
+];
 const rlsPaths = [
   join("infra", "sql", "0003_tenant_rls.sql"),
   join("infra", "sql", "0009_learner_progress_rls.sql"),
 ];
 const coreSchemaRaw = (await Promise.all(coreSchemaPaths.map((path) => readFile(path, "utf8")))).join("\n");
 const sessionMigrationRaw = await readFile(sessionMigrationPath, "utf8");
+const reviewStatusMigrationRaw = (await Promise.all(reviewStatusMigrationPaths.map((path) => readFile(path, "utf8")))).join("\n");
 const rlsSchemaRaw = (await Promise.all(rlsPaths.map((path) => readFile(path, "utf8")))).join("\n");
 const coreSchema = normalizeSql(coreSchemaRaw);
+const reviewStatusSchema = normalizeSql(reviewStatusMigrationRaw);
 const rlsSchema = normalizeSql(rlsSchemaRaw);
 const postgresUrl = process.env.POSTGRES_RLS_SMOKE_URL ?? process.env.DATABASE_URL;
 const requireLive = process.env.SQL_SMOKE_REQUIRE_LIVE === "true";
@@ -68,6 +74,11 @@ assertIncludes(rlsSchema, "create or replace function app.current_tenant_id()", 
 assertIncludes(rlsSchema, "current_setting('app.tenant_id', true)", "current tenant helper must use app.tenant_id");
 assertIncludes(rlsSchema, "create or replace function app.is_rls_bypass_enabled()", "RLS bypass helper is missing");
 assertIncludes(rlsSchema, "current_setting('app.bypass_rls', true)", "RLS bypass helper must use app.bypass_rls");
+assertIncludes(
+  reviewStatusSchema,
+  "teacher-review-required",
+  "review status constraint must allow teacher-review-required",
+);
 
 let live = { status: postgresUrl ? "pending" : "skipped", reason: postgresUrl ? undefined : "POSTGRES_RLS_SMOKE_URL or DATABASE_URL not set" };
 
@@ -183,6 +194,7 @@ end $$;`,
     .replace(/^create table (?!if not exists )/gim, "create table if not exists ")
     .replace(/^create index (?!if not exists )/gim, "create index if not exists ");
   const sessionMigrationSafe = sessionMigrationRaw;
+  const reviewStatusMigrationSafe = reviewStatusMigrationRaw;
   // Drop existing policies before recreating to avoid duplicate policy errors
   const dropPolicies = tenantTables
     .map((t) => `drop policy if exists tenant_isolation_${t} on ${t};`)
@@ -204,6 +216,7 @@ set local app.bypass_rls = 'on';
 
 	${coreSchemaSafe}
 	${sessionMigrationSafe}
+	${reviewStatusMigrationSafe}
 	${dropPolicies}
 	${rlsSchemaSafe}
 
@@ -262,7 +275,7 @@ insert into consent_records (id, tenant_id, user_id, audio_retention, anonymized
 	  id, tenant_id, learner_id, quran_ref, source_checksum, model_version_id, mode, practice_plan_id,
 	  external_processing_allowed, confidence, review_status, started_at, latency_ms, consent_record_id, consent_snapshot, audit_event_id
 	) values
-	  ('session-a', 'tenant-a', 'learner-a', '{"surahNumber":1,"ayahStart":1,"ayahEnd":1}', 'checksum-a', 'model-v0.3', 'guided-recite', 'plan-a', true, 0, 'draft', now(), 0, 'consent-a', '{"externalAsrProcessing":true}', 'audit-a'),
+	  ('session-a', 'tenant-a', 'learner-a', '{"surahNumber":1,"ayahStart":1,"ayahEnd":1}', 'checksum-a', 'model-v0.3', 'guided-recite', 'plan-a', true, 0, 'teacher-review-required', now(), 0, 'consent-a', '{"externalAsrProcessing":true}', 'audit-a'),
 	  ('session-b', 'tenant-b', 'learner-b', '{"surahNumber":1,"ayahStart":1,"ayahEnd":1}', 'checksum-b', 'model-v0.3', 'guided-recite', 'plan-b', true, 0, 'draft', now(), 0, 'consent-b', '{"externalAsrProcessing":true}', 'audit-b');
 
 	insert into learner_progress (tenant_id, learner_id, ayah_ref, easiness_factor, interval_days, repetitions, last_quality, next_review_at) values
@@ -298,8 +311,8 @@ insert into scholar_approvals (id, tenant_id, topic, reviewer_id, status, risk, 
   ('approval-b', 'tenant-b', 'topic-b', 'scholar-b', 'scholar-approved', 'low', '[{"id":"source-b"}]', 'audit-b');
 
 insert into agent_runs (id, tenant_id, name, goal, status, confidence, review_status, source_refs, trace, audit_event_id) values
-  ('agent-a', 'tenant-a', 'agent', 'goal', 'approved', 0.9, 'approved', '[{"id":"source-a"}]', '{}', 'audit-a'),
-  ('agent-b', 'tenant-b', 'agent', 'goal', 'approved', 0.9, 'approved', '[{"id":"source-b"}]', '{}', 'audit-b');
+  ('agent-a', 'tenant-a', 'agent', 'goal', 'approved', 0.9, 'scholar-approved', '[{"id":"source-a"}]', '{}', 'audit-a'),
+  ('agent-b', 'tenant-b', 'agent', 'goal', 'approved', 0.9, 'scholar-approved', '[{"id":"source-b"}]', '{}', 'audit-b');
 
 insert into privacy_jobs (id, tenant_id, learner_id, kind, included_records, deleted_records, audio_object_keys_deleted, audit_event_id) values
   ('privacy-a', 'tenant-a', 'learner-a', 'export', '["session-a"]', '[]', '[]', 'audit-a'),
