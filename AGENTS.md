@@ -54,6 +54,10 @@ SKIPS those DB tests when no DB is reachable — it never fakes them. CI runs th
   path that bypasses the RLS policies in `infra/sql/0003_tenant_rls.sql`.
 - **Audio/privacy.** Honor audio-retention + privacy export/delete logic in `contracts`;
   never log raw audio or secrets.
+- **LOGIN IS OFF for general users until production (owner-gated).** The web app renders
+  with no login screen by default. Do NOT re-enable auth, re-add a login gate, or set
+  `VITE_REQUIRE_LOGIN=1` unless the product owner explicitly says the app is going to
+  production. See `docs/DECISIONS.md` ADR-0002 + the flag in `apps/web/src/App.tsx`.
 
 ## Hard boundaries (also enforced by hooks — do not attempt to bypass)
 - Never edit: `.env*`, `secrets/**`, `**/*.pem`, `node_modules/**`, `dist/**`, `build/**`,

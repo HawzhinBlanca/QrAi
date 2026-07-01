@@ -88,6 +88,10 @@ describe("Quran AI app smoke", () => {
     });
     vi.stubGlobal("MediaRecorder", FakeMediaRecorder);
     vi.stubGlobal("WebSocket", FakeWebSocket);
+    // Hermetic: this smoke test asserts the no-backend fallbacks, so make every fetch fail
+    // fast regardless of whether the local services happen to be running (Node 22 ships a
+    // real global fetch that would otherwise hit them and make the test non-deterministic).
+    vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new Error("no backend in smoke test")));
   });
 
   afterEach(() => {

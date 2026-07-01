@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { motion } from "motion/react";
 import { AlertTriangle, ArrowRight, CheckCircle2, Clock3, Headphones, Mic, RotateCcw, Send, ShieldCheck, Sparkles } from "lucide-react";
 import { AudioCoach } from "./components/AudioCoach";
@@ -48,6 +48,17 @@ const practiceSteps: Array<{ id: Exclude<PracticeMode, "home">; label: string; h
 
 const waveformBars = Array.from({ length: 88 }, (_, index) => 28 + ((index * 17) % 54));
 
+// ─────────────────────────────────────────────────────────────────────────────
+// LOGIN IS INTENTIONALLY DISABLED until the product owner enables it for production.
+// Per explicit instruction: NO login screen for general users until told otherwise.
+// The whole app renders directly with a default learner — no `?smoke` param needed.
+//
+// To RE-ENABLE login (production only, when the owner says so): set the build-time env
+// `VITE_REQUIRE_LOGIN=1` (see apps/web/README, docs/DECISIONS.md, AGENTS.md).
+// Do NOT flip this without the owner's go-ahead.
+// ─────────────────────────────────────────────────────────────────────────────
+const LOGIN_ENABLED = import.meta.env.VITE_REQUIRE_LOGIN === "1";
+
 export default function App() {
   return (
     <AuthProvider>
@@ -57,21 +68,15 @@ export default function App() {
 }
 
 function AppInner() {
-  const { user, login, loading } = useAuth();
+  const { user, loading } = useAuth();
 
-  // In smoke test mode, render the authenticated app directly
-  // (bypasses login which requires the platform API to be running)
-  const isSmokeMode = typeof window !== "undefined" &&
-    (new URLSearchParams(window.location.search).get("smoke") === "layout" ||
-     new URLSearchParams(window.location.search).get("smoke") === "mic");
-
-  if (isSmokeMode) {
-    return <AuthenticatedApp smokeBypass />;
+  // Login disabled (default): render the app directly with a default learner. No login
+  // screen, no query param. Re-enable only via VITE_REQUIRE_LOGIN=1.
+  if (!LOGIN_ENABLED) {
+    return <AuthenticatedApp bypassLogin />;
   }
 
   if (!user) {
-    // While the dev auth bypass establishes a session, show a loader instead of
-    // flashing the login screen. In production (no bypass) loading is false here.
     if (loading) {
       return (
         <div className="login-screen">
@@ -87,12 +92,19 @@ function AppInner() {
   return <AuthenticatedApp />;
 }
 
-function AuthenticatedApp({ smokeBypass = false }: { smokeBypass?: boolean }) {
+function AuthenticatedApp({ bypassLogin = false }: { bypassLogin?: boolean }) {
   const { user, logout } = useAuth();
-  // In smoke bypass mode, use a mock user so the app renders without API
-  const effectiveUser = smokeBypass
-    ? { userId: "learner-1", tenantId: "hikmah-pilot-erbil", role: "learner", displayName: "Smoke Learner", token: "" }
-    : user;
+  // Login-disabled mode (default): use a default learner so the app runs without a
+  // login step. Swapped for the real authenticated user once VITE_REQUIRE_LOGIN=1.
+  // Memoized so the reference is stable — it's a dependency of the data-loading effect,
+  // and a fresh object each render would loop it.
+  const effectiveUser = useMemo(
+    () =>
+      bypassLogin
+        ? { userId: "learner-1", tenantId: "hikmah-pilot-erbil", role: "learner", displayName: "Learner", token: "" }
+        : user,
+    [bypassLogin, user],
+  );
   const [activeLanguage, setActiveLanguage] = useState<SupportedLanguageCode>("ckb");
   const [activeTab, setActiveTab] = useState("recitation");
   const [activeSection, setActiveSection] = useState<AppSection>("learner");
