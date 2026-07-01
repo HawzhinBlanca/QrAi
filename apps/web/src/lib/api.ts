@@ -55,6 +55,64 @@ export interface TajweedFinding {
   confidence: number;
 }
 
+export interface RecitationConsent {
+  audioRetention: "discard" | "teacher-review" | "training-opt-in";
+  anonymizedLearning: boolean;
+  externalAsrProcessing: boolean;
+  guardianApproved: boolean;
+  consentVersion: string;
+}
+
+export interface CreatedSession {
+  id: string;
+  tenantId: string;
+  learnerId: string;
+}
+
+/**
+ * Create a real recitation session (persisted, with the learner's actual consent choices).
+ * The returned id is used for the alignment/tajweed calls so the session is traceable.
+ */
+export async function createRecitationSession(params: {
+  tenantId: string;
+  userId: string;
+  learnerId: string;
+  surahNumber: number;
+  ayahStart: number;
+  ayahEnd: number;
+  language: string;
+  consent: RecitationConsent;
+}): Promise<CreatedSession> {
+  const response = await fetch(`${API_BASE}/v1/recitation-sessions`, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      "x-tenant-id": params.tenantId,
+      "x-user-id": params.userId,
+      "x-user-role": "learner",
+    },
+    body: JSON.stringify({
+      learnerId: params.learnerId,
+      quranRef: {
+        surahNumber: params.surahNumber,
+        ayahStart: params.ayahStart,
+        ayahEnd: params.ayahEnd,
+        display: `Surah ${params.surahNumber} ${params.ayahStart}-${params.ayahEnd}`,
+      },
+      sourceChecksum: "tanzil:uthmani:v1",
+      modelVersion: "model-v0.3",
+      language: params.language,
+      mode: "guided-recite",
+      practicePlanId: "fatihah-mastery-v1",
+      consent: params.consent,
+    }),
+  });
+  if (!response.ok) {
+    throw new Error(`Create session ${response.status}`);
+  }
+  return response.json() as Promise<CreatedSession>;
+}
+
 async function fetchJson(path: string): Promise<unknown> {
   const response = await fetch(`${API_BASE}${path}`);
   if (!response.ok) {

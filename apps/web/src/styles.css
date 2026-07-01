@@ -413,6 +413,39 @@ button:disabled {
   line-height: 1.6;
 }
 
+.consent-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-width: 560px;
+  padding: 14px 16px;
+  border: 1px solid #e6e0d4;
+  border-radius: 12px;
+  background: #fbf9f4;
+}
+
+.consent-panel .quiet-label {
+  margin-bottom: 2px;
+}
+
+.consent-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  color: #5e574c;
+  font-size: 14px;
+  line-height: 1.45;
+  cursor: pointer;
+}
+
+.consent-row input[type="checkbox"] {
+  margin-top: 3px;
+  width: 16px;
+  height: 16px;
+  accent-color: #088066;
+  flex: 0 0 auto;
+}
+
 .mission-actions {
   display: flex;
   flex-wrap: wrap;

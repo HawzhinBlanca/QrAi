@@ -14,7 +14,14 @@ import { LoginScreen } from "./components/LoginScreen";
 import { AuthProvider, useAuth } from "./lib/auth";
 import { startAsr, splitTranscript, isAsrSupported, type AsrController } from "./lib/asr";
 import { startServerAsr, isServerAsrSupported, type ServerAsrController } from "./lib/serverAsr";
-import { predictAlignment, predictTajweed, type AlignmentResult, type TajweedFinding } from "./lib/api";
+import {
+  predictAlignment,
+  predictTajweed,
+  createRecitationSession,
+  type AlignmentResult,
+  type TajweedFinding,
+  type RecitationConsent,
+} from "./lib/api";
 import {
   fetchMemorizationPlan,
   fetchLearnerProgress,
@@ -101,6 +108,15 @@ function AuthenticatedApp({ smokeBypass = false }: { smokeBypass?: boolean }) {
   const [weeklyProgress, setWeeklyProgress] = useState<ProgressBar[]>([]);
   const [memorizationPlan, setMemorizationPlan] = useState<MemorizationPlan | null>(null);
   const [progress, setProgress] = useState<LearnerProgress | null>(null);
+  const [sessionId, setSessionId] = useState<string>("");
+  // Privacy-preserving defaults; the learner opts in explicitly before practice.
+  const [consent, setConsent] = useState<RecitationConsent>({
+    audioRetention: "discard",
+    anonymizedLearning: false,
+    externalAsrProcessing: false,
+    guardianApproved: false,
+    consentVersion: "pilot-consent-v1",
+  });
   const [apiError, setApiError] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const asrRef = useState<AsrController | null>(null);
@@ -188,6 +204,21 @@ function AuthenticatedApp({ smokeBypass = false }: { smokeBypass?: boolean }) {
   function startPractice() {
     setPracticeMode("listen");
     setSelectedWordId(recitationEvents[0]?.wordId ?? quranVerses[0]?.words[0]?.id ?? selectedWordId);
+    // Create a real, consent-bound recitation session; alignment/tajweed reference its id.
+    if (effectiveUser) {
+      void createRecitationSession({
+        tenantId: effectiveUser.tenantId,
+        userId: effectiveUser.userId,
+        learnerId: effectiveUser.userId,
+        surahNumber: 1,
+        ayahStart: 1,
+        ayahEnd: 7,
+        language: activeLanguage,
+        consent,
+      })
+        .then((session) => setSessionId(session.id))
+        .catch(() => setSessionId(""));
+    }
   }
 
   function advancePractice() {
@@ -259,9 +290,10 @@ function AuthenticatedApp({ smokeBypass = false }: { smokeBypass?: boolean }) {
     setIsLoading(true);
     try {
       const words = splitTranscript(transcript);
+      const activeSessionId = sessionId || `practice-${Date.now()}`;
       const alignment = await predictAlignment({
         tenantId: effectiveUser.tenantId,
-        sessionId: `practice-${Date.now()}`,
+        sessionId: activeSessionId,
         surahNumber: 1,
         ayahStart: 1,
         ayahEnd: 7,
@@ -273,7 +305,7 @@ function AuthenticatedApp({ smokeBypass = false }: { smokeBypass?: boolean }) {
 
       const tajweed = await predictTajweed({
         tenantId: effectiveUser.tenantId,
-        sessionId: `practice-${Date.now()}`,
+        sessionId: activeSessionId,
         surahNumber: 1,
         ayahStart: 1,
         ayahEnd: 7,
@@ -431,7 +463,7 @@ function AuthenticatedApp({ smokeBypass = false }: { smokeBypass?: boolean }) {
         >
           {activeSection === "learner" ? (
             practiceMode === "home" ? (
-              <LearnerHome onStartPractice={startPractice} onCheckMic={checkMicPermission} micState={micState} memorizationPlan={memorizationPlan} progress={progress} />
+              <LearnerHome onStartPractice={startPractice} onCheckMic={checkMicPermission} micState={micState} memorizationPlan={memorizationPlan} progress={progress} consent={consent} onConsentChange={setConsent} />
             ) : (
               <PracticeFlow
                 activeStepIndex={activeStepIndex}
@@ -549,18 +581,65 @@ function LayoutSmokeProbe({ report }: { report: LayoutSmokeReport }) {
   );
 }
 
+function ConsentPanel({
+  consent,
+  onConsentChange,
+}: {
+  consent: RecitationConsent;
+  onConsentChange: (consent: RecitationConsent) => void;
+}) {
+  return (
+    <div className="consent-panel" aria-label="Recording consent">
+      <p className="quiet-label">Recording consent</p>
+      <label className="consent-row">
+        <input
+          type="checkbox"
+          checked={consent.audioRetention === "teacher-review"}
+          onChange={(event) =>
+            onConsentChange({
+              ...consent,
+              audioRetention: event.target.checked ? "teacher-review" : "discard",
+            })
+          }
+        />
+        <span>Keep my recitation for teacher review (otherwise it is discarded after analysis).</span>
+      </label>
+      <label className="consent-row">
+        <input
+          type="checkbox"
+          checked={consent.anonymizedLearning}
+          onChange={(event) => onConsentChange({ ...consent, anonymizedLearning: event.target.checked })}
+        />
+        <span>Help improve the model with anonymized data.</span>
+      </label>
+      <label className="consent-row">
+        <input
+          type="checkbox"
+          checked={consent.guardianApproved}
+          onChange={(event) => onConsentChange({ ...consent, guardianApproved: event.target.checked })}
+        />
+        <span>A parent/guardian approves this (required for learners under 13).</span>
+      </label>
+    </div>
+  );
+}
+
 function LearnerHome({
   micState,
   onCheckMic,
   onStartPractice,
   memorizationPlan,
   progress,
+  consent,
+  onConsentChange,
 }: {
   micState: MicState;
   onCheckMic: () => void;
   onStartPractice: () => void;
   memorizationPlan: MemorizationPlan | null;
   progress: LearnerProgress | null;
+  consent: RecitationConsent;
+  onConsentChange: (consent: RecitationConsent) => void;
 }) {
   const masteryPct = Math.round((progress?.mastery ?? 0) * 100);
   return (
@@ -572,6 +651,7 @@ function LearnerHome({
           <p>
             Listen once, recite with guidance, try from memory, then repeat only the words that need attention.
           </p>
+          <ConsentPanel consent={consent} onConsentChange={onConsentChange} />
           <div className="mission-actions">
             <button className="primary-action start-practice-button" onClick={onStartPractice} type="button">
               <Mic size={18} />
