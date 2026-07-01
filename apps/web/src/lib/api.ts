@@ -19,6 +19,9 @@ export interface SurahInfo {
   surahNumber: number;
   ayahCount: number;
   name: string;
+  arabicName?: string;
+  translation?: string;
+  revelationType?: string;
 }
 
 export interface AyahWord {

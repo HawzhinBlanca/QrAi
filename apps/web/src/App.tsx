@@ -20,10 +20,20 @@ import {
   predictAlignment,
   predictTajweed,
   createRecitationSession,
+  fetchSurahList,
   type AlignmentResult,
   type TajweedFinding,
   type RecitationConsent,
+  type SurahInfo,
 } from "./lib/api";
+import { SurahPicker } from "./components/SurahPicker";
+import {
+  DEFAULT_SURAH,
+  practiceRange,
+  globalAyahOffset,
+  progressKey,
+  surahLabel,
+} from "./lib/surah";
 import {
   fetchMemorizationPlan,
   fetchLearnerProgress,
@@ -124,6 +134,8 @@ function AuthenticatedApp({ bypassLogin = false }: { bypassLogin?: boolean }) {
   const [memorizationPlan, setMemorizationPlan] = useState<MemorizationPlan | null>(null);
   const [progress, setProgress] = useState<LearnerProgress | null>(null);
   const [sessionId, setSessionId] = useState<string>("");
+  const [surahList, setSurahList] = useState<SurahInfo[]>([]);
+  const [selectedSurah, setSelectedSurah] = useState<SurahInfo>(DEFAULT_SURAH);
   // Privacy-preserving defaults; the learner opts in explicitly before practice.
   const [consent, setConsent] = useState<RecitationConsent>({
     audioRetention: "discard",
@@ -163,8 +175,25 @@ function AuthenticatedApp({ bypassLogin = false }: { bypassLogin?: boolean }) {
   const isLearnerHome = activeSection === "learner" && practiceMode === "home";
   const pageTitle = activeSection === "learner" ? (isLearnerHome ? "Learner Home" : "Practice") : "Internal Platform";
 
+  // Load the full surah list once so the learner can pick any of the 114 surahs. On
+  // failure the picker stays on the default surah (still fully usable).
   useEffect(() => {
-    void loadSurahVerses(1).then(setQuranVerses).catch(() => {});
+    void fetchSurahList()
+      .then((list) => {
+        if (list.length === 0) return;
+        setSurahList(list);
+        // Keep the selection's metadata in sync with the API record (same surah number).
+        setSelectedSurah((current) => list.find((s) => s.surahNumber === current.surahNumber) ?? current);
+      })
+      .catch(() => {});
+  }, []);
+
+  // (Re)load the reader verses whenever the selected surah changes (and on first mount).
+  useEffect(() => {
+    void loadSurahVerses(selectedSurah.surahNumber).then(setQuranVerses).catch(() => {});
+  }, [selectedSurah.surahNumber]);
+
+  useEffect(() => {
     if (effectiveUser) {
       void loadWeeklyProgress(effectiveUser.tenantId).then(setWeeklyProgress).catch(() => {});
       void fetchMemorizationPlan(effectiveUser.tenantId, effectiveUser.userId, authToken)
@@ -189,7 +218,7 @@ function AuthenticatedApp({ bypassLogin = false }: { bypassLogin?: boolean }) {
         scrollWidth: document.documentElement.scrollWidth,
         hasLearnerHome: bodyText.includes("Learner Home"),
         hasStartPractice: bodyText.includes("Start Practice"),
-        hasPractice: bodyText.includes("Practice") && bodyText.includes("Surah Al-Fatihah"),
+        hasPractice: bodyText.includes("Practice") && bodyText.includes("Back to home"),
         hasHiddenInternalsCopy: bodyText.includes("Learner view keeps model and gateway details hidden"),
         hasCommandHero: bodyText.includes("Quran AI intelligence platform"),
         hasMicReady: bodyText.includes("Microphone is ready for guided recite."),
@@ -243,14 +272,15 @@ function AuthenticatedApp({ bypassLogin = false }: { bypassLogin?: boolean }) {
     setSelectedWordId(recitationEvents[0]?.wordId ?? quranVerses[0]?.words[0]?.id ?? selectedWordId);
     // Create a real, consent-bound recitation session; alignment/tajweed reference its id.
     if (effectiveUser) {
+      const range = practiceRange(selectedSurah);
       void createRecitationSession({
         tenantId: effectiveUser.tenantId,
         userId: effectiveUser.userId,
         authToken,
         learnerId: effectiveUser.userId,
-        surahNumber: 1,
-        ayahStart: 1,
-        ayahEnd: 7,
+        surahNumber: selectedSurah.surahNumber,
+        ayahStart: range.ayahStart,
+        ayahEnd: range.ayahEnd,
         language: activeLanguage,
         consent,
       })
@@ -300,8 +330,9 @@ function AuthenticatedApp({ bypassLogin = false }: { bypassLogin?: boolean }) {
     ).length;
     const accuracy = scored > 0 ? correct / scored : 0;
     const quality = Math.round(accuracy * 5); // SM-2 quality 0-5
+    const ayahRef = progressKey(selectedSurah.surahNumber, practiceRange(selectedSurah));
     try {
-      await updateLearnerProgress(effectiveUser.tenantId, effectiveUser.userId, "1:1-7", quality, authToken);
+      await updateLearnerProgress(effectiveUser.tenantId, effectiveUser.userId, ayahRef, quality, authToken);
       const fresh = await fetchLearnerProgress(effectiveUser.tenantId, effectiveUser.userId, authToken);
       setProgress(fresh);
     } catch {
@@ -324,7 +355,7 @@ function AuthenticatedApp({ bypassLogin = false }: { bypassLogin?: boolean }) {
       if (prev) URL.revokeObjectURL(prev);
       return "";
     });
-    void loadSurahVerses(1).then(setQuranVerses).catch(() => {});
+    void loadSurahVerses(selectedSurah.surahNumber).then(setQuranVerses).catch(() => {});
   }
 
   async function runAlignmentAndTajweed(transcript: string) {
@@ -335,12 +366,13 @@ function AuthenticatedApp({ bypassLogin = false }: { bypassLogin?: boolean }) {
     try {
       const words = splitTranscript(transcript);
       const activeSessionId = sessionId || `practice-${Date.now()}`;
+      const range = practiceRange(selectedSurah);
       const alignment = await predictAlignment({
         tenantId: effectiveUser.tenantId,
         sessionId: activeSessionId,
-        surahNumber: 1,
-        ayahStart: 1,
-        ayahEnd: 7,
+        surahNumber: selectedSurah.surahNumber,
+        ayahStart: range.ayahStart,
+        ayahEnd: range.ayahEnd,
         recognizedText: words,
       });
       setAlignmentResults(alignment.alignments);
@@ -350,9 +382,9 @@ function AuthenticatedApp({ bypassLogin = false }: { bypassLogin?: boolean }) {
       const tajweed = await predictTajweed({
         tenantId: effectiveUser.tenantId,
         sessionId: activeSessionId,
-        surahNumber: 1,
-        ayahStart: 1,
-        ayahEnd: 7,
+        surahNumber: selectedSurah.surahNumber,
+        ayahStart: range.ayahStart,
+        ayahEnd: range.ayahEnd,
       });
       setTajweedResults(tajweed.findings);
     } catch (err) {
@@ -506,8 +538,9 @@ function AuthenticatedApp({ bypassLogin = false }: { bypassLogin?: boolean }) {
     setIsPlaying(false);
   }
 
-  // "Listen": play Surah Al-Fatihah (global ayahs 1–7) sequentially from the
-  // Al Quran Cloud CDN (Mishary Al-Afasy reference recitation).
+  // "Listen": play the selected surah's practice passage sequentially from the Al Quran
+  // Cloud CDN (Mishary Al-Afasy reference recitation). The CDN uses the standard 6236
+  // numbering, so we map the surah's local ayahs to global ayah numbers.
   function togglePlay() {
     // audioRef is always current (unlike the isPlaying state), so rapid double
     // clicks can't start overlapping playback.
@@ -517,9 +550,12 @@ function AuthenticatedApp({ bypassLogin = false }: { bypassLogin?: boolean }) {
     }
     setApiError(null);
     setIsPlaying(true);
-    const LAST_AYAH = 7;
+    const range = practiceRange(selectedSurah);
+    const offset = globalAyahOffset(surahList, selectedSurah.surahNumber);
+    const firstGlobal = offset + range.ayahStart;
+    const lastGlobal = offset + range.ayahEnd;
     const playAyah = (ayah: number) => {
-      if (ayah > LAST_AYAH) {
+      if (ayah > lastGlobal) {
         stopPlayback();
         return;
       }
@@ -538,7 +574,7 @@ function AuthenticatedApp({ bypassLogin = false }: { bypassLogin?: boolean }) {
         stopPlayback();
       });
     };
-    playAyah(1);
+    playAyah(firstGlobal);
   }
 
   function stopRecordingPlayback() {
@@ -588,7 +624,7 @@ function AuthenticatedApp({ bypassLogin = false }: { bypassLogin?: boolean }) {
         >
           {activeSection === "learner" ? (
             practiceMode === "home" ? (
-              <LearnerHome onStartPractice={startPractice} onCheckMic={checkMicPermission} micState={micState} memorizationPlan={memorizationPlan} progress={progress} consent={consent} onConsentChange={setConsent} />
+              <LearnerHome onStartPractice={startPractice} onCheckMic={checkMicPermission} micState={micState} memorizationPlan={memorizationPlan} progress={progress} consent={consent} onConsentChange={setConsent} surahList={surahList} selectedSurah={selectedSurah} onSelectSurah={setSelectedSurah} />
             ) : (
               <PracticeFlow
                 activeStepIndex={activeStepIndex}
@@ -609,6 +645,7 @@ function AuthenticatedApp({ bypassLogin = false }: { bypassLogin?: boolean }) {
                 onPlayRecording={playRecording}
                 liveBars={liveBars}
                 selectedWordId={selectedWordId}
+                surahTitle={surahLabel(selectedSurah)}
                 quranVerses={quranVerses}
                 recitationEvents={recitationEvents}
                 alignmentResults={alignmentResults}
@@ -770,6 +807,9 @@ function LearnerHome({
   progress,
   consent,
   onConsentChange,
+  surahList,
+  selectedSurah,
+  onSelectSurah,
 }: {
   micState: MicState;
   onCheckMic: () => void;
@@ -778,6 +818,9 @@ function LearnerHome({
   progress: LearnerProgress | null;
   consent: RecitationConsent;
   onConsentChange: (consent: RecitationConsent) => void;
+  surahList: SurahInfo[];
+  selectedSurah: SurahInfo;
+  onSelectSurah: (surah: SurahInfo) => void;
 }) {
   const masteryPct = Math.round((progress?.mastery ?? 0) * 100);
   return (
@@ -785,10 +828,11 @@ function LearnerHome({
       <div className="mission-hero">
         <div className="mission-copy">
           <p className="quiet-label">Today's mission</p>
-          <h1>Strengthen Surah Al-Fatihah with a calm mastery loop.</h1>
+          <h1>Strengthen {surahLabel(selectedSurah)} with a calm mastery loop.</h1>
           <p>
             Listen once, recite with guidance, try from memory, then repeat only the words that need attention.
           </p>
+          <SurahPicker surahs={surahList} selected={selectedSurah} onSelect={onSelectSurah} />
           <ConsentPanel consent={consent} onConsentChange={onConsentChange} />
           <div className="mission-actions">
             <button className="primary-action start-practice-button" onClick={onStartPractice} type="button">
@@ -863,6 +907,7 @@ function PracticeFlow({
   onPlayRecording,
   liveBars,
   selectedWordId,
+  surahTitle,
   quranVerses,
   recitationEvents,
   alignmentResults,
@@ -891,6 +936,7 @@ function PracticeFlow({
   onPlayRecording: () => void;
   liveBars: number[];
   selectedWordId: string;
+  surahTitle: string;
   quranVerses: QuranVerse[];
   recitationEvents: RecitationEvent[];
   alignmentResults: AlignmentResult[];
@@ -926,7 +972,7 @@ function PracticeFlow({
             <RotateCcw size={15} />
             Back to home
           </button>
-          <h1>Surah Al-Fatihah</h1>
+          <h1>{surahTitle}</h1>
           <p>{selectedStep.helper}</p>
         </div>
         <button className="primary-action" disabled={isComplete} onClick={onAdvance} type="button">

@@ -413,6 +413,42 @@ button:disabled {
   line-height: 1.6;
 }
 
+.surah-picker {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-width: 560px;
+}
+
+.surah-picker-select {
+  width: 100%;
+  padding: 12px 14px;
+  font: inherit;
+  font-size: 15px;
+  color: #2c2a24;
+  background: #fbf9f4;
+  border: 1px solid #e6e0d4;
+  border-radius: 12px;
+  appearance: none;
+  cursor: pointer;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+
+.surah-picker-select:hover:not(:disabled) {
+  border-color: #cbb98f;
+}
+
+.surah-picker-select:focus-visible {
+  outline: none;
+  border-color: #2f6f4f;
+  box-shadow: 0 0 0 3px rgba(47, 111, 79, 0.15);
+}
+
+.surah-picker-select:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
 .consent-panel {
   display: flex;
   flex-direction: column;

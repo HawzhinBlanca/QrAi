@@ -109,6 +109,7 @@ describe("Quran AI app smoke", () => {
 
     expect(document.body.textContent).toContain("Learner Home");
     expect(document.body.textContent).toContain("Today's mission");
+    expect(document.body.textContent).toContain("Practice surah"); // surah picker present
     expect(document.body.textContent).toContain("Start Practice");
     expect(document.body.textContent).toContain("Allow browser or cloud speech processing");
     expect(document.body.textContent).not.toContain("Quran AI intelligence platform");
@@ -124,7 +125,8 @@ describe("Quran AI app smoke", () => {
     expect(document.body.textContent).toContain("Practice");
     expect(document.body.textContent).toContain("Listen");
     expect(document.body.textContent).toContain("Learner view keeps model and gateway details hidden");
-    expect(document.body.textContent).toContain("Surah Al-Fatihah");
+    // Default surah when the API is unavailable (fetch is stubbed to reject in this test).
+    expect(document.body.textContent).toContain("Surah Al-Faatiha");
 
     const nextButton = Array.from(document.querySelectorAll<HTMLButtonElement>("button")).find((button) =>
       button.textContent?.includes("Next step"),
