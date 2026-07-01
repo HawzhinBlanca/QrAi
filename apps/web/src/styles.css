@@ -1238,9 +1238,13 @@ button:disabled {
   padding: 16px 20px;
   border: 1px solid var(--line);
   border-radius: 20px;
-  background: rgba(255, 253, 248, 0.96);
+  background: rgba(255, 253, 248, 0.98);
   backdrop-filter: blur(18px);
-  box-shadow: 0 14px 40px rgba(78, 61, 34, 0.09);
+  box-shadow: 0 14px 40px rgba(78, 61, 34, 0.12);
+  /* Stay reachable while the learner scrolls the mushaf. */
+  position: sticky;
+  bottom: 16px;
+  z-index: 10;
 }
 
 .coach-status {
@@ -1373,6 +1377,7 @@ button:disabled {
 @media (max-width: 720px) {
   .audio-coach {
     flex-wrap: wrap;
+    bottom: 84px; /* clear the fixed bottom nav */
   }
   .coach-actions {
     width: 100%;
