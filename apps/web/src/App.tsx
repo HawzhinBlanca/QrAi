@@ -20,6 +20,7 @@ import {
   predictAlignment,
   predictTajweed,
   createRecitationSession,
+  persistSessionAlignments,
   fetchSurahList,
   type AlignmentResult,
   type TajweedFinding,
@@ -378,6 +379,19 @@ function AuthenticatedApp({ bypassLogin = false }: { bypassLogin?: boolean }) {
       setAlignmentResults(alignment.alignments);
       setQuranVerses((prev) => updateVersesWithAlignment(prev, alignment.alignments));
       setRecitationEvents(buildRecitationEvents(alignment.alignments));
+
+      // Persist the real alignment to this session so it appears in the Command console
+      // (only for a real persisted session — not the `practice-<ts>` offline fallback).
+      // Best-effort: a failure here must not disrupt the learner's practice.
+      if (sessionId && effectiveUser) {
+        void persistSessionAlignments({
+          tenantId: effectiveUser.tenantId,
+          userId: effectiveUser.userId,
+          authToken,
+          sessionId,
+          alignments: alignment.alignments,
+        }).catch(() => {});
+      }
 
       const tajweed = await predictTajweed({
         tenantId: effectiveUser.tenantId,

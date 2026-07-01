@@ -408,3 +408,128 @@ pub async fn list_session_alignments(
 
     Ok(Json(out))
 }
+
+#[derive(Debug, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PersistAlignmentInput {
+    pub word_id: String,
+    #[serde(default)]
+    pub heard_text: String,
+    #[serde(default)]
+    pub start_ms: i32,
+    #[serde(default)]
+    pub end_ms: i32,
+    pub confidence: f64,
+    pub status: String,
+}
+
+#[derive(Debug, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PersistAlignmentsRequest {
+    pub alignments: Vec<PersistAlignmentInput>,
+    #[serde(default)]
+    pub model_version: Option<String>,
+}
+
+/// Persist a session's word-level alignment (learner-owner or staff). This is the link that
+/// makes a learner's REAL recitation visible in the Command console (which reads
+/// `word_alignments`). Replaces any prior alignment for the session (idempotent re-record),
+/// skips words whose id is not a real canonical word (e.g. the synthetic "extra-N" ids that
+/// would violate the FK), and clamps confidence to [0,1].
+pub async fn persist_session_alignments(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+    Json(req): Json<PersistAlignmentsRequest>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let actor = actor_from_headers(&headers, &state.jwt_config)?;
+    let mut tx = crate::begin_tenant_tx(&state.pool, &actor.tenant_id).await?;
+
+    // The session must exist in-tenant; only its learner or staff may write its alignment.
+    let learner_id: String = sqlx::query_scalar(
+        "SELECT learner_id FROM recitation_sessions WHERE id = $1 AND tenant_id = $2",
+    )
+    .bind(&id)
+    .bind(&actor.tenant_id)
+    .fetch_optional(&mut *tx)
+    .await?
+    .ok_or(ApiError::NotFound)?;
+    actor.require_self_or_any(
+        &learner_id,
+        &[ActorRole::Teacher, ActorRole::Admin, ActorRole::Ops],
+    )?;
+
+    // model_version must satisfy the FK; fall back to the default aligner if unknown.
+    let requested_model = req.model_version.unwrap_or_else(|| "model-v0.3".to_owned());
+    let model_version: String = sqlx::query_scalar("SELECT id FROM model_versions WHERE id = $1")
+        .bind(&requested_model)
+        .fetch_optional(&mut *tx)
+        .await?
+        .unwrap_or_else(|| "model-v0.3".to_owned());
+
+    let audit_id = next_id("audit");
+    let trace_id = crate::auth::extract_trace_id(&headers);
+    sqlx::query(
+        "INSERT INTO audit_events (id, tenant_id, actor_id, action, subject_type, subject_id, metadata)
+         VALUES ($1, $2, $3, 'recitation.alignment.persisted', 'recitation_session', $4, $5)",
+    )
+    .bind(&audit_id)
+    .bind(&actor.tenant_id)
+    .bind(&actor.user_id)
+    .bind(&id)
+    .bind(serde_json::json!({"trace_id": trace_id, "count": req.alignments.len()}))
+    .execute(&mut *tx)
+    .await?;
+
+    // Replace-on-write: clear the session's prior alignment first.
+    sqlx::query("DELETE FROM word_alignments WHERE session_id = $1 AND tenant_id = $2")
+        .bind(&id)
+        .bind(&actor.tenant_id)
+        .execute(&mut *tx)
+        .await?;
+
+    const VALID_STATUS: [&str; 5] = ["matched", "misread", "missed", "extra", "needs-review"];
+    let mut persisted = 0i64;
+    for a in &req.alignments {
+        if !VALID_STATUS.contains(&a.status.as_str()) {
+            continue;
+        }
+        // Only real canonical words satisfy the word_id FK; skip synthetic ids ("extra-N").
+        let is_canonical: Option<String> =
+            sqlx::query_scalar("SELECT id FROM canonical_words WHERE id = $1")
+                .bind(&a.word_id)
+                .fetch_optional(&mut *tx)
+                .await?;
+        if is_canonical.is_none() {
+            continue;
+        }
+        let wa_id = next_id("word-alignment");
+        sqlx::query(
+            "INSERT INTO word_alignments
+                (id, tenant_id, session_id, word_id, heard_text, start_ms, end_ms, confidence, status, model_version_id, audit_event_id)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8::float8::numeric, $9, $10, $11)",
+        )
+        .bind(&wa_id)
+        .bind(&actor.tenant_id)
+        .bind(&id)
+        .bind(&a.word_id)
+        .bind(&a.heard_text)
+        .bind(a.start_ms)
+        .bind(a.end_ms)
+        .bind(a.confidence.clamp(0.0, 1.0))
+        .bind(&a.status)
+        .bind(&model_version)
+        .bind(&audit_id)
+        .execute(&mut *tx)
+        .await?;
+        persisted += 1;
+    }
+
+    tx.commit().await?;
+
+    Ok(Json(serde_json::json!({
+        "sessionId": id,
+        "persisted": persisted,
+        "auditEventId": audit_id,
+    })))
+}

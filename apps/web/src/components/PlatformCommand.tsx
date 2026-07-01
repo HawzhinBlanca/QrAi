@@ -156,6 +156,26 @@ export function PlatformCommand({
     };
   }, [authToken, tenantId]);
 
+  // Live refresh: while the console is open, poll the active session's alignment so a
+  // learner's freshly-persisted recitation appears without a manual reload. Only the
+  // (small) alignment list is re-fetched, not the whole console.
+  useEffect(() => {
+    const sessionId = data.activeSession?.id;
+    if (!sessionId) return;
+    let cancelled = false;
+    const interval = setInterval(() => {
+      void fetchSessionAlignments(tenantId, sessionId, authToken)
+        .then((sessionAlignments) => {
+          if (!cancelled) setData((prev) => ({ ...prev, sessionAlignments }));
+        })
+        .catch(() => {});
+    }, 5000);
+    return () => {
+      cancelled = true;
+      clearInterval(interval);
+    };
+  }, [data.activeSession?.id, tenantId, authToken]);
+
   const scholarSummary = summarizeScholarQueue(data.scholarApprovals);
 
   return (

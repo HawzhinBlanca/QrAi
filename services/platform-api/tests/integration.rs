@@ -316,3 +316,82 @@ async fn learner_progress_learner_id_is_authorized() {
     .await;
     assert_eq!(cross.status(), StatusCode::FORBIDDEN);
 }
+
+/// Persist + read-back of a session's real alignment (the link that surfaces a learner's
+/// recitation in the console). Synthetic "extra" ids are skipped; a non-owner learner is denied.
+#[tokio::test]
+#[ignore = "requires live Postgres"]
+async fn persists_and_reads_back_session_alignment() {
+    let router = platform_router_with_rate_limit(test_state(), false);
+
+    // Create a session owned by learner-1.
+    let created = send_json(
+        &router,
+        Method::POST,
+        "/v1/recitation-sessions",
+        Some("hikmah-pilot-erbil"),
+        Some("learner"),
+        json!({
+            "learnerId": "learner-1",
+            "quranRef": {"surahNumber": 1, "ayahStart": 1, "ayahEnd": 7, "display": "Al-Fatihah 1:1-7"},
+            "sourceChecksum": "fnv1a32:itest",
+            "modelVersion": "model-v0.3",
+            "language": "ckb",
+            "mode": "guided-recite",
+            "practicePlanId": "fatihah-mastery-v1",
+            "consent": {"audioRetention": "discard", "anonymizedLearning": true, "externalAsrProcessing": false, "guardianApproved": true, "consentVersion": "pilot-v1"}
+        }),
+    )
+    .await;
+    assert_eq!(created.status(), StatusCode::OK);
+    let session: Value = read_json(created).await;
+    let session_id = session["id"].as_str().unwrap().to_string();
+
+    // A different learner may NOT write this session's alignment.
+    let denied = send_json(
+        &router,
+        Method::POST,
+        &format!("/v1/recitation-sessions/{session_id}/alignments"),
+        Some("hikmah-pilot-erbil"),
+        Some("scholar"), // x-user-id = scholar-1, not the owner and not staff-for-write
+        json!({ "alignments": [] }),
+    )
+    .await;
+    assert_eq!(denied.status(), StatusCode::FORBIDDEN);
+
+    // The owner persists alignment: one real word + one synthetic "extra" (must be skipped).
+    let persisted = send_json(
+        &router,
+        Method::POST,
+        &format!("/v1/recitation-sessions/{session_id}/alignments"),
+        Some("hikmah-pilot-erbil"),
+        Some("learner"),
+        json!({
+            "modelVersion": "model-v0.3",
+            "alignments": [
+                {"wordId": "1:1:1", "heardText": "بسم", "startMs": 0, "endMs": 400, "confidence": 0.97, "status": "matched"},
+                {"wordId": "extra-0", "heardText": "x", "startMs": 0, "endMs": 0, "confidence": 0.5, "status": "extra"}
+            ]
+        }),
+    )
+    .await;
+    assert_eq!(persisted.status(), StatusCode::OK);
+    let body: Value = read_json(persisted).await;
+    assert_eq!(body["persisted"], 1); // extra skipped
+
+    // Staff reads it back (with canonical text joined).
+    let read = send_json(
+        &router,
+        Method::GET,
+        &format!("/v1/recitation-sessions/{session_id}/alignments"),
+        Some("hikmah-pilot-erbil"),
+        Some("ops"),
+        json!({}),
+    )
+    .await;
+    assert_eq!(read.status(), StatusCode::OK);
+    let rows: Vec<Value> = read_json(read).await;
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0]["wordId"], "1:1:1");
+    assert_eq!(rows[0]["status"], "matched");
+}

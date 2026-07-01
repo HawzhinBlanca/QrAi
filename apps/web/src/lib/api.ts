@@ -126,6 +126,44 @@ export async function createRecitationSession(params: {
   return response.json() as Promise<CreatedSession>;
 }
 
+/**
+ * Persist a session's computed alignment so it reaches `word_alignments` and becomes visible
+ * in the Command console (which reads real alignment, not just seeded demo rows). Synthetic
+ * "extra" words are dropped server-side. Best-effort: callers fire-and-forget.
+ */
+export async function persistSessionAlignments(params: {
+  tenantId: string;
+  userId: string;
+  authToken?: string;
+  sessionId: string;
+  alignments: AlignmentResult[];
+  modelVersion?: string;
+}): Promise<{ persisted: number }> {
+  const response = await fetchWithTimeout(
+    `${API_BASE}/v1/recitation-sessions/${encodeURIComponent(params.sessionId)}/alignments`,
+    {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        ...actorHeaders(params.tenantId, params.userId, "learner", params.authToken),
+      },
+      body: JSON.stringify({
+        modelVersion: params.modelVersion ?? "model-v0.3",
+        alignments: params.alignments.map((a) => ({
+          wordId: a.wordId,
+          heardText: a.heardText ?? "",
+          startMs: 0,
+          endMs: 0,
+          confidence: a.confidence,
+          status: a.status,
+        })),
+      }),
+    },
+  );
+  if (!response.ok) throw new Error(`Persist alignments ${response.status}`);
+  return response.json() as Promise<{ persisted: number }>;
+}
+
 async function fetchJson(path: string): Promise<unknown> {
   const response = await fetchWithTimeout(`${API_BASE}${path}`);
   if (!response.ok) {
