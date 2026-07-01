@@ -65,4 +65,3 @@ def build_quran_phoneme_script_vocab(path: str):
 
     with open(path, "w+", encoding="utf-8") as f:
         json.dump(level_to_token_to_idx, f, ensure_ascii=False, indent=2)
-

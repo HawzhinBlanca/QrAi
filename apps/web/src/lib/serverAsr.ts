@@ -44,6 +44,15 @@ export function isServerAsrSupported(): boolean {
   );
 }
 
+export function isAudioRecordingSupported(): boolean {
+  return (
+    typeof window !== "undefined" &&
+    typeof navigator !== "undefined" &&
+    !!navigator.mediaDevices?.getUserMedia &&
+    typeof MediaRecorder !== "undefined"
+  );
+}
+
 function pickRecorderMime(): string {
   const candidates = ["audio/webm;codecs=opus", "audio/webm", "audio/ogg;codecs=opus", "audio/mp4"];
   for (const mime of candidates) {
@@ -60,6 +69,32 @@ export async function startServerAsr(options: StartServerAsrOptions): Promise<Se
     return null;
   }
 
+  return startRecordedAudio(options, async (recorded) => {
+    const wav = await decodeToWav16kMono(recorded);
+    const transcript = await transcribeWav(wav, options.language ?? "ar");
+    return { transcript, confidence: 0.9 };
+  });
+}
+
+export async function startLocalAudioRecording(
+  options: StartServerAsrOptions,
+): Promise<ServerAsrController | null> {
+  if (!isAudioRecordingSupported()) {
+    options.onStatusChange("unsupported");
+    return null;
+  }
+
+  return startRecordedAudio(options, async () => ({
+    transcript: "",
+    confidence: 0,
+    error: "external-asr-consent-required",
+  }));
+}
+
+async function startRecordedAudio(
+  options: StartServerAsrOptions,
+  processRecording: (recorded: Blob) => Promise<Omit<ServerAsrResult, "audioBlob">>,
+): Promise<ServerAsrController | null> {
   let stream: MediaStream;
   try {
     stream = await navigator.mediaDevices.getUserMedia({ audio: true });
@@ -96,9 +131,8 @@ export async function startServerAsr(options: StartServerAsrOptions): Promise<Se
 
       // Always keep the recording playable, even if the ASR service is unreachable.
       try {
-        const wav = await decodeToWav16kMono(recorded);
-        const transcript = await transcribeWav(wav, options.language ?? "ar");
-        return { transcript, confidence: 0.9, audioBlob: recorded };
+        const result = await processRecording(recorded);
+        return { ...result, audioBlob: recorded };
       } catch (error) {
         return {
           transcript: "",

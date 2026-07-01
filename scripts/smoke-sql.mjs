@@ -15,14 +15,23 @@ const tenantTables = [
   "agent_runs",
   "realtime_session_tickets",
   "alignment_runs",
+  "learner_progress",
   "privacy_jobs",
   "audit_events",
 ];
 
-const coreSchemaPath = join("infra", "sql", "0001_core_schema.sql");
-const rlsPath = join("infra", "sql", "0003_tenant_rls.sql");
-const coreSchemaRaw = await readFile(coreSchemaPath, "utf8");
-const rlsSchemaRaw = await readFile(rlsPath, "utf8");
+const coreSchemaPaths = [
+  join("infra", "sql", "0001_core_schema.sql"),
+  join("infra", "sql", "0005_learner_progress.sql"),
+];
+const sessionMigrationPath = join("infra", "sql", "0008_session_language.sql");
+const rlsPaths = [
+  join("infra", "sql", "0003_tenant_rls.sql"),
+  join("infra", "sql", "0009_learner_progress_rls.sql"),
+];
+const coreSchemaRaw = (await Promise.all(coreSchemaPaths.map((path) => readFile(path, "utf8")))).join("\n");
+const sessionMigrationRaw = await readFile(sessionMigrationPath, "utf8");
+const rlsSchemaRaw = (await Promise.all(rlsPaths.map((path) => readFile(path, "utf8")))).join("\n");
 const coreSchema = normalizeSql(coreSchemaRaw);
 const rlsSchema = normalizeSql(rlsSchemaRaw);
 const postgresUrl = process.env.POSTGRES_RLS_SMOKE_URL ?? process.env.DATABASE_URL;
@@ -31,10 +40,14 @@ const requireLive = process.env.SQL_SMOKE_REQUIRE_LIVE === "true";
 const failures = [];
 
 for (const table of tenantTables) {
-  assertIncludes(coreSchema, `create table ${table} (`, `${table} table is missing from ${coreSchemaPath}`);
   assertRegex(
     coreSchema,
-    new RegExp(`create table ${table} \\([\\s\\S]*?tenant_id text not null references institutions\\(id\\)`, "i"),
+    new RegExp(`create table (if not exists )?${table} \\(`, "i"),
+    `${table} table is missing from tenant schema migrations`,
+  );
+  assertRegex(
+    coreSchema,
+    new RegExp(`create table (if not exists )?${table} \\([\\s\\S]*?tenant_id text not null references institutions\\(id\\)`, "i"),
     `${table} must include tenant_id referencing institutions(id)`,
   );
   assertIncludes(rlsSchema, `alter table ${table} enable row level security;`, `${table} does not enable RLS`);
@@ -137,6 +150,7 @@ function buildLiveSmokeSql() {
     agent_runs: 1,
     realtime_session_tickets: 1,
     alignment_runs: 1,
+    learner_progress: 1,
     privacy_jobs: 1,
     audit_events: 1,
   };
@@ -166,25 +180,37 @@ end $$;`,
 
   // Wrap schema creation with IF NOT EXISTS to handle pre-existing tables and indexes
   const coreSchemaSafe = coreSchemaRaw
-    .replace(/^create table /gm, "create table if not exists ")
-    .replace(/^create index /gm, "create index if not exists ");
+    .replace(/^create table (?!if not exists )/gim, "create table if not exists ")
+    .replace(/^create index (?!if not exists )/gim, "create index if not exists ");
+  const sessionMigrationSafe = sessionMigrationRaw;
   // Drop existing policies before recreating to avoid duplicate policy errors
   const dropPolicies = tenantTables
     .map((t) => `drop policy if exists tenant_isolation_${t} on ${t};`)
     .join("\n");
+  // Make the non-superuser RLS test role self-contained: ensure it exists and is granted
+  // every tenant table (learner_progress was added after the role was first bootstrapped).
+  const grantRlsRole = `do $$ begin
+  if not exists (select 1 from pg_roles where rolname = 'quran_ai_rls_test') then
+    create role quran_ai_rls_test nologin;
+  end if;
+end $$;
+grant usage on schema public to quran_ai_rls_test;
+${tenantTables.map((t) => `grant select, insert, update, delete on ${t} to quran_ai_rls_test;`).join("\n")}`;
   const rlsSchemaSafe = rlsSchemaRaw;
 
   return `
 begin;
 set local app.bypass_rls = 'on';
 
-${coreSchemaSafe}
-${dropPolicies}
-${rlsSchemaSafe}
+	${coreSchemaSafe}
+	${sessionMigrationSafe}
+	${dropPolicies}
+	${rlsSchemaSafe}
 
--- Clean up ALL existing data from all tables (transaction will roll back)
--- This is necessary because API smoke tests create records that block FK deletes
-delete from privacy_jobs;
+	-- Clean up ALL existing data from all tables (transaction will roll back)
+	-- This is necessary because API smoke tests create records that block FK deletes
+	delete from learner_progress;
+	delete from privacy_jobs;
 delete from agent_runs;
 delete from scholar_approvals;
 delete from teacher_reviews;
@@ -232,12 +258,16 @@ insert into consent_records (id, tenant_id, user_id, audio_retention, anonymized
   ('consent-a', 'tenant-a', 'learner-a', 'discard', true, true, true, 'audit-a'),
   ('consent-b', 'tenant-b', 'learner-b', 'discard', true, true, true, 'audit-b');
 
-insert into recitation_sessions (
-  id, tenant_id, learner_id, quran_ref, source_checksum, model_version_id, mode, practice_plan_id,
-  external_processing_allowed, confidence, review_status, started_at, latency_ms, consent_record_id, audit_event_id
-) values
-  ('session-a', 'tenant-a', 'learner-a', '{"surahNumber":1,"ayahStart":1,"ayahEnd":1}', 'checksum-a', 'model-v0.3', 'guided-recite', 'plan-a', true, 0, 'draft', now(), 0, 'consent-a', 'audit-a'),
-  ('session-b', 'tenant-b', 'learner-b', '{"surahNumber":1,"ayahStart":1,"ayahEnd":1}', 'checksum-b', 'model-v0.3', 'guided-recite', 'plan-b', true, 0, 'draft', now(), 0, 'consent-b', 'audit-b');
+	insert into recitation_sessions (
+	  id, tenant_id, learner_id, quran_ref, source_checksum, model_version_id, mode, practice_plan_id,
+	  external_processing_allowed, confidence, review_status, started_at, latency_ms, consent_record_id, consent_snapshot, audit_event_id
+	) values
+	  ('session-a', 'tenant-a', 'learner-a', '{"surahNumber":1,"ayahStart":1,"ayahEnd":1}', 'checksum-a', 'model-v0.3', 'guided-recite', 'plan-a', true, 0, 'draft', now(), 0, 'consent-a', '{"externalAsrProcessing":true}', 'audit-a'),
+	  ('session-b', 'tenant-b', 'learner-b', '{"surahNumber":1,"ayahStart":1,"ayahEnd":1}', 'checksum-b', 'model-v0.3', 'guided-recite', 'plan-b', true, 0, 'draft', now(), 0, 'consent-b', '{"externalAsrProcessing":true}', 'audit-b');
+
+	insert into learner_progress (tenant_id, learner_id, ayah_ref, easiness_factor, interval_days, repetitions, last_quality, next_review_at) values
+	  ('tenant-a', 'learner-a', '1:1', 2.5, 1, 1, 5, now() + interval '1 day'),
+	  ('tenant-b', 'learner-b', '1:1', 2.5, 1, 1, 5, now() + interval '1 day');
 
 insert into realtime_session_tickets (id, tenant_id, session_id, learner_id, token_hash, expires_at, allowed_sample_rates, external_asr_processing, audit_event_id) values
   ('ticket-a', 'tenant-a', 'session-a', 'learner-a', 'hash-a', now() + interval '5 minutes', array[16000], true, 'audit-a'),
@@ -275,6 +305,8 @@ insert into privacy_jobs (id, tenant_id, learner_id, kind, included_records, del
   ('privacy-a', 'tenant-a', 'learner-a', 'export', '["session-a"]', '[]', '[]', 'audit-a'),
   ('privacy-b', 'tenant-b', 'learner-b', 'export', '["session-b"]', '[]', '[]', 'audit-b');
 
+	${grantRlsRole}
+
 -- Run RLS visibility checks as a non-superuser role (superusers bypass RLS)
 set role quran_ai_rls_test;
 
@@ -284,13 +316,14 @@ set local app.bypass_rls = 'off';
 set local app.tenant_id = 'tenant-a';
 do $$
 begin
-  insert into recitation_sessions (
-    id, tenant_id, learner_id, quran_ref, source_checksum, model_version_id, mode, practice_plan_id,
-    external_processing_allowed, confidence, review_status, started_at, latency_ms, consent_record_id, audit_event_id
-  ) values (
-    'session-cross-tenant', 'tenant-b', 'learner-b', '{"surahNumber":1,"ayahStart":1,"ayahEnd":1}',
-    'checksum-cross', 'model-v0.3', 'guided-recite', 'plan-cross', true, 0, 'draft', now(), 0, 'consent-b', 'audit-b'
-  );
+	  insert into recitation_sessions (
+	    id, tenant_id, learner_id, quran_ref, source_checksum, model_version_id, mode, practice_plan_id,
+	    external_processing_allowed, confidence, review_status, started_at, latency_ms, consent_record_id, consent_snapshot, audit_event_id
+	  ) values (
+	    'session-cross-tenant', 'tenant-b', 'learner-b', '{"surahNumber":1,"ayahStart":1,"ayahEnd":1}',
+	    'checksum-cross', 'model-v0.3', 'guided-recite', 'plan-cross', true, 0, 'draft', now(), 0, 'consent-b',
+	    '{"externalAsrProcessing":true}', 'audit-b'
+	  );
   raise exception 'cross-tenant insert unexpectedly succeeded';
 exception
   when insufficient_privilege or check_violation or with_check_option_violation then

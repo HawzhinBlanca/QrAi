@@ -16,6 +16,11 @@ services:
       - ./infra/sql/0002_seed_fatihah.sql:/docker-entrypoint-initdb.d/02_seed.sql:ro
       - ./infra/sql/0003_tenant_rls.sql:/docker-entrypoint-initdb.d/03_rls.sql:ro
       - ./infra/sql/0004_add_password_hash.sql:/docker-entrypoint-initdb.d/04_password.sql:ro
+      - ./infra/sql/0005_learner_progress.sql:/docker-entrypoint-initdb.d/05_learner_progress.sql:ro
+      - ./infra/sql/0007_seed_surah_names.sql:/docker-entrypoint-initdb.d/06_seed_surah_names.sql:ro
+      - ./infra/sql/0008_session_language.sql:/docker-entrypoint-initdb.d/07_session_language.sql:ro
+      - ./infra/sql/0006_seed_internal.sql:/docker-entrypoint-initdb.d/08_seed_internal.sql:ro
+      - ./infra/sql/0009_learner_progress_rls.sql:/docker-entrypoint-initdb.d/09_learner_progress_rls.sql:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U hawzhin -d quran_ai"]
       interval: 5s
@@ -30,7 +35,9 @@ services:
     environment:
       DATABASE_URL: "postgresql://hawzhin@postgres:5432/quran_ai"
       JWT_SECRET: "production-secret-change-me"
+      REALTIME_GATEWAY_TICKET_SECRET: "production-secret-change-me"
       PLATFORM_API_BIND: "0.0.0.0:8080"
+      ALLOW_HEADER_AUTH: "1"
     ports:
       - "8080:8080"
     depends_on:

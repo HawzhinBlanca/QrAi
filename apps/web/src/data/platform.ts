@@ -79,6 +79,15 @@ export const governanceItems = [
 
 const API_BASE = import.meta.env.VITE_PLATFORM_API_URL || "http://127.0.0.1:8080";
 
+function actorHeaders(tenantId: string, userId: string, role: string, authToken?: string): Record<string, string> {
+  return {
+    ...(authToken ? { authorization: `Bearer ${authToken}` } : {}),
+    "x-tenant-id": tenantId,
+    "x-user-id": userId,
+    "x-user-role": role,
+  };
+}
+
 export interface LearnerProgress {
   learnerId: string;
   tenantId: string;
@@ -88,13 +97,13 @@ export interface LearnerProgress {
   nextReviewAt: string | null;
 }
 
-export async function fetchLearnerProgress(tenantId: string, userId: string): Promise<LearnerProgress> {
+export async function fetchLearnerProgress(
+  tenantId: string,
+  userId: string,
+  authToken?: string,
+): Promise<LearnerProgress> {
   const response = await fetch(`${API_BASE}/v1/learner/progress`, {
-    headers: {
-      "x-tenant-id": tenantId,
-      "x-user-id": userId,
-      "x-user-role": "learner",
-    },
+    headers: actorHeaders(tenantId, userId, "learner", authToken),
   });
   if (!response.ok) throw new Error(`Progress API ${response.status}`);
   return response.json();
@@ -109,14 +118,13 @@ export async function updateLearnerProgress(
   userId: string,
   ayahRef: string,
   quality: number,
+  authToken?: string,
 ): Promise<void> {
   const response = await fetch(`${API_BASE}/v1/learner/progress`, {
     method: "POST",
     headers: {
       "content-type": "application/json",
-      "x-tenant-id": tenantId,
-      "x-user-id": userId,
-      "x-user-role": "learner",
+      ...actorHeaders(tenantId, userId, "learner", authToken),
     },
     body: JSON.stringify({ quality: Math.max(0, Math.min(5, Math.round(quality))), ayahRef }),
   });
@@ -130,9 +138,13 @@ export interface MemorizationPlan {
   intervals: Array<{ label: string; dueCount: number; retention: number }>;
 }
 
-export async function fetchMemorizationPlan(tenantId: string, userId: string): Promise<MemorizationPlan | null> {
+export async function fetchMemorizationPlan(
+  tenantId: string,
+  userId: string,
+  authToken?: string,
+): Promise<MemorizationPlan | null> {
   try {
-    const progress = await fetchLearnerProgress(tenantId, userId);
+    const progress = await fetchLearnerProgress(tenantId, userId, authToken);
     return {
       learnerId: progress.learnerId,
       nextReviewAt: progress.nextReviewAt ?? "Not scheduled",
@@ -158,14 +170,14 @@ export interface EvalRun {
   unsourcedLearnerOutputs: number;
 }
 
-export async function fetchEvalRun(tenantId: string, modelVersion: string): Promise<EvalRun | null> {
+export async function fetchEvalRun(
+  tenantId: string,
+  modelVersion: string,
+  authToken?: string,
+): Promise<EvalRun | null> {
   try {
     const response = await fetch(`${API_BASE}/v1/eval-runs/${modelVersion}`, {
-      headers: {
-        "x-tenant-id": tenantId,
-        "x-user-id": "admin-1",
-        "x-user-role": "admin",
-      },
+      headers: actorHeaders(tenantId, "admin-1", "admin", authToken),
     });
     if (!response.ok) return null;
     return response.json();
@@ -181,8 +193,8 @@ export interface BenchmarkMetric {
   status: "passing" | "watch" | "blocked";
 }
 
-export async function fetchBenchmarkMetrics(tenantId: string): Promise<BenchmarkMetric[]> {
-  const evalRun = await fetchEvalRun(tenantId, "model-v0.3");
+export async function fetchBenchmarkMetrics(tenantId: string, authToken?: string): Promise<BenchmarkMetric[]> {
+  const evalRun = await fetchEvalRun(tenantId, "model-v0.3", authToken);
   if (!evalRun) return [];
   return [
     { label: "Word alignment F1", value: evalRun.wordAlignmentF1.toFixed(2), target: "≥0.90", status: evalRun.wordAlignmentF1 >= 0.9 ? "passing" : "watch" },
@@ -197,15 +209,12 @@ export async function fetchBenchmarkMetrics(tenantId: string): Promise<Benchmark
 // Real, DB-backed reads. Header-auth admin identity works in dev (ALLOW_HEADER_AUTH=1);
 // production requires a real admin/ops JWT (platform-api gates header auth off by default).
 
-const ADMIN_HEADERS = (tenantId: string): Record<string, string> => ({
-  "x-tenant-id": tenantId,
-  "x-user-id": "admin-1",
-  "x-user-role": "admin",
-});
+const ADMIN_HEADERS = (tenantId: string, authToken?: string): Record<string, string> =>
+  actorHeaders(tenantId, "admin-1", "admin", authToken);
 
-async function fetchConsole<T>(path: string, tenantId: string, fallback: T): Promise<T> {
+async function fetchConsole<T>(path: string, tenantId: string, fallback: T, authToken?: string): Promise<T> {
   try {
-    const response = await fetch(`${API_BASE}${path}`, { headers: ADMIN_HEADERS(tenantId) });
+    const response = await fetch(`${API_BASE}${path}`, { headers: ADMIN_HEADERS(tenantId, authToken) });
     if (!response.ok) return fallback;
     return (await response.json()) as T;
   } catch {
@@ -224,8 +233,8 @@ export interface AgentRunSummary {
   lastEvent?: string;
 }
 
-export function fetchAgentRuns(tenantId: string): Promise<AgentRunSummary[]> {
-  return fetchConsole<AgentRunSummary[]>("/v1/agent-runs", tenantId, []);
+export function fetchAgentRuns(tenantId: string, authToken?: string): Promise<AgentRunSummary[]> {
+  return fetchConsole<AgentRunSummary[]>("/v1/agent-runs", tenantId, [], authToken);
 }
 
 export interface ScholarApprovalSummary {
@@ -237,8 +246,8 @@ export interface ScholarApprovalSummary {
   sourceCount: number;
 }
 
-export function fetchScholarApprovals(tenantId: string): Promise<ScholarApprovalSummary[]> {
-  return fetchConsole<ScholarApprovalSummary[]>("/v1/scholar-approvals", tenantId, []);
+export function fetchScholarApprovals(tenantId: string, authToken?: string): Promise<ScholarApprovalSummary[]> {
+  return fetchConsole<ScholarApprovalSummary[]>("/v1/scholar-approvals", tenantId, [], authToken);
 }
 
 export interface TeacherReviewItem {
@@ -251,8 +260,8 @@ export interface TeacherReviewItem {
   auditEventId: string;
 }
 
-export function fetchTeacherReviewQueue(tenantId: string): Promise<TeacherReviewItem[]> {
-  return fetchConsole<TeacherReviewItem[]>("/v1/teacher-review-queue", tenantId, []);
+export function fetchTeacherReviewQueue(tenantId: string, authToken?: string): Promise<TeacherReviewItem[]> {
+  return fetchConsole<TeacherReviewItem[]>("/v1/teacher-review-queue", tenantId, [], authToken);
 }
 
 export interface TajweedFindingSummary {
@@ -266,8 +275,8 @@ export interface TajweedFindingSummary {
   sources: SourceReference[];
 }
 
-export function fetchTajweedFindings(tenantId: string): Promise<TajweedFindingSummary[]> {
-  return fetchConsole<TajweedFindingSummary[]>("/v1/tajweed-findings", tenantId, []);
+export function fetchTajweedFindings(tenantId: string, authToken?: string): Promise<TajweedFindingSummary[]> {
+  return fetchConsole<TajweedFindingSummary[]>("/v1/tajweed-findings", tenantId, [], authToken);
 }
 
 export interface SessionAlignment {
@@ -291,15 +300,20 @@ export interface RecitationSessionSummary {
   quranRef: { surahNumber: number; ayahStart: number; ayahEnd: number; display: string };
 }
 
-export function fetchRecitationSessions(tenantId: string): Promise<RecitationSessionSummary[]> {
-  return fetchConsole<RecitationSessionSummary[]>("/v1/recitation-sessions", tenantId, []);
+export function fetchRecitationSessions(tenantId: string, authToken?: string): Promise<RecitationSessionSummary[]> {
+  return fetchConsole<RecitationSessionSummary[]>("/v1/recitation-sessions", tenantId, [], authToken);
 }
 
-export function fetchSessionAlignments(tenantId: string, sessionId: string): Promise<SessionAlignment[]> {
+export function fetchSessionAlignments(
+  tenantId: string,
+  sessionId: string,
+  authToken?: string,
+): Promise<SessionAlignment[]> {
   return fetchConsole<SessionAlignment[]>(
     `/v1/recitation-sessions/${sessionId}/alignments`,
     tenantId,
     [],
+    authToken,
   );
 }
 

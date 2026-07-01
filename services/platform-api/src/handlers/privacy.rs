@@ -49,8 +49,29 @@ async fn create_privacy_job(
         .map(|r| r.try_get::<String, _>("id").unwrap_or_default())
         .collect();
 
+    let progress_rows = sqlx::query(
+        "SELECT ayah_ref FROM learner_progress WHERE tenant_id = $1 AND learner_id = $2",
+    )
+    .bind(&actor.tenant_id)
+    .bind(&req.learner_id)
+    .fetch_all(&state.pool)
+    .await?;
+
+    let progress_ids: Vec<String> = progress_rows
+        .into_iter()
+        .map(|r| {
+            format!(
+                "learner_progress:{}",
+                r.try_get::<String, _>("ayah_ref").unwrap_or_default()
+            )
+        })
+        .collect();
+
+    let mut included_ids = session_ids.clone();
+    included_ids.extend(progress_ids);
+
     let deleted_ids = if kind == PrivacyJobKind::Delete {
-        session_ids.clone()
+        included_ids.clone()
     } else {
         Vec::new()
     };
@@ -63,7 +84,7 @@ async fn create_privacy_job(
         PrivacyJobKind::Delete => "privacy.delete.requested",
     };
 
-    let included_json = serde_json::to_value(&session_ids).unwrap_or_default();
+    let included_json = serde_json::to_value(&included_ids).unwrap_or_default();
     let deleted_json = serde_json::to_value(&deleted_ids).unwrap_or_default();
 
     sqlx::query(
@@ -94,6 +115,12 @@ async fn create_privacy_job(
     .await?;
 
     if kind == PrivacyJobKind::Delete {
+        sqlx::query("DELETE FROM learner_progress WHERE tenant_id = $1 AND learner_id = $2")
+            .bind(&actor.tenant_id)
+            .bind(&req.learner_id)
+            .execute(&state.pool)
+            .await?;
+
         // Delete in FK-safe order: teacher_reviews → tajweed_findings → word_alignments → audio_chunks
         sqlx::query(
             "DELETE FROM teacher_reviews WHERE tenant_id = $1 AND finding_id IN (SELECT id FROM tajweed_findings WHERE tenant_id = $1)",
@@ -124,7 +151,7 @@ async fn create_privacy_job(
         tenant_id: actor.tenant_id,
         learner_id: req.learner_id,
         kind,
-        included_records: session_ids,
+        included_records: included_ids,
         deleted_records: deleted_ids,
         audio_object_keys_deleted: Vec::new(),
         audit_event_id: audit_id,

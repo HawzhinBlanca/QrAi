@@ -13,7 +13,7 @@ import { TopBar } from "./components/TopBar";
 import { LoginScreen } from "./components/LoginScreen";
 import { AuthProvider, useAuth } from "./lib/auth";
 import { startAsr, splitTranscript, isAsrSupported, type AsrController } from "./lib/asr";
-import { startServerAsr, isServerAsrSupported, type ServerAsrController } from "./lib/serverAsr";
+import { startLocalAudioRecording, startServerAsr, isServerAsrSupported, type ServerAsrController } from "./lib/serverAsr";
 import { startMicVisualizer, type MicVisualizerStop } from "./lib/micVisualizer";
 import {
   predictAlignment,
@@ -105,6 +105,7 @@ function AuthenticatedApp({ bypassLogin = false }: { bypassLogin?: boolean }) {
         : user,
     [bypassLogin, user],
   );
+  const authToken = effectiveUser?.token || undefined;
   const [activeLanguage, setActiveLanguage] = useState<SupportedLanguageCode>("ckb");
   const [activeTab, setActiveTab] = useState("recitation");
   const [activeSection, setActiveSection] = useState<AppSection>("learner");
@@ -158,12 +159,12 @@ function AuthenticatedApp({ bypassLogin = false }: { bypassLogin?: boolean }) {
     void loadSurahVerses(1).then(setQuranVerses);
     if (effectiveUser) {
       void loadWeeklyProgress(effectiveUser.tenantId).then(setWeeklyProgress);
-      void fetchMemorizationPlan(effectiveUser.tenantId, effectiveUser.userId).then(setMemorizationPlan);
-      void fetchLearnerProgress(effectiveUser.tenantId, effectiveUser.userId)
+      void fetchMemorizationPlan(effectiveUser.tenantId, effectiveUser.userId, authToken).then(setMemorizationPlan);
+      void fetchLearnerProgress(effectiveUser.tenantId, effectiveUser.userId, authToken)
         .then(setProgress)
         .catch(() => {});
     }
-  }, [effectiveUser]);
+  }, [authToken, effectiveUser]);
 
   useEffect(() => {
     if (!isBrowserSmokeEnabled()) {
@@ -235,6 +236,7 @@ function AuthenticatedApp({ bypassLogin = false }: { bypassLogin?: boolean }) {
       void createRecitationSession({
         tenantId: effectiveUser.tenantId,
         userId: effectiveUser.userId,
+        authToken,
         learnerId: effectiveUser.userId,
         surahNumber: 1,
         ayahStart: 1,
@@ -289,8 +291,8 @@ function AuthenticatedApp({ bypassLogin = false }: { bypassLogin?: boolean }) {
     const accuracy = scored > 0 ? correct / scored : 0;
     const quality = Math.round(accuracy * 5); // SM-2 quality 0-5
     try {
-      await updateLearnerProgress(effectiveUser.tenantId, effectiveUser.userId, "1:1-7", quality);
-      const fresh = await fetchLearnerProgress(effectiveUser.tenantId, effectiveUser.userId);
+      await updateLearnerProgress(effectiveUser.tenantId, effectiveUser.userId, "1:1-7", quality, authToken);
+      const fresh = await fetchLearnerProgress(effectiveUser.tenantId, effectiveUser.userId, authToken);
       setProgress(fresh);
     } catch {
       // Keep the prior progress if the update fails; don't block the completion UI.
@@ -379,7 +381,9 @@ function AuthenticatedApp({ bypassLogin = false }: { bypassLogin?: boolean }) {
           // Keep the recording playable regardless of what the ASR service does.
           setRecordedAudio(result.audioBlob);
           setAsrTranscript(result.transcript);
-          if (result.error) {
+          if (result.error === "external-asr-consent-required") {
+            setApiError("Recording saved in this browser. Enable ASR processing consent to run automatic analysis.");
+          } else if (result.error) {
             setApiError("Saved your recitation — you can play it back. Analysis is offline right now.");
           } else if (result.transcript.trim()) {
             await runAlignmentAndTajweed(result.transcript);
@@ -412,8 +416,11 @@ function AuthenticatedApp({ bypassLogin = false }: { bypassLogin?: boolean }) {
       visualizerStopRef.current = stop;
     });
 
-    // Prefer the trained Quran ASR model (records audio, transcribes server-side).
-    if (isServerAsrSupported()) {
+    const hasExternalAsrConsent = consent.externalAsrProcessing && consent.guardianApproved;
+
+    // Prefer the trained Quran ASR model only when the learner explicitly allows
+    // external ASR processing and guardian approval is present.
+    if (isServerAsrSupported() && hasExternalAsrConsent) {
       const controller = await startServerAsr({
         language: "ar",
         onStatusChange: () => {},
@@ -431,7 +438,29 @@ function AuthenticatedApp({ bypassLogin = false }: { bypassLogin?: boolean }) {
       // Could not start server ASR — fall through to Web Speech.
     }
 
-    // Fallback: browser Web Speech API (generic ar-SA recognition).
+    if (!hasExternalAsrConsent) {
+      const controller = await startLocalAudioRecording({
+        onStatusChange: () => {},
+        onError: (message) => {
+          setIsRecording(false);
+          setMicState("denied");
+          setApiError(message);
+        },
+      });
+      if (controller) {
+        serverAsrRef.current = controller;
+        setIsRecording(true);
+        setApiError("Automatic analysis is off until ASR consent is enabled. This recording stays in your browser.");
+        return;
+      }
+    }
+
+    // Fallback: browser Web Speech API (generic ar-SA recognition). Treat it as external
+    // ASR too, so it only runs after the same consent gate.
+    if (!hasExternalAsrConsent) {
+      setMicState("unavailable");
+      return;
+    }
     if (!isAsrSupported()) {
       setMicState("unavailable");
       return;
@@ -582,6 +611,7 @@ function AuthenticatedApp({ bypassLogin = false }: { bypassLogin?: boolean }) {
           ) : (
             <InternalSurface
               tenantId={effectiveUser?.tenantId ?? "hikmah-pilot-erbil"}
+              authToken={authToken}
               activeLanguage={activeLanguage}
               activeSection={activeSection}
               activeTab={activeTab}
@@ -699,6 +729,14 @@ function ConsentPanel({
           onChange={(event) => onConsentChange({ ...consent, anonymizedLearning: event.target.checked })}
         />
         <span>Help improve the model with anonymized data.</span>
+      </label>
+      <label className="consent-row">
+        <input
+          type="checkbox"
+          checked={consent.externalAsrProcessing}
+          onChange={(event) => onConsentChange({ ...consent, externalAsrProcessing: event.target.checked })}
+        />
+        <span>Allow ASR processing for automatic transcript analysis.</span>
       </label>
       <label className="consent-row">
         <input
@@ -1040,6 +1078,7 @@ function CompletePanel({ onReset, memorizationPlan }: { onReset: () => void; mem
 
 function InternalSurface({
   tenantId,
+  authToken,
   activeLanguage,
   activeSection,
   activeTab,
@@ -1047,6 +1086,7 @@ function InternalSurface({
   onTabChange,
 }: {
   tenantId: string;
+  authToken?: string;
   activeLanguage: SupportedLanguageCode;
   activeSection: AppSection;
   activeTab: string;
@@ -1068,6 +1108,7 @@ function InternalSurface({
   return (
     <PlatformCommand
       tenantId={tenantId}
+      authToken={authToken}
       activeLanguage={activeLanguage}
       activeTab={activeTab}
       onLanguageChange={onLanguageChange}

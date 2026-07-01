@@ -119,4 +119,3 @@ class MultiLevelTokenizer:
                 for k, v in level_to_id_to_vocab[level].items()
             }
         return level_to_id_to_en_vocab
-

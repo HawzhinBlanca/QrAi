@@ -6,3 +6,8 @@
 
 alter table recitation_sessions
   add column if not exists language text not null default 'ar';
+
+-- The API stores the exact consent used when the session was created so later reads
+-- and audit/export flows do not depend on the mutable consent_records row.
+alter table recitation_sessions
+  add column if not exists consent_snapshot jsonb not null default '{}'::jsonb;

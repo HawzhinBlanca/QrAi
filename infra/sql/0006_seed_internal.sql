@@ -6,7 +6,51 @@
 -- FK chain: audit_events -> word_alignments -> tajweed_findings -> teacher_reviews,
 -- plus agent_runs. Word alignments attach to the tenant's most recent session.
 
--- 1. Audit events backing each record (every reviewed artifact is auditable).
+-- 0. Minimal pilot tenant, actors, model versions, and a seed recitation session.
+-- Earlier migrations seed canonical Quran text only, so keep this migration runnable on
+-- a fresh database.
+insert into institutions (id, name, region) values
+  ('hikmah-pilot-erbil', 'Hikmah Erbil Pilot', 'Kurdistan Region')
+on conflict (id) do nothing;
+
+insert into users (id, tenant_id, display_name, role, language) values
+  ('learner-1', 'hikmah-pilot-erbil', 'Learner', 'learner', 'ckb'),
+  ('teacher-1', 'hikmah-pilot-erbil', 'Teacher', 'teacher', 'ckb'),
+  ('scholar-1', 'hikmah-pilot-erbil', 'Scholar', 'scholar', 'ckb'),
+  ('admin-1', 'hikmah-pilot-erbil', 'Admin', 'admin', 'en'),
+  ('ops-1', 'hikmah-pilot-erbil', 'Ops', 'ops', 'en')
+on conflict (id) do nothing;
+
+insert into model_versions (id, kind, version, status) values
+  ('model-v0.3', 'alignment', '0.3', 'eval-passed'),
+  ('tajweed-v0.1', 'tajweed', '0.1', 'eval-passed')
+on conflict (id) do nothing;
+
+insert into audit_events (id, tenant_id, actor_id, action, subject_type, subject_id, metadata) values
+  ('audit-seed-consent-1', 'hikmah-pilot-erbil', 'learner-1', 'consent.recorded', 'consent_record', 'consent-seed-learner-1', '{}'),
+  ('audit-seed-session-1', 'hikmah-pilot-erbil', 'learner-1', 'recitation.session.started', 'recitation_session', 'session-seed-fatihah-1', '{}')
+on conflict (id) do nothing;
+
+insert into consent_records (id, tenant_id, user_id, audio_retention, anonymized_learning,
+  external_asr_processing, guardian_approved, consent_version, audit_event_id)
+values
+  ('consent-seed-learner-1', 'hikmah-pilot-erbil', 'learner-1', 'teacher-review',
+   true, false, true, 'pilot-consent-v1', 'audit-seed-consent-1')
+on conflict (id) do nothing;
+
+insert into recitation_sessions
+  (id, tenant_id, learner_id, quran_ref, source_checksum, model_version_id,
+   mode, practice_plan_id, external_processing_allowed, confidence, review_status,
+   started_at, latency_ms, consent_record_id, audit_event_id)
+values
+  ('session-seed-fatihah-1', 'hikmah-pilot-erbil', 'learner-1',
+   '{"surahNumber":1,"ayahStart":1,"ayahEnd":7,"display":"Al-Fatihah 1:1-7"}',
+   'tanzil:uthmani:v1', 'model-v0.3', 'guided-recite', 'fatihah-mastery-v1',
+   false, 0.86, 'teacher-reviewed', now(), 428, 'consent-seed-learner-1',
+   'audit-seed-session-1')
+on conflict (id) do nothing;
+
+-- 1. Audit events backing each reviewed record (every artifact is auditable).
 insert into audit_events (id, tenant_id, actor_id, action, subject_type, subject_id, metadata) values
   ('audit-seed-align-1', 'hikmah-pilot-erbil', 'teacher-1', 'alignment.recorded', 'word_alignment', 'align-seed-1', '{}'),
   ('audit-seed-align-2', 'hikmah-pilot-erbil', 'teacher-1', 'alignment.recorded', 'word_alignment', 'align-seed-2', '{}'),

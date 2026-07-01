@@ -67,6 +67,7 @@ import { BrandMark } from "./BrandMark";
 
 interface PlatformCommandProps {
   tenantId: string;
+  authToken?: string;
   activeLanguage: SupportedLanguageCode;
   onLanguageChange: (language: SupportedLanguageCode) => void;
   activeTab: string;
@@ -97,6 +98,7 @@ const EMPTY_CONSOLE: ConsoleData = {
 
 export function PlatformCommand({
   tenantId,
+  authToken,
   activeLanguage,
   activeTab,
   onLanguageChange,
@@ -114,18 +116,18 @@ export function PlatformCommand({
     async function load() {
       const [agentRuns, scholarApprovals, teacherReviews, tajweedFindings, benchmarkMetrics, memorizationPlan, sessions] =
         await Promise.all([
-          fetchAgentRuns(tenantId),
-          fetchScholarApprovals(tenantId),
-          fetchTeacherReviewQueue(tenantId),
-          fetchTajweedFindings(tenantId),
-          fetchBenchmarkMetrics(tenantId),
-          fetchMemorizationPlan(tenantId, "learner-1"),
-          fetchRecitationSessions(tenantId),
+          fetchAgentRuns(tenantId, authToken),
+          fetchScholarApprovals(tenantId, authToken),
+          fetchTeacherReviewQueue(tenantId, authToken),
+          fetchTajweedFindings(tenantId, authToken),
+          fetchBenchmarkMetrics(tenantId, authToken),
+          fetchMemorizationPlan(tenantId, "learner-1", authToken),
+          fetchRecitationSessions(tenantId, authToken),
         ]);
 
       const activeSession = sessions[0] ?? null;
       const sessionAlignments = activeSession
-        ? await fetchSessionAlignments(tenantId, activeSession.id)
+        ? await fetchSessionAlignments(tenantId, activeSession.id, authToken)
         : [];
 
       if (cancelled) return;
@@ -146,7 +148,7 @@ export function PlatformCommand({
     return () => {
       cancelled = true;
     };
-  }, [tenantId]);
+  }, [authToken, tenantId]);
 
   const scholarSummary = summarizeScholarQueue(data.scholarApprovals);
 

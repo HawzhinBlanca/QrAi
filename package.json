@@ -5,8 +5,8 @@
   "type": "module",
   "scripts": {
     "dev": "pnpm --filter @quran-ai/web dev",
-    "gateway:dev": "cargo run --manifest-path services/realtime-gateway/Cargo.toml",
-    "api:dev": "cargo run --manifest-path services/platform-api/Cargo.toml",
+    "gateway:dev": "ALLOW_INSECURE_DEFAULTS=1 cargo run --manifest-path services/realtime-gateway/Cargo.toml",
+    "api:dev": "ALLOW_INSECURE_DEFAULTS=1 ALLOW_HEADER_AUTH=1 cargo run --manifest-path services/platform-api/Cargo.toml",
     "smoke:gateway": "node scripts/smoke-gateway.mjs",
     "smoke:api": "node scripts/smoke-api.mjs",
     "smoke:ml": "node scripts/smoke-ml.mjs",

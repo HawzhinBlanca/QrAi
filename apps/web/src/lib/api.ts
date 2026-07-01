@@ -4,6 +4,15 @@
 
 const API_BASE = import.meta.env.VITE_PLATFORM_API_URL || "http://127.0.0.1:8080";
 
+function actorHeaders(tenantId: string, userId: string, role: string, authToken?: string): Record<string, string> {
+  return {
+    ...(authToken ? { authorization: `Bearer ${authToken}` } : {}),
+    "x-tenant-id": tenantId,
+    "x-user-id": userId,
+    "x-user-role": role,
+  };
+}
+
 export interface SurahInfo {
   surahNumber: number;
   ayahCount: number;
@@ -76,6 +85,7 @@ export interface CreatedSession {
 export async function createRecitationSession(params: {
   tenantId: string;
   userId: string;
+  authToken?: string;
   learnerId: string;
   surahNumber: number;
   ayahStart: number;
@@ -87,9 +97,7 @@ export async function createRecitationSession(params: {
     method: "POST",
     headers: {
       "content-type": "application/json",
-      "x-tenant-id": params.tenantId,
-      "x-user-id": params.userId,
-      "x-user-role": "learner",
+      ...actorHeaders(params.tenantId, params.userId, "learner", params.authToken),
     },
     body: JSON.stringify({
       learnerId: params.learnerId,
