@@ -13,6 +13,7 @@ import { TopBar } from "./components/TopBar";
 import { LoginScreen } from "./components/LoginScreen";
 import { AuthProvider, useAuth } from "./lib/auth";
 import { startAsr, splitTranscript, isAsrSupported, type AsrController } from "./lib/asr";
+import { startServerAsr, isServerAsrSupported, type ServerAsrController } from "./lib/serverAsr";
 import { predictAlignment, predictTajweed, type AlignmentResult, type TajweedFinding } from "./lib/api";
 import {
   fetchMemorizationPlan,
@@ -102,6 +103,7 @@ function AuthenticatedApp({ smokeBypass = false }: { smokeBypass?: boolean }) {
   const [apiError, setApiError] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const asrRef = useState<AsrController | null>(null);
+  const serverAsrRef = useRef<ServerAsrController | null>(null);
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const [isPlaying, setIsPlaying] = useState(false);
 
@@ -253,23 +255,68 @@ function AuthenticatedApp({ smokeBypass = false }: { smokeBypass?: boolean }) {
     }
   }
 
-  function toggleAsrRecording() {
-    if (!isAsrSupported()) {
-      setMicState("unavailable");
-      return;
-    }
+  async function toggleAsrRecording() {
+    // STOP
     if (isRecording) {
-      asrRef[0]?.stop();
       setIsRecording(false);
+      // Real trained-Quran-model path: transcribe the captured audio on the ASR service.
+      if (serverAsrRef.current) {
+        const controller = serverAsrRef.current;
+        serverAsrRef.current = null;
+        setIsLoading(true);
+        try {
+          const { transcript } = await controller.stopAndTranscribe();
+          setAsrTranscript(transcript);
+          if (transcript.trim()) {
+            await runAlignmentAndTajweed(transcript);
+          } else {
+            setApiError("No speech detected. Please recite closer to the microphone and try again.");
+          }
+        } catch {
+          setApiError("Could not reach the Quran ASR service (port 8091). Please try again.");
+        } finally {
+          setIsLoading(false);
+        }
+        return;
+      }
+      // Web Speech fallback path (streaming transcript already accumulated).
+      asrRef[0]?.stop();
       if (asrTranscript) {
         void runAlignmentAndTajweed(asrTranscript);
       }
       return;
     }
+
+    // START
     stopPlayback();
-    asrRef[0]?.stop();
-    setIsRecording(true);
     setAsrTranscript("");
+    setApiError(null);
+
+    // Prefer the trained Quran ASR model (records audio, transcribes server-side).
+    if (isServerAsrSupported()) {
+      const controller = await startServerAsr({
+        language: "ar",
+        onStatusChange: () => {},
+        onError: (message) => {
+          setIsRecording(false);
+          setMicState("denied");
+          setApiError(message);
+        },
+      });
+      if (controller) {
+        serverAsrRef.current = controller;
+        setIsRecording(true);
+        return;
+      }
+      // Could not start server ASR — fall through to Web Speech.
+    }
+
+    // Fallback: browser Web Speech API (generic ar-SA recognition).
+    if (!isAsrSupported()) {
+      setMicState("unavailable");
+      return;
+    }
+    setIsRecording(true);
     const controller = startAsr({
       language: "ar-SA",
       onResult: (result) => {
