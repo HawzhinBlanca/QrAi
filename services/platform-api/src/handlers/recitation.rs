@@ -76,8 +76,8 @@ pub async fn create_session(
         "INSERT INTO recitation_sessions
             (id, tenant_id, learner_id, quran_ref, source_checksum, model_version_id,
              mode, practice_plan_id, external_processing_allowed, confidence, review_status,
-             started_at, latency_ms, consent_record_id, consent_snapshot, audit_event_id)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 0.0, 'draft', now(), 0, $10, $11, $12)",
+             started_at, latency_ms, consent_record_id, consent_snapshot, audit_event_id, language)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 0.0, 'draft', now(), 0, $10, $11, $12, $13)",
     )
     .bind(&session_id)
     .bind(&actor.tenant_id)
@@ -91,6 +91,7 @@ pub async fn create_session(
     .bind(&consent_record_id)
     .bind(&consent_json)
     .bind(&audit_id)
+    .bind(&req.language)
     .execute(&state.pool)
     .await?;
 
@@ -129,7 +130,7 @@ pub async fn get_session(
         "SELECT id, tenant_id, learner_id, quran_ref, source_checksum,
                 model_version_id, mode, practice_plan_id,
                 external_processing_allowed, confidence::float8 as confidence, review_status,
-                consent_snapshot, audit_event_id
+                consent_snapshot, audit_event_id, language
          FROM recitation_sessions
          WHERE id = $1 AND tenant_id = $2",
     )
@@ -181,7 +182,7 @@ pub async fn get_session(
         quran_ref,
         source_checksum: row.try_get("source_checksum")?,
         model_version: row.try_get("model_version_id")?,
-        language: "ar".to_owned(),
+        language: row.try_get("language").unwrap_or_else(|_| "ar".to_owned()),
         mode,
         practice_plan_id: row.try_get("practice_plan_id")?,
         external_processing_allowed: row.try_get("external_processing_allowed")?,

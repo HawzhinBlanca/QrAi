@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { getQuranVerses, buildRecitationEvents } from "../data/quran";
+import type { WordStatus } from "../data/quran";
 import { createWaveform, flattenWords, nextActiveWordIndex, summarizeSession } from "./recitation";
 import {
   canShowLearnerFacingAnswer,
@@ -16,7 +17,18 @@ describe("recitation helpers", () => {
       { wordId: "1:6:2", canonicalText: "الصِّرَاطَ", heardText: "السِّرَاطَ", status: "needs-review", confidence: 0.79 },
       { wordId: "1:7:4", canonicalText: "عَلَيْهِمْ", heardText: "", status: "missed", confidence: 0.3 },
     ]);
-    const summary = summarizeSession(getQuranVerses(), recitationEvents);
+    // Simulate the post-recitation verse state (3 flagged words) as a local fixture —
+    // the canonical verses themselves carry no fabricated statuses.
+    const flaggedStatuses: Record<string, WordStatus> = {
+      "1:5:4": "mistake",
+      "1:6:2": "needs-work",
+      "1:7:4": "missed",
+    };
+    const verses = getQuranVerses().map((verse) => ({
+      ...verse,
+      words: verse.words.map((word) => ({ ...word, status: flaggedStatuses[word.id] ?? word.status })),
+    }));
+    const summary = summarizeSession(verses, recitationEvents);
 
     expect(summary.totalWords).toBe(29);
     expect(summary.correctWords).toBe(26);

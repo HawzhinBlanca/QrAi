@@ -13,30 +13,64 @@ pub struct SurahInfo {
     pub surah_number: i32,
     pub ayah_count: i32,
     pub name: String,
+    pub arabic_name: String,
+    pub translation: String,
+    pub revelation_type: String,
 }
 
 pub async fn list_surahs(
     State(state): State<AppState>,
     _headers: HeaderMap,
 ) -> Result<Json<Vec<SurahInfo>>, ApiError> {
+    // Join the canonical surah metadata for real names (Al-Fatihah, Al-Baqarah, ...)
+    // instead of synthetic "Surah N" placeholders.
     let rows = sqlx::query(
-        "SELECT surah_number, COUNT(*) as ayah_count
-         FROM canonical_ayahs
-         GROUP BY surah_number
-         ORDER BY surah_number",
+        "SELECT a.surah_number,
+                COUNT(*) AS ayah_count,
+                s.english_name,
+                s.name_arabic,
+                s.english_translation,
+                s.revelation_type
+         FROM canonical_ayahs a
+         LEFT JOIN canonical_surahs s ON s.surah_number = a.surah_number
+         GROUP BY a.surah_number, s.english_name, s.name_arabic, s.english_translation, s.revelation_type
+         ORDER BY a.surah_number",
     )
     .fetch_all(&state.pool)
     .await?;
 
     let surahs = rows
         .into_iter()
-        .map(|r| SurahInfo {
-            surah_number: r.try_get::<i32, _>("surah_number").unwrap_or(0),
-            ayah_count: r
-                .try_get::<i64, _>("ayah_count")
-                .map(|c| c as i32)
-                .unwrap_or(0),
-            name: format!("Surah {}", r.try_get::<i32, _>("surah_number").unwrap_or(0)),
+        .map(|r| {
+            let number = r.try_get::<i32, _>("surah_number").unwrap_or(0);
+            SurahInfo {
+                surah_number: number,
+                ayah_count: r
+                    .try_get::<i64, _>("ayah_count")
+                    .map(|c| c as i32)
+                    .unwrap_or(0),
+                name: r
+                    .try_get::<Option<String>, _>("english_name")
+                    .ok()
+                    .flatten()
+                    .filter(|n| !n.is_empty())
+                    .unwrap_or_else(|| format!("Surah {number}")),
+                arabic_name: r
+                    .try_get::<Option<String>, _>("name_arabic")
+                    .ok()
+                    .flatten()
+                    .unwrap_or_default(),
+                translation: r
+                    .try_get::<Option<String>, _>("english_translation")
+                    .ok()
+                    .flatten()
+                    .unwrap_or_default(),
+                revelation_type: r
+                    .try_get::<Option<String>, _>("revelation_type")
+                    .ok()
+                    .flatten()
+                    .unwrap_or_default(),
+            }
         })
         .collect();
 

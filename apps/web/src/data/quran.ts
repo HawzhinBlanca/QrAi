@@ -58,19 +58,15 @@ import { buildFatihahImportBundle } from "@quran-ai/quran-data";
 
 const staticFatihah = buildFatihahImportBundle("tanzil");
 
-// Test fixture: 3 words with practice statuses (used by recitation.test.ts)
-const practiceWordStatuses: Record<string, WordStatus> = {
-  "1:5:4": "mistake",
-  "1:6:2": "needs-work",
-  "1:7:4": "missed",
-};
-
+// Pre-load fallback: canonical Al-Fatihah text with a neutral status for every word.
+// No practice feedback is shown until the learner actually recites and real alignment
+// results arrive — we never render fabricated mistake/missed marks.
 const staticVerses: QuranVerse[] = staticFatihah.ayahs.map((ayah) => ({
   id: ayah.id,
   verseNumber: ayah.quranRef.ayahStart,
   words: staticFatihah.words
     .filter((word) => word.ayahId === ayah.id)
-    .map((word) => ({ id: word.id, text: word.text, status: practiceWordStatuses[word.id] ?? ("good" as WordStatus) })),
+    .map((word) => ({ id: word.id, text: word.text, status: "good" as WordStatus })),
 }));
 
 export function getQuranVerses(): QuranVerse[] {
