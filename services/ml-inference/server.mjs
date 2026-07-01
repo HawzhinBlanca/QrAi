@@ -170,7 +170,7 @@ function readJson(request) {
     request.on("data", (chunk) => {
       data += chunk;
       if (data.length > 5_000_000) {
-        reject(new Error("request body too large"));
+        reject(httpError(413, "request body too large"));
         request.destroy();
       }
     });
@@ -181,8 +181,9 @@ function readJson(request) {
       }
       try {
         resolve(JSON.parse(data));
-      } catch (error) {
-        reject(error);
+      } catch {
+        // Malformed JSON is a client error (400), not an internal failure (500).
+        reject(httpError(400, "request body is not valid JSON"));
       }
     });
     request.on("error", reject);
@@ -334,6 +335,11 @@ async function predictAlignment(requestBody) {
     } else if (requestBody.recognizedText && Array.isArray(requestBody.recognizedText)) {
       recognizedWords = requestBody.recognizedText;
     } else if (requestBody.recognizedTextString) {
+      // Guard the type: a truthy non-string (number, object, array) would throw a
+      // TypeError on .trim() and surface as a 500. Bad input is a 400.
+      if (typeof requestBody.recognizedTextString !== "string") {
+        throw httpError(400, "recognizedTextString must be a string");
+      }
       recognizedWords = requestBody.recognizedTextString.trim().split(/\s+/);
     } else {
       recognizedWords = canonicalWords.map((w) => w.text);
