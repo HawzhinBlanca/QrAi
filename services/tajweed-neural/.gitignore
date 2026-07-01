@@ -1,0 +1,8 @@
+# Isolated Python venv — never commit (large; recreate via requirements.txt)
+.venv312/
+.venv/
+__pycache__/
+*.pyc
+# HF model cache / downloaded weights
+models--*/
+*.safetensors
