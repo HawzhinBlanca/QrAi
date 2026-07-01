@@ -9,6 +9,8 @@
 
 import http from "node:http";
 import { runTajweedExplainer } from "./lib/tajweedExplainer.mjs";
+import { runMistakePatternSummarizer } from "./lib/mistakePatterns.mjs";
+import { runPracticeRecommender } from "./lib/practiceRecommender.mjs";
 
 const PORT = Number(process.env.AGENTS_PORT || 8092);
 const PLATFORM_API_URL = process.env.PLATFORM_API_URL || "http://127.0.0.1:8080";
@@ -26,6 +28,29 @@ async function fetchTajweedFindings() {
   const res = await fetch(`${PLATFORM_API_URL}/v1/tajweed-findings`, { headers: authHeaders() });
   if (!res.ok) throw new Error(`tajweed-findings ${res.status}`);
   return res.json();
+}
+
+async function fetchRecitationSessions() {
+  const res = await fetch(`${PLATFORM_API_URL}/v1/recitation-sessions`, { headers: authHeaders() });
+  if (!res.ok) throw new Error(`recitation-sessions ${res.status}`);
+  return res.json();
+}
+
+async function fetchLearnerProgress(learnerId) {
+  const url = `${PLATFORM_API_URL}/v1/learner/progress?learnerId=${encodeURIComponent(learnerId)}`;
+  const res = await fetch(url, { headers: authHeaders() });
+  if (!res.ok) throw new Error(`learner-progress ${res.status}`);
+  return res.json();
+}
+
+/** Distinct learner ids that have at least one recitation session. */
+async function fetchActiveLearnerIds() {
+  const sessions = await fetchRecitationSessions();
+  const ids = new Set();
+  for (const session of Array.isArray(sessions) ? sessions : []) {
+    if (session && session.learnerId) ids.add(session.learnerId);
+  }
+  return [...ids];
 }
 
 async function recordAgentRun(run) {
@@ -52,6 +77,47 @@ export async function runTajweedExplainerBatch({ fetchFindings, record } = {}) {
   return { agent: "Tajweed Explainer", processedFindings: findings.length, created: runs.length, runs };
 }
 
+// findings -> one cohort summary run. IO injectable for tests.
+export async function runMistakePatternSummarizerBatch({ fetchFindings, record } = {}) {
+  const getFindings = fetchFindings || fetchTajweedFindings;
+  const write = record || recordAgentRun;
+  const findings = await getFindings();
+  const candidate = runMistakePatternSummarizer(findings);
+  const runs = candidate ? [await write(candidate)] : [];
+  return {
+    agent: "Mistake Pattern Summarizer",
+    processedFindings: findings.length,
+    created: runs.length,
+    runs,
+  };
+}
+
+// active learners -> per-learner progress -> next-step recommendation run. IO injectable.
+export async function runPracticeRecommenderBatch({ fetchLearnerIds, fetchProgress, record, now } = {}) {
+  const getLearnerIds = fetchLearnerIds || fetchActiveLearnerIds;
+  const getProgress = fetchProgress || fetchLearnerProgress;
+  const write = record || recordAgentRun;
+  const nowIso = now || new Date().toISOString();
+  const learnerIds = await getLearnerIds();
+  const runs = [];
+  for (const learnerId of learnerIds) {
+    const progress = await getProgress(learnerId);
+    const candidate = runPracticeRecommender(progress, nowIso);
+    runs.push(await write(candidate));
+  }
+  return { agent: "Practice Plan Recommender", processedLearners: learnerIds.length, created: runs.length, runs };
+}
+
+// Run every agent and aggregate. Exported for tests.
+export async function runAllAgents(overrides = {}) {
+  const results = [
+    await runTajweedExplainerBatch(overrides.tajweed),
+    await runMistakePatternSummarizerBatch(overrides.mistakes),
+    await runPracticeRecommenderBatch(overrides.recommend),
+  ];
+  return { agents: results, created: results.reduce((sum, r) => sum + r.created, 0) };
+}
+
 function sendJson(res, status, body) {
   const payload = JSON.stringify(body);
   res.writeHead(status, { "content-type": "application/json" });
@@ -64,14 +130,23 @@ const server = http.createServer(async (req, res) => {
       return sendJson(res, 200, {
         status: "ok",
         service: "agents",
-        agents: ["Tajweed Explainer"],
+        agents: ["Tajweed Explainer", "Mistake Pattern Summarizer", "Practice Plan Recommender"],
         platformApi: PLATFORM_API_URL,
         tenant: TENANT_ID,
       });
     }
     if (req.method === "POST" && req.url === "/run") {
-      const summary = await runTajweedExplainerBatch();
+      const summary = await runAllAgents();
       return sendJson(res, 200, summary);
+    }
+    if (req.method === "POST" && req.url === "/run/tajweed") {
+      return sendJson(res, 200, await runTajweedExplainerBatch());
+    }
+    if (req.method === "POST" && req.url === "/run/mistakes") {
+      return sendJson(res, 200, await runMistakePatternSummarizerBatch());
+    }
+    if (req.method === "POST" && req.url === "/run/recommend") {
+      return sendJson(res, 200, await runPracticeRecommenderBatch());
     }
     return sendJson(res, 404, { error: "not found" });
   } catch (err) {

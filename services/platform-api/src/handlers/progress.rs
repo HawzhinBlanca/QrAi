@@ -1,5 +1,5 @@
 use axum::Json;
-use axum::extract::State;
+use axum::extract::{Query, State};
 use axum::http::HeaderMap;
 use serde::{Deserialize, Serialize};
 use sqlx::Row;
@@ -58,10 +58,19 @@ pub fn sm2_update(state: &Sm2State, quality: u32) -> Sm2State {
     }
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProgressQuery {
+    /// Read another learner's progress. Staff (teacher/admin/ops) only; a learner may only
+    /// pass their own id. Absent = the caller's own progress (unchanged default).
+    pub learner_id: Option<String>,
+}
+
 /// Real learner progress: aggregates persisted SM-2 state + session history.
 pub async fn get_progress(
     State(state): State<AppState>,
     headers: HeaderMap,
+    Query(query): Query<ProgressQuery>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
     let actor = actor_from_headers(&headers, &state.jwt_config)?;
     actor.require_any(&[
@@ -71,13 +80,26 @@ pub async fn get_progress(
         ActorRole::Ops,
     ])?;
 
+    // Resolve whose progress to read. Reading another learner requires a staff role; a
+    // learner passing their own id is fine, anyone else is Forbidden.
+    let learner_id = match query.learner_id {
+        Some(id) => {
+            actor.require_self_or_any(
+                &id,
+                &[ActorRole::Teacher, ActorRole::Admin, ActorRole::Ops],
+            )?;
+            id
+        }
+        None => actor.user_id.clone(),
+    };
+
     let mut tx = crate::begin_tenant_tx(&state.pool, &actor.tenant_id).await?;
 
     let total_sessions: i64 = sqlx::query_scalar(
         "SELECT COUNT(*) FROM recitation_sessions WHERE tenant_id = $1 AND learner_id = $2",
     )
     .bind(&actor.tenant_id)
-    .bind(&actor.user_id)
+    .bind(&learner_id)
     .fetch_one(&mut *tx)
     .await
     .unwrap_or(0);
@@ -87,7 +109,7 @@ pub async fn get_progress(
         "SELECT repetitions FROM learner_progress WHERE tenant_id = $1 AND learner_id = $2",
     )
     .bind(&actor.tenant_id)
-    .bind(&actor.user_id)
+    .bind(&learner_id)
     .fetch_all(&mut *tx)
     .await
     .unwrap_or_default();
@@ -102,7 +124,7 @@ pub async fn get_progress(
         "SELECT MIN(next_review_at) FROM learner_progress WHERE tenant_id = $1 AND learner_id = $2",
     )
     .bind(&actor.tenant_id)
-    .bind(&actor.user_id)
+    .bind(&learner_id)
     .fetch_one(&mut *tx)
     .await
     .ok()
@@ -113,7 +135,7 @@ pub async fn get_progress(
          FROM recitation_sessions WHERE tenant_id = $1 AND learner_id = $2 ORDER BY d DESC",
     )
     .bind(&actor.tenant_id)
-    .bind(&actor.user_id)
+    .bind(&learner_id)
     .fetch_all(&mut *tx)
     .await
     .unwrap_or_default();
@@ -122,7 +144,7 @@ pub async fn get_progress(
     tx.commit().await?;
 
     Ok(Json(serde_json::json!({
-        "learnerId": actor.user_id,
+        "learnerId": learner_id,
         "tenantId": actor.tenant_id,
         "totalSessions": total_sessions,
         "streak": streak,

@@ -3,7 +3,14 @@ import assert from "node:assert/strict";
 
 import { canShowLearnerFacingAiOutput, statusForRun } from "./lib/gate.mjs";
 import { explainRule, runTajweedExplainer, SCHOLAR_BOARD_SOURCE } from "./lib/tajweedExplainer.mjs";
-import { runTajweedExplainerBatch } from "./server.mjs";
+import { summarizePatterns, runMistakePatternSummarizer } from "./lib/mistakePatterns.mjs";
+import { recommendNextStep, runPracticeRecommender } from "./lib/practiceRecommender.mjs";
+import {
+  runTajweedExplainerBatch,
+  runMistakePatternSummarizerBatch,
+  runPracticeRecommenderBatch,
+  runAllAgents,
+} from "./server.mjs";
 
 test("gate blocks AI-suggested output even when confident and sourced", () => {
   assert.equal(
@@ -75,4 +82,103 @@ test("runTajweedExplainerBatch turns findings into recorded runs (injected IO)",
     written.map((r) => r.findingId),
     ["f1", "f2"],
   );
+});
+
+// --- Mistake Pattern Summarizer ---------------------------------------------
+
+test("summarizePatterns ranks recurring rules by frequency", () => {
+  const findings = [
+    { rule: "Makhraj of ع", severity: "major", confidence: 0.9 },
+    { rule: "makhraj of ع", severity: "major", confidence: 0.8 }, // same rule, case-insensitive
+    { rule: "Ghunnah", severity: "minor", confidence: 0.7 },
+  ];
+  const patterns = summarizePatterns(findings);
+  assert.equal(patterns[0].rule, "Makhraj of ع");
+  assert.equal(patterns[0].count, 2);
+  assert.equal(patterns[0].avgConfidence, 0.85);
+  assert.equal(patterns[0].severity, "major");
+  assert.equal(patterns[1].rule, "Ghunnah");
+});
+
+test("runMistakePatternSummarizer emits one gated, sourced summary; null for no findings", () => {
+  assert.equal(runMistakePatternSummarizer([]), null);
+  const run = runMistakePatternSummarizer([
+    { rule: "Ghunnah", severity: "minor", confidence: 0.7 },
+    { rule: "Ghunnah", severity: "minor", confidence: 0.8 },
+  ]);
+  assert.equal(run.name, "Mistake Pattern Summarizer");
+  assert.equal(run.reviewStatus, "ai-suggested");
+  assert.equal(run.status, "needs-human-review"); // never auto-approved
+  assert.ok(run.sources.length >= 1);
+  assert.match(run.lastEvent, /Ghunnah/);
+});
+
+test("runMistakePatternSummarizerBatch records one run (injected IO)", async () => {
+  const written = [];
+  const summary = await runMistakePatternSummarizerBatch({
+    fetchFindings: async () => [{ rule: "Madd", severity: "major", confidence: 0.75 }],
+    record: async (run) => {
+      written.push(run);
+      return { id: "run-1", ...run };
+    },
+  });
+  assert.equal(summary.created, 1);
+  assert.equal(written.length, 1);
+  assert.equal(written[0].name, "Mistake Pattern Summarizer");
+});
+
+// --- Practice Plan Recommender ----------------------------------------------
+
+const NOW = "2026-07-01T12:00:00Z";
+
+test("recommendNextStep chooses by session count, due date, mastery, and streak", () => {
+  assert.match(recommendNextStep({ totalSessions: 0 }, NOW).headline, /Start/);
+  assert.match(
+    recommendNextStep({ totalSessions: 3, nextReviewAt: "2026-06-30T12:00:00Z" }, NOW).headline,
+    /due/i,
+  );
+  assert.match(recommendNextStep({ totalSessions: 3, mastery: 0.2, nextReviewAt: "2026-07-05T12:00:00Z" }, NOW).headline, /accuracy/i);
+  assert.match(recommendNextStep({ totalSessions: 3, mastery: 0.8, streak: 0, nextReviewAt: "2026-07-05T12:00:00Z" }, NOW).headline, /streak/i);
+  assert.match(recommendNextStep({ totalSessions: 3, mastery: 0.8, streak: 4, nextReviewAt: "2026-07-05T12:00:00Z" }, NOW).headline, /memory/i);
+});
+
+test("runPracticeRecommender gates a sourced recommendation to review", () => {
+  const run = runPracticeRecommender({ learnerId: "learner-1", totalSessions: 3, mastery: 0.25, nextReviewAt: "2026-07-05T12:00:00Z" }, NOW);
+  assert.equal(run.name, "Practice Plan Recommender");
+  assert.equal(run.reviewStatus, "ai-suggested");
+  assert.equal(run.status, "needs-human-review");
+  assert.match(run.goal, /learner-1/);
+  assert.ok(run.sources.length >= 1);
+});
+
+test("runPracticeRecommenderBatch fans out over active learners (injected IO)", async () => {
+  const written = [];
+  const summary = await runPracticeRecommenderBatch({
+    fetchLearnerIds: async () => ["learner-1", "learner-2"],
+    fetchProgress: async (id) => ({ learnerId: id, totalSessions: 2, mastery: 0.3, streak: 1, nextReviewAt: "2026-07-05T12:00:00Z" }),
+    record: async (run) => {
+      written.push(run);
+      return { id: `run-${written.length}`, ...run };
+    },
+    now: NOW,
+  });
+  assert.equal(summary.processedLearners, 2);
+  assert.equal(summary.created, 2);
+  assert.ok(written.every((r) => r.name === "Practice Plan Recommender"));
+});
+
+test("runAllAgents aggregates every agent's runs (injected IO)", async () => {
+  const noop = async (run) => ({ id: "x", ...run });
+  const result = await runAllAgents({
+    tajweed: { fetchFindings: async () => [{ id: "f1", rule: "Ghunnah", confidence: 0.8, sources: [] }], record: noop },
+    mistakes: { fetchFindings: async () => [{ rule: "Ghunnah", severity: "minor", confidence: 0.8 }], record: noop },
+    recommend: {
+      fetchLearnerIds: async () => ["learner-1"],
+      fetchProgress: async (id) => ({ learnerId: id, totalSessions: 1, mastery: 0.1 }),
+      record: noop,
+      now: NOW,
+    },
+  });
+  assert.equal(result.agents.length, 3);
+  assert.equal(result.created, 3); // 1 explainer + 1 summary + 1 recommendation
 });

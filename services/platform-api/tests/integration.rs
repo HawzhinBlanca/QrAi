@@ -282,3 +282,37 @@ async fn begin_tenant_tx_activates_rls_context() {
     assert_eq!(t.as_deref(), Some("tenant-rls-check"));
     tx.commit().await.unwrap();
 }
+
+/// Security: `GET /v1/learner/progress?learnerId=X` lets staff read any learner in-tenant,
+/// but a learner may only read their own — a cross-learner read is Forbidden.
+#[tokio::test]
+#[ignore = "requires live Postgres"]
+async fn learner_progress_learner_id_is_authorized() {
+    let router = platform_router_with_rate_limit(test_state(), false);
+
+    // Ops may read another learner's progress.
+    let ops = send_json(
+        &router,
+        Method::GET,
+        "/v1/learner/progress?learnerId=learner-1",
+        Some("hikmah-pilot-erbil"),
+        Some("ops"),
+        json!({}),
+    )
+    .await;
+    assert_eq!(ops.status(), StatusCode::OK);
+    let body: Value = read_json(ops).await;
+    assert_eq!(body["learnerId"], "learner-1");
+
+    // A learner may NOT read a different learner's progress.
+    let cross = send_json(
+        &router,
+        Method::GET,
+        "/v1/learner/progress?learnerId=learner-2",
+        Some("hikmah-pilot-erbil"),
+        Some("learner"), // x-user-id = learner-1
+        json!({}),
+    )
+    .await;
+    assert_eq!(cross.status(), StatusCode::FORBIDDEN);
+}

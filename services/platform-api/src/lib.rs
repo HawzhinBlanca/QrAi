@@ -42,7 +42,12 @@ impl AppState {
 }
 
 pub fn platform_router(state: AppState) -> Router {
-    platform_router_with_rate_limit(state, true)
+    // Rate limiting is on by default; set DISABLE_RATE_LIMIT=1 to turn it off (local dev /
+    // preview, where a browser fires bursts of requests from a single IP).
+    let rate_limit = std::env::var("DISABLE_RATE_LIMIT")
+        .map(|v| v != "1")
+        .unwrap_or(true);
+    platform_router_with_rate_limit(state, rate_limit)
 }
 
 pub fn platform_router_with_rate_limit(state: AppState, rate_limit: bool) -> Router {
