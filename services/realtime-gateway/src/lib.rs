@@ -153,6 +153,12 @@ impl RealtimeGateway {
     /// Fails DEGRADED: if Redis is unconfigured or unreachable, returns `Unavailable`
     /// and the caller falls back to the in-memory consumed set (single-process
     /// protection) rather than rejecting every connection during a Redis outage.
+    /// Whether a shared (Redis) replay store is configured. When false, single-use is
+    /// per-process by design and fail-closed does not apply.
+    fn redis_configured(&self) -> bool {
+        self.redis_url.is_some()
+    }
+
     async fn redis_mark_ticket(&self, ticket_hash: &str, ttl_seconds: u64) -> TicketDedup {
         let Some(ref url) = self.redis_url else {
             return TicketDedup::Unavailable;
@@ -311,6 +317,11 @@ pub struct GatewayServerConfig {
     pub ticket_secret: String,
     pub ml_inference_url: String,
     pub tenant_id: String,
+    /// When true AND Redis is configured, reject a connection if the shared replay store is
+    /// unreachable (fail CLOSED) instead of degrading to per-process single-use. Trades
+    /// availability for a guarantee that a ticket used during a Redis outage can't be
+    /// replayed on another instance. Default false (fail open). Env: REALTIME_TICKET_FAIL_CLOSED.
+    pub ticket_fail_closed: bool,
 }
 
 impl Default for GatewayServerConfig {
@@ -325,6 +336,9 @@ impl Default for GatewayServerConfig {
                 .unwrap_or_else(|_| "http://127.0.0.1:8090".to_owned()),
             tenant_id: std::env::var("GATEWAY_TENANT_ID")
                 .unwrap_or_else(|_| "hikmah-pilot-erbil".to_owned()),
+            ticket_fail_closed: std::env::var("REALTIME_TICKET_FAIL_CLOSED")
+                .map(|v| v == "1" || v == "true")
+                .unwrap_or(false),
         }
     }
 }
@@ -433,6 +447,15 @@ async fn audio_ws(
         .gateway
         .redis_mark_ticket(&ticket_hash(ticket), ttl)
         .await;
+    // Fail CLOSED (opt-in): if a shared store is configured but unreachable, we cannot
+    // guarantee this ticket wasn't already used on another instance, so refuse rather than
+    // fall back to per-process dedup (which would leave a cross-instance replay window).
+    if state.config.ticket_fail_closed
+        && state.gateway.redis_configured()
+        && redis_dedup == TicketDedup::Unavailable
+    {
+        return StatusCode::SERVICE_UNAVAILABLE.into_response();
+    }
     let mem_replay = {
         let mut consumed_tickets = state.consumed_tickets.write().await;
         consumed_tickets

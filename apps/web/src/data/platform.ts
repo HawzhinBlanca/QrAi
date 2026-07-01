@@ -97,16 +97,32 @@ export interface LearnerProgress {
   nextReviewAt: string | null;
 }
 
+// Coalesce concurrent identical progress reads into ONE network request. On mount the app
+// fires fetchLearnerProgress directly AND via fetchMemorizationPlan (and StrictMode doubles
+// effects in dev), which otherwise hit /v1/learner/progress several times for the same data.
+const progressInFlight = new Map<string, Promise<LearnerProgress>>();
+
 export async function fetchLearnerProgress(
   tenantId: string,
   userId: string,
   authToken?: string,
 ): Promise<LearnerProgress> {
-  const response = await fetch(`${API_BASE}/v1/learner/progress`, {
-    headers: actorHeaders(tenantId, userId, "learner", authToken),
-  });
-  if (!response.ok) throw new Error(`Progress API ${response.status}`);
-  return response.json();
+  const key = `${tenantId}|${userId}`;
+  const existing = progressInFlight.get(key);
+  if (existing) return existing;
+  const promise = (async () => {
+    const response = await fetch(`${API_BASE}/v1/learner/progress`, {
+      headers: actorHeaders(tenantId, userId, "learner", authToken),
+    });
+    if (!response.ok) throw new Error(`Progress API ${response.status}`);
+    return response.json() as Promise<LearnerProgress>;
+  })();
+  progressInFlight.set(key, promise);
+  try {
+    return await promise;
+  } finally {
+    progressInFlight.delete(key);
+  }
 }
 
 /**

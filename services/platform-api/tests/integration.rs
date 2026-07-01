@@ -395,3 +395,125 @@ async fn persists_and_reads_back_session_alignment() {
     assert_eq!(rows[0]["wordId"], "1:1:1");
     assert_eq!(rows[0]["status"], "matched");
 }
+
+/// Two regressions on a session that has a real tajweed finding attached:
+///  1. Security: a teacher review records the AUTHENTICATED actor as author, never a
+///     caller-supplied teacher_id (authorship forgery).
+///  2. Blocker: re-recording a session's alignment when a finding already references it must
+///     succeed (cascade), not FK-violate into a 500.
+#[tokio::test]
+#[ignore = "requires live Postgres"]
+async fn teacher_review_author_is_actor_and_realignment_cascades() {
+    use sqlx::Row;
+    let state = test_state();
+    let router = platform_router_with_rate_limit(test_state(), false);
+
+    // Create a real session + alignment through the API (handles every column correctly).
+    let created = send_json(
+        &router,
+        Method::POST,
+        "/v1/recitation-sessions",
+        Some("hikmah-pilot-erbil"),
+        Some("learner"),
+        json!({
+            "learnerId": "learner-1",
+            "quranRef": {"surahNumber": 1, "ayahStart": 1, "ayahEnd": 7, "display": "Al-Fatihah 1:1-7"},
+            "sourceChecksum": "fnv1a32:cascade", "modelVersion": "model-v0.3", "language": "ckb",
+            "mode": "guided-recite", "practicePlanId": "fatihah-mastery-v1",
+            "consent": {"audioRetention": "discard", "anonymizedLearning": true, "externalAsrProcessing": false, "guardianApproved": true, "consentVersion": "pilot-v1"}
+        }),
+    )
+    .await;
+    let session_id = read_json::<Value>(created).await["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let persisted = send_json(
+        &router,
+        Method::POST,
+        &format!("/v1/recitation-sessions/{session_id}/alignments"),
+        Some("hikmah-pilot-erbil"),
+        Some("learner"),
+        json!({ "alignments": [{"wordId": "1:1:1", "heardText": "بسم", "confidence": 0.9, "status": "matched"}] }),
+    )
+    .await;
+    assert_eq!(persisted.status(), StatusCode::OK);
+
+    // Attach a tajweed finding to that alignment (the only bit not creatable via a plain API call).
+    let align_id: String =
+        sqlx::query("SELECT id FROM word_alignments WHERE session_id = $1 LIMIT 1")
+            .bind(&session_id)
+            .fetch_one(&state.pool)
+            .await
+            .unwrap()
+            .try_get("id")
+            .unwrap();
+    let finding_audit = format!("audit-tf-{}", next_suffix());
+    let finding_id = format!("tf-cascade-{}", next_suffix());
+    sqlx::query("INSERT INTO audit_events (id, tenant_id, actor_id, action, subject_type, subject_id) VALUES ($1,'hikmah-pilot-erbil','ops-1','test.seed','tajweed_finding',$2)")
+        .bind(&finding_audit).bind(&finding_id).execute(&state.pool).await.unwrap();
+    sqlx::query("INSERT INTO tajweed_findings (id, tenant_id, alignment_id, rule, severity, confidence, explanation, review_status, source_refs, model_version_id, audit_event_id) VALUES ($1,'hikmah-pilot-erbil',$2,'Ghunnah','warning',0.8,'x','teacher-review-required','[]'::jsonb,'model-v0.3',$3)")
+        .bind(&finding_id).bind(&align_id).bind(&finding_audit).execute(&state.pool).await.unwrap();
+
+    // (1) teacher-1 reviews it but tries to forge authorship as "teacher-2".
+    let review = send_json(
+        &router,
+        Method::POST,
+        "/v1/teacher-reviews",
+        Some("hikmah-pilot-erbil"),
+        Some("teacher"),
+        json!({ "findingId": finding_id, "teacherId": "teacher-2", "decision": "rejected", "note": "forged?" }),
+    )
+    .await;
+    assert_eq!(review.status(), StatusCode::OK);
+    assert_eq!(read_json::<Value>(review).await["teacherId"], "teacher-1");
+    let stored: String =
+        sqlx::query("SELECT teacher_id FROM teacher_reviews WHERE finding_id = $1")
+            .bind(&finding_id)
+            .fetch_one(&state.pool)
+            .await
+            .unwrap()
+            .try_get("teacher_id")
+            .unwrap();
+    assert_eq!(stored, "teacher-1", "author must not be forgeable");
+
+    // (2) Re-record alignment for the SAME session (which now has a finding+review): must
+    // cascade-delete them and succeed, not FK-violate into a 500.
+    let rerecord = send_json(
+        &router,
+        Method::POST,
+        &format!("/v1/recitation-sessions/{session_id}/alignments"),
+        Some("hikmah-pilot-erbil"),
+        Some("learner"),
+        json!({ "alignments": [{"wordId": "1:1:2", "heardText": "الله", "confidence": 0.95, "status": "matched"}] }),
+    )
+    .await;
+    assert_eq!(
+        rerecord.status(),
+        StatusCode::OK,
+        "re-record must not FK-violate"
+    );
+    let gone: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM tajweed_findings WHERE id = $1")
+        .bind(&finding_id)
+        .fetch_one(&state.pool)
+        .await
+        .unwrap();
+    assert_eq!(
+        gone, 0,
+        "stale finding should be cascaded away on re-record"
+    );
+}
+
+fn next_suffix() -> String {
+    // Unique across processes AND runs (the DB persists between runs), so seeded ids never
+    // collide. SystemTime is fine here (unlike workflow scripts, ordinary tests may use it).
+    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::time::{SystemTime, UNIX_EPOCH};
+    static N: AtomicU64 = AtomicU64::new(0);
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    format!("{}-{}", nanos, N.fetch_add(1, Ordering::Relaxed))
+}

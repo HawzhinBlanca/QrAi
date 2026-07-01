@@ -51,6 +51,10 @@ pub async fn create_teacher_review(
     .execute(&mut *tx)
     .await?;
 
+    // The review author is the AUTHENTICATED actor — never a caller-supplied teacher_id.
+    // Trusting req.teacher_id let any teacher attribute a review to another user (even a
+    // cross-tenant user, since users(id) is a platform-global FK). req.teacher_id is ignored.
+    let author_id = &actor.user_id;
     sqlx::query(
         "INSERT INTO teacher_reviews (id, tenant_id, finding_id, teacher_id, decision, note, audit_event_id)
          VALUES ($1, $2, $3, $4, $5, $6, $7)",
@@ -58,7 +62,7 @@ pub async fn create_teacher_review(
     .bind(&review_id)
     .bind(&actor.tenant_id)
     .bind(&req.finding_id)
-    .bind(&req.teacher_id)
+    .bind(author_id)
     .bind(decision_str)
     .bind(&req.note)
     .bind(&audit_id)
@@ -69,9 +73,9 @@ pub async fn create_teacher_review(
 
     Ok(Json(TeacherReview {
         id: review_id,
+        teacher_id: actor.user_id.clone(),
         tenant_id: actor.tenant_id,
         finding_id: req.finding_id,
-        teacher_id: req.teacher_id,
         decision: req.decision,
         note: req.note,
         audit_event_id: audit_id,
@@ -166,6 +170,8 @@ pub async fn create_scholar_approval(
     .execute(&mut *tx)
     .await?;
 
+    // The reviewer is the AUTHENTICATED actor, never a caller-supplied reviewer_id (which
+    // would allow attributing an approval to another user). req.reviewer_id is ignored.
     sqlx::query(
         "INSERT INTO scholar_approvals (id, tenant_id, topic, reviewer_id, status, risk, source_refs, audit_event_id)
          VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
@@ -173,7 +179,7 @@ pub async fn create_scholar_approval(
     .bind(&approval_id)
     .bind(&actor.tenant_id)
     .bind(&req.topic)
-    .bind(&req.reviewer_id)
+    .bind(&actor.user_id)
     .bind(status_str)
     .bind(risk_str)
     .bind(&sources_json)
@@ -185,9 +191,9 @@ pub async fn create_scholar_approval(
 
     Ok(Json(ScholarApproval {
         id: approval_id,
+        reviewer_id: actor.user_id.clone(),
         tenant_id: actor.tenant_id,
         topic: req.topic,
-        reviewer_id: req.reviewer_id,
         status: req.status,
         risk: req.risk,
         sources: req.sources,

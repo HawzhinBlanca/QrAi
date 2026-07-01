@@ -37,12 +37,17 @@ pub fn sm2_update(state: &Sm2State, quality: u32) -> Sm2State {
         (0, 1, state.easiness_factor)
     } else {
         let new_rep = state.repetitions + 1;
+        // Cap the interval at 10 years. Left unbounded, it grows by ×EF every perfect review
+        // and eventually overflows chrono when added to `now()` (Utc::now() + Duration::days),
+        // panicking the request. Spaced repetition never needs a longer interval.
+        const MAX_INTERVAL_DAYS: i32 = 3650;
         let new_interval = if new_rep == 1 {
             1
         } else if new_rep == 2 {
             6
         } else {
-            ((state.interval_days as f64) * state.easiness_factor).round() as i32
+            (((state.interval_days as f64) * state.easiness_factor).round() as i32)
+                .min(MAX_INTERVAL_DAYS)
         };
 
         let new_ef =
@@ -214,7 +219,10 @@ pub async fn update_progress(
     };
 
     let updated = sm2_update(&prior, req.quality);
-    let next_review = chrono::Utc::now() + chrono::Duration::days(updated.interval_days as i64);
+    // Defensive clamp (in case a pre-existing row stored a huge interval): never feed an
+    // out-of-range day count into chrono's Add, which would panic.
+    let next_review =
+        chrono::Utc::now() + chrono::Duration::days(updated.interval_days.clamp(1, 3650) as i64);
 
     sqlx::query(
         "INSERT INTO learner_progress

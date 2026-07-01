@@ -333,6 +333,11 @@ async function predictAlignment(requestBody) {
       asrResult = await transcribeAudio(requestBody.audioBase64, requestBody.audioFormat ?? "webm", "ar");
       recognizedWords = asrResult.words.map((w) => w.word);
     } else if (requestBody.recognizedText && Array.isArray(requestBody.recognizedText)) {
+      // Every element must be a string; a non-string would throw inside alignWords and
+      // surface as a 500. Bad input is a 400.
+      if (!requestBody.recognizedText.every((w) => typeof w === "string")) {
+        throw httpError(400, "recognizedText must be an array of strings");
+      }
       recognizedWords = requestBody.recognizedText;
     } else if (requestBody.recognizedTextString) {
       // Guard the type: a truthy non-string (number, object, array) would throw a

@@ -24,6 +24,11 @@ function authHeaders() {
   return { "x-tenant-id": TENANT_ID, "x-user-id": "ops-1", "x-user-role": "ops" };
 }
 
+/** Defensive: an upstream that returns a non-array (with HTTP 200) means "no items". */
+function toArray(value) {
+  return Array.isArray(value) ? value : [];
+}
+
 async function fetchTajweedFindings() {
   const res = await fetch(`${PLATFORM_API_URL}/v1/tajweed-findings`, { headers: authHeaders() });
   if (!res.ok) throw new Error(`tajweed-findings ${res.status}`);
@@ -67,7 +72,9 @@ async function recordAgentRun(run) {
 export async function runTajweedExplainerBatch({ fetchFindings, record } = {}) {
   const getFindings = fetchFindings || fetchTajweedFindings;
   const write = record || recordAgentRun;
-  const findings = await getFindings();
+  // Coerce to an array: a malformed upstream (non-array body with HTTP 200) must not throw
+  // "findings is not iterable" (500) — it means "no findings".
+  const findings = toArray(await getFindings());
   const runs = [];
   for (const finding of findings) {
     const candidate = runTajweedExplainer(finding);
@@ -81,7 +88,7 @@ export async function runTajweedExplainerBatch({ fetchFindings, record } = {}) {
 export async function runMistakePatternSummarizerBatch({ fetchFindings, record } = {}) {
   const getFindings = fetchFindings || fetchTajweedFindings;
   const write = record || recordAgentRun;
-  const findings = await getFindings();
+  const findings = toArray(await getFindings());
   const candidate = runMistakePatternSummarizer(findings);
   const runs = candidate ? [await write(candidate)] : [];
   return {
@@ -98,7 +105,7 @@ export async function runPracticeRecommenderBatch({ fetchLearnerIds, fetchProgre
   const getProgress = fetchProgress || fetchLearnerProgress;
   const write = record || recordAgentRun;
   const nowIso = now || new Date().toISOString();
-  const learnerIds = await getLearnerIds();
+  const learnerIds = toArray(await getLearnerIds());
   const runs = [];
   for (const learnerId of learnerIds) {
     const progress = await getProgress(learnerId);

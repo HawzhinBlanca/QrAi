@@ -481,7 +481,32 @@ pub async fn persist_session_alignments(
     .execute(&mut *tx)
     .await?;
 
-    // Replace-on-write: clear the session's prior alignment first.
+    // Replace-on-write: clear the session's prior alignment first, in FK-safe order.
+    // tajweed_findings.alignment_id and teacher_reviews.finding_id both RESTRICT, so a naked
+    // DELETE of word_alignments would raise a foreign_key_violation (→ 500) for any session
+    // that already has findings/reviews. Re-recording the alignment invalidates those old
+    // findings anyway (they point at words being re-aligned), so cascade them explicitly:
+    // teacher_reviews → tajweed_findings → word_alignments, all scoped to this session.
+    sqlx::query(
+        "DELETE FROM teacher_reviews WHERE tenant_id = $1 AND finding_id IN (
+             SELECT tf.id FROM tajweed_findings tf
+             JOIN word_alignments wa ON wa.id = tf.alignment_id
+             WHERE wa.session_id = $2 AND wa.tenant_id = $1)",
+    )
+    .bind(&actor.tenant_id)
+    .bind(&id)
+    .execute(&mut *tx)
+    .await?;
+
+    sqlx::query(
+        "DELETE FROM tajweed_findings WHERE tenant_id = $1 AND alignment_id IN (
+             SELECT id FROM word_alignments WHERE session_id = $2 AND tenant_id = $1)",
+    )
+    .bind(&actor.tenant_id)
+    .bind(&id)
+    .execute(&mut *tx)
+    .await?;
+
     sqlx::query("DELETE FROM word_alignments WHERE session_id = $1 AND tenant_id = $2")
         .bind(&id)
         .bind(&actor.tenant_id)

@@ -167,6 +167,16 @@ test("runPracticeRecommenderBatch fans out over active learners (injected IO)", 
   assert.ok(written.every((r) => r.name === "Practice Plan Recommender"));
 });
 
+test("batch runners tolerate a non-array upstream (no 'not iterable' crash)", async () => {
+  // A malformed upstream that returns an object (HTTP 200) must mean "no items", not throw.
+  const tj = await runTajweedExplainerBatch({ fetchFindings: async () => ({ oops: true }), record: async () => ({}) });
+  assert.equal(tj.created, 0);
+  const mp = await runMistakePatternSummarizerBatch({ fetchFindings: async () => null, record: async () => ({}) });
+  assert.equal(mp.created, 0);
+  const pr = await runPracticeRecommenderBatch({ fetchLearnerIds: async () => "not-an-array", fetchProgress: async () => ({}), record: async () => ({}), now: NOW });
+  assert.equal(pr.created, 0);
+});
+
 test("runAllAgents aggregates every agent's runs (injected IO)", async () => {
   const noop = async (run) => ({ id: "x", ...run });
   const result = await runAllAgents({

@@ -162,15 +162,36 @@ pub fn platform_router_with_rate_limit(state: AppState, rate_limit: bool) -> Rou
         // burst — a single browser page load (~15 requests) would exhaust a 100 burst in a
         // few interactions and then get throttled to ~1 req/min. Replenish one request every
         // 50ms (~20 req/s sustained) with a 200 burst: generous for a real client, still a
-        // backstop against abuse (per peer IP).
-        let governor_conf = GovernorConfigBuilder::default()
-            .per_millisecond(50)
-            .burst_size(200)
-            .finish()
-            .unwrap();
-        base_router.layer(GovernorLayer {
-            config: governor_conf.into(),
-        })
+        // backstop against abuse.
+        //
+        // Keying: default is the PEER IP. Behind a reverse proxy every request shares the
+        // proxy's IP, collapsing this to a single global bucket — set TRUST_PROXY_HEADERS=1
+        // to key off X-Forwarded-For/X-Real-IP instead. That is spoofable if the service is
+        // exposed directly (a client sets the header to dodge the limit), so it is opt-in and
+        // must only be enabled behind a proxy that OVERWRITES those headers.
+        let trust_proxy = std::env::var("TRUST_PROXY_HEADERS")
+            .map(|v| v == "1" || v == "true")
+            .unwrap_or(false);
+        if trust_proxy {
+            let conf = GovernorConfigBuilder::default()
+                .per_millisecond(50)
+                .burst_size(200)
+                .key_extractor(tower_governor::key_extractor::SmartIpKeyExtractor)
+                .finish()
+                .unwrap();
+            base_router.layer(GovernorLayer {
+                config: conf.into(),
+            })
+        } else {
+            let conf = GovernorConfigBuilder::default()
+                .per_millisecond(50)
+                .burst_size(200)
+                .finish()
+                .unwrap();
+            base_router.layer(GovernorLayer {
+                config: conf.into(),
+            })
+        }
     } else {
         base_router
     };
