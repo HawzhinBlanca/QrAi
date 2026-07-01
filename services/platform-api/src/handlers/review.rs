@@ -17,6 +17,19 @@ pub async fn create_teacher_review(
 
     let mut tx = crate::begin_tenant_tx(&state.pool, &actor.tenant_id).await?;
 
+    // The finding must exist in this tenant. Without this check a dangling finding_id
+    // fails the FK constraint and surfaces as a 500; a missing referenced entity is a
+    // 404. RLS scopes the lookup to the caller's tenant.
+    let finding_exists =
+        sqlx::query("SELECT 1 FROM tajweed_findings WHERE id = $1 AND tenant_id = $2")
+            .bind(&req.finding_id)
+            .bind(&actor.tenant_id)
+            .fetch_optional(&mut *tx)
+            .await?;
+    if finding_exists.is_none() {
+        return Err(ApiError::NotFound);
+    }
+
     let review_id = next_id("teacher-review");
     let audit_id = next_id("audit");
     let trace_id = crate::auth::extract_trace_id(&headers);

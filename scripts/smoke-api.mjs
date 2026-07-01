@@ -115,10 +115,14 @@ const seedFinding = await request("/v1/teacher-reviews", {
     note: "Smoke review accepted.",
   }),
 });
-// If finding doesn't exist yet (FK error), the review will fail — that's OK,
-// we'll try again after seeding via the ML service. For now just verify the
-// review endpoint responds (either 200 or 500 FK error is acceptable in smoke).
+// "finding-smoke" does not exist, so the review must be rejected with a clean 404
+// (dangling reference) — NOT a 500 FK error. This asserts the handler validates the
+// referenced finding before inserting.
 const review = seedFinding;
+if (review.response.status !== 404) {
+  console.error(`teacher-review with missing finding expected 404, got ${review.response.status}`);
+  process.exit(1);
+}
 
 // Also test scholar approval (no FK chain needed)
 const scholarApproval = await request("/v1/scholar-approvals", {
