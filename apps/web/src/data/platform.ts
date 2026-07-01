@@ -100,6 +100,29 @@ export async function fetchLearnerProgress(tenantId: string, userId: string): Pr
   return response.json();
 }
 
+/**
+ * Persist an SM-2 review for one ayah after a practice session (quality 0-5).
+ * Drives mastery/streak accumulation from real practice.
+ */
+export async function updateLearnerProgress(
+  tenantId: string,
+  userId: string,
+  ayahRef: string,
+  quality: number,
+): Promise<void> {
+  const response = await fetch(`${API_BASE}/v1/learner/progress`, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      "x-tenant-id": tenantId,
+      "x-user-id": userId,
+      "x-user-role": "learner",
+    },
+    body: JSON.stringify({ quality: Math.max(0, Math.min(5, Math.round(quality))), ayahRef }),
+  });
+  if (!response.ok) throw new Error(`Progress update ${response.status}`);
+}
+
 export interface MemorizationPlan {
   learnerId: string;
   nextReviewAt: string;

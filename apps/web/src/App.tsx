@@ -18,6 +18,7 @@ import { predictAlignment, predictTajweed, type AlignmentResult, type TajweedFin
 import {
   fetchMemorizationPlan,
   fetchLearnerProgress,
+  updateLearnerProgress,
   type MemorizationPlan,
   type LearnerProgress,
 } from "./data/platform";
@@ -190,6 +191,12 @@ function AuthenticatedApp({ smokeBypass = false }: { smokeBypass?: boolean }) {
   }
 
   function advancePractice() {
+    // Detect the transition into the final "complete" step so we can persist progress.
+    const fromIndex = practiceSteps.findIndex((step) => step.id === practiceMode);
+    const enteringComplete =
+      practiceMode !== "home" &&
+      practiceSteps[Math.min(fromIndex + 1, practiceSteps.length - 1)].id === "complete";
+
     setPracticeMode((currentMode) => {
       if (currentMode === "home") {
         return "listen";
@@ -200,6 +207,37 @@ function AuthenticatedApp({ smokeBypass = false }: { smokeBypass?: boolean }) {
       return nextStep.id;
     });
     setIsRecording(false);
+
+    if (enteringComplete) {
+      void saveProgressFromPractice();
+    }
+  }
+
+  /**
+   * On practice completion, persist a real SM-2 review (mastery/streak accumulate) from
+   * the actual alignment accuracy. Skipped when the learner didn't recite, so we never
+   * record a fabricated (quality-0) review.
+   */
+  async function saveProgressFromPractice() {
+    if (!effectiveUser || alignmentResults.length === 0) return;
+    const correct = alignmentResults.filter((a) => a.status === "matched").length;
+    const scored = alignmentResults.filter(
+      (a) =>
+        a.status === "matched" ||
+        a.status === "misread" ||
+        a.status === "missed" ||
+        a.status === "needs-review" ||
+        a.status === "extra",
+    ).length;
+    const accuracy = scored > 0 ? correct / scored : 0;
+    const quality = Math.round(accuracy * 5); // SM-2 quality 0-5
+    try {
+      await updateLearnerProgress(effectiveUser.tenantId, effectiveUser.userId, "1:1-7", quality);
+      const fresh = await fetchLearnerProgress(effectiveUser.tenantId, effectiveUser.userId);
+      setProgress(fresh);
+    } catch {
+      // Keep the prior progress if the update fails; don't block the completion UI.
+    }
   }
 
   function resetPractice() {
