@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -12,7 +12,7 @@ use axum::response::IntoResponse;
 use axum::routing::get;
 use hmac::{Hmac, Mac};
 use serde::Serialize;
-use sha2::Sha256;
+use sha2::{Digest, Sha256};
 use thiserror::Error;
 use tokio::sync::{RwLock, mpsc};
 
@@ -140,6 +140,48 @@ impl RealtimeGateway {
                 "end" => redis::cmd("DEL").arg(&key).query(&mut conn),
                 _ => Ok(()),
             };
+        }
+    }
+
+    /// Cross-restart / cross-instance single-use enforcement for realtime tickets.
+    ///
+    /// Uses Redis `SET key 1 NX EX <ttl>` so a consumed ticket stays consumed even if
+    /// this gateway process restarts or a *different* gateway instance handled the first
+    /// use — the in-memory set alone loses that history on restart and is per-process.
+    /// The Redis key expires with the ticket, so it never grows unbounded.
+    ///
+    /// Fails DEGRADED: if Redis is unconfigured or unreachable, returns `Unavailable`
+    /// and the caller falls back to the in-memory consumed set (single-process
+    /// protection) rather than rejecting every connection during a Redis outage.
+    async fn redis_mark_ticket(&self, ticket_hash: &str, ttl_seconds: u64) -> TicketDedup {
+        let Some(ref url) = self.redis_url else {
+            return TicketDedup::Unavailable;
+        };
+        let ttl = ttl_seconds.max(1);
+        let key = format!("quran-ai:gateway:ticket:{ticket_hash}");
+        let mut conn = match redis::Client::open(url.as_str()).and_then(|c| c.get_connection()) {
+            Ok(conn) => conn,
+            Err(e) => {
+                tracing::warn!("Redis connect failed (ticket dedup degraded to in-memory): {e}");
+                return TicketDedup::Unavailable;
+            }
+        };
+        // `SET .. NX` returns the value ("OK") when the key was newly set, and Nil
+        // (deserialized to None) when the key already existed — i.e. a replay.
+        let set: redis::RedisResult<Option<String>> = redis::cmd("SET")
+            .arg(&key)
+            .arg("1")
+            .arg("NX")
+            .arg("EX")
+            .arg(ttl)
+            .query(&mut conn);
+        match set {
+            Ok(Some(_)) => TicketDedup::Fresh,
+            Ok(None) => TicketDedup::Replay,
+            Err(e) => {
+                tracing::warn!("Redis ticket dedup failed (degraded to in-memory): {e}");
+                TicketDedup::Unavailable
+            }
         }
     }
 
@@ -291,7 +333,9 @@ impl Default for GatewayServerConfig {
 struct GatewayServerState {
     gateway: RealtimeGateway,
     config: GatewayServerConfig,
-    consumed_tickets: Arc<RwLock<HashSet<String>>>,
+    // ticket string -> its expiry (unix seconds). Per-process fast path for single-use
+    // enforcement; the authoritative cross-restart/cross-instance check is Redis when set.
+    consumed_tickets: Arc<RwLock<HashMap<String, u64>>>,
 }
 
 #[derive(Debug, Serialize, PartialEq, Eq)]
@@ -308,19 +352,22 @@ pub struct AudioIngressAck {
 pub fn gateway_router(config: GatewayServerConfig) -> Router {
     let redis_url = std::env::var("REDIS_URL").ok();
     let gateway = RealtimeGateway::with_redis(config.chunk_capacity, redis_url);
-    let consumed_tickets: Arc<RwLock<HashSet<String>>> = Arc::new(RwLock::new(HashSet::new()));
+    let consumed_tickets: Arc<RwLock<HashMap<String, u64>>> = Arc::new(RwLock::new(HashMap::new()));
 
-    // Spawn periodic cleanup of expired consumed tickets (every 5 minutes)
-    // Only spawn if we're inside a Tokio runtime (not in tests)
+    // Spawn periodic cleanup that evicts ONLY expired consumed tickets (every 60s).
+    // Only spawn if we're inside a Tokio runtime (not in tests).
     let cleanup_tickets = consumed_tickets.clone();
     if let Ok(handle) = tokio::runtime::Handle::try_current() {
         handle.spawn(async move {
             loop {
-                tokio::time::sleep(tokio::time::Duration::from_secs(300)).await;
-                let mut tickets = cleanup_tickets.write().await;
-                let before = tickets.len();
-                tickets.clear();
-                tracing::debug!("consumed_tickets cleanup: removed {before} entries");
+                tokio::time::sleep(tokio::time::Duration::from_secs(60)).await;
+                let removed = {
+                    let mut tickets = cleanup_tickets.write().await;
+                    evict_expired(&mut tickets, unix_now_seconds())
+                };
+                if removed > 0 {
+                    tracing::debug!("consumed_tickets cleanup: removed {removed} expired entries");
+                }
             }
         });
     }
@@ -377,11 +424,23 @@ async fn audio_ws(
         Err(_) => return StatusCode::UNAUTHORIZED.into_response(),
     };
 
-    {
+    // Single-use enforcement. Redis (when configured) makes this survive gateway
+    // restarts and span multiple instances; the in-memory map is the always-on fast path
+    // and the sole guard when Redis is absent. A replay seen by EITHER store is rejected.
+    let now = unix_now_seconds();
+    let ttl = claims.expires_at_unix_seconds.saturating_sub(now).max(1);
+    let redis_dedup = state
+        .gateway
+        .redis_mark_ticket(&ticket_hash(ticket), ttl)
+        .await;
+    let mem_replay = {
         let mut consumed_tickets = state.consumed_tickets.write().await;
-        if !consumed_tickets.insert(ticket.to_owned()) {
-            return StatusCode::UNAUTHORIZED.into_response();
-        }
+        consumed_tickets
+            .insert(ticket.to_owned(), claims.expires_at_unix_seconds)
+            .is_some()
+    };
+    if mem_replay || redis_dedup == TicketDedup::Replay {
+        return StatusCode::UNAUTHORIZED.into_response();
     }
 
     let trace_id = query
@@ -420,6 +479,34 @@ pub struct RealtimeTicketClaims {
     pub external_asr_processing: bool,
     pub expires_at_unix_seconds: u64,
     pub nonce: String,
+}
+
+/// Outcome of the cross-instance replay check (see `RealtimeGateway::redis_mark_ticket`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TicketDedup {
+    /// First time this ticket was seen by the shared store.
+    Fresh,
+    /// The shared store already recorded this ticket — a replay.
+    Replay,
+    /// No shared store available (Redis unconfigured/unreachable); fall back to in-memory.
+    Unavailable,
+}
+
+/// Stable, bounded-length key for a ticket in the shared replay store. We store a hash
+/// rather than the raw signed ticket so Redis never holds the credential material and
+/// keys stay a fixed size. Matches how platform-api derives `token_hash`.
+fn ticket_hash(ticket: &str) -> String {
+    format!("{:x}", Sha256::digest(ticket.as_bytes()))
+}
+
+/// Evict only consumed tickets whose own expiry has passed. The previous cleanup cleared
+/// the whole set every interval, which erased the single-use marker of tickets that were
+/// still valid — reopening a replay window until the ticket's real expiry. Retaining
+/// unexpired entries closes that window while still bounding memory.
+fn evict_expired(consumed: &mut HashMap<String, u64>, now_unix_seconds: u64) -> usize {
+    let before = consumed.len();
+    consumed.retain(|_, &mut expires_at| expires_at > now_unix_seconds);
+    before - consumed.len()
 }
 
 pub fn issue_realtime_ticket(
@@ -732,9 +819,12 @@ mod tests {
 
     use tokio::time::{Duration, timeout};
 
+    use std::collections::HashMap;
+
     use super::{
-        AudioChunk, GatewayError, GatewayServerConfig, RealtimeGateway, TicketError,
-        gateway_router, issue_realtime_ticket, validate_realtime_ticket,
+        AudioChunk, GatewayError, GatewayServerConfig, RealtimeGateway, TicketDedup, TicketError,
+        evict_expired, gateway_router, issue_realtime_ticket, ticket_hash,
+        validate_realtime_ticket,
     };
 
     fn chunk(session_id: &str, chunk_id: &str) -> AudioChunk {
@@ -899,6 +989,48 @@ mod tests {
         assert_eq!(metrics.sessions_started, 100);
         assert_eq!(metrics.chunks_accepted, 100);
         assert!(p95 < Duration::from_millis(150), "p95 was {p95:?}");
+    }
+
+    #[test]
+    fn cleanup_evicts_only_expired_consumed_tickets() {
+        // Regression: the old cleanup cleared the whole set, erasing the single-use
+        // marker of still-valid tickets and reopening a replay window. Eviction must
+        // keep unexpired entries so a consumed-but-unexpired ticket stays rejected.
+        let mut consumed: HashMap<String, u64> = HashMap::new();
+        consumed.insert("expired-ticket".to_owned(), 1_000); // expiry in the past
+        consumed.insert("live-ticket".to_owned(), 5_000); // still valid
+
+        let removed = evict_expired(&mut consumed, 2_000);
+
+        assert_eq!(removed, 1, "only the expired ticket should be evicted");
+        assert!(
+            !consumed.contains_key("expired-ticket"),
+            "expired ticket is dropped"
+        );
+        assert!(
+            consumed.contains_key("live-ticket"),
+            "unexpired consumed ticket is retained so replay stays blocked"
+        );
+    }
+
+    #[test]
+    fn ticket_hash_is_stable_and_not_the_raw_ticket() {
+        let ticket = "rt_v1.session-1.tenant-1.learner-1.true.2000.nonce-1.sig";
+        let hash = ticket_hash(ticket);
+        assert_eq!(hash, ticket_hash(ticket), "hash is deterministic");
+        assert_ne!(hash, ticket, "the raw ticket is never used as the key");
+        assert_eq!(hash.len(), 64, "sha256 hex digest");
+    }
+
+    #[tokio::test]
+    async fn redis_ticket_dedup_is_unavailable_without_redis() {
+        // With no Redis configured, the shared check reports Unavailable so the caller
+        // degrades to the in-memory set rather than rejecting every connection.
+        let gateway = RealtimeGateway::new(4);
+        let outcome = gateway
+            .redis_mark_ticket(&ticket_hash("some-ticket"), 300)
+            .await;
+        assert_eq!(outcome, TicketDedup::Unavailable);
     }
 
     #[test]
