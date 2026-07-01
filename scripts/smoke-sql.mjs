@@ -32,6 +32,7 @@ const reviewStatusMigrationPaths = [
 const rlsPaths = [
   join("infra", "sql", "0003_tenant_rls.sql"),
   join("infra", "sql", "0009_learner_progress_rls.sql"),
+  join("infra", "sql", "0012_superuser_only_rls_bypass.sql"),
 ];
 const coreSchemaRaw = (await Promise.all(coreSchemaPaths.map((path) => readFile(path, "utf8")))).join("\n");
 const sessionMigrationRaw = await readFile(sessionMigrationPath, "utf8");
@@ -74,6 +75,7 @@ assertIncludes(rlsSchema, "create or replace function app.current_tenant_id()", 
 assertIncludes(rlsSchema, "current_setting('app.tenant_id', true)", "current tenant helper must use app.tenant_id");
 assertIncludes(rlsSchema, "create or replace function app.is_rls_bypass_enabled()", "RLS bypass helper is missing");
 assertIncludes(rlsSchema, "current_setting('app.bypass_rls', true)", "RLS bypass helper must use app.bypass_rls");
+assertIncludes(rlsSchema, "rolsuper", "RLS bypass helper must ignore app.bypass_rls for non-superuser roles");
 assertIncludes(
   reviewStatusSchema,
   "teacher-review-required",
@@ -322,6 +324,19 @@ insert into privacy_jobs (id, tenant_id, learner_id, kind, included_records, del
 
 -- Run RLS visibility checks as a non-superuser role (superusers bypass RLS)
 set role quran_ai_rls_test;
+
+-- Restricted roles must not be able to opt into the maintenance bypass GUC.
+set local app.bypass_rls = 'on';
+set local app.tenant_id = 'tenant-a';
+do $$
+declare
+  visible_count integer;
+begin
+  select count(*) into visible_count from users;
+  if visible_count <> 3 then
+    raise exception 'restricted role bypassed tenant RLS via app.bypass_rls; expected 3 users, got %', visible_count;
+  end if;
+end $$;
 
 ${requiredVisibleChecks}
 

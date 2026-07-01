@@ -13,8 +13,9 @@
 --   psql "$SUPERUSER_URL" -v app_password="$STRONG_PASSWORD" -f infra/sql/rls-app-role.sql
 --   DATABASE_URL=postgresql://quran_ai_app:$STRONG_PASSWORD@host:5432/quran_ai
 --
--- The API sets `app.tenant_id` per request (never `app.bypass_rls`), so this role is
--- always subject to the tenant policies.
+-- The API sets `app.tenant_id` per request. Even if this role sets the custom
+-- `app.bypass_rls` GUC, `app.is_rls_bypass_enabled()` ignores it because the role is
+-- not a superuser, so this role is always subject to the tenant policies.
 
 \set ON_ERROR_STOP on
 

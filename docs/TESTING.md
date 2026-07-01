@@ -59,7 +59,8 @@ PLATFORM_API_SMOKE_URL=http://127.0.0.1:8085 node scripts/smoke-api.mjs
 
 Expected: `status:"pass"`, `sameTenant:200`, `otherTenant:404` (cross-tenant read blocked by
 RLS, not just by the WHERE clause), and no unexpected 500s. The `SET LOCAL app.bypass_rls`
-escape hatch is never set by the API, so this role is always subject to the policies.
+escape hatch is ignored for non-superuser roles, so the app role stays subject to the policies
+even if that custom GUC is set.
 
 The **live SQL RLS smoke** proves the policies in isolation without the app:
 

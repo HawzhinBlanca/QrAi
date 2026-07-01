@@ -14,6 +14,12 @@ language sql
 stable
 as $$
   select coalesce(nullif(current_setting('app.bypass_rls', true), ''), 'off') in ('on', 'true', '1')
+    and exists (
+      select 1
+      from pg_roles
+      where rolname = current_user
+        and rolsuper
+    )
 $$;
 
 alter table users enable row level security;
