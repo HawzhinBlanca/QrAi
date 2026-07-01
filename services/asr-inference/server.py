@@ -148,8 +148,11 @@ async def transcribe(req: TranscribeRequest):
     if not req.audioBase64:
         raise HTTPException(status_code=400, detail="audioBase64 is required")
 
-    # Decode base64 audio → temp file
-    audio_bytes = base64.b64decode(req.audioBase64)
+    # Decode base64 audio → temp file. Malformed base64 is a client error (400), not a 500.
+    try:
+        audio_bytes = base64.b64decode(req.audioBase64, validate=True)
+    except (ValueError, TypeError) as exc:
+        raise HTTPException(status_code=400, detail=f"Invalid base64 audio: {exc}")
     suffix = f".{req.audioFormat}"
 
     with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
@@ -219,7 +222,10 @@ async def force_align(req: ForceAlignRequest):
     if not req.transcript:
         raise HTTPException(status_code=400, detail="transcript is required")
 
-    audio_bytes = base64.b64decode(req.audioBase64)
+    try:
+        audio_bytes = base64.b64decode(req.audioBase64, validate=True)
+    except (ValueError, TypeError) as exc:
+        raise HTTPException(status_code=400, detail=f"Invalid base64 audio: {exc}")
     suffix = f".{req.audioFormat}"
 
     with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
@@ -288,7 +294,10 @@ async def analyze_tajweed(req: TajweedAnalysisRequest):
     if not req.words:
         raise HTTPException(status_code=400, detail="words (with timestamps) are required")
 
-    audio_bytes = base64.b64decode(req.audioBase64)
+    try:
+        audio_bytes = base64.b64decode(req.audioBase64, validate=True)
+    except (ValueError, TypeError) as exc:
+        raise HTTPException(status_code=400, detail=f"Invalid base64 audio: {exc}")
     suffix = f".{req.audioFormat}"
 
     with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:

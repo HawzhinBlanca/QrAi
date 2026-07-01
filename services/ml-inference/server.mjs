@@ -98,6 +98,11 @@ const deletionJobs = new Map();
 // Load surah data cache
 const surahCache = new Map();
 function getSurah(surahNumber) {
+  // Validate BEFORE touching the filesystem so an out-of-range reference is a 400, not a
+  // 500 from readFileSync(ENOENT).
+  if (!Number.isInteger(surahNumber) || surahNumber < 1 || surahNumber > 114) {
+    throw httpError(400, `surahNumber must be an integer 1-114 (got ${surahNumber})`);
+  }
   if (surahCache.has(surahNumber)) return surahCache.get(surahNumber);
   const fileName = `surah-${String(surahNumber).padStart(3, "0")}.json`;
   const data = JSON.parse(readFileSync(join(QURAN_DATA_DIR, fileName), "utf8"));
@@ -107,6 +112,18 @@ function getSurah(surahNumber) {
 
 function getCanonicalWords(surahNumber, ayahStart, ayahEnd) {
   const surah = getSurah(surahNumber);
+  if (
+    !Number.isInteger(ayahStart) ||
+    !Number.isInteger(ayahEnd) ||
+    ayahStart < 1 ||
+    ayahEnd < ayahStart ||
+    ayahStart > surah.ayahs.length
+  ) {
+    throw httpError(
+      400,
+      `invalid ayah range ${ayahStart}-${ayahEnd} for surah ${surahNumber} (${surah.ayahs.length} ayahs)`,
+    );
+  }
   const words = [];
   for (const ayah of surah.ayahs) {
     if (ayah.ayahNumber >= ayahStart && ayah.ayahNumber <= ayahEnd) {

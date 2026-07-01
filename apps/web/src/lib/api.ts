@@ -2,6 +2,8 @@
  * Platform API client — talks to the real Postgres-backed Rust API.
  */
 
+import { fetchWithTimeout } from "./http";
+
 const API_BASE = import.meta.env.VITE_PLATFORM_API_URL || "http://127.0.0.1:8080";
 
 function actorHeaders(tenantId: string, userId: string, role: string, authToken?: string): Record<string, string> {
@@ -93,7 +95,7 @@ export async function createRecitationSession(params: {
   language: string;
   consent: RecitationConsent;
 }): Promise<CreatedSession> {
-  const response = await fetch(`${API_BASE}/v1/recitation-sessions`, {
+  const response = await fetchWithTimeout(`${API_BASE}/v1/recitation-sessions`, {
     method: "POST",
     headers: {
       "content-type": "application/json",
@@ -122,7 +124,7 @@ export async function createRecitationSession(params: {
 }
 
 async function fetchJson(path: string): Promise<unknown> {
-  const response = await fetch(`${API_BASE}${path}`);
+  const response = await fetchWithTimeout(`${API_BASE}${path}`);
   if (!response.ok) {
     throw new Error(`API ${response.status}: ${path}`);
   }
@@ -130,7 +132,7 @@ async function fetchJson(path: string): Promise<unknown> {
 }
 
 async function postJson(path: string, body: unknown): Promise<unknown> {
-  const response = await fetch(`${API_BASE}${path}`, {
+  const response = await fetchWithTimeout(`${API_BASE}${path}`, {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify(body),
@@ -162,7 +164,7 @@ export async function predictAlignment(params: {
   recognizedText?: string[];
 }): Promise<{ alignments: AlignmentResult[]; confidence: number }> {
   const mlBase = import.meta.env.VITE_ML_INFERENCE_URL || "http://127.0.0.1:8090";
-  const response = await fetch(`${mlBase}/v1/alignments:predict`, {
+  const response = await fetchWithTimeout(`${mlBase}/v1/alignments:predict`, {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({
@@ -189,7 +191,7 @@ export async function predictTajweed(params: {
   ayahEnd: number;
 }): Promise<{ findings: TajweedFinding[]; confidence: number }> {
   const mlBase = import.meta.env.VITE_ML_INFERENCE_URL || "http://127.0.0.1:8090";
-  const response = await fetch(`${mlBase}/v1/tajweed-findings:predict`, {
+  const response = await fetchWithTimeout(`${mlBase}/v1/tajweed-findings:predict`, {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({

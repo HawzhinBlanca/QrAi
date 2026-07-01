@@ -114,34 +114,40 @@ export function PlatformCommand({
     setLoaded(false);
 
     async function load() {
-      const [agentRuns, scholarApprovals, teacherReviews, tajweedFindings, benchmarkMetrics, memorizationPlan, sessions] =
-        await Promise.all([
-          fetchAgentRuns(tenantId, authToken),
-          fetchScholarApprovals(tenantId, authToken),
-          fetchTeacherReviewQueue(tenantId, authToken),
-          fetchTajweedFindings(tenantId, authToken),
-          fetchBenchmarkMetrics(tenantId, authToken),
-          fetchMemorizationPlan(tenantId, "learner-1", authToken),
-          fetchRecitationSessions(tenantId, authToken),
-        ]);
+      try {
+        const [agentRuns, scholarApprovals, teacherReviews, tajweedFindings, benchmarkMetrics, memorizationPlan, sessions] =
+          await Promise.all([
+            fetchAgentRuns(tenantId, authToken),
+            fetchScholarApprovals(tenantId, authToken),
+            fetchTeacherReviewQueue(tenantId, authToken),
+            fetchTajweedFindings(tenantId, authToken),
+            fetchBenchmarkMetrics(tenantId, authToken),
+            fetchMemorizationPlan(tenantId, "learner-1", authToken),
+            fetchRecitationSessions(tenantId, authToken),
+          ]);
 
-      const activeSession = sessions[0] ?? null;
-      const sessionAlignments = activeSession
-        ? await fetchSessionAlignments(tenantId, activeSession.id, authToken)
-        : [];
+        const activeSession = sessions[0] ?? null;
+        const sessionAlignments = activeSession
+          ? await fetchSessionAlignments(tenantId, activeSession.id, authToken)
+          : [];
 
-      if (cancelled) return;
-      setData({
-        agentRuns,
-        scholarApprovals,
-        teacherReviews,
-        tajweedFindings,
-        benchmarkMetrics,
-        memorizationPlan,
-        activeSession,
-        sessionAlignments,
-      });
-      setLoaded(true);
+        if (cancelled) return;
+        setData({
+          agentRuns,
+          scholarApprovals,
+          teacherReviews,
+          tajweedFindings,
+          benchmarkMetrics,
+          memorizationPlan,
+          activeSession,
+          sessionAlignments,
+        });
+      } catch {
+        // A failed console fetch must not crash the surface — fall back to empty state.
+        if (!cancelled) setData(EMPTY_CONSOLE);
+      } finally {
+        if (!cancelled) setLoaded(true);
+      }
     }
 
     void load();

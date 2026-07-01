@@ -133,7 +133,7 @@ function AuthenticatedApp({ bypassLogin = false }: { bypassLogin?: boolean }) {
   });
   const [apiError, setApiError] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(false);
-  const asrRef = useState<AsrController | null>(null);
+  const asrRef = useRef<AsrController | null>(null);
   const serverAsrRef = useRef<ServerAsrController | null>(null);
   const visualizerStopRef = useRef<MicVisualizerStop | null>(null);
   const [liveBars, setLiveBars] = useState<number[]>([]);
@@ -156,10 +156,12 @@ function AuthenticatedApp({ bypassLogin = false }: { bypassLogin?: boolean }) {
   const pageTitle = activeSection === "learner" ? (isLearnerHome ? "Learner Home" : "Practice") : "Internal Platform";
 
   useEffect(() => {
-    void loadSurahVerses(1).then(setQuranVerses);
+    void loadSurahVerses(1).then(setQuranVerses).catch(() => {});
     if (effectiveUser) {
-      void loadWeeklyProgress(effectiveUser.tenantId).then(setWeeklyProgress);
-      void fetchMemorizationPlan(effectiveUser.tenantId, effectiveUser.userId, authToken).then(setMemorizationPlan);
+      void loadWeeklyProgress(effectiveUser.tenantId).then(setWeeklyProgress).catch(() => {});
+      void fetchMemorizationPlan(effectiveUser.tenantId, effectiveUser.userId, authToken)
+        .then(setMemorizationPlan)
+        .catch(() => {});
       void fetchLearnerProgress(effectiveUser.tenantId, effectiveUser.userId, authToken)
         .then(setProgress)
         .catch(() => {});
@@ -314,7 +316,7 @@ function AuthenticatedApp({ bypassLogin = false }: { bypassLogin?: boolean }) {
       if (prev) URL.revokeObjectURL(prev);
       return "";
     });
-    void loadSurahVerses(1).then(setQuranVerses);
+    void loadSurahVerses(1).then(setQuranVerses).catch(() => {});
   }
 
   async function runAlignmentAndTajweed(transcript: string) {
@@ -398,7 +400,7 @@ function AuthenticatedApp({ bypassLogin = false }: { bypassLogin?: boolean }) {
         return;
       }
       // Web Speech fallback path (streaming transcript already accumulated).
-      asrRef[0]?.stop();
+      asrRef.current?.stop();
       if (asrTranscript) {
         void runAlignmentAndTajweed(asrTranscript);
       }
@@ -454,7 +456,7 @@ function AuthenticatedApp({ bypassLogin = false }: { bypassLogin?: boolean }) {
           setMicState("denied");
         },
       });
-      asrRef[1](controller);
+      asrRef.current = controller;
       return;
     }
 

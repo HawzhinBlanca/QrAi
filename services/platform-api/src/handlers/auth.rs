@@ -8,9 +8,19 @@ use crate::types::*;
 
 pub async fn issue_token(
     State(state): State<AppState>,
-    _headers: HeaderMap,
+    headers: HeaderMap,
     Json(req): Json<TokenRequest>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
+    // Minting a JWT for an arbitrary user is an admin/ops operation. Without this check
+    // anyone who knows a (user_id, tenant_id, role) tuple could forge a session for any
+    // user, bypassing login entirely. Require an authenticated admin/ops caller, scoped
+    // to their own tenant.
+    let caller = crate::auth::actor_from_headers(&headers, &state.jwt_config)?;
+    caller.require_any(&[ActorRole::Admin, ActorRole::Ops])?;
+    if caller.tenant_id != req.tenant_id {
+        return Err(ApiError::Forbidden);
+    }
+
     // Verify the user exists in the database
     let row = sqlx::query("SELECT id, tenant_id, role FROM users WHERE id = $1 AND tenant_id = $2")
         .bind(&req.user_id)
@@ -36,13 +46,15 @@ pub async fn issue_token(
         .jwt_config
         .issue_token(&req.user_id, &req.tenant_id, &req.role)?;
 
+    // Audit records the REAL caller as actor_id and the target user as subject_id.
     let audit_id = next_id("audit");
     sqlx::query(
         "INSERT INTO audit_events (id, tenant_id, actor_id, action, subject_type, subject_id)
-         VALUES ($1, $2, $3, 'auth.token.issued', 'auth_token', $3)",
+         VALUES ($1, $2, $3, 'auth.token.issued', 'auth_token', $4)",
     )
     .bind(&audit_id)
     .bind(&req.tenant_id)
+    .bind(&caller.user_id)
     .bind(&req.user_id)
     .execute(&state.pool)
     .await?;
