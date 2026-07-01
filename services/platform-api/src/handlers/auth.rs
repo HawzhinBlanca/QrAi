@@ -21,11 +21,13 @@ pub async fn issue_token(
         return Err(ApiError::Forbidden);
     }
 
+    let mut tx = crate::begin_tenant_tx(&state.pool, &caller.tenant_id).await?;
+
     // Verify the user exists in the database
     let row = sqlx::query("SELECT id, tenant_id, role FROM users WHERE id = $1 AND tenant_id = $2")
         .bind(&req.user_id)
         .bind(&req.tenant_id)
-        .fetch_optional(&state.pool)
+        .fetch_optional(&mut *tx)
         .await?
         .ok_or(ApiError::Unauthorized)?;
 
@@ -56,8 +58,10 @@ pub async fn issue_token(
     .bind(&req.tenant_id)
     .bind(&caller.user_id)
     .bind(&req.user_id)
-    .execute(&state.pool)
+    .execute(&mut *tx)
     .await?;
+
+    tx.commit().await?;
 
     Ok(Json(json!({
         "token": token,

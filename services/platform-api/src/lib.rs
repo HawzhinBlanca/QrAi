@@ -169,6 +169,26 @@ async fn health() -> impl IntoResponse {
     (axum::http::StatusCode::OK, "ok")
 }
 
+/// Begin a transaction scoped to a tenant so Postgres Row-Level-Security enforces tenant
+/// isolation at the DATABASE layer (defense in depth on top of the app-level WHERE tenant_id
+/// filters). Uses `set_config(..., is_local => true)` (SET LOCAL) so the context resets when
+/// the transaction ends and the pooled connection is safely reused.
+///
+/// In dev the connection role is a superuser (RLS bypassed), so this is a no-op there and
+/// behavior is unchanged; in production (a restricted, non-superuser role) it activates the
+/// policies defined in infra/sql/0003 + 0009.
+pub async fn begin_tenant_tx<'a>(
+    pool: &'a PgPool,
+    tenant_id: &str,
+) -> Result<sqlx::Transaction<'a, sqlx::Postgres>, sqlx::Error> {
+    let mut tx = pool.begin().await?;
+    sqlx::query("SELECT set_config('app.tenant_id', $1, true)")
+        .bind(tenant_id)
+        .execute(&mut *tx)
+        .await?;
+    Ok(tx)
+}
+
 pub fn realtime_ticket_secret() -> String {
     std::env::var("REALTIME_GATEWAY_TICKET_SECRET").unwrap_or_else(|_| "smoke-secret".to_owned())
 }

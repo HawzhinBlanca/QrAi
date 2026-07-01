@@ -15,6 +15,8 @@ pub async fn create_teacher_review(
     let actor = actor_from_headers(&headers, &state.jwt_config)?;
     actor.require_any(&[ActorRole::Teacher, ActorRole::Admin, ActorRole::Ops])?;
 
+    let mut tx = crate::begin_tenant_tx(&state.pool, &actor.tenant_id).await?;
+
     let review_id = next_id("teacher-review");
     let audit_id = next_id("audit");
     let trace_id = crate::auth::extract_trace_id(&headers);
@@ -33,7 +35,7 @@ pub async fn create_teacher_review(
     .bind(&actor.user_id)
     .bind(&review_id)
     .bind(serde_json::json!({"trace_id": trace_id, "decision": decision_str}))
-    .execute(&state.pool)
+    .execute(&mut *tx)
     .await?;
 
     sqlx::query(
@@ -47,8 +49,10 @@ pub async fn create_teacher_review(
     .bind(decision_str)
     .bind(&req.note)
     .bind(&audit_id)
-    .execute(&state.pool)
+    .execute(&mut *tx)
     .await?;
+
+    tx.commit().await?;
 
     Ok(Json(TeacherReview {
         id: review_id,
@@ -68,12 +72,14 @@ pub async fn list_teacher_review_queue(
     let actor = actor_from_headers(&headers, &state.jwt_config)?;
     actor.require_any(&[ActorRole::Teacher, ActorRole::Admin, ActorRole::Ops])?;
 
+    let mut tx = crate::begin_tenant_tx(&state.pool, &actor.tenant_id).await?;
+
     let rows = sqlx::query(
         "SELECT id, tenant_id, finding_id, teacher_id, decision, note, audit_event_id
          FROM teacher_reviews WHERE tenant_id = $1 ORDER BY created_at DESC",
     )
     .bind(&actor.tenant_id)
-    .fetch_all(&state.pool)
+    .fetch_all(&mut *tx)
     .await?;
 
     let reviews = rows
@@ -98,6 +104,8 @@ pub async fn list_teacher_review_queue(
         })
         .collect();
 
+    tx.commit().await?;
+
     Ok(Json(reviews))
 }
 
@@ -108,6 +116,8 @@ pub async fn create_scholar_approval(
 ) -> Result<Json<ScholarApproval>, ApiError> {
     let actor = actor_from_headers(&headers, &state.jwt_config)?;
     actor.require_any(&[ActorRole::Scholar, ActorRole::Admin, ActorRole::Ops])?;
+
+    let mut tx = crate::begin_tenant_tx(&state.pool, &actor.tenant_id).await?;
 
     if req.status == ScholarDecision::ScholarApproved && req.sources.is_empty() {
         return Err(ApiError::MissingSources);
@@ -140,7 +150,7 @@ pub async fn create_scholar_approval(
     .bind(&actor.user_id)
     .bind(&approval_id)
     .bind(serde_json::json!({"trace_id": trace_id}))
-    .execute(&state.pool)
+    .execute(&mut *tx)
     .await?;
 
     sqlx::query(
@@ -155,8 +165,10 @@ pub async fn create_scholar_approval(
     .bind(risk_str)
     .bind(&sources_json)
     .bind(&audit_id)
-    .execute(&state.pool)
+    .execute(&mut *tx)
     .await?;
+
+    tx.commit().await?;
 
     Ok(Json(ScholarApproval {
         id: approval_id,
@@ -182,12 +194,14 @@ pub async fn list_scholar_approvals(
         ActorRole::Ops,
     ])?;
 
+    let mut tx = crate::begin_tenant_tx(&state.pool, &actor.tenant_id).await?;
+
     let rows = sqlx::query(
         "SELECT id, topic, reviewer_id, status, risk, source_refs
          FROM scholar_approvals WHERE tenant_id = $1 ORDER BY created_at DESC",
     )
     .bind(&actor.tenant_id)
-    .fetch_all(&state.pool)
+    .fetch_all(&mut *tx)
     .await?;
 
     let out = rows
@@ -207,6 +221,8 @@ pub async fn list_scholar_approvals(
         })
         .collect();
 
+    tx.commit().await?;
+
     Ok(Json(out))
 }
 
@@ -224,6 +240,8 @@ pub async fn list_tajweed_findings(
         ActorRole::Ops,
     ])?;
 
+    let mut tx = crate::begin_tenant_tx(&state.pool, &actor.tenant_id).await?;
+
     let rows = sqlx::query(
         "SELECT tf.id, tf.alignment_id, wa.word_id, tf.rule, tf.severity,
                 tf.confidence::float8 AS confidence, tf.explanation, tf.review_status, tf.source_refs
@@ -233,7 +251,7 @@ pub async fn list_tajweed_findings(
          ORDER BY tf.confidence DESC",
     )
     .bind(&actor.tenant_id)
-    .fetch_all(&state.pool)
+    .fetch_all(&mut *tx)
     .await?;
 
     let out = rows
@@ -253,6 +271,8 @@ pub async fn list_tajweed_findings(
             })
         })
         .collect();
+
+    tx.commit().await?;
 
     Ok(Json(out))
 }

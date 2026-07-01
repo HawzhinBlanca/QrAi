@@ -71,12 +71,14 @@ pub async fn get_progress(
         ActorRole::Ops,
     ])?;
 
+    let mut tx = crate::begin_tenant_tx(&state.pool, &actor.tenant_id).await?;
+
     let total_sessions: i64 = sqlx::query_scalar(
         "SELECT COUNT(*) FROM recitation_sessions WHERE tenant_id = $1 AND learner_id = $2",
     )
     .bind(&actor.tenant_id)
     .bind(&actor.user_id)
-    .fetch_one(&state.pool)
+    .fetch_one(&mut *tx)
     .await
     .unwrap_or(0);
 
@@ -86,7 +88,7 @@ pub async fn get_progress(
     )
     .bind(&actor.tenant_id)
     .bind(&actor.user_id)
-    .fetch_all(&state.pool)
+    .fetch_all(&mut *tx)
     .await
     .unwrap_or_default();
     let mastery = if reps.is_empty() {
@@ -101,7 +103,7 @@ pub async fn get_progress(
     )
     .bind(&actor.tenant_id)
     .bind(&actor.user_id)
-    .fetch_one(&state.pool)
+    .fetch_one(&mut *tx)
     .await
     .ok()
     .flatten();
@@ -112,10 +114,12 @@ pub async fn get_progress(
     )
     .bind(&actor.tenant_id)
     .bind(&actor.user_id)
-    .fetch_all(&state.pool)
+    .fetch_all(&mut *tx)
     .await
     .unwrap_or_default();
     let streak = compute_streak(&days);
+
+    tx.commit().await?;
 
     Ok(Json(serde_json::json!({
         "learnerId": actor.user_id,
@@ -166,6 +170,8 @@ pub async fn update_progress(
     let actor = actor_from_headers(&headers, &state.jwt_config)?;
     actor.require_self_or_any(&actor.user_id, &[ActorRole::Admin, ActorRole::Ops])?;
 
+    let mut tx = crate::begin_tenant_tx(&state.pool, &actor.tenant_id).await?;
+
     let current = sqlx::query(
         "SELECT easiness_factor, interval_days, repetitions FROM learner_progress
          WHERE tenant_id = $1 AND learner_id = $2 AND ayah_ref = $3",
@@ -173,7 +179,7 @@ pub async fn update_progress(
     .bind(&actor.tenant_id)
     .bind(&actor.user_id)
     .bind(&req.ayah_ref)
-    .fetch_optional(&state.pool)
+    .fetch_optional(&mut *tx)
     .await?;
 
     let prior = match current {
@@ -205,8 +211,10 @@ pub async fn update_progress(
     .bind(updated.repetitions)
     .bind(req.quality as i32)
     .bind(next_review)
-    .execute(&state.pool)
+    .execute(&mut *tx)
     .await?;
+
+    tx.commit().await?;
 
     Ok(Json(serde_json::json!({
         "learnerId": actor.user_id,

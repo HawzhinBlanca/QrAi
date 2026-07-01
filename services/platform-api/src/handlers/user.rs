@@ -25,10 +25,14 @@ pub async fn register(
     headers: HeaderMap,
     Json(req): Json<RegisterRequest>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
+    // Scope the whole registration to the target tenant so RLS enforces isolation on the
+    // users/audit writes. (institutions is not an RLS table; the tenant-exists check is safe.)
+    let mut tx = crate::begin_tenant_tx(&state.pool, &req.tenant_id).await?;
+
     // Verify tenant exists
     let tenant_exists = sqlx::query("SELECT id FROM institutions WHERE id = $1")
         .bind(&req.tenant_id)
-        .fetch_optional(&state.pool)
+        .fetch_optional(&mut *tx)
         .await?;
 
     if tenant_exists.is_none() {
@@ -55,7 +59,7 @@ pub async fn register(
     if let Some(ref email) = req.email {
         let existing = sqlx::query("SELECT id FROM users WHERE email = $1")
             .bind(email)
-            .fetch_optional(&state.pool)
+            .fetch_optional(&mut *tx)
             .await?;
         if existing.is_some() {
             return Err(ApiError::BadRequest("Email already registered".to_string()));
@@ -85,7 +89,7 @@ pub async fn register(
     .bind(&req.language)
     .bind(&password_hash)
     .bind(&req.email)
-    .execute(&state.pool)
+    .execute(&mut *tx)
     .await?;
 
     // Issue JWT token
@@ -102,8 +106,10 @@ pub async fn register(
     .bind(&audit_id)
     .bind(&req.tenant_id)
     .bind(&user_id)
-    .execute(&state.pool)
+    .execute(&mut *tx)
     .await?;
+
+    tx.commit().await?;
 
     Ok(Json(json!({
         "userId": user_id,
@@ -129,6 +135,9 @@ pub async fn login(
     _headers: HeaderMap,
     Json(req): Json<LoginRequest>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
+    // Scope to the requested tenant so RLS enforces isolation on the users/audit access.
+    let mut tx = crate::begin_tenant_tx(&state.pool, &req.tenant_id).await?;
+
     // Find user by user_id or email
     let row = if let Some(ref email) = req.email {
         sqlx::query(
@@ -136,7 +145,7 @@ pub async fn login(
         )
         .bind(email)
         .bind(&req.tenant_id)
-        .fetch_optional(&state.pool)
+        .fetch_optional(&mut *tx)
         .await?
     } else if let Some(ref user_id) = req.user_id {
         sqlx::query(
@@ -144,7 +153,7 @@ pub async fn login(
         )
         .bind(user_id)
         .bind(&req.tenant_id)
-        .fetch_optional(&state.pool)
+        .fetch_optional(&mut *tx)
         .await?
     } else {
         return Err(ApiError::BadRequest(
@@ -185,8 +194,10 @@ pub async fn login(
     .bind(&audit_id)
     .bind(&tenant_id)
     .bind(&user_id)
-    .execute(&state.pool)
+    .execute(&mut *tx)
     .await?;
+
+    tx.commit().await?;
 
     Ok(Json(json!({
         "userId": user_id,

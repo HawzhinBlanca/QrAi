@@ -250,3 +250,23 @@ fn sm2_spaced_repetition_updates_correctly() {
     assert_eq!(failed.repetitions, 0);
     assert_eq!(failed.interval_days, 1);
 }
+
+/// Proves begin_tenant_tx activates the RLS tenant context at runtime: within the
+/// transaction, `current_setting('app.tenant_id')` equals the actor's tenant. Combined with
+/// the SQL RLS smoke (policies enforce GIVEN that setting), this shows runtime RLS works.
+#[tokio::test]
+#[ignore = "requires live Postgres"]
+async fn begin_tenant_tx_activates_rls_context() {
+    use sqlx::Row;
+    let state = test_state();
+    let mut tx = quran_ai_platform_api::begin_tenant_tx(&state.pool, "tenant-rls-check")
+        .await
+        .expect("begin tenant tx");
+    let row = sqlx::query("SELECT current_setting('app.tenant_id', true) AS t")
+        .fetch_one(&mut *tx)
+        .await
+        .expect("read app.tenant_id");
+    let t: Option<String> = row.try_get("t").unwrap();
+    assert_eq!(t.as_deref(), Some("tenant-rls-check"));
+    tx.commit().await.unwrap();
+}

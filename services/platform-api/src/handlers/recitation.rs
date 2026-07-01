@@ -23,6 +23,8 @@ pub async fn create_session(
     let audit_id = next_id("audit");
     let trace_id = crate::auth::extract_trace_id(&headers);
 
+    let mut tx = crate::begin_tenant_tx(&state.pool, &actor.tenant_id).await?;
+
     sqlx::query(
         "INSERT INTO audit_events (id, tenant_id, actor_id, action, subject_type, subject_id, metadata)
          VALUES ($1, $2, $3, 'recitation.session.started', 'recitation_session', $4, $5)",
@@ -32,7 +34,7 @@ pub async fn create_session(
     .bind(&actor.user_id)
     .bind(&session_id)
     .bind(serde_json::json!({"trace_id": trace_id, "model_version": req.model_version}))
-    .execute(&state.pool)
+    .execute(&mut *tx)
     .await?;
 
     let mode_str = match req.mode {
@@ -69,7 +71,7 @@ pub async fn create_session(
     .bind(req.consent.guardian_approved)
     .bind(&req.consent.consent_version)
     .bind(&audit_id)
-    .execute(&state.pool)
+    .execute(&mut *tx)
     .await?;
 
     sqlx::query(
@@ -92,8 +94,10 @@ pub async fn create_session(
     .bind(&consent_json)
     .bind(&audit_id)
     .bind(&req.language)
-    .execute(&state.pool)
+    .execute(&mut *tx)
     .await?;
+
+    tx.commit().await?;
 
     Ok(Json(RecitationSession {
         id: session_id,
@@ -126,6 +130,8 @@ pub async fn get_session(
         ActorRole::Ops,
     ])?;
 
+    let mut tx = crate::begin_tenant_tx(&state.pool, &actor.tenant_id).await?;
+
     let row = sqlx::query(
         "SELECT id, tenant_id, learner_id, quran_ref, source_checksum,
                 model_version_id, mode, practice_plan_id,
@@ -136,7 +142,7 @@ pub async fn get_session(
     )
     .bind(&id)
     .bind(&actor.tenant_id)
-    .fetch_optional(&state.pool)
+    .fetch_optional(&mut *tx)
     .await?
     .ok_or(ApiError::NotFound)?;
 
@@ -175,6 +181,8 @@ pub async fn get_session(
         _ => ReviewStatus::Draft,
     };
 
+    tx.commit().await?;
+
     Ok(Json(RecitationSession {
         id: row.try_get("id")?,
         tenant_id: row.try_get("tenant_id")?,
@@ -208,12 +216,14 @@ pub async fn list_sessions(
     let actor = actor_from_headers(&headers, &state.jwt_config)?;
     actor.require_any(&[ActorRole::Teacher, ActorRole::Admin, ActorRole::Ops])?;
 
+    let mut tx = crate::begin_tenant_tx(&state.pool, &actor.tenant_id).await?;
+
     let rows = sqlx::query(
         "SELECT id, learner_id, quran_ref, mode, confidence, review_status, started_at, latency_ms
          FROM recitation_sessions WHERE tenant_id = $1 ORDER BY started_at DESC LIMIT 50",
     )
     .bind(&actor.tenant_id)
-    .fetch_all(&state.pool)
+    .fetch_all(&mut *tx)
     .await?;
 
     let out = rows
@@ -237,6 +247,8 @@ pub async fn list_sessions(
         })
         .collect();
 
+    tx.commit().await?;
+
     Ok(Json(out))
 }
 
@@ -248,6 +260,8 @@ pub async fn create_realtime_ticket(
     let actor = actor_from_headers(&headers, &state.jwt_config)?;
     actor.require_any(&[ActorRole::Learner, ActorRole::Admin, ActorRole::Ops])?;
 
+    let mut tx = crate::begin_tenant_tx(&state.pool, &actor.tenant_id).await?;
+
     let row = sqlx::query(
         "SELECT id, tenant_id, learner_id, external_processing_allowed
          FROM recitation_sessions
@@ -255,7 +269,7 @@ pub async fn create_realtime_ticket(
     )
     .bind(&req.session_id)
     .bind(&actor.tenant_id)
-    .fetch_optional(&state.pool)
+    .fetch_optional(&mut *tx)
     .await?
     .ok_or(ApiError::NotFound)?;
 
@@ -308,7 +322,7 @@ pub async fn create_realtime_ticket(
     .bind(&actor.user_id)
     .bind(&ticket_id)
     .bind(serde_json::json!({"trace_id": trace_id}))
-    .execute(&state.pool)
+    .execute(&mut *tx)
     .await?;
 
     sqlx::query(
@@ -326,8 +340,10 @@ pub async fn create_realtime_ticket(
     .bind(&sample_rates_i32)
     .bind(external_asr)
     .bind(&audit_id)
-    .execute(&state.pool)
+    .execute(&mut *tx)
     .await?;
+
+    tx.commit().await?;
 
     Ok(Json(RealtimeSessionTicket {
         session_id,
@@ -351,6 +367,8 @@ pub async fn list_session_alignments(
     let actor = actor_from_headers(&headers, &state.jwt_config)?;
     actor.require_any(&[ActorRole::Teacher, ActorRole::Admin, ActorRole::Ops])?;
 
+    let mut tx = crate::begin_tenant_tx(&state.pool, &actor.tenant_id).await?;
+
     let rows = sqlx::query(
         "SELECT wa.word_id, cw.text_uthmani, wa.heard_text, wa.start_ms, wa.end_ms,
                 wa.confidence::float8 AS confidence, wa.status
@@ -361,7 +379,7 @@ pub async fn list_session_alignments(
     )
     .bind(&id)
     .bind(&actor.tenant_id)
-    .fetch_all(&state.pool)
+    .fetch_all(&mut *tx)
     .await?;
 
     let out = rows
@@ -378,6 +396,8 @@ pub async fn list_session_alignments(
             })
         })
         .collect();
+
+    tx.commit().await?;
 
     Ok(Json(out))
 }

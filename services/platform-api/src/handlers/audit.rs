@@ -14,6 +14,8 @@ pub async fn list_audit_events(
     let actor = actor_from_headers(&headers, &state.jwt_config)?;
     actor.require_any(&[ActorRole::Admin, ActorRole::Ops])?;
 
+    let mut tx = crate::begin_tenant_tx(&state.pool, &actor.tenant_id).await?;
+
     let rows = sqlx::query(
         "SELECT id, tenant_id, actor_id, action, subject_type, subject_id, metadata
          FROM audit_events
@@ -22,7 +24,7 @@ pub async fn list_audit_events(
          LIMIT 200",
     )
     .bind(&actor.tenant_id)
-    .fetch_all(&state.pool)
+    .fetch_all(&mut *tx)
     .await?;
 
     let events = rows
@@ -44,6 +46,8 @@ pub async fn list_audit_events(
             }
         })
         .collect();
+
+    tx.commit().await?;
 
     Ok(Json(events))
 }

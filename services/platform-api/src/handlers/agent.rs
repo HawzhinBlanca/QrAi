@@ -39,6 +39,8 @@ pub async fn create_agent_run(
     let actor = actor_from_headers(&headers, &state.jwt_config)?;
     actor.require_any(&[ActorRole::Scholar, ActorRole::Admin, ActorRole::Ops])?;
 
+    let mut tx = crate::begin_tenant_tx(&state.pool, &actor.tenant_id).await?;
+
     const ALLOWED: [&str; 5] = [
         "queued",
         "running",
@@ -82,7 +84,7 @@ pub async fn create_agent_run(
     .bind(&actor.user_id)
     .bind(&run_id)
     .bind(serde_json::json!({ "trace_id": trace_id }))
-    .execute(&state.pool)
+    .execute(&mut *tx)
     .await?;
 
     sqlx::query(
@@ -100,8 +102,10 @@ pub async fn create_agent_run(
     .bind(&req.sources)
     .bind(&trace)
     .bind(&audit_id)
-    .execute(&state.pool)
+    .execute(&mut *tx)
     .await?;
+
+    tx.commit().await?;
 
     Ok(Json(serde_json::json!({
         "id": run_id,
@@ -127,12 +131,14 @@ pub async fn list_agent_runs(
         ActorRole::Ops,
     ])?;
 
+    let mut tx = crate::begin_tenant_tx(&state.pool, &actor.tenant_id).await?;
+
     let rows = sqlx::query(
         "SELECT id, name, goal, status, confidence, review_status, source_refs, trace
          FROM agent_runs WHERE tenant_id = $1 ORDER BY created_at DESC LIMIT 50",
     )
     .bind(&actor.tenant_id)
-    .fetch_all(&state.pool)
+    .fetch_all(&mut *tx)
     .await?;
 
     let out = rows
@@ -158,6 +164,8 @@ pub async fn list_agent_runs(
             })
         })
         .collect();
+
+    tx.commit().await?;
 
     Ok(Json(out))
 }

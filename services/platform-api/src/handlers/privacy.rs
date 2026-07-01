@@ -32,6 +32,10 @@ async fn create_privacy_job(
     let actor = actor_from_headers(&headers, &state.jwt_config)?;
     actor.require_self_or_any(&req.learner_id, &[ActorRole::Admin, ActorRole::Ops])?;
 
+    // Whole export/delete runs in one tenant-scoped transaction: RLS enforces isolation AND
+    // the multi-table delete cascade is atomic.
+    let mut tx = crate::begin_tenant_tx(&state.pool, &actor.tenant_id).await?;
+
     let kind_str = match kind {
         PrivacyJobKind::Export => "export",
         PrivacyJobKind::Delete => "delete",
@@ -41,7 +45,7 @@ async fn create_privacy_job(
         sqlx::query("SELECT id FROM recitation_sessions WHERE tenant_id = $1 AND learner_id = $2")
             .bind(&actor.tenant_id)
             .bind(&req.learner_id)
-            .fetch_all(&state.pool)
+            .fetch_all(&mut *tx)
             .await?;
 
     let session_ids: Vec<String> = sessions
@@ -54,7 +58,7 @@ async fn create_privacy_job(
     )
     .bind(&actor.tenant_id)
     .bind(&req.learner_id)
-    .fetch_all(&state.pool)
+    .fetch_all(&mut *tx)
     .await?;
 
     let progress_ids: Vec<String> = progress_rows
@@ -97,7 +101,7 @@ async fn create_privacy_job(
     .bind(action)
     .bind(&job_id)
     .bind(serde_json::json!({"trace_id": trace_id, "kind": kind_str}))
-    .execute(&state.pool)
+    .execute(&mut *tx)
     .await?;
 
     sqlx::query(
@@ -111,14 +115,14 @@ async fn create_privacy_job(
     .bind(&included_json)
     .bind(&deleted_json)
     .bind(&audit_id)
-    .execute(&state.pool)
+    .execute(&mut *tx)
     .await?;
 
     if kind == PrivacyJobKind::Delete {
         sqlx::query("DELETE FROM learner_progress WHERE tenant_id = $1 AND learner_id = $2")
             .bind(&actor.tenant_id)
             .bind(&req.learner_id)
-            .execute(&state.pool)
+            .execute(&mut *tx)
             .await?;
 
         // Delete in FK-safe order: teacher_reviews → tajweed_findings → word_alignments → audio_chunks
@@ -126,7 +130,7 @@ async fn create_privacy_job(
             "DELETE FROM teacher_reviews WHERE tenant_id = $1 AND finding_id IN (SELECT id FROM tajweed_findings WHERE tenant_id = $1)",
         )
         .bind(&actor.tenant_id)
-        .execute(&state.pool)
+        .execute(&mut *tx)
         .await?;
 
         sqlx::query(
@@ -134,7 +138,7 @@ async fn create_privacy_job(
         )
         .bind(&actor.tenant_id)
         .bind(&req.learner_id)
-        .execute(&state.pool)
+        .execute(&mut *tx)
         .await?;
 
         sqlx::query(
@@ -142,7 +146,7 @@ async fn create_privacy_job(
         )
         .bind(&actor.tenant_id)
         .bind(&req.learner_id)
-        .execute(&state.pool)
+        .execute(&mut *tx)
         .await?;
 
         // Remaining session-owned rows must be deleted before the sessions themselves, and
@@ -154,7 +158,7 @@ async fn create_privacy_job(
             ))
             .bind(&actor.tenant_id)
             .bind(&req.learner_id)
-            .execute(&state.pool)
+            .execute(&mut *tx)
             .await?;
         }
 
@@ -163,21 +167,23 @@ async fn create_privacy_job(
         )
         .bind(&actor.tenant_id)
         .bind(&req.learner_id)
-        .execute(&state.pool)
+        .execute(&mut *tx)
         .await?;
 
         sqlx::query("DELETE FROM recitation_sessions WHERE tenant_id = $1 AND learner_id = $2")
             .bind(&actor.tenant_id)
             .bind(&req.learner_id)
-            .execute(&state.pool)
+            .execute(&mut *tx)
             .await?;
 
         sqlx::query("DELETE FROM consent_records WHERE tenant_id = $1 AND user_id = $2")
             .bind(&actor.tenant_id)
             .bind(&req.learner_id)
-            .execute(&state.pool)
+            .execute(&mut *tx)
             .await?;
     }
+
+    tx.commit().await?;
 
     Ok(Json(PrivacyJob {
         id: job_id,
