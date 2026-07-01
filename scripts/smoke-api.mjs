@@ -1,6 +1,9 @@
 import { createHmac, randomUUID } from "node:crypto";
+import { existsSync } from "node:fs";
+import { spawn } from "node:child_process";
 
 const baseUrl = process.env.PLATFORM_API_SMOKE_URL ?? "http://127.0.0.1:8080";
+const databaseUrl = process.env.DATABASE_URL ?? "postgresql://hawzhin@localhost:5432/quran_ai";
 const realtimeTicketSecret = process.env.REALTIME_GATEWAY_TICKET_SECRET ?? "smoke-secret";
 const smokeTraceId = process.env.SMOKE_TRACE_ID ?? `smoke-trace-${randomUUID()}`;
 const tenant = process.env.SMOKE_TENANT ?? "hikmah-pilot-erbil";
@@ -104,8 +107,8 @@ if (
   process.exit(1);
 }
 
-// Seed a tajweed finding for the review test (requires FK chain: session → alignment → finding)
-const seedFinding = await request("/v1/teacher-reviews", {
+// Missing findings must be rejected cleanly before insert; this catches FK-driven 500s.
+const missingFindingReview = await request("/v1/teacher-reviews", {
   method: "POST",
   role: "teacher",
   body: JSON.stringify({
@@ -115,12 +118,29 @@ const seedFinding = await request("/v1/teacher-reviews", {
     note: "Smoke review accepted.",
   }),
 });
-// "finding-smoke" does not exist, so the review must be rejected with a clean 404
-// (dangling reference) — NOT a 500 FK error. This asserts the handler validates the
-// referenced finding before inserting.
-const review = seedFinding;
-if (review.response.status !== 404) {
-  console.error(`teacher-review with missing finding expected 404, got ${review.response.status}`);
+if (missingFindingReview.response.status !== 404) {
+  console.error(`teacher-review with missing finding expected 404, got ${missingFindingReview.response.status}`);
+  process.exit(1);
+}
+
+// Success path: seed a real FK chain, then review it through the public API.
+const teacherReviewFindingId = `finding-smoke-${randomUUID()}`;
+await seedTeacherReviewFinding({
+  sessionId: created.body.id,
+  findingId: teacherReviewFindingId,
+});
+const teacherReview = await request("/v1/teacher-reviews", {
+  method: "POST",
+  role: "teacher",
+  body: JSON.stringify({
+    findingId: teacherReviewFindingId,
+    teacherId: "teacher-1",
+    decision: "edited",
+    note: "Smoke review wrote a real teacher decision.",
+  }),
+});
+if (!teacherReview.response.ok || !teacherReview.body?.id) {
+  console.error(`teacher-review success path failed: ${teacherReview.response.status}`);
   process.exit(1);
 }
 
@@ -153,8 +173,10 @@ if (!queue.response.ok || !Array.isArray(queue.body)) {
   console.error(`teacher queue failed: ${queue.response.status}`);
   process.exit(1);
 }
-// Queue may be empty if no findings were seeded — that's OK for smoke.
-// What matters is that the endpoint returns a valid array.
+if (queue.body.length < 1) {
+  console.error("teacher queue smoke expected at least one seeded review item");
+  process.exit(1);
+}
 
 const evalRun = await request("/v1/eval-runs/model-v0.3", { role: "admin" });
 if (
@@ -229,6 +251,7 @@ console.log(
     otherTenant: otherTenant.response.status,
     evalModel: evalRun.body.modelVersion,
     evalPassed: evalRun.body.passed,
+    teacherReview: teacherReview.body.id,
     teacherQueue: queue.body.length,
     scholarApproval: scholarApproval.body?.id ?? "none",
     privacyExport: exported.body.includedRecords.length,
@@ -239,3 +262,108 @@ console.log(
     sm2NextReview: progress.body.nextReviewAt,
   }),
 );
+
+async function seedTeacherReviewFinding({ sessionId, findingId }) {
+  const psql = resolvePsql();
+  const alignmentId = `alignment-smoke-${randomUUID()}`;
+  const auditId = `audit-smoke-${randomUUID()}`;
+  const tenantSql = sqlLiteral(tenant);
+  const sessionSql = sqlLiteral(sessionId);
+  const findingSql = sqlLiteral(findingId);
+  const alignmentSql = sqlLiteral(alignmentId);
+  const auditSql = sqlLiteral(auditId);
+  const traceSql = sqlLiteral(smokeTraceId);
+  const sql = `
+begin;
+set local app.tenant_id = ${tenantSql};
+
+insert into audit_events (id, tenant_id, actor_id, action, subject_type, subject_id, metadata)
+values (${auditSql}, ${tenantSql}, 'teacher-1', 'smoke.teacher-review.seed', 'tajweed_finding', ${findingSql}, jsonb_build_object('trace_id', ${traceSql}));
+
+with source_word as (
+  select id, text_uthmani
+  from canonical_words
+  where ayah_id = '1:1' and word_index = 1
+),
+inserted_alignment as (
+  insert into word_alignments (id, tenant_id, session_id, word_id, heard_text, start_ms, end_ms, confidence, status, model_version_id, audit_event_id)
+  select ${alignmentSql}, ${tenantSql}, ${sessionSql}, id, text_uthmani, 0, 500, 0.72, 'needs-review', 'model-v0.3', ${auditSql}
+  from source_word
+  returning id
+)
+select count(*) from inserted_alignment;
+
+insert into tajweed_findings (id, tenant_id, alignment_id, rule, severity, confidence, explanation, review_status, source_refs, model_version_id, audit_event_id)
+values (
+  ${findingSql},
+  ${tenantSql},
+  ${alignmentSql},
+  'madd',
+  'practice',
+  0.72,
+  'Smoke-seeded finding for public teacher-review write proof.',
+  'teacher-review-required',
+  '[{"id":"smoke-source","title":"Smoke source","citation":"API smoke seeded review prerequisite"}]',
+  'model-v0.3',
+  ${auditSql}
+);
+
+commit;
+`;
+  let result;
+  try {
+    result = await run(psql, [
+      "--set",
+      "ON_ERROR_STOP=1",
+      "--dbname",
+      databaseUrl,
+      "--command",
+      sql,
+    ]);
+  } catch (error) {
+    console.error(`teacher-review smoke seed failed to launch psql: ${error instanceof Error ? error.message : String(error)}`);
+    process.exit(1);
+  }
+  if (result.code !== 0) {
+    console.error(`teacher-review smoke seed failed: ${redactDatabaseUrl(result.stderr || result.stdout)}`);
+    process.exit(1);
+  }
+}
+
+function resolvePsql() {
+  const candidates = [
+    process.env.PSQL,
+    "/opt/homebrew/opt/postgresql@16/bin/psql",
+    "/opt/homebrew/bin/psql",
+    "/usr/local/bin/psql",
+    "psql",
+  ].filter(Boolean);
+  for (const candidate of candidates) {
+    if (candidate.includes("/")) {
+      if (existsSync(candidate)) return candidate;
+      continue;
+    }
+    return candidate;
+  }
+  return "psql";
+}
+
+function run(command, args) {
+  return new Promise((resolve, reject) => {
+    const child = spawn(command, args, { cwd: process.cwd(), env: process.env, stdio: ["ignore", "pipe", "pipe"] });
+    const stdout = [];
+    const stderr = [];
+    child.stdout.on("data", (chunk) => stdout.push(String(chunk)));
+    child.stderr.on("data", (chunk) => stderr.push(String(chunk)));
+    child.on("error", reject);
+    child.on("close", (code) => resolve({ code, stdout: stdout.join(""), stderr: stderr.join("") }));
+  });
+}
+
+function sqlLiteral(value) {
+  return `'${String(value).replace(/'/g, "''")}'`;
+}
+
+function redactDatabaseUrl(value) {
+  return value.replace(/(postgres(?:ql)?:\/\/[^:\s]+:)[^@\s]+@/gi, "$1[REDACTED]@");
+}

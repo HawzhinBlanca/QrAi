@@ -30,7 +30,7 @@
 - [x] Teacher agreement is at least 90% on deterministic smoke eval fixtures.
 - [x] Unsourced or draft religious explanations are blocked from learner display in current contracts, UI copy, and source-backed smoke fixtures.
 - [x] Platform API tenant isolation tests prove one tenant cannot read another tenant's recitation sessions.
-- [x] Platform API smoke issues realtime tickets, checks teacher review queue, validates eval metadata, exercises privacy export/delete jobs, and verifies learner RBAC denial for teacher actions.
+- [x] Platform API smoke issues realtime tickets, writes a real teacher review, checks teacher review queue, validates eval metadata, exercises privacy export/delete jobs, and verifies learner RBAC denial for teacher actions.
 - [ ] Production tenant isolation tests prove one institution cannot read another institution's sessions, reviews, or audio in live Postgres/RLS and object storage.
 - [x] `pnpm smoke:sql` validates tenant RLS policy text plus forced RLS for 14 tenant-owned SQL tables.
 - [x] `SQL_SMOKE_REQUIRE_LIVE=true POSTGRES_RLS_SMOKE_URL=... pnpm smoke:sql` passes against live Postgres.
