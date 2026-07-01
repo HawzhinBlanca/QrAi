@@ -157,9 +157,15 @@ pub fn platform_router_with_rate_limit(state: AppState, rate_limit: bool) -> Rou
         .with_state(state);
 
     let rate_limited = if rate_limit {
+        // per_millisecond/per_second set the REPLENISH PERIOD (time to regain ONE request),
+        // not a rate. The old `per_second(60)` therefore meant "1 request per 60s" after the
+        // burst — a single browser page load (~15 requests) would exhaust a 100 burst in a
+        // few interactions and then get throttled to ~1 req/min. Replenish one request every
+        // 50ms (~20 req/s sustained) with a 200 burst: generous for a real client, still a
+        // backstop against abuse (per peer IP).
         let governor_conf = GovernorConfigBuilder::default()
-            .per_second(60)
-            .burst_size(100)
+            .per_millisecond(50)
+            .burst_size(200)
             .finish()
             .unwrap();
         base_router.layer(GovernorLayer {
