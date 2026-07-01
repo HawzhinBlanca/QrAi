@@ -60,17 +60,11 @@ export function AudioCoach({
         <Volume2 size={16} />
         <span>1.0x</span>
       </div>
-      <div className="waveform" aria-hidden="true">
+      <div className={isRecording ? "waveform live" : "waveform"} aria-hidden="true">
         {bars.map((height, index) => (
           <span
-            className={[
-              index <= activeIndex ? "heard" : "",
-              index === 24 || index === 61 ? "mistake" : "",
-              index === 47 || index === 76 ? "needs-work" : "",
-            ]
-              .filter(Boolean)
-              .join(" ")}
-            key={`${height}-${index}`}
+            className={index <= activeIndex ? "heard" : ""}
+            key={index}
             style={{ height: `${height}%` }}
           />
         ))}

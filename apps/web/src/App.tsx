@@ -14,6 +14,7 @@ import { LoginScreen } from "./components/LoginScreen";
 import { AuthProvider, useAuth } from "./lib/auth";
 import { startAsr, splitTranscript, isAsrSupported, type AsrController } from "./lib/asr";
 import { startServerAsr, isServerAsrSupported, type ServerAsrController } from "./lib/serverAsr";
+import { startMicVisualizer, type MicVisualizerStop } from "./lib/micVisualizer";
 import {
   predictAlignment,
   predictTajweed,
@@ -121,6 +122,8 @@ function AuthenticatedApp({ smokeBypass = false }: { smokeBypass?: boolean }) {
   const [isLoading, setIsLoading] = useState(false);
   const asrRef = useState<AsrController | null>(null);
   const serverAsrRef = useRef<ServerAsrController | null>(null);
+  const visualizerStopRef = useRef<MicVisualizerStop | null>(null);
+  const [liveBars, setLiveBars] = useState<number[]>([]);
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const [isPlaying, setIsPlaying] = useState(false);
 
@@ -329,6 +332,10 @@ function AuthenticatedApp({ smokeBypass = false }: { smokeBypass?: boolean }) {
     // STOP
     if (isRecording) {
       setIsRecording(false);
+      // Stop the live mic waveform.
+      visualizerStopRef.current?.();
+      visualizerStopRef.current = null;
+      setLiveBars([]);
       // Real trained-Quran-model path: transcribe the captured audio on the ASR service.
       if (serverAsrRef.current) {
         const controller = serverAsrRef.current;
@@ -361,6 +368,11 @@ function AuthenticatedApp({ smokeBypass = false }: { smokeBypass?: boolean }) {
     stopPlayback();
     setAsrTranscript("");
     setApiError(null);
+
+    // Live mic waveform (real signal) for the whole recording, regardless of ASR path.
+    void startMicVisualizer(setLiveBars).then((stop) => {
+      visualizerStopRef.current = stop;
+    });
 
     // Prefer the trained Quran ASR model (records audio, transcribes server-side).
     if (isServerAsrSupported()) {
@@ -479,6 +491,7 @@ function AuthenticatedApp({ smokeBypass = false }: { smokeBypass?: boolean }) {
                 onToggleRecording={toggleAsrRecording}
                 isPlaying={isPlaying}
                 onTogglePlay={togglePlay}
+                liveBars={liveBars}
                 selectedWordId={selectedWordId}
                 quranVerses={quranVerses}
                 recitationEvents={recitationEvents}
@@ -720,6 +733,7 @@ function PracticeFlow({
   onToggleRecording,
   isPlaying,
   onTogglePlay,
+  liveBars,
   selectedWordId,
   quranVerses,
   recitationEvents,
@@ -744,6 +758,7 @@ function PracticeFlow({
   onToggleRecording: () => void;
   isPlaying: boolean;
   onTogglePlay: () => void;
+  liveBars: number[];
   selectedWordId: string;
   quranVerses: QuranVerse[];
   recitationEvents: RecitationEvent[];
@@ -821,8 +836,8 @@ function PracticeFlow({
           )}
           <QuranReader activeWordId={activeWordId} onSelectWord={onSelectWord} selectedWordId={selectedWordId} verses={quranVerses} />
           <AudioCoach
-            activeIndex={isRecording ? 58 : activeStepIndex * 12}
-            bars={waveformBars}
+            activeIndex={isRecording ? liveBars.length - 1 : activeStepIndex * 12}
+            bars={isRecording && liveBars.length > 0 ? liveBars : waveformBars}
             isRecording={isRecording}
             isPlaying={isPlaying}
             onToggleRecording={onToggleRecording}

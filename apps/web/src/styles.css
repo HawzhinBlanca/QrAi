@@ -1332,6 +1332,12 @@ button:disabled {
   background: var(--warning);
 }
 
+/* Live mic waveform while recording — bars move with the reciter's voice. */
+.waveform.live span {
+  background: var(--emerald);
+  transition: height 70ms ease-out;
+}
+
 .platform-stage {
   padding: 26px;
 }
