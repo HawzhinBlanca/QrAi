@@ -1,11 +1,119 @@
 use axum::Json;
 use axum::extract::State;
 use axum::http::HeaderMap;
+use serde::Deserialize;
 use sqlx::Row;
 
 use crate::AppState;
 use crate::auth::actor_from_headers;
 use crate::types::*;
+
+fn empty_sources() -> serde_json::Value {
+    serde_json::json!([])
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentRunRequest {
+    pub name: String,
+    pub goal: String,
+    pub status: String,
+    pub confidence: f64,
+    pub review_status: String,
+    #[serde(default = "empty_sources")]
+    pub sources: serde_json::Value,
+    #[serde(default)]
+    pub last_event: String,
+    #[serde(default)]
+    pub finding_id: Option<String>,
+}
+
+/// Record an agent run (written by the supervised agents service). Ops/Admin/Scholar
+/// only. Enforces the source/review gate: an `approved` (learner-facing) run must cite
+/// at least one source, mirroring `canShowLearnerFacingAiOutput` in packages/contracts.
+pub async fn create_agent_run(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(req): Json<AgentRunRequest>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let actor = actor_from_headers(&headers, &state.jwt_config)?;
+    actor.require_any(&[ActorRole::Scholar, ActorRole::Admin, ActorRole::Ops])?;
+
+    const ALLOWED: [&str; 5] = [
+        "queued",
+        "running",
+        "needs-human-review",
+        "approved",
+        "blocked",
+    ];
+    if !ALLOWED.contains(&req.status.as_str()) {
+        return Err(ApiError::BadRequest(format!(
+            "invalid agent run status: {}",
+            req.status
+        )));
+    }
+    if !(0.0..=1.0).contains(&req.confidence) {
+        return Err(ApiError::BadRequest(
+            "confidence must be within [0, 1]".to_owned(),
+        ));
+    }
+    let source_count = req.sources.as_array().map(|a| a.len()).unwrap_or(0);
+    if req.status == "approved" && source_count == 0 {
+        return Err(ApiError::BadRequest(
+            "an approved agent run must cite at least one source".to_owned(),
+        ));
+    }
+
+    let run_id = next_id("agent-run");
+    let audit_id = next_id("audit");
+    let trace_id = crate::auth::extract_trace_id(&headers);
+    let trace = serde_json::json!({
+        "last_event": req.last_event,
+        "finding_id": req.finding_id,
+        "trace_id": trace_id,
+    });
+
+    sqlx::query(
+        "INSERT INTO audit_events (id, tenant_id, actor_id, action, subject_type, subject_id, metadata)
+         VALUES ($1, $2, $3, 'agent.run.recorded', 'agent_run', $4, $5)",
+    )
+    .bind(&audit_id)
+    .bind(&actor.tenant_id)
+    .bind(&actor.user_id)
+    .bind(&run_id)
+    .bind(serde_json::json!({ "trace_id": trace_id }))
+    .execute(&state.pool)
+    .await?;
+
+    sqlx::query(
+        "INSERT INTO agent_runs
+            (id, tenant_id, name, goal, status, confidence, review_status, source_refs, trace, audit_event_id)
+         VALUES ($1, $2, $3, $4, $5, $6::float8::numeric, $7, $8, $9, $10)",
+    )
+    .bind(&run_id)
+    .bind(&actor.tenant_id)
+    .bind(&req.name)
+    .bind(&req.goal)
+    .bind(&req.status)
+    .bind(req.confidence)
+    .bind(&req.review_status)
+    .bind(&req.sources)
+    .bind(&trace)
+    .bind(&audit_id)
+    .execute(&state.pool)
+    .await?;
+
+    Ok(Json(serde_json::json!({
+        "id": run_id,
+        "name": req.name,
+        "goal": req.goal,
+        "status": req.status,
+        "confidence": req.confidence,
+        "reviewStatus": req.review_status,
+        "sources": req.sources,
+        "lastEvent": req.last_event,
+    })))
+}
 
 pub async fn list_agent_runs(
     State(state): State<AppState>,

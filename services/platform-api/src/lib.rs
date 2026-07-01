@@ -98,7 +98,8 @@ pub fn platform_router_with_rate_limit(state: AppState, rate_limit: bool) -> Rou
         )
         .route(
             "/v1/agent-runs",
-            axum::routing::get(handlers::agent::list_agent_runs),
+            axum::routing::get(handlers::agent::list_agent_runs)
+                .post(handlers::agent::create_agent_run),
         )
         .route(
             "/v1/eval-runs/{model_version}",
