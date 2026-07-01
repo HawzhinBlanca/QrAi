@@ -172,6 +172,9 @@ async function startMlService() {
       ...process.env,
       ML_INFERENCE_PORT: String(port),
       ML_EXTERNAL_ASR_TENANTS: "tenant-smoke",
+      // This smoke asserts deterministic golden-fixture behavior, so run ml in fixture
+      // mode (it defaults OFF so learners get real computed alignment).
+      ML_USE_GOLDEN_FIXTURES: "1",
     },
     stdio: ["ignore", "pipe", "pipe"],
   });

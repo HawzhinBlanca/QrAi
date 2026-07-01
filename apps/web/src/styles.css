@@ -1391,9 +1391,14 @@ button:disabled {
   align-items: center;
   gap: 3px;
   overflow: hidden;
+  /* The fixed-width bars must never force the layout wider than its container — shrink
+     and clip on narrow screens instead of overflowing. */
+  flex: 1 1 0;
+  min-width: 0;
 }
 
 .waveform span {
+  flex: 0 0 auto;
   width: 3px;
   min-width: 3px;
   border-radius: 999px;
@@ -2273,6 +2278,27 @@ button:disabled {
 
   .step-chip {
     min-width: 132px;
+  }
+
+  /* Flex/grid children default to min-width:auto (can't shrink below content). Let the
+     whole practice content chain shrink so nothing overflows the mobile viewport. */
+  .workspace,
+  .learner-stage,
+  .practice-main-grid,
+  .learner-reader-column,
+  .reader-panel,
+  .reader-frame,
+  .verse-line,
+  .arabic-line,
+  .audio-coach,
+  .coach-status,
+  .coach-actions {
+    min-width: 0;
+    max-width: 100%;
+  }
+
+  .arabic-line {
+    overflow-wrap: anywhere;
   }
 
   .learner-summary-grid,

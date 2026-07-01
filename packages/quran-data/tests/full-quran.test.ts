@@ -16,11 +16,13 @@ describe("Full Quran data", () => {
     expect(FULL_QURAN_MANIFEST.totalAyahs).toBe(6236);
   });
 
+  // Reads + parses all 114 surah files (~41ms locally). Generous timeout so it doesn't
+  // flake under heavy concurrent load (e.g. proof.sh running inside the smoke suite).
   it("validates all surah files match manifest counts", () => {
     const result = validateFullQuranData();
     expect(result.isValid).toBe(true);
     expect(result.errors).toEqual([]);
-  });
+  }, 60000);
 
   it("gets Al-Fatihah (surah 1) with 7 ayahs and 29 words", () => {
     const surah = getSurah(1);
