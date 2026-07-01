@@ -158,11 +158,13 @@ async fn create_privacy_job(
             .await?;
         }
 
-        sqlx::query("DELETE FROM realtime_session_tickets WHERE tenant_id = $1 AND learner_id = $2")
-            .bind(&actor.tenant_id)
-            .bind(&req.learner_id)
-            .execute(&state.pool)
-            .await?;
+        sqlx::query(
+            "DELETE FROM realtime_session_tickets WHERE tenant_id = $1 AND learner_id = $2",
+        )
+        .bind(&actor.tenant_id)
+        .bind(&req.learner_id)
+        .execute(&state.pool)
+        .await?;
 
         sqlx::query("DELETE FROM recitation_sessions WHERE tenant_id = $1 AND learner_id = $2")
             .bind(&actor.tenant_id)

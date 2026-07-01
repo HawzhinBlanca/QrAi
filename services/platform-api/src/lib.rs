@@ -46,8 +46,18 @@ pub fn platform_router(state: AppState) -> Router {
 }
 
 pub fn platform_router_with_rate_limit(state: AppState, rate_limit: bool) -> Router {
+    // Restrict CORS origins in production via CORS_ALLOWED_ORIGINS (comma-separated).
+    // Unset = permissive (dev/pilot, no-login preview).
+    let allow_origin = match std::env::var("CORS_ALLOWED_ORIGINS") {
+        Ok(v) if !v.trim().is_empty() => {
+            let origins: Vec<axum::http::HeaderValue> =
+                v.split(',').filter_map(|o| o.trim().parse().ok()).collect();
+            tower_http::cors::AllowOrigin::list(origins)
+        }
+        _ => tower_http::cors::AllowOrigin::any(),
+    };
     let cors = CorsLayer::new()
-        .allow_origin(Any)
+        .allow_origin(allow_origin)
         .allow_methods(Any)
         .allow_headers(Any);
 

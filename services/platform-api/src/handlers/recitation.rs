@@ -188,12 +188,14 @@ pub async fn get_session(
         external_processing_allowed: row.try_get("external_processing_allowed")?,
         confidence: row.try_get("confidence").unwrap_or(0.0),
         review_status,
+        // If a session predates consent_snapshot, fall back to the MOST RESTRICTIVE consent
+        // — never fabricate consent (e.g. anonymized-learning) the learner may not have given.
         consent: serde_json::from_value(row.try_get("consent_snapshot")?).unwrap_or(Consent {
             audio_retention: AudioRetention::Discard,
-            anonymized_learning: true,
+            anonymized_learning: false,
             external_asr_processing: false,
             guardian_approved: false,
-            consent_version: "pilot-v1".to_owned(),
+            consent_version: "unknown".to_owned(),
         }),
         audit_event_id: row.try_get("audit_event_id").unwrap_or_default(),
     }))
