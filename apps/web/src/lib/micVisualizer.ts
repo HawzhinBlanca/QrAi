@@ -71,9 +71,13 @@ export async function startMicVisualizer(
 
   return () => {
     stopped = true;
-    cancelAnimationFrame(frame);
-    source.disconnect();
-    stream.getTracks().forEach((track) => track.stop());
-    void audioCtx.close();
+    try {
+      cancelAnimationFrame(frame);
+      source.disconnect();
+      stream.getTracks().forEach((track) => track.stop());
+      void audioCtx.close();
+    } catch {
+      // best-effort cleanup — never throw from teardown
+    }
   };
 }

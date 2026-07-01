@@ -16,6 +16,10 @@ const ASR_BASE = import.meta.env.VITE_ASR_INFERENCE_URL || "http://127.0.0.1:809
 export interface ServerAsrResult {
   transcript: string;
   confidence: number;
+  /** The exact audio the learner recorded — kept so they can play it back. */
+  audioBlob: Blob;
+  /** Set when transcription failed (e.g. ASR service down). The recording is still playable. */
+  error?: string;
 }
 
 export interface StartServerAsrOptions {
@@ -90,9 +94,19 @@ export async function startServerAsr(options: StartServerAsrOptions): Promise<Se
       });
       stream.getTracks().forEach((track) => track.stop());
 
-      const wav = await decodeToWav16kMono(recorded);
-      const transcript = await transcribeWav(wav, options.language ?? "ar");
-      return { transcript, confidence: 0.9 };
+      // Always keep the recording playable, even if the ASR service is unreachable.
+      try {
+        const wav = await decodeToWav16kMono(recorded);
+        const transcript = await transcribeWav(wav, options.language ?? "ar");
+        return { transcript, confidence: 0.9, audioBlob: recorded };
+      } catch (error) {
+        return {
+          transcript: "",
+          confidence: 0,
+          audioBlob: recorded,
+          error: error instanceof Error ? error.message : "transcription failed",
+        };
+      }
     },
   };
 }

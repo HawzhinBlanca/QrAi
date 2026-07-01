@@ -138,6 +138,17 @@ function AuthenticatedApp({ bypassLogin = false }: { bypassLogin?: boolean }) {
   const [liveBars, setLiveBars] = useState<number[]>([]);
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const [isPlaying, setIsPlaying] = useState(false);
+  // The learner's own recorded recitation, kept for playback.
+  const [recordedAudioUrl, setRecordedAudioUrl] = useState<string>("");
+  const recordingAudioRef = useRef<HTMLAudioElement | null>(null);
+  const [isPlayingRecording, setIsPlayingRecording] = useState(false);
+
+  function setRecordedAudio(blob: Blob) {
+    setRecordedAudioUrl((prev) => {
+      if (prev) URL.revokeObjectURL(prev);
+      return URL.createObjectURL(blob);
+    });
+  }
 
   const activeStepIndex = Math.max(0, practiceSteps.findIndex((step) => step.id === practiceMode));
   const isLearnerHome = activeSection === "learner" && practiceMode === "home";
@@ -295,6 +306,12 @@ function AuthenticatedApp({ bypassLogin = false }: { bypassLogin?: boolean }) {
     setAsrTranscript("");
     setRecitationEvents([]);
     setApiError(null);
+    stopPlayback();
+    stopRecordingPlayback();
+    setRecordedAudioUrl((prev) => {
+      if (prev) URL.revokeObjectURL(prev);
+      return "";
+    });
     void loadSurahVerses(1).then(setQuranVerses);
   }
 
@@ -344,8 +361,12 @@ function AuthenticatedApp({ bypassLogin = false }: { bypassLogin?: boolean }) {
     // STOP
     if (isRecording) {
       setIsRecording(false);
-      // Stop the live mic waveform.
-      visualizerStopRef.current?.();
+      // Stop the live mic waveform — must NEVER throw and abort saving the recording.
+      try {
+        visualizerStopRef.current?.();
+      } catch {
+        // ignore visualizer cleanup errors
+      }
       visualizerStopRef.current = null;
       setLiveBars([]);
       // Real trained-Quran-model path: transcribe the captured audio on the ASR service.
@@ -354,15 +375,19 @@ function AuthenticatedApp({ bypassLogin = false }: { bypassLogin?: boolean }) {
         serverAsrRef.current = null;
         setIsLoading(true);
         try {
-          const { transcript } = await controller.stopAndTranscribe();
-          setAsrTranscript(transcript);
-          if (transcript.trim()) {
-            await runAlignmentAndTajweed(transcript);
+          const result = await controller.stopAndTranscribe();
+          // Keep the recording playable regardless of what the ASR service does.
+          setRecordedAudio(result.audioBlob);
+          setAsrTranscript(result.transcript);
+          if (result.error) {
+            setApiError("Saved your recitation — you can play it back. Analysis is offline right now.");
+          } else if (result.transcript.trim()) {
+            await runAlignmentAndTajweed(result.transcript);
           } else {
-            setApiError("No speech detected. Please recite closer to the microphone and try again.");
+            setApiError("We couldn't hear clear speech. Your recording is saved — try reciting a little louder.");
           }
         } catch {
-          setApiError("Could not reach the Quran ASR service (port 8091). Please try again.");
+          setApiError("Could not process the recording. Please try again.");
         } finally {
           setIsLoading(false);
         }
@@ -378,6 +403,7 @@ function AuthenticatedApp({ bypassLogin = false }: { bypassLogin?: boolean }) {
 
     // START
     stopPlayback();
+    stopRecordingPlayback();
     setAsrTranscript("");
     setApiError(null);
 
@@ -474,6 +500,40 @@ function AuthenticatedApp({ bypassLogin = false }: { bypassLogin?: boolean }) {
     playAyah(1);
   }
 
+  function stopRecordingPlayback() {
+    const audio = recordingAudioRef.current;
+    if (audio) {
+      audio.onended = null;
+      audio.onerror = null;
+      audio.pause();
+      recordingAudioRef.current = null;
+    }
+    setIsPlayingRecording(false);
+  }
+
+  // Play back the learner's OWN recording (local blob — always works, no network).
+  function playRecording() {
+    if (!recordedAudioUrl) return;
+    if (recordingAudioRef.current) {
+      stopRecordingPlayback();
+      return;
+    }
+    stopPlayback();
+    setApiError(null);
+    const audio = new Audio(recordedAudioUrl);
+    recordingAudioRef.current = audio;
+    setIsPlayingRecording(true);
+    audio.onended = () => stopRecordingPlayback();
+    audio.onerror = () => {
+      setApiError("Couldn't play that recording.");
+      stopRecordingPlayback();
+    };
+    void audio.play().catch((err: unknown) => {
+      if (err instanceof DOMException && err.name === "AbortError") return;
+      stopRecordingPlayback();
+    });
+  }
+
   return (
     <div className="app-shell">
       <Sidebar activeSection={activeSection} onSectionChange={(section) => setActiveSection(section as AppSection)} />
@@ -503,6 +563,9 @@ function AuthenticatedApp({ bypassLogin = false }: { bypassLogin?: boolean }) {
                 onToggleRecording={toggleAsrRecording}
                 isPlaying={isPlaying}
                 onTogglePlay={togglePlay}
+                hasRecording={!!recordedAudioUrl}
+                isPlayingRecording={isPlayingRecording}
+                onPlayRecording={playRecording}
                 liveBars={liveBars}
                 selectedWordId={selectedWordId}
                 quranVerses={quranVerses}
@@ -745,6 +808,9 @@ function PracticeFlow({
   onToggleRecording,
   isPlaying,
   onTogglePlay,
+  hasRecording,
+  isPlayingRecording,
+  onPlayRecording,
   liveBars,
   selectedWordId,
   quranVerses,
@@ -770,6 +836,9 @@ function PracticeFlow({
   onToggleRecording: () => void;
   isPlaying: boolean;
   onTogglePlay: () => void;
+  hasRecording: boolean;
+  isPlayingRecording: boolean;
+  onPlayRecording: () => void;
   liveBars: number[];
   selectedWordId: string;
   quranVerses: QuranVerse[];
@@ -851,9 +920,13 @@ function PracticeFlow({
             activeIndex={isRecording ? liveBars.length - 1 : activeStepIndex * 12}
             bars={isRecording && liveBars.length > 0 ? liveBars : waveformBars}
             isRecording={isRecording}
-            isPlaying={isPlaying}
+            isAnalyzing={isLoading}
+            hasRecording={hasRecording}
+            isPlayingRecording={isPlayingRecording}
+            isPlayingReference={isPlaying}
             onToggleRecording={onToggleRecording}
-            onTogglePlay={onTogglePlay}
+            onPlayRecording={onPlayRecording}
+            onPlayReference={onTogglePlay}
           />
         </div>
         <aside className="learner-insight-column" aria-label="Practice guidance">
