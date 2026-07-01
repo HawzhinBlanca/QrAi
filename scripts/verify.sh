@@ -62,6 +62,9 @@ run "typecheck: ts" "pnpm --filter @quran-ai/contracts typecheck && pnpm --filte
 if [[ "$FAST" != "--fast" ]]; then
   # --- 3. Test --------------------------------------------------------------
   run "test: ts"                  "pnpm --filter @quran-ai/contracts test && pnpm --filter @quran-ai/quran-data test && pnpm --filter @quran-ai/web test"
+  # Node services (ml-inference, agents) have no pnpm workspace; run their hermetic
+  # node:test suites by explicit path (a dir glob would import server.mjs, which listens).
+  run "test: node services"       "node --test services/ml-inference/alignment.test.mjs services/agents/agents.test.mjs"
   run "test: rust gateway"        "cargo test --manifest-path $GW"
   run "test: rust platform-api"   "cargo test --manifest-path $API"
 

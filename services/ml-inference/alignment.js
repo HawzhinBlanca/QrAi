@@ -117,10 +117,28 @@ export function alignWords(canonicalWords, recognizedWords) {
   return results;
 }
 
+// Per-status weights for the overall confidence score, ordered by how close the
+// recited word was to the canonical text (see alignWords' similarity thresholds):
+//   matched (sim ≥ 0.95) → 1.0   needs-review (0.85–0.95) → 0.8
+//   misread (0.65–0.85)  → 0.5   missed / extra          → 0.0
+// "needs-review" previously scored 0 (identical to a skipped word), which understated
+// accuracy: an ayah recited entirely at 0.85–0.94 similarity reported 0% confidence.
+// It now contributes 0.8 — above "misread", below "matched" — so the score stays
+// monotonic with recitation quality.
+const CONFIDENCE_WEIGHTS = {
+  matched: 1.0,
+  "needs-review": 0.8,
+  misread: 0.5,
+  missed: 0.0,
+  extra: 0.0,
+};
+
 export function calculateConfidence(results) {
   if (results.length === 0) return 0;
-  const matched = results.filter((r) => r.status === "matched").length;
-  const misread = results.filter((r) => r.status === "misread").length;
   const total = results.length;
-  return (matched + misread * 0.5) / total;
+  const weighted = results.reduce(
+    (sum, r) => sum + (CONFIDENCE_WEIGHTS[r.status] ?? 0),
+    0,
+  );
+  return weighted / total;
 }
