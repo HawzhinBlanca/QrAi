@@ -147,11 +147,10 @@ pub fn platform_router_with_rate_limit(state: AppState, rate_limit: bool) -> Rou
             "/v1/learner/progress",
             axum::routing::post(handlers::progress::update_progress),
         )
-        .layer(cors)
         .layer(TraceLayer::new_for_http())
         .with_state(state);
 
-    if rate_limit {
+    let rate_limited = if rate_limit {
         let governor_conf = GovernorConfigBuilder::default()
             .per_second(60)
             .burst_size(100)
@@ -162,7 +161,15 @@ pub fn platform_router_with_rate_limit(state: AppState, rate_limit: bool) -> Rou
         })
     } else {
         base_router
-    }
+    };
+
+    // CORS MUST be the outermost layer. Otherwise the rate limiter (GovernorLayer) sees
+    // requests first: it rate-limits CORS preflight OPTIONS and returns 429s that never pass
+    // back through CorsLayer, so they carry no Access-Control-Allow-Origin header and the
+    // browser rejects them — breaking the whole app during any burst of requests. With CORS
+    // outermost, it short-circuits preflight OPTIONS (never rate-limited) and every response,
+    // including a genuine 429, gets CORS headers the browser can read.
+    rate_limited.layer(cors)
 }
 
 async fn health() -> impl IntoResponse {
