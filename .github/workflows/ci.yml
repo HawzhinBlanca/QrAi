@@ -64,6 +64,14 @@ jobs:
             psql "$DATABASE_URL" -f "$sql"
           done
 
+      # --- Seed the full Quran (canonical_ayahs/words for all 114 surahs) so integration
+      #     tests like gets_quran_surah_list_from_postgres (expects >= 114) hold in CI. The
+      #     migrations above seed only surah NAMES (0007) + Al-Fatihah ayahs (0002). Uses the
+      #     psql-based seed (no `pg` dep); its defaults (localhost/hawzhin/quran_ai) match the
+      #     postgres service, only PSQL needs the ubuntu path. ---
+      - name: Seed full Quran
+        run: PSQL=psql bash packages/quran-data/scripts/seed-full-quran-to-db.sh
+
       # --- The CODYSTEM gate (same script the agent runs locally) ---
       - run: bash scripts/verify.sh
 
