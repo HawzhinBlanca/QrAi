@@ -29,6 +29,64 @@ fn ensure_secure_config() {
     }
 }
 
+fn redact_database_url(database_url: &str) -> String {
+    redact_query_password(&redact_authority_password(database_url))
+}
+
+fn redact_authority_password(database_url: &str) -> String {
+    let Some(scheme_end) = database_url.find("://") else {
+        return database_url.to_owned();
+    };
+    let authority_start = scheme_end + "://".len();
+    let after_scheme = &database_url[authority_start..];
+    let authority_end = after_scheme
+        .find(['/', '?', '#'])
+        .unwrap_or(after_scheme.len());
+    let authority = &after_scheme[..authority_end];
+    let Some(at_index) = authority.rfind('@') else {
+        return database_url.to_owned();
+    };
+    let userinfo = &authority[..at_index];
+    let Some(password_separator) = userinfo.rfind(':') else {
+        return database_url.to_owned();
+    };
+
+    format!(
+        "{}{}:***@{}{}",
+        &database_url[..authority_start],
+        &userinfo[..password_separator],
+        &authority[at_index + 1..],
+        &after_scheme[authority_end..]
+    )
+}
+
+fn redact_query_password(database_url: &str) -> String {
+    let Some(query_start) = database_url.find('?') else {
+        return database_url.to_owned();
+    };
+    let (prefix, query_and_fragment) = database_url.split_at(query_start + 1);
+    let (query, fragment) = query_and_fragment
+        .split_once('#')
+        .map(|(query, fragment)| (query, format!("#{fragment}")))
+        .unwrap_or((query_and_fragment, String::new()));
+    let redacted_query = query
+        .split('&')
+        .map(|part| {
+            let Some((key, _value)) = part.split_once('=') else {
+                return part.to_owned();
+            };
+            if key.eq_ignore_ascii_case("password") {
+                format!("{key}=***")
+            } else {
+                part.to_owned()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("&");
+
+    format!("{prefix}{redacted_query}{fragment}")
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     ensure_secure_config();
@@ -48,7 +106,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .connect(&database_url)
         .await
         .map_err(|e| {
-            eprintln!("Failed to connect to Postgres at {database_url}: {e}");
+            eprintln!(
+                "Failed to connect to Postgres at {}: {e}",
+                redact_database_url(&database_url)
+            );
             e
         })?;
 
@@ -71,4 +132,35 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     .await?;
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::redact_database_url;
+
+    #[test]
+    fn redacts_password_in_database_url_authority() {
+        assert_eq!(
+            redact_database_url("postgresql://api_user:secret-password@db.internal:5432/quran_ai"),
+            "postgresql://api_user:***@db.internal:5432/quran_ai"
+        );
+    }
+
+    #[test]
+    fn redacts_password_query_parameter() {
+        assert_eq!(
+            redact_database_url(
+                "postgresql://db.internal/quran_ai?sslmode=require&password=secret-password"
+            ),
+            "postgresql://db.internal/quran_ai?sslmode=require&password=***"
+        );
+    }
+
+    #[test]
+    fn leaves_passwordless_database_url_readable() {
+        assert_eq!(
+            redact_database_url("postgresql://db.internal:5432/quran_ai"),
+            "postgresql://db.internal:5432/quran_ai"
+        );
+    }
 }
