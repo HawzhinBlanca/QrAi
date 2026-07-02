@@ -36,10 +36,10 @@
 - [x] `SQL_SMOKE_REQUIRE_LIVE=true POSTGRES_RLS_SMOKE_URL=... pnpm smoke:sql` passes against live Postgres.
 - [x] `pnpm smoke:api` creates a tenant-scoped session, verifies cross-tenant 404, and checks eval lookup on the running API.
 - [x] `pnpm smoke:ml` proves local ML service health, deterministic Al-Fatihah + Juz Amma golden cases, source-backed tajweed fixtures, eval threshold gate, and external ASR consent audit.
-- [x] `pnpm smoke:privacy` proves external ASR denial without consent, child-profile guardian gating, opt-in ASR audit, privacy export, and deletion job behavior.
+- [x] `pnpm smoke:privacy` proves external ASR denial without consent, child-profile guardian gating, opt-in ASR audit, discard-mode export, retained-audio object export, and deletion of retained local audio blobs plus metadata sidecars.
 - [x] `pnpm smoke:all` runs proof plus SQL, browser, API, gateway, ML, and privacy smoke with retained artifacts.
 - [x] `pnpm smoke:all` retains one `SMOKE_TRACE_ID` across the aggregate summary, browser artifact summary, Platform API audit events, realtime gateway ack, ML traces/audit events, and privacy export/delete report.
-- [x] Audio deletion/export smoke tests prove privacy controls work for the current local service boundary.
+- [x] Audio deletion/export smoke tests prove retained local audio blobs and metadata sidecars are exported and deleted for the current local service boundary.
 - [ ] Pilot report covers latency, teacher agreement, learner retention, review-time reduction, model accuracy, and governance incidents.
 
 ## Latest Full Smoke Artifact

@@ -64,31 +64,40 @@ async function storeAudioObject(tenantId, learnerId, chunkId, audioBytes) {
 
 async function deleteAudioObjects(tenantId, learnerId) {
   const tenantDir = join(AUDIO_STORAGE_DIR, tenantId, learnerId);
-  let deletedKeys = [];
+  const deletedAudioObjectKeys = [];
+  const deletedMetadataObjectKeys = [];
   if (existsSync(tenantDir)) {
     const { readdirSync, unlinkSync, rmdirSync } = await import("node:fs");
     const files = readdirSync(tenantDir);
     for (const file of files) {
       if (file.endsWith(".bin")) {
         unlinkSync(join(tenantDir, file));
-        deletedKeys.push(`${tenantId}/${learnerId}/${file}`);
+        deletedAudioObjectKeys.push(`${tenantId}/${learnerId}/${file}`);
+      } else if (file.endsWith(".meta.json")) {
+        unlinkSync(join(tenantDir, file));
+        deletedMetadataObjectKeys.push(`${tenantId}/${learnerId}/${file}`);
       }
     }
     try { rmdirSync(tenantDir); } catch {}
   }
-  return deletedKeys;
+  return { deletedAudioObjectKeys, deletedMetadataObjectKeys };
 }
 
 async function listAudioObjects(tenantId, learnerId) {
   const tenantDir = join(AUDIO_STORAGE_DIR, tenantId, learnerId);
-  let keys = [];
+  let audioObjectKeys = [];
+  let metadataObjectKeys = [];
   if (existsSync(tenantDir)) {
     const { readdirSync } = await import("node:fs");
-    keys = readdirSync(tenantDir)
-      .filter(f => f.endsWith(".bin"))
-      .map(f => `${tenantId}/${learnerId}/${f}`);
+    const files = readdirSync(tenantDir);
+    audioObjectKeys = files
+      .filter((file) => file.endsWith(".bin"))
+      .map((file) => `${tenantId}/${learnerId}/${file}`);
+    metadataObjectKeys = files
+      .filter((file) => file.endsWith(".meta.json"))
+      .map((file) => `${tenantId}/${learnerId}/${file}`);
   }
-  return keys;
+  return { audioObjectKeys, metadataObjectKeys };
 }
 
 const auditEvents = [];
@@ -525,13 +534,14 @@ async function exportPrivacy(requestBody) {
   appendAudit(tenantId, "privacy.export.requested", learnerId, { traceId });
 
   // List audio files for this tenant/learner
-  const audioObjectKeys = await listAudioObjects(tenantId, learnerId);
+  const { audioObjectKeys, metadataObjectKeys } = await listAudioObjects(tenantId, learnerId);
 
   return {
     traceId,
     tenantId,
     learnerId,
     audioObjectKeys,
+    metadataObjectKeys,
     externalAsrCalls: auditEvents.filter(
       (event) => event.tenantId === tenantId && event.action === "privacy.external-asr.called",
     ),
@@ -548,7 +558,7 @@ async function deletePrivacy(requestBody) {
   const traceId = extractTraceId(requestBody);
 
   // Delete audio files
-  const deletedKeys = await deleteAudioObjects(tenantId, learnerId);
+  const { deletedAudioObjectKeys, deletedMetadataObjectKeys } = await deleteAudioObjects(tenantId, learnerId);
 
   const job = {
     id: `privacy-delete-${randomUUID()}`,
@@ -556,12 +566,18 @@ async function deletePrivacy(requestBody) {
     tenantId,
     learnerId,
     status: "completed",
-    deletedAudioObjectKeys: deletedKeys,
+    deletedAudioObjectKeys,
+    deletedMetadataObjectKeys,
     tombstonedDerivedRecords: true,
     completedAt: new Date().toISOString(),
   };
   deletionJobs.set(job.id, job);
-  appendAudit(tenantId, "privacy.delete.requested", learnerId, { jobId: job.id, traceId, deletedKeys });
+  appendAudit(tenantId, "privacy.delete.requested", learnerId, {
+    jobId: job.id,
+    traceId,
+    deletedAudioObjectKeys,
+    deletedMetadataObjectKeys,
+  });
   return job;
 }
 

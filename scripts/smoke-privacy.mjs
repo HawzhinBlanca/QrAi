@@ -8,6 +8,8 @@ const providedUrl = process.env.ML_INFERENCE_SMOKE_URL;
 const artifactRoot = process.env.SMOKE_ARTIFACT_DIR ?? join("out", "smoke", new Date().toISOString().replace(/[:.]/g, "-"));
 const artifactDir = join(artifactRoot, "privacy");
 const smokeTraceId = process.env.SMOKE_TRACE_ID ?? `smoke-trace-${randomUUID()}`;
+const retainedLearnerId = `learner-retained-${randomUUID()}`;
+const retainedChunkId = `chunk-retained-${randomUUID()}`;
 
 await mkdir(artifactDir, { recursive: true });
 
@@ -49,6 +51,7 @@ try {
   });
   assert(exported.traceId === smokeTraceId, "privacy export dropped smoke trace id");
   assert(exported.audioObjectKeys.length === 0, "discard-mode smoke should not persist audio object keys");
+  assert(exported.metadataObjectKeys.length === 0, "discard-mode smoke should not persist audio metadata keys");
   assert(exported.externalAsrCalls.length === 1, "privacy export did not include opted-in external ASR audit");
   assert(exported.deniedExternalAsr.length >= 2, "privacy export did not include denial audits");
   assert(
@@ -64,7 +67,56 @@ try {
   assert(deletion.traceId === smokeTraceId, "privacy delete dropped smoke trace id");
   assert(deletion.status === "completed", "privacy delete job did not complete");
   assert(deletion.deletedAudioObjectKeys.length === 0, "privacy delete reported unexpected audio keys");
+  assert(deletion.deletedMetadataObjectKeys.length === 0, "privacy delete reported unexpected metadata keys");
   assert(deletion.tombstonedDerivedRecords === true, "privacy delete did not tombstone derived records");
+
+  const retainedAudio = await postJson("/v1/audio-chunks", {
+    tenantId: "tenant-smoke",
+    learnerId: retainedLearnerId,
+    sessionId: `session-retained-${randomUUID()}`,
+    chunkId: retainedChunkId,
+    sampleRate: 16000,
+    startMs: 0,
+    endMs: 640,
+    audioBase64: Buffer.from("retained-audio-smoke").toString("base64"),
+    traceId: smokeTraceId,
+  });
+  assert(retainedAudio.stored === true, "retained audio chunk was not stored");
+  assert(
+    retainedAudio.objectKey === `tenant-smoke/${retainedLearnerId}/${retainedChunkId}.bin`,
+    `retained audio object key was unexpected: ${JSON.stringify(retainedAudio)}`,
+  );
+
+  const retainedExport = await postJson("/v1/privacy/export", {
+    tenantId: "tenant-smoke",
+    traceId: smokeTraceId,
+    learnerId: retainedLearnerId,
+  });
+  assert(retainedExport.audioObjectKeys.length === 1, "retained audio export did not include the audio object");
+  assert(
+    retainedExport.metadataObjectKeys.length === 1,
+    `retained audio export did not include metadata sidecar: ${JSON.stringify(retainedExport)}`,
+  );
+
+  const retainedDeletion = await postJson("/v1/privacy/delete", {
+    tenantId: "tenant-smoke",
+    traceId: smokeTraceId,
+    learnerId: retainedLearnerId,
+  });
+  assert(retainedDeletion.status === "completed", "retained audio delete job did not complete");
+  assert(retainedDeletion.deletedAudioObjectKeys.length === 1, "retained audio delete did not remove audio object");
+  assert(
+    retainedDeletion.deletedMetadataObjectKeys.length === 1,
+    `retained audio delete did not remove metadata sidecar: ${JSON.stringify(retainedDeletion)}`,
+  );
+
+  const retainedAfterDelete = await postJson("/v1/privacy/export", {
+    tenantId: "tenant-smoke",
+    traceId: smokeTraceId,
+    learnerId: retainedLearnerId,
+  });
+  assert(retainedAfterDelete.audioObjectKeys.length === 0, "retained audio object remained after delete");
+  assert(retainedAfterDelete.metadataObjectKeys.length === 0, "retained metadata sidecar remained after delete");
 
   const summary = {
     traceId: smokeTraceId,
@@ -73,11 +125,21 @@ try {
     allowed: allowed.externalAsr,
     export: {
       audioObjectKeys: exported.audioObjectKeys.length,
+      metadataObjectKeys: exported.metadataObjectKeys.length,
       externalAsrCalls: exported.externalAsrCalls.length,
       deniedExternalAsr: exported.deniedExternalAsr.length,
       auditEvents: exported.auditEvents.length,
     },
     deletion,
+    retainedAudio: {
+      objectKey: retainedAudio.objectKey,
+      exportAudioObjectKeys: retainedExport.audioObjectKeys.length,
+      exportMetadataObjectKeys: retainedExport.metadataObjectKeys.length,
+      deletedAudioObjectKeys: retainedDeletion.deletedAudioObjectKeys.length,
+      deletedMetadataObjectKeys: retainedDeletion.deletedMetadataObjectKeys.length,
+      postDeleteAudioObjectKeys: retainedAfterDelete.audioObjectKeys.length,
+      postDeleteMetadataObjectKeys: retainedAfterDelete.metadataObjectKeys.length,
+    },
   };
 
   await writeFile(join(artifactDir, "privacy-report.json"), JSON.stringify(summary, null, 2));
@@ -140,6 +202,7 @@ async function startMlService() {
       ...process.env,
       ML_INFERENCE_PORT: String(port),
       ML_EXTERNAL_ASR_TENANTS: "tenant-smoke",
+      AUDIO_STORAGE_DIR: join(artifactDir, "audio-storage"),
     },
     stdio: ["ignore", "pipe", "pipe"],
   });
