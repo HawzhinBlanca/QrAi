@@ -11,6 +11,8 @@ no `?smoke` param. See `docs/DECISIONS.md` ADR-0002.
   learner.
 - **To enable login for production (owner-authorized only):** build with
   `VITE_REQUIRE_LOGIN=1`.
+- Login-enabled builds use the real login/register flow. There is no silent dev
+  auto-login credential in the browser bundle.
 
 ## Dev
 

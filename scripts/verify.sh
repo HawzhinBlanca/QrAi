@@ -79,6 +79,7 @@ if [[ "$FAST" != "--fast" ]]; then
 
   # --- 4. Build -------------------------------------------------------------
   run "build" "pnpm --filter @quran-ai/contracts build && pnpm --filter @quran-ai/quran-data build && pnpm --filter @quran-ai/web build"
+  run "guard: web production bundle secrets" "node scripts/check-web-bundle-secrets.mjs"
 fi
 
 if [[ "$fail" -ne 0 ]]; then
