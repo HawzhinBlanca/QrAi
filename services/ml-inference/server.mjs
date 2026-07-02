@@ -45,6 +45,9 @@ mkdirSync(AUDIO_STORAGE_DIR, { recursive: true });
 const ASR_SERVICE_URL = process.env.ASR_SERVICE_URL ?? "http://127.0.0.1:8091";
 
 async function storeAudioObject(tenantId, learnerId, chunkId, audioBytes) {
+  tenantId = safeStorageSegment(tenantId, "tenantId");
+  learnerId = safeStorageSegment(learnerId, "learnerId");
+  chunkId = safeStorageSegment(chunkId, "chunkId");
   const objectKey = `${tenantId}/${learnerId}/${chunkId}.bin`;
   if (AUDIO_STORAGE_DRIVER === "s3") {
     // S3/MinIO storage (when configured)
@@ -63,6 +66,8 @@ async function storeAudioObject(tenantId, learnerId, chunkId, audioBytes) {
 }
 
 async function deleteAudioObjects(tenantId, learnerId) {
+  tenantId = safeStorageSegment(tenantId, "tenantId");
+  learnerId = safeStorageSegment(learnerId, "learnerId");
   const tenantDir = join(AUDIO_STORAGE_DIR, tenantId, learnerId);
   const deletedAudioObjectKeys = [];
   const deletedMetadataObjectKeys = [];
@@ -84,6 +89,8 @@ async function deleteAudioObjects(tenantId, learnerId) {
 }
 
 async function listAudioObjects(tenantId, learnerId) {
+  tenantId = safeStorageSegment(tenantId, "tenantId");
+  learnerId = safeStorageSegment(learnerId, "learnerId");
   const tenantDir = join(AUDIO_STORAGE_DIR, tenantId, learnerId);
   let audioObjectKeys = [];
   let metadataObjectKeys = [];
@@ -224,6 +231,22 @@ function requiredString(value, fieldName) {
     throw httpError(400, `${fieldName} is required`);
   }
   return value;
+}
+
+function safeStorageSegment(value, fieldName) {
+  const segment = requiredString(value, fieldName);
+  if (
+    segment === "." ||
+    segment === ".." ||
+    segment.includes("..") ||
+    segment.includes("/") ||
+    segment.includes("\\") ||
+    segment.includes("\0") ||
+    !/^[A-Za-z0-9][A-Za-z0-9._:-]*$/.test(segment)
+  ) {
+    throw httpError(400, `${fieldName} must be a safe storage path segment`);
+  }
+  return segment;
 }
 
 function httpError(status, message) {
@@ -528,8 +551,8 @@ async function createEvalRun(requestBody) {
 
 // === Privacy ===
 async function exportPrivacy(requestBody) {
-  const tenantId = requiredString(requestBody.tenantId, "tenantId");
-  const learnerId = requiredString(requestBody.learnerId, "learnerId");
+  const tenantId = safeStorageSegment(requestBody.tenantId, "tenantId");
+  const learnerId = safeStorageSegment(requestBody.learnerId, "learnerId");
   const traceId = extractTraceId(requestBody);
   appendAudit(tenantId, "privacy.export.requested", learnerId, { traceId });
 
@@ -553,8 +576,8 @@ async function exportPrivacy(requestBody) {
 }
 
 async function deletePrivacy(requestBody) {
-  const tenantId = requiredString(requestBody.tenantId, "tenantId");
-  const learnerId = requiredString(requestBody.learnerId, "learnerId");
+  const tenantId = safeStorageSegment(requestBody.tenantId, "tenantId");
+  const learnerId = safeStorageSegment(requestBody.learnerId, "learnerId");
   const traceId = extractTraceId(requestBody);
 
   // Delete audio files
@@ -583,10 +606,10 @@ async function deletePrivacy(requestBody) {
 
 // === Audio chunk storage ===
 async function storeAudioChunk(requestBody) {
-  const tenantId = requiredString(requestBody.tenantId, "tenantId");
-  const learnerId = requiredString(requestBody.learnerId, "learnerId");
+  const tenantId = safeStorageSegment(requestBody.tenantId, "tenantId");
+  const learnerId = safeStorageSegment(requestBody.learnerId, "learnerId");
   const sessionId = requiredString(requestBody.sessionId, "sessionId");
-  const chunkId = requiredString(requestBody.chunkId, "chunkId");
+  const chunkId = safeStorageSegment(requestBody.chunkId, "chunkId");
 
   const tenantDir = join(AUDIO_STORAGE_DIR, tenantId, learnerId);
   mkdirSync(tenantDir, { recursive: true });

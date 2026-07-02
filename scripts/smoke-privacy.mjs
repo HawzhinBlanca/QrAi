@@ -70,6 +70,22 @@ try {
   assert(deletion.deletedMetadataObjectKeys.length === 0, "privacy delete reported unexpected metadata keys");
   assert(deletion.tombstonedDerivedRecords === true, "privacy delete did not tombstone derived records");
 
+  const traversalStore = await postRaw("/v1/audio-chunks", {
+    tenantId: "tenant-smoke",
+    learnerId: "../learner-path-escape",
+    sessionId: `session-traversal-${randomUUID()}`,
+    chunkId: "chunk-traversal",
+    sampleRate: 16000,
+    startMs: 0,
+    endMs: 640,
+    audioBase64: Buffer.from("path-traversal-smoke").toString("base64"),
+    traceId: smokeTraceId,
+  });
+  assert(
+    traversalStore.response.status === 400,
+    `path traversal learner id should be rejected with 400, got ${traversalStore.response.status}: ${JSON.stringify(traversalStore.body)}`,
+  );
+
   const retainedAudio = await postJson("/v1/audio-chunks", {
     tenantId: "tenant-smoke",
     learnerId: retainedLearnerId,
@@ -131,6 +147,7 @@ try {
       auditEvents: exported.auditEvents.length,
     },
     deletion,
+    traversalRejectedStatus: traversalStore.response.status,
     retainedAudio: {
       objectKey: retainedAudio.objectKey,
       exportAudioObjectKeys: retainedExport.audioObjectKeys.length,
@@ -180,6 +197,14 @@ function consent(isAllowed) {
 }
 
 async function postJson(path, body) {
+  const { response, body: payload, text } = await postRaw(path, body);
+  if (!response.ok) {
+    throw new Error(`${path} failed ${response.status}: ${text}`);
+  }
+  return payload;
+}
+
+async function postRaw(path, body) {
   const response = await fetch(`${baseUrl}${path}`, {
     method: "POST",
     headers: { "content-type": "application/json" },
@@ -187,10 +212,7 @@ async function postJson(path, body) {
   });
   const text = await response.text();
   const payload = text ? JSON.parse(text) : null;
-  if (!response.ok) {
-    throw new Error(`${path} failed ${response.status}: ${text}`);
-  }
-  return payload;
+  return { response, body: payload, text };
 }
 
 async function startMlService() {

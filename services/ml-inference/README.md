@@ -26,6 +26,9 @@ Non-opted-in requests stay local and are marked `teacher-review-required` when
 Retained audio privacy behavior:
 
 - `/v1/audio-chunks` writes an audio object plus a metadata sidecar for retained chunks.
+- Filesystem-backed storage IDs (`tenantId`, `learnerId`, `chunkId`) must be safe
+  path segments: no traversal markers, slashes, backslashes, NUL, whitespace, or
+  shell-style path characters.
 - `/v1/privacy/export` reports both `audioObjectKeys` and `metadataObjectKeys`.
 - `/v1/privacy/delete` removes both object classes for the requested tenant/learner and
   reports `deletedAudioObjectKeys` plus `deletedMetadataObjectKeys`.
