@@ -48,6 +48,8 @@ alter table privacy_jobs enable row level security;
 alter table privacy_jobs force row level security;
 alter table audit_events enable row level security;
 alter table audit_events force row level security;
+alter table eval_runs enable row level security;
+alter table eval_runs force row level security;
 
 create policy tenant_isolation_users
   on users
@@ -123,6 +125,12 @@ create policy tenant_isolation_privacy_jobs
 
 create policy tenant_isolation_audit_events
   on audit_events
+  for all
+  using (app.is_rls_bypass_enabled() or tenant_id = app.current_tenant_id())
+  with check (app.is_rls_bypass_enabled() or tenant_id = app.current_tenant_id());
+
+create policy tenant_isolation_eval_runs
+  on eval_runs
   for all
   using (app.is_rls_bypass_enabled() or tenant_id = app.current_tenant_id())
   with check (app.is_rls_bypass_enabled() or tenant_id = app.current_tenant_id());

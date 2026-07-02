@@ -76,14 +76,34 @@ export function getCanonicalSourceManifest(sourceId: CanonicalSourceManifest["id
 
 export function validateCanonicalImportBundle(bundle: CanonicalImportBundle): CanonicalImportValidation {
   const errors: string[] = [];
-  const expectedWordCount = FATIHAH_SEED.reduce((sum, ayah) => sum + ayah.words.length, 0);
+  
+  let expectedWordCount = 0;
+  let expectedAyahCount = 0;
 
-  if (bundle.ayahs.length !== 7) {
-    errors.push(`Expected 7 Al-Fatihah ayahs, found ${bundle.ayahs.length}.`);
+  for (const ayah of bundle.ayahs) {
+    const parts = ayah.id.split(":");
+    const surahNum = parseInt(parts[0], 10);
+    const ayahNum = parseInt(parts[1], 10);
+
+    const seedAyah = FATIHAH_SEED.find(
+      (s) => s.surahNumber === surahNum && s.ayahNumber === ayahNum
+    );
+
+    if (seedAyah) {
+      expectedWordCount += seedAyah.words.length;
+      expectedAyahCount += 1;
+    } else {
+      expectedWordCount += ayah.wordCount;
+      expectedAyahCount += 1;
+    }
+  }
+
+  if (bundle.ayahs.length !== expectedAyahCount) {
+    errors.push(`Expected ${expectedAyahCount} ayahs, found ${bundle.ayahs.length}.`);
   }
 
   if (bundle.words.length !== expectedWordCount) {
-    errors.push(`Expected ${expectedWordCount} Al-Fatihah words, found ${bundle.words.length}.`);
+    errors.push(`Expected ${expectedWordCount} words, found ${bundle.words.length}.`);
   }
 
   for (const ayah of bundle.ayahs) {

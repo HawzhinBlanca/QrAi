@@ -18,6 +18,7 @@ const tenantTables = [
   "learner_progress",
   "privacy_jobs",
   "audit_events",
+  "eval_runs",
 ];
 
 const coreSchemaPaths = [
@@ -166,6 +167,7 @@ function buildLiveSmokeSql() {
     learner_progress: 1,
     privacy_jobs: 1,
     audit_events: 1,
+    eval_runs: 1,
   };
 
   const requiredVisibleChecks = tenantTables
@@ -319,6 +321,10 @@ insert into agent_runs (id, tenant_id, name, goal, status, confidence, review_st
 insert into privacy_jobs (id, tenant_id, learner_id, kind, included_records, deleted_records, audio_object_keys_deleted, audit_event_id) values
   ('privacy-a', 'tenant-a', 'learner-a', 'export', '["session-a"]', '[]', '[]', 'audit-a'),
   ('privacy-b', 'tenant-b', 'learner-b', 'export', '["session-b"]', '[]', '[]', 'audit-b');
+
+insert into eval_runs (id, tenant_id, model_version_id, dataset_version, metrics, word_alignment_f1, tajweed_f1, false_positive_rate, teacher_agreement_rate, unsourced_learner_outputs, passed) values
+  ('eval-a', 'tenant-a', 'model-v0.3', 'smoke', '{}', 0.95, 0.85, 0.05, 0.95, 0, true),
+  ('eval-b', 'tenant-b', 'model-v0.3', 'smoke', '{}', 0.95, 0.85, 0.05, 0.95, 0, true);
 
 	${grantRlsRole}
 

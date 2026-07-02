@@ -14,17 +14,25 @@ fn ensure_secure_config() {
         return;
     }
     let jwt = std::env::var("JWT_SECRET").unwrap_or_default();
-    if jwt.trim().is_empty() || jwt == "quran-ai-dev-secret" {
+    if jwt.trim().is_empty()
+        || jwt == "quran-ai-dev-secret"
+        || jwt == "production-secret-change-me"
+        || jwt.len() < 32
+    {
         panic!(
-            "JWT_SECRET must be set to a strong, non-default value in production. \
+            "JWT_SECRET must be set to a strong, non-default value in production (at least 32 characters). \
              Set ALLOW_INSECURE_DEFAULTS=1 for local dev only."
         );
     }
     let ticket = std::env::var("REALTIME_GATEWAY_TICKET_SECRET").unwrap_or_default();
-    if ticket.trim().is_empty() || ticket == "smoke-secret" {
+    if ticket.trim().is_empty()
+        || ticket == "smoke-secret"
+        || ticket == "production-secret-change-me"
+        || ticket.len() < 32
+    {
         panic!(
             "REALTIME_GATEWAY_TICKET_SECRET must be set to a strong, non-default value in \
-             production (shared with the realtime gateway). Set ALLOW_INSECURE_DEFAULTS=1 for local dev only."
+             production (shared with the realtime gateway, at least 32 characters). Set ALLOW_INSECURE_DEFAULTS=1 for local dev only."
         );
     }
 }

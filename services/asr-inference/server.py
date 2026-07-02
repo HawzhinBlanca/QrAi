@@ -17,9 +17,11 @@ Endpoints:
 
 import io
 import os
+import json
 import base64
 import tempfile
 import time
+import logging
 from typing import Optional
 
 import torch
@@ -31,6 +33,26 @@ import whisper
 import uvicorn
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
+
+# === Structured JSON Logger ===
+class JsonFormatter(logging.Formatter):
+    def format(self, record: logging.LogRecord) -> str:
+        entry = {
+            "ts": self.formatTime(record, "%Y-%m-%dT%H:%M:%S"),
+            "level": record.levelname.lower(),
+            "service": "asr-inference",
+            "msg": record.getMessage(),
+        }
+        if record.exc_info and record.exc_info[1]:
+            entry["error"] = str(record.exc_info[1])
+        return json.dumps(entry)
+
+_handler = logging.StreamHandler()
+_handler.setFormatter(JsonFormatter())
+logger = logging.getLogger("asr-inference")
+logger.setLevel(os.environ.get("LOG_LEVEL", "INFO").upper())
+logger.addHandler(_handler)
+logger.propagate = False
 
 # === Model Loading ===
 # Default to the real Quran-fine-tuned ASR (diacritized Arabic) via HF transformers.
@@ -47,16 +69,16 @@ if _USE_HF:
         if torch.backends.mps.is_available()
         else ("cuda" if torch.cuda.is_available() else "cpu")
     )
-    print(f"Loading HF Quran ASR model: {ASR_MODEL} on {DEVICE_STR} ...")
+    logger.info("Loading HF Quran ASR model: %s on %s", ASR_MODEL, DEVICE_STR)
     asr_pipe = hf_pipeline("automatic-speech-recognition", model=ASR_MODEL, device=DEVICE_STR)
     model = None
-    print(f"HF Quran ASR {ASR_MODEL} loaded on {DEVICE_STR}.")
+    logger.info("HF Quran ASR %s loaded on %s", ASR_MODEL, DEVICE_STR)
 else:
-    print(f"Loading Whisper model: {ASR_MODEL}...")
+    logger.info("Loading Whisper model: %s", ASR_MODEL)
     model = whisper.load_model(ASR_MODEL)
     asr_pipe = None
     DEVICE_STR = str(model.device)
-    print(f"Whisper {ASR_MODEL} loaded. Device: {model.device}")
+    logger.info("Whisper %s loaded. Device: %s", ASR_MODEL, model.device)
 
 app = FastAPI(title="Quran AI ASR Inference", version="0.1.0")
 
@@ -221,6 +243,13 @@ async def force_align(req: ForceAlignRequest):
         raise HTTPException(status_code=400, detail="audioBase64 is required")
     if not req.transcript:
         raise HTTPException(status_code=400, detail="transcript is required")
+
+    if model is None:
+        raise HTTPException(
+            status_code=501,
+            detail="Force alignment is not supported with the Hugging Face pipeline model. "
+            "Please configure ASR_MODEL to a standard Whisper model size (e.g., 'base') to enable force-alignment."
+        )
 
     try:
         audio_bytes = base64.b64decode(req.audioBase64, validate=True)

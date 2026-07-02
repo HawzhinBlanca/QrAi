@@ -192,6 +192,7 @@ create table agent_runs (
 
 create table eval_runs (
   id text primary key,
+  tenant_id text not null references institutions(id),
   model_version_id text not null references model_versions(id),
   dataset_version text not null,
   metrics jsonb not null,

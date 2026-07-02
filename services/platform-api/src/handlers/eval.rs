@@ -15,6 +15,8 @@ pub async fn get_eval_run(
     let actor = actor_from_headers(&headers, &state.jwt_config)?;
     actor.require_any(&[ActorRole::Admin, ActorRole::Ops])?;
 
+    let mut tx = crate::begin_tenant_tx(&state.pool, &actor.tenant_id).await?;
+
     let row = sqlx::query(
         "SELECT model_version_id, dataset_version,
                 word_alignment_f1::float8 as word_alignment_f1,
@@ -28,9 +30,11 @@ pub async fn get_eval_run(
          LIMIT 1",
     )
     .bind(&model_version)
-    .fetch_optional(&state.pool)
+    .fetch_optional(&mut *tx)
     .await?
     .ok_or(ApiError::NotFound)?;
+
+    tx.commit().await?;
 
     Ok(Json(EvalRun {
         model_version: row.try_get("model_version_id")?,

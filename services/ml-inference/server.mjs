@@ -24,6 +24,8 @@ const fixtures = JSON.parse(readFileSync(FIXTURES_PATH, "utf8"));
 const QURAN_DATA_DIR = join(__dirname, "..", "..", "packages", "quran-data", "src", "data", "full-quran");
 const manifest = JSON.parse(readFileSync(join(QURAN_DATA_DIR, "manifest.json"), "utf8"));
 
+const ML_API_KEY = process.env.ML_API_KEY ?? "smoke-ml-api-key";
+
 const MODEL_VERSION = process.env.ML_MODEL_VERSION ?? "ml-aligner-v0.2";
 const DATASET_VERSION = fixtures.datasetVersion;
 const GOLDEN_CASE_IDS = fixtures.cases.map((c) => c.id);
@@ -43,6 +45,28 @@ const S3_SECRET_KEY = process.env.S3_SECRET_KEY ?? "minioadmin";
 mkdirSync(AUDIO_STORAGE_DIR, { recursive: true });
 
 const ASR_SERVICE_URL = process.env.ASR_SERVICE_URL ?? "http://127.0.0.1:8091";
+
+// === Structured JSON Logger ===
+// Outputs JSON lines to stdout (info) or stderr (warn/error) for production log aggregation.
+const LOG_LEVEL = process.env.LOG_LEVEL ?? "info";
+const LOG_LEVELS = { debug: 0, info: 1, warn: 2, error: 3 };
+const currentLogLevel = LOG_LEVELS[LOG_LEVEL] ?? 1;
+
+function log(level, msg, data = {}) {
+  if ((LOG_LEVELS[level] ?? 1) < currentLogLevel) return;
+  const entry = JSON.stringify({
+    ts: new Date().toISOString(),
+    level,
+    service: "ml-inference",
+    msg,
+    ...data,
+  });
+  if (level === "error" || level === "warn") {
+    process.stderr.write(entry + "\n");
+  } else {
+    process.stdout.write(entry + "\n");
+  }
+}
 
 async function storeAudioObject(tenantId, learnerId, chunkId, audioBytes) {
   tenantId = safeStorageSegment(tenantId, "tenantId");
@@ -159,7 +183,7 @@ function getCanonicalWords(surahNumber, ayahStart, ayahEnd) {
 const CORS_HEADERS = {
   "access-control-allow-origin": "*",
   "access-control-allow-methods": "GET, POST, OPTIONS",
-  "access-control-allow-headers": "content-type, x-tenant-id, x-user-id, x-user-role, x-trace-id",
+  "access-control-allow-headers": "content-type, x-tenant-id, x-user-id, x-user-role, x-trace-id, x-ml-api-key",
 };
 
 function jsonResponse(response, status, body) {
@@ -714,12 +738,66 @@ async function route(request, response) {
   textResponse(response, 404, "not found");
 }
 
+// === Rate Limiter (sliding window, per-IP) ===
+const RATE_LIMIT_WINDOW_MS = 60_000; // 1 minute
+const RATE_LIMIT_MAX = 100;          // max requests per window
+/** @type {Map<string, number[]>} */
+const rateLimitMap = new Map();
+
+// Clean up stale entries every 5 minutes to prevent memory growth.
+setInterval(() => {
+  const cutoff = Date.now() - RATE_LIMIT_WINDOW_MS;
+  for (const [ip, timestamps] of rateLimitMap) {
+    const valid = timestamps.filter((t) => t > cutoff);
+    if (valid.length === 0) {
+      rateLimitMap.delete(ip);
+    } else {
+      rateLimitMap.set(ip, valid);
+    }
+  }
+}, 5 * 60_000);
+
+/** @param {string} ip */
+function checkRateLimit(ip) {
+  const now = Date.now();
+  const cutoff = now - RATE_LIMIT_WINDOW_MS;
+  const timestamps = (rateLimitMap.get(ip) ?? []).filter((t) => t > cutoff);
+  if (timestamps.length >= RATE_LIMIT_MAX) {
+    return false;
+  }
+  timestamps.push(now);
+  rateLimitMap.set(ip, timestamps);
+  return true;
+}
+
 const server = createServer((request, response) => {
   if (request.method === "OPTIONS") {
     response.writeHead(204, CORS_HEADERS);
     response.end();
     return;
   }
+
+  const url = new URL(request.url ?? "/", "http://127.0.0.1");
+
+  // --- Per-IP sliding-window rate limiter (100 req/min for non-health endpoints) ---
+  if (url.pathname !== "/health") {
+    const clientIp = request.headers["x-forwarded-for"]?.toString().split(",")[0]?.trim()
+      || request.socket.remoteAddress
+      || "unknown";
+    if (!checkRateLimit(clientIp)) {
+      jsonResponse(response, 429, { error: "Too many requests. Please try again later." });
+      return;
+    }
+  }
+
+  if (url.pathname !== "/health") {
+    const apiKey = request.headers["x-ml-api-key"] ?? url.searchParams.get("apiKey");
+    if (!apiKey || apiKey !== ML_API_KEY) {
+      jsonResponse(response, 401, { error: "unauthorized" });
+      return;
+    }
+  }
+
   route(request, response).catch((error) => {
     jsonResponse(response, error.status ?? 500, {
       error: error.message,
@@ -727,17 +805,61 @@ const server = createServer((request, response) => {
   });
 });
 
+// Periodic cleanup for audio-storage: delete files older than 24 hours.
+// Scans the directory recursively and deletes bin/meta files.
+setInterval(async () => {
+  try {
+    const now = Date.now();
+    const cutoff = now - 24 * 60 * 60 * 1000; // 24 hours ago
+    const fs = await import("node:fs");
+    const { join } = await import("node:path");
+
+    const cleanDir = (dir) => {
+      if (!fs.existsSync(dir)) return;
+      const entries = fs.readdirSync(dir, { withFileTypes: true });
+      for (const entry of entries) {
+        const fullPath = join(dir, entry.name);
+        if (entry.isDirectory()) {
+          cleanDir(fullPath);
+          // Clean up empty directories
+          try {
+            if (fs.readdirSync(fullPath).length === 0) {
+              fs.rmdirSync(fullPath);
+            }
+          } catch {}
+        } else {
+          try {
+            const stat = fs.statSync(fullPath);
+            if (stat.mtimeMs < cutoff) {
+              fs.unlinkSync(fullPath);
+              log("info", "Evicted old audio-storage file", { path: fullPath });
+            }
+          } catch (err) {
+            log("error", "Failed to stat/unlink file", { path: fullPath, error: String(err) });
+          }
+        }
+      }
+    };
+    cleanDir(AUDIO_STORAGE_DIR);
+  } catch (err) {
+    log("error", "Failed running periodic audio storage cleanup", { error: String(err) });
+  }
+}, 60 * 60 * 1000); // run every hour
+
 const bindHost = process.env.ML_INFERENCE_HOST ?? "127.0.0.1";
 const bindPort = Number(process.env.ML_INFERENCE_PORT ?? 8090);
 
 server.listen(bindPort, bindHost, () => {
   const address = server.address();
   const port = typeof address === "object" && address ? address.port : bindPort;
-  console.log(`quran-ai ml inference listening on http://${bindHost}:${port}`);
-  console.log(`  Model: ${MODEL_VERSION}`);
-  console.log(`  Dataset: ${DATASET_VERSION}`);
-  console.log(`  Quran coverage: ${manifest.surahCount} surahs, ${manifest.totalAyahs} ayahs`);
-  console.log(`  Audio storage: ${AUDIO_STORAGE_DIR}`);
+  log("info", "ml inference server started", {
+    bind: `http://${bindHost}:${port}`,
+    model: MODEL_VERSION,
+    dataset: DATASET_VERSION,
+    surahCount: manifest.surahCount,
+    totalAyahs: manifest.totalAyahs,
+    audioStorage: AUDIO_STORAGE_DIR,
+  });
 });
 
 for (const signal of ["SIGINT", "SIGTERM"]) {

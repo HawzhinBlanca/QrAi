@@ -266,11 +266,31 @@ impl RealtimeGateway {
                     tracing::warn!("Redis connect failed: {e}");
                     e
                 })
-            && let Ok(keys) = redis::cmd("KEYS")
-                .arg("quran-ai:gateway:session:*")
-                .query::<Vec<String>>(&mut conn)
         {
-            return keys.len();
+            let mut cursor = 0_u64;
+            let mut count = 0;
+            loop {
+                let (next_cursor, keys): (u64, Vec<String>) = match redis::cmd("SCAN")
+                    .arg(cursor)
+                    .arg("MATCH")
+                    .arg("quran-ai:gateway:session:*")
+                    .arg("COUNT")
+                    .arg(100)
+                    .query(&mut conn)
+                {
+                    Ok(res) => res,
+                    Err(e) => {
+                        tracing::warn!("Redis SCAN failed: {e}");
+                        break;
+                    }
+                };
+                count += keys.len();
+                cursor = next_cursor;
+                if cursor == 0 {
+                    break;
+                }
+            }
+            return count;
         }
         self.sessions.read().await.len()
     }
@@ -386,7 +406,11 @@ pub fn gateway_router(config: GatewayServerConfig) -> Router {
         });
     }
 
-    Router::new()
+    let rate_limited = std::env::var("ENABLE_RATE_LIMIT")
+        .map(|v| v == "1" || v == "true")
+        .unwrap_or(false);
+
+    let base_router = Router::new()
         .route("/health", get(health))
         .route("/v1/recitation-sessions/{session_id}/audio", get(audio_ws))
         .route("/metrics", get(metrics))
@@ -394,7 +418,20 @@ pub fn gateway_router(config: GatewayServerConfig) -> Router {
             gateway,
             config,
             consumed_tickets,
+        });
+
+    if rate_limited {
+        let conf = tower_governor::governor::GovernorConfigBuilder::default()
+            .per_millisecond(50)
+            .burst_size(200)
+            .finish()
+            .unwrap();
+        base_router.layer(tower_governor::GovernorLayer {
+            config: conf.into(),
         })
+    } else {
+        base_router
+    }
 }
 
 async fn metrics(State(state): State<GatewayServerState>) -> impl IntoResponse {
@@ -724,6 +761,7 @@ async fn handle_audio_socket(
     let ml_url = state.config.ml_inference_url.clone();
     let tenant_id = state.config.tenant_id.clone();
     let ml_trace = trace_id.clone();
+    let ml_api_key = std::env::var("ML_API_KEY").unwrap_or_else(|_| "smoke-ml-api-key".to_owned());
     let mut reader = reader;
     tokio::spawn(async move {
         let client = reqwest::Client::new();
@@ -745,7 +783,13 @@ async fn handle_audio_socket(
                 "audioSize": chunk.bytes.len(),
                 "traceId": ml_trace,
             });
-            match client.post(&url).json(&body).send().await {
+            match client
+                .post(&url)
+                .header("x-ml-api-key", &ml_api_key)
+                .json(&body)
+                .send()
+                .await
+            {
                 Ok(resp) if resp.status().is_success() => {
                     tracing::debug!("forwarded chunk {chunk_id} to ML service");
                 }

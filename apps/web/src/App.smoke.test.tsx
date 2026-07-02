@@ -174,6 +174,12 @@ describe("Quran AI app smoke", () => {
       internalCommandButton?.click();
     });
 
+    // Wait for the lazy-loaded PlatformCommand chunk to resolve (may take multiple ticks).
+    for (let i = 0; i < 10; i++) {
+      await act(async () => { await new Promise((r) => setTimeout(r, 10)); });
+      if (document.body.textContent?.includes("Quran AI intelligence platform")) break;
+    }
+
     const startButton = document.querySelector<HTMLButtonElement>(".capture-button");
     expect(document.body.textContent).toContain("Quran AI intelligence platform");
     expect(startButton?.textContent).toContain("Start live recitation");

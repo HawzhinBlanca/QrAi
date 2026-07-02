@@ -6,8 +6,30 @@ on:
 jobs:
   verify:
     runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: hawzhin
+          POSTGRES_DB: quran_ai
+          POSTGRES_HOST_AUTH_METHOD: trust
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U hawzhin -d quran_ai"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 5
+
+    env:
+      DATABASE_URL: "postgresql://hawzhin@localhost:5432/quran_ai"
+      ALLOW_INSECURE_DEFAULTS: "1"
+
     steps:
       - uses: actions/checkout@v4
+
+      # --- Toolchains ---
       - uses: pnpm/action-setup@v4          # version from package.json "packageManager"
       - uses: actions/setup-node@v4
         with: { node-version: "22", cache: "pnpm" }
@@ -19,8 +41,43 @@ jobs:
           workspaces: |
             services/realtime-gateway
             services/platform-api
+
+      # --- Bootstrap ---
       - run: pnpm install --frozen-lockfile
-      - run: bash scripts/verify.sh         # SAME gate the agent runs locally
-        # platform-api integration tests need live Postgres and are SKIPPED here.
-        # To run the full DB gate in CI, add a postgres:16 service + load infra/sql,
-        # then set DATABASE_URL (see docs/TESTING.md). Kept infra-free so local == CI.
+
+      # --- Seed Postgres with migrations ---
+      - name: Apply SQL migrations
+        run: |
+          for sql in \
+            infra/sql/0001_core_schema.sql \
+            infra/sql/0002_seed_fatihah.sql \
+            infra/sql/0003_tenant_rls.sql \
+            infra/sql/0004_add_password_hash.sql \
+            infra/sql/0005_learner_progress.sql \
+            infra/sql/0007_seed_surah_names.sql \
+            infra/sql/0008_session_language.sql \
+            infra/sql/0006_seed_internal.sql \
+            infra/sql/0009_learner_progress_rls.sql \
+            infra/sql/0010_review_status_check.sql \
+            infra/sql/0011_teacher_review_required_status.sql \
+            infra/sql/0012_superuser_only_rls_bypass.sql; do
+            psql "$DATABASE_URL" -f "$sql"
+          done
+
+      # --- The CODYSTEM gate (same script the agent runs locally) ---
+      - run: bash scripts/verify.sh
+
+      # --- Lightweight CI smoke: start platform-api and hit /health ---
+      - name: CI smoke test
+        run: |
+          cargo build --manifest-path services/platform-api/Cargo.toml --release 2>/dev/null
+          services/platform-api/target/release/quran-ai-platform-api &
+          API_PID=$!
+          sleep 3
+          HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:8080/health || true)
+          kill $API_PID 2>/dev/null || true
+          if [ "$HTTP_CODE" != "200" ]; then
+            echo "CI smoke failed: /health returned $HTTP_CODE"
+            exit 1
+          fi
+          echo "CI smoke passed: /health returned 200"

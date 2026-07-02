@@ -121,3 +121,7 @@ insert into agent_runs (id, tenant_id, name, goal, status, confidence, review_st
    '[]',
    '{"last_event":"Policy stopped the answer: no approved source references."}', 'audit-seed-agent-4')
 on conflict (id) do nothing;
+
+insert into eval_runs (id, tenant_id, model_version_id, dataset_version, metrics, word_alignment_f1, tajweed_f1, false_positive_rate, teacher_agreement_rate, unsourced_learner_outputs, passed) values
+  ('eval-v0.3', 'hikmah-pilot-erbil', 'model-v0.3', 'fatihah-juz-amma-smoke-v1', '{}', 0.93, 0.86, 0.05, 0.92, 0, true)
+on conflict (id) do nothing;

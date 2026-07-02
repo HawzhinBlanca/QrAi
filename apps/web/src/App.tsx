@@ -1,16 +1,18 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { Suspense, lazy, useEffect, useMemo, useRef, useState } from "react";
 import { motion } from "motion/react";
 import { AlertTriangle, ArrowRight, CheckCircle2, Clock3, Headphones, Mic, RotateCcw, Send, ShieldCheck, Sparkles } from "lucide-react";
 import { AudioCoach } from "./components/AudioCoach";
 import { IssuePanel } from "./components/IssuePanel";
 import { TajweedPanel } from "./components/TajweedPanel";
 import { MutashabihatPanel } from "./components/MutashabihatPanel";
-import { PlatformCommand } from "./components/PlatformCommand";
+const PlatformCommand = lazy(() => import("./components/PlatformCommand").then(m => ({ default: m.PlatformCommand })));
 import { ProgressPanel } from "./components/ProgressPanel";
 import { QuranReader } from "./components/QuranReader";
 import { Sidebar } from "./components/Sidebar";
 import { TopBar } from "./components/TopBar";
-import { LoginScreen } from "./components/LoginScreen";
+import { ErrorBoundary } from "./components/ErrorBoundary";
+import { OfflineBanner } from "./components/OfflineBanner";
+const LoginScreen = lazy(() => import("./components/LoginScreen").then(m => ({ default: m.LoginScreen })));
 import { AuthProvider, useAuth } from "./lib/auth";
 import { startAsr, splitTranscript, isAsrSupported, type AsrController } from "./lib/asr";
 import { startLocalAudioRecording, startServerAsr, isServerAsrSupported, type ServerAsrController } from "./lib/serverAsr";
@@ -73,9 +75,11 @@ const LOGIN_ENABLED = import.meta.env.VITE_REQUIRE_LOGIN === "1";
 
 export default function App() {
   return (
-    <AuthProvider>
-      <AppInner />
-    </AuthProvider>
+    <ErrorBoundary>
+      <AuthProvider>
+        <AppInner />
+      </AuthProvider>
+    </ErrorBoundary>
   );
 }
 
@@ -98,7 +102,7 @@ function AppInner() {
         </div>
       );
     }
-    return <LoginScreen />;
+    return <Suspense fallback={<div className="login-screen"><div className="login-card"><p className="login-hint">Loading…</p></div></div>}><LoginScreen /></Suspense>;
   }
 
   return <AuthenticatedApp />;
@@ -627,6 +631,7 @@ function AuthenticatedApp({ bypassLogin = false }: { bypassLogin?: boolean }) {
 
   return (
     <div className="app-shell">
+      <OfflineBanner />
       <Sidebar activeSection={activeSection} onSectionChange={(section) => setActiveSection(section as AppSection)} />
       <main className="workspace">
         <TopBar title={pageTitle} trustLabel={activeSection === "learner" ? "Teacher-reviewed" : "Scholar-gated"} />
@@ -1178,14 +1183,16 @@ function InternalSurface({
   }
 
   return (
-    <PlatformCommand
-      tenantId={tenantId}
-      authToken={authToken}
-      activeLanguage={activeLanguage}
-      activeTab={activeTab}
-      onLanguageChange={onLanguageChange}
-      onTabChange={onTabChange}
-    />
+    <Suspense fallback={<div className="internal-placeholder"><p>Loading platform console…</p></div>}>
+      <PlatformCommand
+        tenantId={tenantId}
+        authToken={authToken}
+        activeLanguage={activeLanguage}
+        activeTab={activeTab}
+        onLanguageChange={onLanguageChange}
+        onTabChange={onTabChange}
+      />
+    </Suspense>
   );
 }
 

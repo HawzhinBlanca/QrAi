@@ -7,8 +7,12 @@ import { fetchWithTimeout } from "./http";
 const API_BASE = import.meta.env.VITE_PLATFORM_API_URL || "http://127.0.0.1:8080";
 
 function actorHeaders(tenantId: string, userId: string, role: string, authToken?: string): Record<string, string> {
+  if (authToken) {
+    return {
+      authorization: `Bearer ${authToken}`,
+    };
+  }
   return {
-    ...(authToken ? { authorization: `Bearer ${authToken}` } : {}),
     "x-tenant-id": tenantId,
     "x-user-id": userId,
     "x-user-role": role,
@@ -205,9 +209,13 @@ export async function predictAlignment(params: {
   recognizedText?: string[];
 }): Promise<{ alignments: AlignmentResult[]; confidence: number }> {
   const mlBase = import.meta.env.VITE_ML_INFERENCE_URL || "http://127.0.0.1:8090";
+  const mlApiKey = import.meta.env.VITE_ML_API_KEY || "smoke-ml-api-key";
   const response = await fetchWithTimeout(`${mlBase}/v1/alignments:predict`, {
     method: "POST",
-    headers: { "content-type": "application/json" },
+    headers: {
+      "content-type": "application/json",
+      "x-ml-api-key": mlApiKey,
+    },
     body: JSON.stringify({
       tenantId: params.tenantId,
       sessionId: params.sessionId,
@@ -232,9 +240,13 @@ export async function predictTajweed(params: {
   ayahEnd: number;
 }): Promise<{ findings: TajweedFinding[]; confidence: number }> {
   const mlBase = import.meta.env.VITE_ML_INFERENCE_URL || "http://127.0.0.1:8090";
+  const mlApiKey = import.meta.env.VITE_ML_API_KEY || "smoke-ml-api-key";
   const response = await fetchWithTimeout(`${mlBase}/v1/tajweed-findings:predict`, {
     method: "POST",
-    headers: { "content-type": "application/json" },
+    headers: {
+      "content-type": "application/json",
+      "x-ml-api-key": mlApiKey,
+    },
     body: JSON.stringify({
       tenantId: params.tenantId,
       sessionId: params.sessionId,

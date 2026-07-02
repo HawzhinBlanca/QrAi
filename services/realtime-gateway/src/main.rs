@@ -13,10 +13,14 @@ fn ensure_secure_config() {
         return;
     }
     let secret = std::env::var("REALTIME_GATEWAY_TICKET_SECRET").unwrap_or_default();
-    if secret.trim().is_empty() || secret == "smoke-secret" {
+    if secret.trim().is_empty()
+        || secret == "smoke-secret"
+        || secret == "production-secret-change-me"
+        || secret.len() < 32
+    {
         panic!(
             "REALTIME_GATEWAY_TICKET_SECRET must be set to a strong, non-default value in \
-             production (shared with platform-api). Set ALLOW_INSECURE_DEFAULTS=1 for local dev only."
+             production (shared with platform-api, at least 32 characters). Set ALLOW_INSECURE_DEFAULTS=1 for local dev only."
         );
     }
 }
