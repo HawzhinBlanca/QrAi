@@ -1,5 +1,10 @@
 import { describe, it, expect } from "vitest";
 import {
+  FULL_QURAN_MANIFEST as EXPORTED_FULL_QURAN_MANIFEST,
+  getAyahText as getExportedAyahText,
+  validateFullQuranData as validateExportedFullQuranData,
+} from "@quran-ai/quran-data/full-quran";
+import {
   getSurah,
   getAyah,
   getAyahRangeWords,
@@ -15,6 +20,13 @@ describe("Full Quran data", () => {
     expect(FULL_QURAN_MANIFEST.surahCount).toBe(114);
     expect(FULL_QURAN_MANIFEST.totalAyahs).toBe(6236);
   });
+
+  it("exports the server-only full Quran module through the package boundary", () => {
+    expect(EXPORTED_FULL_QURAN_MANIFEST.surahCount).toBe(114);
+    expect(EXPORTED_FULL_QURAN_MANIFEST.totalAyahs).toBe(6236);
+    expect(getExportedAyahText(112, 1)).toContain("قُلْ");
+    expect(validateExportedFullQuranData()).toEqual({ isValid: true, errors: [] });
+  }, 60000);
 
   // Reads + parses all 114 surah files (~41ms locally). Generous timeout so it doesn't
   // flake under heavy concurrent load (e.g. proof.sh running inside the smoke suite).

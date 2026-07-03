@@ -4,7 +4,7 @@
 
 - [x] `pnpm install` completes with workspace packages.
 - [x] `pnpm --filter @quran-ai/contracts test` proves API routes, event subjects, canonical checksums, learner-facing AI gates, signed realtime ticket fields, and retention logic.
-- [x] `pnpm --filter @quran-ai/quran-data test` proves canonical Al-Fatihah import counts, source manifests, immutability, checksum tamper detection, and SQL schema compatibility.
+- [x] `pnpm --filter @quran-ai/quran-data test` proves canonical Al-Fatihah import counts, source manifests, immutability, checksum tamper detection, SQL schema compatibility, and the server-only full Quran package boundary for the alquran.cloud 114-surah/6236-ayah bundle.
 - [x] `pnpm --filter @quran-ai/web test` proves existing recitation helpers, browser mic support detection, audio chunk envelope shape, denied/error mic states, mocked partial alignment events, and platform helper behavior.
 - [x] `pnpm --filter @quran-ai/web build` proves web typecheck and production build.
 - [x] `cargo fmt --manifest-path services/realtime-gateway/Cargo.toml --check` proves Rust formatting.
@@ -16,7 +16,8 @@
 ## Next Proof Gates
 
 - [x] Seeded canonical Al-Fatihah ingestion validates ayah/word counts and source checksums against Tanzil/Quran Foundation source manifests.
-- [ ] Full canonical Quran ingestion validates all ayah/word counts and source checksums from Quran Foundation/Tanzil.
+- [x] Server-only full Quran bundle validation loads all 114 surah files and verifies manifest ayah/word totals for the alquran.cloud quran-uthmani source.
+- [ ] Independent Quran Foundation/Tanzil reconciliation validates full Quran ayah/word counts and source checksums against a second canonical source.
 - [x] Browser mic capture handles support detection, denied/error states, and chunk-shape cases in unit tests.
 - [x] App DOM smoke test renders the command center, starts mocked live recitation, emits one audio chunk, and updates aligned-word telemetry.
 - [x] Frontend WebSocket upload client builds gateway URLs, parses acknowledgements, gates sends by socket readiness, and is covered by smoke test.

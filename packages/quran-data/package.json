@@ -7,6 +7,10 @@
     ".": {
       "types": "./src/index.ts",
       "default": "./src/index.ts"
+    },
+    "./full-quran": {
+      "types": "./src/full-quran.ts",
+      "default": "./src/full-quran.ts"
     }
   },
   "scripts": {

@@ -6,7 +6,7 @@ This repo now has the first enforceable foundation for the Quran Recitation Inte
 
 - `apps/web`: the existing React/Vite platform command app.
 - `packages/contracts`: shared TypeScript contracts for platform records, canonical Quran records, API routes, event subjects, storage tables, proof gates, checksum verification, retention decisions, and learner-facing AI gates.
-- `packages/quran-data`: canonical Al-Fatihah seed, Tanzil/Quran Foundation source manifests, immutable import bundles, checksum validation, and SQL seed generation.
+- `packages/quran-data`: canonical Al-Fatihah seed, Tanzil/Quran Foundation source manifests, immutable import bundles, checksum validation, SQL seed generation, and a server-only full Quran alquran.cloud bundle exposed through `@quran-ai/quran-data/full-quran`.
 - `apps/web/src/lib/liveRecitation.ts`: browser mic capture wrapper, audio chunk envelopes, mocked partial alignment events, and live capture summary helpers.
 - `services/platform-api`: Rust/Axum tenant-scoped API for recitation sessions, teacher reviews, scholar approvals, eval lookup, and audit events.
 - `services/realtime-gateway`: Rust/Tokio/Axum realtime gateway with health route, WebSocket audio ingress, bounded-channel ingestion, metrics counters, and 100-session local ingestion proof.
@@ -35,9 +35,9 @@ The winning architecture is a real vertical slice first:
 
 ## Still Not Implemented
 
-- Production Postgres runtime, SQLx integration, row-level security, and full Quran live ingestion.
+- Production Postgres runtime, SQLx integration, row-level security, and independent Quran Foundation/Tanzil reconciliation for the full Quran bundle.
 - Authenticated WebSocket sessions, persisted audio events, and cross-service NATS emission.
-- Quran Foundation/Tanzil live ingestion job.
+- Quran Foundation/Tanzil live reconciliation job.
 - Quran-specific ASR/alignment/tajweed ML service.
 - OpenAI Realtime/Agents SDK integration.
 - Expo mobile app.
