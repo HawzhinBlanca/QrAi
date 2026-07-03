@@ -631,9 +631,10 @@ function AuthenticatedApp({ bypassLogin = false }: { bypassLogin?: boolean }) {
 
   return (
     <div className="app-shell">
+      <a href="#main-content" className="skip-link">Skip to content</a>
       <OfflineBanner />
       <Sidebar activeSection={activeSection} onSectionChange={(section) => setActiveSection(section as AppSection)} />
-      <main className="workspace">
+      <main className="workspace" id="main-content">
         <TopBar title={pageTitle} trustLabel={activeSection === "learner" ? "Teacher-reviewed" : "Scholar-gated"} />
         <motion.div
           animate={{ opacity: 1, y: 0 }}

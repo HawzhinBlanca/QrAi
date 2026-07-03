@@ -46,6 +46,7 @@ export function Sidebar({ activeSection, onSectionChange }: SidebarProps) {
               key={item.id}
               onClick={() => onSectionChange(item.id)}
               type="button"
+              aria-current={activeSection === item.id ? "page" : undefined}
             >
               <Icon size={19} strokeWidth={1.9} />
               <span>{item.label}</span>

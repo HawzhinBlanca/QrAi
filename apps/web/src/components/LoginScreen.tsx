@@ -65,6 +65,7 @@ export function LoginScreen() {
               <input
                 type="text"
                 placeholder="Display name"
+                aria-label="Display name"
                 value={displayName}
                 onChange={(e) => setDisplayName(e.target.value)}
               />
@@ -77,6 +78,7 @@ export function LoginScreen() {
               <input
                 type="text"
                 placeholder="User ID (e.g. learner-1)"
+                aria-label="User ID"
                 value={userId}
                 onChange={(e) => setUserId(e.target.value)}
                 required
@@ -89,6 +91,7 @@ export function LoginScreen() {
             <input
               type="password"
               placeholder="Password (min 8 characters)"
+              aria-label="Password"
               value={password}
               onChange={(e) => setPassword(e.target.value)}
               required
@@ -101,6 +104,7 @@ export function LoginScreen() {
               <input
                 type="email"
                 placeholder="Email (optional)"
+                aria-label="Email"
                 value={email}
                 onChange={(e) => setEmail(e.target.value)}
               />
@@ -112,6 +116,7 @@ export function LoginScreen() {
             <input
               type="text"
               placeholder="Institution ID"
+              aria-label="Institution ID"
               value={tenantId}
               onChange={(e) => setTenantId(e.target.value)}
               required
@@ -119,7 +124,8 @@ export function LoginScreen() {
           </label>
 
           <label className="login-field">
-            <select value={role} onChange={(e) => setRole(e.target.value)}>
+            <span className="sr-only">Role</span>
+            <select value={role} onChange={(e) => setRole(e.target.value)} aria-label="Role">
               <option value="learner">Learner</option>
               <option value="teacher">Teacher</option>
               <option value="scholar">Scholar</option>
@@ -129,7 +135,8 @@ export function LoginScreen() {
 
           {mode === "register" && (
             <label className="login-field">
-              <select value={language} onChange={(e) => setLanguage(e.target.value)}>
+              <span className="sr-only">Language</span>
+              <select value={language} onChange={(e) => setLanguage(e.target.value)} aria-label="Language">
                 <option value="ar">العربية</option>
                 <option value="ckb">کوردیی ناوەندی</option>
                 <option value="en">English</option>
@@ -139,7 +146,7 @@ export function LoginScreen() {
             </label>
           )}
 
-          {error && <p className="login-error">{error}</p>}
+          {error && <p className="login-error" role="alert">{error}</p>}
 
           <button type="submit" className="login-submit" disabled={loading}>
             {loading ? "Please wait..." : mode === "login" ? "Sign In" : "Create Account"}
