@@ -10,6 +10,7 @@ const providedUrl = process.env.ML_INFERENCE_SMOKE_URL;
 const artifactRoot = process.env.SMOKE_ARTIFACT_DIR ?? join("out", "smoke", new Date().toISOString().replace(/[:.]/g, "-"));
 const artifactDir = join(artifactRoot, "ml");
 const smokeTraceId = process.env.SMOKE_TRACE_ID ?? `smoke-trace-${randomUUID()}`;
+const mlApiKey = process.env.ML_API_KEY ?? "smoke-ml-api-key";
 
 await mkdir(artifactDir, { recursive: true });
 
@@ -141,14 +142,16 @@ function consent(isAllowed) {
 }
 
 async function getJson(path) {
-  const response = await fetch(`${baseUrl}${path}`);
+  const response = await fetch(`${baseUrl}${path}`, {
+    headers: { "x-ml-api-key": mlApiKey },
+  });
   return readResponse(response, path);
 }
 
 async function postJson(path, body) {
   const response = await fetch(`${baseUrl}${path}`, {
     method: "POST",
-    headers: { "content-type": "application/json" },
+    headers: { "content-type": "application/json", "x-ml-api-key": mlApiKey },
     body: JSON.stringify(body),
   });
   return readResponse(response, path);

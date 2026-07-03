@@ -8,6 +8,7 @@ const providedUrl = process.env.ML_INFERENCE_SMOKE_URL;
 const artifactRoot = process.env.SMOKE_ARTIFACT_DIR ?? join("out", "smoke", new Date().toISOString().replace(/[:.]/g, "-"));
 const artifactDir = join(artifactRoot, "privacy");
 const smokeTraceId = process.env.SMOKE_TRACE_ID ?? `smoke-trace-${randomUUID()}`;
+const mlApiKey = process.env.ML_API_KEY ?? "smoke-ml-api-key";
 const retainedLearnerId = `learner-retained-${randomUUID()}`;
 const retainedChunkId = `chunk-retained-${randomUUID()}`;
 
@@ -207,7 +208,7 @@ async function postJson(path, body) {
 async function postRaw(path, body) {
   const response = await fetch(`${baseUrl}${path}`, {
     method: "POST",
-    headers: { "content-type": "application/json" },
+    headers: { "content-type": "application/json", "x-ml-api-key": mlApiKey },
     body: JSON.stringify(body),
   });
   const text = await response.text();

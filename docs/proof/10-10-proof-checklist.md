@@ -45,4 +45,4 @@
 
 ## Latest Full Smoke Artifact
 
-- `out/smoke/2026-07-01T18-43-51-013Z/summary.json` passed `pnpm smoke:all` with trace ID `smoke-trace-e6071f72-90ab-4ad3-aded-aa25153b8296`.
+- `out/smoke/2026-07-03T10-29-20-338Z/summary.json` passed `pnpm smoke:all` with trace ID `smoke-trace-8174c703-d1bc-40c7-93b9-9861e08f39fb`.
