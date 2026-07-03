@@ -125,16 +125,24 @@ async fn create_privacy_job(
             .execute(&mut *tx)
             .await?;
 
-        // Delete in FK-safe order: teacher_reviews → tajweed_findings → word_alignments → audio_chunks
+        // Delete in FK-safe order: teacher_reviews -> tajweed_findings -> word_alignments -> audio_chunks.
+        // Every derived-record delete is scoped through this learner's tenant-owned sessions;
+        // otherwise one learner's erasure can remove another learner's reviewed findings.
         sqlx::query(
-            "DELETE FROM teacher_reviews WHERE tenant_id = $1 AND finding_id IN (SELECT id FROM tajweed_findings WHERE tenant_id = $1)",
-        )
-        .bind(&actor.tenant_id)
-        .execute(&mut *tx)
-        .await?;
-
-        sqlx::query(
-            "DELETE FROM tajweed_findings WHERE tenant_id = $1 AND alignment_id IN (SELECT id FROM word_alignments WHERE session_id IN (SELECT id FROM recitation_sessions WHERE learner_id = $2))",
+            "DELETE FROM teacher_reviews
+             WHERE tenant_id = $1
+               AND finding_id IN (
+                 SELECT tf.id
+                 FROM tajweed_findings tf
+                 JOIN word_alignments wa
+                   ON wa.id = tf.alignment_id
+                  AND wa.tenant_id = tf.tenant_id
+                 JOIN recitation_sessions rs
+                   ON rs.id = wa.session_id
+                  AND rs.tenant_id = wa.tenant_id
+                 WHERE tf.tenant_id = $1
+                   AND rs.learner_id = $2
+               )",
         )
         .bind(&actor.tenant_id)
         .bind(&req.learner_id)
@@ -142,7 +150,30 @@ async fn create_privacy_job(
         .await?;
 
         sqlx::query(
-            "DELETE FROM word_alignments WHERE tenant_id = $1 AND session_id IN (SELECT id FROM recitation_sessions WHERE learner_id = $2)",
+            "DELETE FROM tajweed_findings
+             WHERE tenant_id = $1
+               AND alignment_id IN (
+                 SELECT wa.id
+                 FROM word_alignments wa
+                 JOIN recitation_sessions rs
+                   ON rs.id = wa.session_id
+                  AND rs.tenant_id = wa.tenant_id
+                 WHERE wa.tenant_id = $1
+                   AND rs.learner_id = $2
+               )",
+        )
+        .bind(&actor.tenant_id)
+        .bind(&req.learner_id)
+        .execute(&mut *tx)
+        .await?;
+
+        sqlx::query(
+            "DELETE FROM word_alignments
+             WHERE tenant_id = $1
+               AND session_id IN (
+                 SELECT id FROM recitation_sessions
+                 WHERE tenant_id = $1 AND learner_id = $2
+               )",
         )
         .bind(&actor.tenant_id)
         .bind(&req.learner_id)
@@ -154,7 +185,7 @@ async fn create_privacy_job(
         for table in ["audio_chunks", "alignment_runs"] {
             sqlx::query(&format!(
                 "DELETE FROM {table} WHERE tenant_id = $1 AND session_id IN \
-                 (SELECT id FROM recitation_sessions WHERE learner_id = $2)"
+                 (SELECT id FROM recitation_sessions WHERE tenant_id = $1 AND learner_id = $2)"
             ))
             .bind(&actor.tenant_id)
             .bind(&req.learner_id)

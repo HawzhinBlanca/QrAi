@@ -505,6 +505,192 @@ async fn teacher_review_author_is_actor_and_realignment_cascades() {
     );
 }
 
+#[tokio::test]
+#[ignore = "requires live Postgres"]
+async fn privacy_delete_preserves_other_learners_teacher_reviews() {
+    let state = test_state();
+    let router = platform_router_with_rate_limit(state.clone(), false);
+    let target_learner = format!("learner-privacy-target-{}", next_suffix());
+    let other_learner = format!("learner-privacy-other-{}", next_suffix());
+
+    sqlx::query(
+        "INSERT INTO users (id, tenant_id, display_name, role, language)
+         VALUES ($1, 'hikmah-pilot-erbil', 'Privacy Target', 'learner', 'ckb'),
+                ($2, 'hikmah-pilot-erbil', 'Privacy Other', 'learner', 'ckb')",
+    )
+    .bind(&target_learner)
+    .bind(&other_learner)
+    .execute(&state.pool)
+    .await
+    .unwrap();
+
+    let target_session = create_test_session_for_learner(&router, &target_learner).await;
+    let other_session = create_test_session_for_learner(&router, &other_learner).await;
+    let (target_finding, target_review) =
+        seed_reviewed_finding(&state.pool, &target_session, "target").await;
+    let (other_finding, other_review) =
+        seed_reviewed_finding(&state.pool, &other_session, "other").await;
+
+    let deleted = send_json(
+        &router,
+        Method::POST,
+        "/v1/privacy/delete",
+        Some("hikmah-pilot-erbil"),
+        Some("admin"),
+        json!({ "learnerId": target_learner }),
+    )
+    .await;
+    assert_eq!(deleted.status(), StatusCode::OK);
+
+    let target_review_count: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM teacher_reviews WHERE id = $1")
+            .bind(&target_review)
+            .fetch_one(&state.pool)
+            .await
+            .unwrap();
+    assert_eq!(
+        target_review_count, 0,
+        "target learner review should be deleted"
+    );
+
+    let target_finding_count: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM tajweed_findings WHERE id = $1")
+            .bind(&target_finding)
+            .fetch_one(&state.pool)
+            .await
+            .unwrap();
+    assert_eq!(
+        target_finding_count, 0,
+        "target learner finding should be deleted"
+    );
+
+    let other_review_count: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM teacher_reviews WHERE id = $1")
+            .bind(&other_review)
+            .fetch_one(&state.pool)
+            .await
+            .unwrap();
+    assert_eq!(
+        other_review_count, 1,
+        "privacy delete must preserve other learners' teacher reviews"
+    );
+
+    let other_finding_count: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM tajweed_findings WHERE id = $1")
+            .bind(&other_finding)
+            .fetch_one(&state.pool)
+            .await
+            .unwrap();
+    assert_eq!(
+        other_finding_count, 1,
+        "privacy delete must preserve other learners' findings"
+    );
+
+    let other_session_count: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM recitation_sessions WHERE id = $1")
+            .bind(&other_session)
+            .fetch_one(&state.pool)
+            .await
+            .unwrap();
+    assert_eq!(
+        other_session_count, 1,
+        "privacy delete must preserve other learners' sessions"
+    );
+}
+
+async fn create_test_session_for_learner(router: &axum::Router, learner_id: &str) -> String {
+    let created = send_json(
+        router,
+        Method::POST,
+        "/v1/recitation-sessions",
+        Some("hikmah-pilot-erbil"),
+        Some("admin"),
+        json!({
+            "learnerId": learner_id,
+            "quranRef": {"surahNumber": 1, "ayahStart": 1, "ayahEnd": 7, "display": "Al-Fatihah 1:1-7"},
+            "sourceChecksum": "fnv1a32:privacy-scope",
+            "modelVersion": "model-v0.3",
+            "language": "ckb",
+            "mode": "guided-recite",
+            "practicePlanId": "fatihah-mastery-v1",
+            "consent": {"audioRetention": "discard", "anonymizedLearning": true, "externalAsrProcessing": false, "guardianApproved": true, "consentVersion": "pilot-v1"}
+        }),
+    )
+    .await;
+    assert_eq!(created.status(), StatusCode::OK);
+    read_json::<Value>(created).await["id"]
+        .as_str()
+        .unwrap()
+        .to_string()
+}
+
+async fn seed_reviewed_finding(
+    pool: &sqlx::PgPool,
+    session_id: &str,
+    label: &str,
+) -> (String, String) {
+    let suffix = next_suffix();
+    let alignment_id = format!("wa-privacy-{label}-{suffix}");
+    let finding_id = format!("tf-privacy-{label}-{suffix}");
+    let review_id = format!("review-privacy-{label}-{suffix}");
+    let alignment_audit = format!("audit-wa-privacy-{label}-{suffix}");
+    let finding_audit = format!("audit-tf-privacy-{label}-{suffix}");
+    let review_audit = format!("audit-review-privacy-{label}-{suffix}");
+
+    sqlx::query(
+        "INSERT INTO audit_events (id, tenant_id, actor_id, action, subject_type, subject_id)
+         VALUES ($1, 'hikmah-pilot-erbil', 'ops-1', 'test.seed', 'word_alignment', $2),
+                ($3, 'hikmah-pilot-erbil', 'ops-1', 'test.seed', 'tajweed_finding', $4),
+                ($5, 'hikmah-pilot-erbil', 'teacher-1', 'test.seed', 'teacher_review', $6)",
+    )
+    .bind(&alignment_audit)
+    .bind(&alignment_id)
+    .bind(&finding_audit)
+    .bind(&finding_id)
+    .bind(&review_audit)
+    .bind(&review_id)
+    .execute(pool)
+    .await
+    .unwrap();
+
+    sqlx::query(
+        "INSERT INTO word_alignments
+           (id, tenant_id, session_id, word_id, heard_text, start_ms, end_ms, confidence, status, model_version_id, audit_event_id)
+         VALUES ($1, 'hikmah-pilot-erbil', $2, '1:1:1', 'بسم', 0, 100, 0.9, 'matched', 'model-v0.3', $3)",
+    )
+    .bind(&alignment_id)
+    .bind(session_id)
+    .bind(&alignment_audit)
+    .execute(pool)
+    .await
+    .unwrap();
+
+    sqlx::query(
+        "INSERT INTO tajweed_findings
+           (id, tenant_id, alignment_id, rule, severity, confidence, explanation, review_status, source_refs, model_version_id, audit_event_id)
+         VALUES ($1, 'hikmah-pilot-erbil', $2, 'Ghunnah', 'warning', 0.8, 'x', 'teacher-review-required', '[]'::jsonb, 'model-v0.3', $3)",
+    )
+    .bind(&finding_id)
+    .bind(&alignment_id)
+    .bind(&finding_audit)
+    .execute(pool)
+    .await
+    .unwrap();
+
+    sqlx::query(
+        "INSERT INTO teacher_reviews (id, tenant_id, finding_id, teacher_id, decision, note, audit_event_id)
+         VALUES ($1, 'hikmah-pilot-erbil', $2, 'teacher-1', 'accepted', 'scoped privacy regression', $3)",
+    )
+    .bind(&review_id)
+    .bind(&finding_id)
+    .bind(&review_audit)
+    .execute(pool)
+    .await
+    .unwrap();
+
+    (finding_id, review_id)
+}
+
 fn next_suffix() -> String {
     // Unique across processes AND runs (the DB persists between runs), so seeded ids never
     // collide. SystemTime is fine here (unlike workflow scripts, ordinary tests may use it).
