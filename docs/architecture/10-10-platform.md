@@ -8,10 +8,11 @@ This repo now has the first enforceable foundation for the Quran Recitation Inte
 - `packages/contracts`: shared TypeScript contracts for platform records, canonical Quran records, API routes, event subjects, storage tables, proof gates, checksum verification, retention decisions, and learner-facing AI gates.
 - `packages/quran-data`: canonical Al-Fatihah seed, Tanzil/Quran Foundation source manifests, immutable import bundles, checksum validation, SQL seed generation, and a server-only full Quran alquran.cloud bundle exposed through `@quran-ai/quran-data/full-quran`.
 - `apps/web/src/lib/liveRecitation.ts`: browser mic capture wrapper, audio chunk envelopes, mocked partial alignment events, and live capture summary helpers.
-- `services/platform-api`: Rust/Axum tenant-scoped API for recitation sessions, teacher reviews, scholar approvals, eval lookup, and audit events.
+- `services/platform-api`: Rust/Axum + SQLx/Postgres tenant-scoped API for auth, recitation sessions, progress, privacy export/delete, teacher reviews, scholar approvals, eval lookup, audit events, and realtime ticket issuance.
 - `services/realtime-gateway`: Rust/Tokio/Axum realtime gateway with health route, WebSocket audio ingress, bounded-channel ingestion, metrics counters, and 100-session local ingestion proof.
-- `infra/sql/0001_core_schema.sql`: Postgres target schema for institutions, users, canonical Quran text, recitation sessions, audio chunks, alignments, findings, reviews, agent runs, model versions, eval runs, consent, and audit events.
-- `scripts/proof.sh`: local proof command for contracts, web app, and gateway tests.
+- `infra/sql`: Postgres schema, full Quran seed, tenant RLS policies, restricted app role, learner-progress RLS, eval-run tenant isolation, and superuser-only RLS bypass guard.
+- `scripts/verify.sh`: canonical local/CI gate for Rust fmt/clippy, TS typecheck, TS/Rust/Node tests, live Postgres integration tests when reachable, production build, and web bundle secret scan.
+- `scripts/smoke-*.mjs`: running-stack proof for SQL/RLS, API, gateway, ML, privacy, browser, and trace-linked aggregate smoke.
 
 ## Architecture Direction
 
@@ -35,11 +36,13 @@ The winning architecture is a real vertical slice first:
 
 ## Still Not Implemented
 
-- Production Postgres runtime, SQLx integration, row-level security, and independent Quran Foundation/Tanzil reconciliation for the full Quran bundle.
-- Authenticated WebSocket sessions, persisted audio events, and cross-service NATS emission.
+- Managed production deployment posture: restricted DB role provisioning, production secrets/origins, backups, observability, and branch-protected CI checks.
+- Independent Quran Foundation/Tanzil reconciliation for the full Quran bundle.
+- Managed object storage for retained audio and privacy deletion beyond the current local filesystem boundary.
+- Cross-service NATS/JetStream emission for audit/event fanout.
 - Quran Foundation/Tanzil live reconciliation job.
 - Quran-specific ASR/alignment/tajweed ML service.
 - OpenAI Realtime/Agents SDK integration.
 - Expo mobile app.
-- Production institution auth/RBAC.
+- Production institution auth provider/RBAC (OIDC/OAuth or equivalent), beyond the current JWT/login implementation.
 - Real pilot data and teacher/scholar workflows.
