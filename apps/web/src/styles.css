@@ -2697,6 +2697,24 @@ button:disabled {
   line-height: 1.5;
   margin: 0;
 }
+.tajweed-review {
+  display: inline-flex;
+  align-items: center;
+  margin-top: 6px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1.4;
+}
+.tajweed-review.provisional {
+  background: #fbeecb;
+  color: #8a6d1f;
+}
+.tajweed-review.verified {
+  background: #dcefe0;
+  color: #2f6b45;
+}
 .panel-empty {
   font-size: 13px;
   color: #8a7e66;

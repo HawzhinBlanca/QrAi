@@ -2,6 +2,8 @@
  * Platform API client — talks to the real Postgres-backed Rust API.
  */
 
+import type { ReviewStatus, SourceReference } from "@quran-ai/contracts";
+
 import { fetchWithTimeout } from "./http";
 
 const API_BASE = import.meta.env.VITE_PLATFORM_API_URL || "http://127.0.0.1:8080";
@@ -71,6 +73,9 @@ export interface TajweedFinding {
   severity: "practice" | "warning" | "critical";
   explanation: string;
   confidence: number;
+  /** Review state of this finding — "ai-suggested" for live practice output (not yet human-reviewed). */
+  reviewStatus: ReviewStatus;
+  sources: SourceReference[];
 }
 
 export interface RecitationConsent {

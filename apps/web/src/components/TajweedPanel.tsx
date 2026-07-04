@@ -1,5 +1,6 @@
 import { AlertTriangle, ShieldAlert, Sparkles } from "lucide-react";
 import type { TajweedFinding } from "../lib/api";
+import { tajweedReviewBadge } from "../lib/tajweedReview";
 
 interface TajweedPanelProps {
   findings: TajweedFinding[];
@@ -24,6 +25,7 @@ export function TajweedPanel({ findings }: TajweedPanelProps) {
         <div className="tajweed-list">
           {findings.map((finding) => {
             const Icon = ICONS[finding.severity] ?? Sparkles;
+            const review = tajweedReviewBadge(finding);
             return (
               <div className={`tajweed-card ${finding.severity}`} key={`${finding.wordId}-${finding.rule}`}>
                 <div className="tajweed-head">
@@ -37,6 +39,17 @@ export function TajweedPanel({ findings }: TajweedPanelProps) {
                   <span className="tajweed-conf">{Math.round(finding.confidence * 100)}%</span>
                 </div>
                 <p>{finding.explanation}</p>
+                {/* Honest provenance: live AI output is provisional until a teacher reviews it. */}
+                <span
+                  className={`tajweed-review ${review.verified ? "verified" : "provisional"}`}
+                  title={
+                    review.verified
+                      ? "Reviewed and verified for learners."
+                      : "This is an AI suggestion and has not yet been reviewed by a teacher."
+                  }
+                >
+                  {review.label}
+                </span>
               </div>
             );
           })}
