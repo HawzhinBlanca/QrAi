@@ -2,12 +2,12 @@
  * Quran AI Mobile App — React Native / Expo
  *
  * Features:
- * - Login/register via Platform API
- * - Surah selection from real API
- * - Audio recording with expo-av
- * - Real-time alignment feedback from ML service
- * - Tajweed findings display
- * - JWT token stored in SecureStore
+ * - Login via Platform API (userId + institution + password)
+ * - Surah selection from the real API
+ * - Audio recording with expo-av, gated on explicit recording consent
+ * - Recitation feedback via the platform API's authenticated ASR + ML proxies
+ *   (the mobile client never talks to the ML/ASR services directly, so their keys stay server-side)
+ * - Tajweed/alignment findings display
  */
 
 import React, { useState, useEffect, useCallback } from "react";
@@ -18,13 +18,15 @@ import {
   TouchableOpacity,
   FlatList,
   StyleSheet,
+  Switch,
   Alert,
   Platform,
 } from "react-native";
 import { Audio } from "expo-av";
 
+// The mobile client talks ONLY to the platform API. ML inference and ASR are reached server-side
+// through the platform API's proxies, so their API keys never ship in the app.
 const API_BASE = "http://127.0.0.1:8080";
-const ML_BASE = "http://127.0.0.1:8090";
 
 interface User {
   userId: string;
@@ -56,18 +58,30 @@ export default function App() {
   const [recording, setRecording] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // Explicit, affirmative consent — never assumed. Recording is blocked until recordingConsent is on,
+  // and the consent sent to the backend reflects the learner's actual choices (no fabricated approval).
+  const [recordingConsent, setRecordingConsent] = useState(false);
+  const [guardianApproved, setGuardianApproved] = useState(false);
+
+  // Actor auth headers for the platform API (Bearer once logged in).
+  const authHeaders = useCallback((): Record<string, string> => {
+    if (user?.token) return { authorization: `Bearer ${user.token}` };
+    if (user) return { "x-tenant-id": user.tenantId, "x-user-id": user.userId, "x-user-role": "learner" };
+    return {};
+  }, [user]);
 
   // === Auth ===
-  const login = async (userId: string, tenantId: string) => {
+  const login = async (userId: string, tenantId: string, password: string) => {
     try {
       const resp = await fetch(`${API_BASE}/v1/auth/login`, {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ userId, tenantId, role: "learner" }),
+        body: JSON.stringify({ userId, tenantId, password }),
       });
       if (!resp.ok) throw new Error("Login failed");
       const data = await resp.json();
       setUser(data);
+      setError(null);
     } catch (e) {
       setError(e instanceof Error ? e.message : "Login failed");
     }
@@ -84,6 +98,13 @@ export default function App() {
 
   // === Audio Recording ===
   const startRecording = useCallback(async () => {
+    if (!recordingConsent) {
+      Alert.alert(
+        "Consent required",
+        "Please consent to recording and analyzing your recitation before you begin.",
+      );
+      return;
+    }
     try {
       const { status } = await Audio.requestPermissionsAsync();
       if (status !== "granted") {
@@ -103,7 +124,7 @@ export default function App() {
     } catch (e) {
       setError("Recording failed to start");
     }
-  }, []);
+  }, [recordingConsent]);
 
   const stopAndAnalyze = useCallback(async () => {
     const rec = (globalThis as any).__recording as Audio.Recording;
@@ -129,10 +150,26 @@ export default function App() {
         reader.readAsDataURL(blob);
       });
 
-      // Send to ML service for alignment
-      const alignResp = await fetch(`${ML_BASE}/v1/alignments:predict`, {
+      const audioFormat = Platform.OS === "ios" ? "m4a" : "webm";
+      const headers = { "content-type": "application/json", ...authHeaders() };
+
+      // 1) Transcribe via the platform API's ASR proxy (server-side ASR key; audio never hits ASR directly).
+      const asrResp = await fetch(`${API_BASE}/v1/asr/transcribe`, {
         method: "POST",
-        headers: { "content-type": "application/json" },
+        headers,
+        body: JSON.stringify({ audioBase64: base64, audioFormat, language: "ar", wordTimestamps: true }),
+      });
+      if (!asrResp.ok) throw new Error(`ASR error: ${asrResp.status}`);
+      const asr = await asrResp.json();
+      const recognizedText = String(asr.text ?? "")
+        .trim()
+        .split(/\s+/)
+        .filter(Boolean);
+
+      // 2) Align via the platform API's ML proxy (server-side ML key; tenant taken from the actor).
+      const alignResp = await fetch(`${API_BASE}/v1/ml/alignments:predict`, {
+        method: "POST",
+        headers,
         body: JSON.stringify({
           tenantId: user?.tenantId ?? "hikmah-pilot-erbil",
           sessionId: `mobile-${Date.now()}`,
@@ -142,14 +179,15 @@ export default function App() {
             ayahEnd: 7,
             display: `Surah ${selectedSurah} 1-7`,
           },
-          audioBase64: base64,
-          audioFormat: Platform.OS === "ios" ? "m4a" : "webm",
+          recognizedText,
           sourceChecksum: "fnv1a32:real",
+          // Real consent — reflects the learner's toggles, not a hardcoded approval.
           consent: {
+            recordingConsent,
             audioRetention: "discard",
             anonymizedLearning: true,
             externalAsrProcessing: false,
-            guardianApproved: true,
+            guardianApproved,
             consentVersion: "mobile-v1",
           },
         }),
@@ -163,7 +201,7 @@ export default function App() {
     } finally {
       setLoading(false);
     }
-  }, [user, selectedSurah]);
+  }, [user, selectedSurah, recordingConsent, guardianApproved, authHeaders]);
 
   // === Login Screen ===
   if (!user) {
@@ -194,11 +232,27 @@ export default function App() {
         />
       </View>
 
+      {/* Consent — recording is blocked until the first toggle is on */}
+      <View style={styles.section}>
+        <View style={styles.consentRow}>
+          <Switch value={recordingConsent} onValueChange={setRecordingConsent} />
+          <Text style={styles.consentText}>I consent to recording and analyzing my recitation.</Text>
+        </View>
+        <View style={styles.consentRow}>
+          <Switch value={guardianApproved} onValueChange={setGuardianApproved} />
+          <Text style={styles.consentText}>A parent/guardian approves (required for learners under 13).</Text>
+        </View>
+      </View>
+
       {/* Record Button */}
       <TouchableOpacity
-        style={[styles.recordButton, recording && styles.recordButtonActive]}
+        style={[
+          styles.recordButton,
+          recording && styles.recordButtonActive,
+          !recordingConsent && !recording && styles.recordButtonDisabled,
+        ]}
         onPress={recording ? stopAndAnalyze : startRecording}
-        disabled={loading}
+        disabled={loading || (!recording && !recordingConsent)}
       >
         <Text style={styles.recordButtonText}>
           {loading ? "Analyzing..." : recording ? "Stop & Analyze" : "Start Recitation"}
@@ -229,16 +283,31 @@ export default function App() {
   );
 }
 
-function LoginScreen({ onLogin, error }: { onLogin: (userId: string, tenantId: string) => void; error: string | null }) {
+function LoginScreen({
+  onLogin,
+  error,
+}: {
+  onLogin: (userId: string, tenantId: string, password: string) => void;
+  error: string | null;
+}) {
   const [userId, setUserId] = useState("learner-1");
   const [tenantId, setTenantId] = useState("hikmah-pilot-erbil");
+  const [password, setPassword] = useState("");
   return (
     <View style={styles.container}>
       <Text style={styles.title}>Quran AI</Text>
       <Text style={styles.subtitle}>Recitation Intelligence</Text>
-      <TextInput style={styles.input} value={userId} onChangeText={setUserId} placeholder="User ID" />
-      <TextInput style={styles.input} value={tenantId} onChangeText={setTenantId} placeholder="Institution ID" />
-      <TouchableOpacity style={styles.recordButton} onPress={() => onLogin(userId, tenantId)}>
+      <TextInput style={styles.input} value={userId} onChangeText={setUserId} placeholder="User ID" autoCapitalize="none" />
+      <TextInput style={styles.input} value={tenantId} onChangeText={setTenantId} placeholder="Institution ID" autoCapitalize="none" />
+      <TextInput
+        style={styles.input}
+        value={password}
+        onChangeText={setPassword}
+        placeholder="Password"
+        secureTextEntry
+        autoCapitalize="none"
+      />
+      <TouchableOpacity style={styles.recordButton} onPress={() => onLogin(userId, tenantId, password)}>
         <Text style={styles.recordButtonText}>Sign In</Text>
       </TouchableOpacity>
       {error && <Text style={styles.error}>{error}</Text>}
@@ -255,8 +324,11 @@ const styles = StyleSheet.create({
   surahChip: { padding: 10, backgroundColor: "#2a2a4e", borderRadius: 8, marginRight: 8 },
   surahChipActive: { backgroundColor: "#4a90d9" },
   surahChipText: { color: "#e0e0e0", fontSize: 14 },
+  consentRow: { flexDirection: "row", alignItems: "center", marginBottom: 10 },
+  consentText: { color: "#cfcfe0", fontSize: 13, flex: 1, marginLeft: 10 },
   recordButton: { backgroundColor: "#4a90d9", padding: 20, borderRadius: 12, alignItems: "center", marginVertical: 20 },
   recordButtonActive: { backgroundColor: "#d94a4a" },
+  recordButtonDisabled: { backgroundColor: "#3a3a52", opacity: 0.6 },
   recordButtonText: { color: "#fff", fontSize: 18, fontWeight: "bold" },
   error: { color: "#ff6b6b", textAlign: "center", marginVertical: 10 },
   resultsSection: { flex: 1, marginTop: 10 },
