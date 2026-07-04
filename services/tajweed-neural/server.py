@@ -28,14 +28,48 @@ from model_loader import NeuralTajweedModel, MODEL_ID
 
 app = FastAPI(title="Quran AI Neural Tajweed (experimental)")
 
+# Whitelist of accepted audio container formats (mirrors the asr-inference service). The
+# client-controlled audioFormat becomes a tempfile suffix; without this a value with a NUL byte
+# ("wav\0") or path traversal ("../../x") makes tempfile.NamedTemporaryFile raise an unhandled 500.
+ALLOWED_AUDIO_FORMATS = {"webm", "wav", "mp3", "m4a", "ogg", "flac"}
+
+
+def safe_audio_suffix(audio_format: str) -> str:
+    fmt = (audio_format or "").strip().lower()
+    if fmt not in ALLOWED_AUDIO_FORMATS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"unsupported audioFormat {audio_format!r}; allowed: {sorted(ALLOWED_AUDIO_FORMATS)}",
+        )
+    return f".{fmt}"
+
+
 _model: NeuralTajweedModel | None = None
+_model_load_error: str | None = None
 
 
 def get_model() -> NeuralTajweedModel:
-    global _model
+    """Lazily load the model. On failure, remember the error and re-raise; callers decide how to
+    surface it (startup logs + degrades, requests return 503). A later call retries, so the service
+    self-heals once the model becomes reachable."""
+    global _model, _model_load_error
     if _model is None:
-        _model = NeuralTajweedModel()
+        try:
+            _model = NeuralTajweedModel()
+            _model_load_error = None
+        except Exception as e:  # noqa: BLE001
+            _model_load_error = str(e)
+            raise
     return _model
+
+
+def require_loaded_model() -> NeuralTajweedModel:
+    """Return the model, or raise a clean 503 if it cannot be loaded — a 503 (unavailable) reads
+    honestly as 'model not ready', vs a 500 that looks like a bug in request handling."""
+    try:
+        return get_model()
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(status_code=503, detail=f"neural tajweed model unavailable (load failed): {e}")
 
 
 class AnalyzeRequest(BaseModel):
@@ -54,10 +88,11 @@ class AnalyzeResponse(BaseModel):
 @app.get("/health")
 def health():
     return {
-        "status": "ok",
+        "status": "ok" if _model_load_error is None else "degraded",
         "service": "tajweed-neural",
         "model": MODEL_ID,
         "loaded": _model is not None,
+        "loadError": _model_load_error,
         "experimental": True,
     }
 
@@ -66,14 +101,20 @@ def health():
 def analyze_tajweed_neural(req: AnalyzeRequest):
     if not req.audioBase64:
         raise HTTPException(status_code=400, detail="audioBase64 is required")
+    # Acquire the model before touching the request body: an unloaded model is a 503, not a 500.
+    model = require_loaded_model()
     start = time.time()
-    audio_bytes = base64.b64decode(req.audioBase64)
-    suffix = f".{req.audioFormat}"
+    # Malformed base64 / audioFormat are client errors (400), not an unhandled 500.
+    try:
+        audio_bytes = base64.b64decode(req.audioBase64, validate=True)
+    except (ValueError, TypeError) as exc:
+        raise HTTPException(status_code=400, detail=f"Invalid base64 audio: {exc}")
+    suffix = safe_audio_suffix(req.audioFormat)
     with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
         tmp.write(audio_bytes)
         tmp_path = tmp.name
     try:
-        result = get_model().analyze(tmp_path)
+        result = model.analyze(tmp_path)
         return AnalyzeResponse(
             modelId=result["modelId"],
             experimental=True,
@@ -81,6 +122,8 @@ def analyze_tajweed_neural(req: AnalyzeRequest):
             levels=result["levels"],
             latencyMs=max(1, int((time.time() - start) * 1000)),
         )
+    except HTTPException:
+        raise
     except Exception as e:  # noqa: BLE001
         raise HTTPException(status_code=500, detail=f"Neural tajweed analysis failed: {e}")
     finally:
@@ -92,8 +135,18 @@ if __name__ == "__main__":
 
     host = os.environ.get("TAJWEED_NEURAL_HOST", "127.0.0.1")
     port = int(os.environ.get("TAJWEED_NEURAL_PORT", "8093"))
-    # Eagerly load so the first request isn't a cold start.
+    # Eagerly load so the first request isn't a cold start — but a load failure (Hub unreachable,
+    # bad MODEL_ID / TAJWEED_NEURAL_MODEL) must NOT crash the process before it binds the port.
+    # Degrade gracefully: log and start anyway. /health then reports loaded=false + the error, and
+    # requests return a clean 503 (require_loaded_model), retrying the load until it succeeds.
     print(f"[tajweed-neural] loading {MODEL_ID} ...", flush=True)
-    get_model()
-    print(f"[tajweed-neural] ready on http://{host}:{port}", flush=True)
+    try:
+        get_model()
+        print(f"[tajweed-neural] ready on http://{host}:{port}", flush=True)
+    except Exception as e:  # noqa: BLE001
+        print(
+            f"[tajweed-neural] model load FAILED ({e}); starting DEGRADED — "
+            f"/health loaded=false, requests return 503 until the model loads",
+            flush=True,
+        )
     uvicorn.run(app, host=host, port=port)
