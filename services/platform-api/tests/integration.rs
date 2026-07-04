@@ -600,10 +600,33 @@ async fn teacher_review_author_is_actor_and_realignment_cascades() {
     );
 }
 
+/// Spawn a throwaway HTTP server that impersonates the ML inference service's audio-erasure
+/// endpoint, so a privacy delete (which now calls it for right-to-erasure) runs without a live ML
+/// service. Returns the base URL to point AppState at.
+async fn spawn_mock_ml_privacy_delete() -> String {
+    let app = axum::Router::new().route(
+        "/v1/privacy/delete",
+        axum::routing::post(|| async {
+            axum::Json(serde_json::json!({
+                "deletedAudioObjectKeys": ["hikmah-pilot-erbil/learner/chunk-1.bin"],
+                "deletedMetadataObjectKeys": ["hikmah-pilot-erbil/learner/chunk-1.meta.json"],
+            }))
+        }),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+    format!("http://{addr}")
+}
+
 #[tokio::test]
 #[ignore = "requires live Postgres"]
 async fn privacy_delete_preserves_other_learners_teacher_reviews() {
-    let state = test_state();
+    // Point the ML endpoint at a mock so the right-to-erasure audio call succeeds off-network.
+    let mock_ml = spawn_mock_ml_privacy_delete().await;
+    let state = test_state().with_ml_inference_url(mock_ml);
     let router = platform_router_with_rate_limit(state.clone(), false);
     let target_learner = format!("learner-privacy-target-{}", next_suffix());
     let other_learner = format!("learner-privacy-other-{}", next_suffix());
@@ -636,6 +659,16 @@ async fn privacy_delete_preserves_other_learners_teacher_reviews() {
     )
     .await;
     assert_eq!(deleted.status(), StatusCode::OK);
+    // Right-to-erasure: the delete must have erased the learner's audio via the ML service and
+    // reported the erased object keys (previously this was always an empty list).
+    let deleted_body: Value = read_json(deleted).await;
+    assert!(
+        deleted_body["audioObjectKeysDeleted"]
+            .as_array()
+            .is_some_and(|keys| !keys.is_empty()),
+        "privacy delete must report erased audio object keys, got {:?}",
+        deleted_body["audioObjectKeysDeleted"]
+    );
 
     let target_review_count: i64 =
         sqlx::query_scalar("SELECT COUNT(*) FROM teacher_reviews WHERE id = $1")

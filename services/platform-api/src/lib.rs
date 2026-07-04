@@ -22,28 +22,52 @@ pub use quran_ai_shared_ticket::issue_realtime_ticket;
 pub struct AppState {
     pub pool: PgPool,
     pub jwt_config: Arc<JwtConfig>,
-    /// Shared HTTP client for outbound requests (ML proxy, etc.).
+    /// Shared HTTP client for outbound requests (ML proxy, ASR proxy, audio erasure).
     /// Reuses connection pools and TLS sessions.
     pub http_client: reqwest::Client,
+    /// Internal ML/ASR inference endpoints + keys — read from env at construction, kept off the
+    /// browser. Held on state (not scattered env reads) so tests can point them at a mock server.
+    pub ml_inference_url: String,
+    pub ml_api_key: String,
+    pub asr_inference_url: String,
+    pub asr_api_key: String,
+}
+
+fn env_or(key: &str, default: &str) -> String {
+    std::env::var(key).unwrap_or_else(|_| default.to_owned())
 }
 
 impl AppState {
     pub fn new(pool: PgPool, jwt_secret: &str) -> Self {
-        Self {
-            pool,
-            jwt_config: Arc::new(JwtConfig::new(jwt_secret)),
-            http_client: reqwest::Client::new(),
-        }
+        Self::build(pool, JwtConfig::new(jwt_secret))
     }
 
     /// Construct with an explicit header-auth toggle (tests/embedders that must not
     /// depend on the process-wide ALLOW_HEADER_AUTH env var).
     pub fn with_header_auth(pool: PgPool, jwt_secret: &str, allow_header_auth: bool) -> Self {
+        Self::build(
+            pool,
+            JwtConfig::with_header_auth(jwt_secret, allow_header_auth),
+        )
+    }
+
+    fn build(pool: PgPool, jwt_config: JwtConfig) -> Self {
         Self {
             pool,
-            jwt_config: Arc::new(JwtConfig::with_header_auth(jwt_secret, allow_header_auth)),
+            jwt_config: Arc::new(jwt_config),
             http_client: reqwest::Client::new(),
+            ml_inference_url: env_or("ML_INFERENCE_URL", "http://127.0.0.1:8090"),
+            ml_api_key: env_or("ML_API_KEY", "smoke-ml-api-key"),
+            asr_inference_url: env_or("ASR_INFERENCE_URL", "http://127.0.0.1:8091"),
+            asr_api_key: env_or("ASR_API_KEY", "smoke-asr-api-key"),
         }
+    }
+
+    /// Point the ML inference endpoint at a specific URL (tests use a mock server so the audio
+    /// erasure / proxy paths run without a live ML service).
+    pub fn with_ml_inference_url(mut self, url: impl Into<String>) -> Self {
+        self.ml_inference_url = url.into();
+        self
     }
 }
 

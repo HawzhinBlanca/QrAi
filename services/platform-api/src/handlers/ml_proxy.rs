@@ -6,18 +6,6 @@ use crate::AppState;
 use crate::auth::actor_from_headers;
 use crate::types::*;
 
-/// Server-side ML inference URL (never exposed to the browser).
-fn ml_inference_url() -> String {
-    std::env::var("ML_INFERENCE_URL").unwrap_or_else(|_| "http://127.0.0.1:8090".to_owned())
-}
-
-/// Server-side ML API key (never exposed to the browser). In production the key MUST be set; the
-/// insecure default is refused at boot unless ALLOW_INSECURE_DEFAULTS is enabled (see main.rs
-/// `ensure_secure_config`), so this fallback only ever applies in dev/CI.
-fn ml_api_key() -> String {
-    std::env::var("ML_API_KEY").unwrap_or_else(|_| "smoke-ml-api-key".to_owned())
-}
-
 /// Proxy a prediction request to the internal ML service.
 ///
 /// Tenant isolation: the caller is authenticated and the request's `tenantId` is OVERWRITTEN with the
@@ -48,9 +36,9 @@ async fn proxy_ml(
 
     let response = state
         .http_client
-        .post(format!("{}{}", ml_inference_url(), path))
+        .post(format!("{}{}", state.ml_inference_url, path))
         .header("content-type", "application/json")
-        .header("x-ml-api-key", ml_api_key())
+        .header("x-ml-api-key", &state.ml_api_key)
         .json(&body)
         .send()
         .await
@@ -104,18 +92,6 @@ pub async fn proxy_predict_tajweed(
     .await
 }
 
-/// Server-side ASR inference URL (never exposed to the browser).
-fn asr_inference_url() -> String {
-    std::env::var("ASR_INFERENCE_URL").unwrap_or_else(|_| "http://127.0.0.1:8091".to_owned())
-}
-
-/// Server-side ASR API key (never exposed to the browser). In production the key MUST be set; the
-/// insecure default is refused at boot unless ALLOW_INSECURE_DEFAULTS is enabled (see main.rs
-/// `ensure_secure_config`), so this fallback only ever applies in dev/CI.
-fn asr_api_key() -> String {
-    std::env::var("ASR_API_KEY").unwrap_or_else(|_| "smoke-asr-api-key".to_owned())
-}
-
 /// Proxy audio transcription to the internal ASR service so `ASR_API_KEY` stays server-side and the
 /// browser never reaches the ASR service directly (previously the web posted audio straight to
 /// :8091, which had no auth at all).
@@ -137,9 +113,9 @@ pub async fn proxy_asr_transcribe(
 
     let response = state
         .http_client
-        .post(format!("{}/v1/transcribe", asr_inference_url()))
+        .post(format!("{}/v1/transcribe", state.asr_inference_url))
         .header("content-type", "application/json")
-        .header("x-asr-api-key", asr_api_key())
+        .header("x-asr-api-key", &state.asr_api_key)
         .json(&body)
         .send()
         .await
