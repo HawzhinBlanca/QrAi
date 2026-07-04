@@ -130,6 +130,27 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             e
         })?;
 
+    // Defense-in-depth: if the API connects as a superuser / BYPASSRLS role, EVERY RLS policy is a
+    // no-op and tenant isolation rests solely on per-handler filters. Refuse to boot in production in
+    // that case (dev/CI opt out with ALLOW_INSECURE_DEFAULTS=1), mirroring infra/sql/rls-app-role.sql.
+    if !std::env::var("ALLOW_INSECURE_DEFAULTS")
+        .map(|v| v == "1" || v == "true")
+        .unwrap_or(false)
+    {
+        let (rolname, rolsuper, rolbypassrls): (String, bool, bool) = sqlx::query_as(
+            "SELECT rolname, rolsuper, rolbypassrls FROM pg_roles WHERE rolname = current_user",
+        )
+        .fetch_one(&pool)
+        .await?;
+        if rolsuper || rolbypassrls {
+            panic!(
+                "DB role '{rolname}' is superuser/bypassrls — RLS tenant isolation is INERT. Connect \
+                 as a restricted role (see infra/sql/rls-app-role.sql), or set ALLOW_INSECURE_DEFAULTS=1 \
+                 for local dev only."
+            );
+        }
+    }
+
     let jwt_secret =
         std::env::var("JWT_SECRET").unwrap_or_else(|_| "quran-ai-dev-secret".to_owned());
 

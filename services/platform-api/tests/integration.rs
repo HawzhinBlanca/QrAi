@@ -382,6 +382,31 @@ async fn list_active_learners_is_distinct_and_staff_only() {
     assert_eq!(denied.status(), StatusCode::FORBIDDEN);
 }
 
+/// An invalid agent_run review_status is a clean 400 (validated against the contract allowlist),
+/// not an opaque DB-CHECK 500.
+#[tokio::test]
+#[ignore = "requires live Postgres"]
+async fn agent_run_invalid_review_status_is_bad_request() {
+    let router = platform_router_with_rate_limit(test_state(), false);
+    let res = send_json(
+        &router,
+        Method::POST,
+        "/v1/agent-runs",
+        Some("hikmah-pilot-erbil"),
+        Some("ops"),
+        json!({
+            "name": "Tajweed Explainer",
+            "goal": "explain a finding",
+            "status": "queued",
+            "confidence": 0.9,
+            "reviewStatus": "not-a-real-status",
+            "sources": []
+        }),
+    )
+    .await;
+    assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+}
+
 /// Persist + read-back of a session's real alignment (the link that surfaces a learner's
 /// recitation in the console). Synthetic "extra" ids are skipped; a non-owner learner is denied.
 #[tokio::test]
