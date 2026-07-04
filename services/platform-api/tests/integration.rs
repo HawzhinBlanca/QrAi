@@ -317,6 +317,27 @@ async fn learner_progress_learner_id_is_authorized() {
     assert_eq!(cross.status(), StatusCode::FORBIDDEN);
 }
 
+/// SM-2 quality is clamped to its 0..=5 domain: an out-of-range quality must NOT violate the
+/// learner_progress.last_quality CHECK (0..5) and fail the write with a 500 — it is clamped and the
+/// review still persists.
+#[tokio::test]
+#[ignore = "requires live Postgres"]
+async fn progress_quality_out_of_range_is_clamped_not_500() {
+    let router = platform_router_with_rate_limit(test_state(), false);
+    let res = send_json(
+        &router,
+        Method::POST,
+        "/v1/learner/progress",
+        Some("hikmah-pilot-erbil"),
+        Some("learner"),
+        json!({ "quality": 6, "ayahRef": "1:1" }),
+    )
+    .await;
+    assert_eq!(res.status(), StatusCode::OK); // clamped, not a CHECK-constraint 500
+    let body: Value = read_json(res).await;
+    assert_eq!(body["quality"], 5); // 6 clamped to the SM-2 / DB max of 5
+}
+
 /// Persist + read-back of a session's real alignment (the link that surfaces a learner's
 /// recitation in the console). Synthetic "extra" ids are skipped; a non-owner learner is denied.
 #[tokio::test]
