@@ -14,13 +14,16 @@ pub mod types;
 use auth::JwtConfig;
 
 pub const REALTIME_TICKET_TTL_SECONDS: u64 = 300;
-use hmac::Mac;
-type HmacSha256 = hmac::Hmac<sha2::Sha256>;
+
+pub use quran_ai_shared_ticket::issue_realtime_ticket;
 
 #[derive(Clone)]
 pub struct AppState {
     pub pool: PgPool,
     pub jwt_config: Arc<JwtConfig>,
+    /// Shared HTTP client for outbound requests (ML proxy, etc.).
+    /// Reuses connection pools and TLS sessions.
+    pub http_client: reqwest::Client,
 }
 
 impl AppState {
@@ -28,6 +31,7 @@ impl AppState {
         Self {
             pool,
             jwt_config: Arc::new(JwtConfig::new(jwt_secret)),
+            http_client: reqwest::Client::new(),
         }
     }
 
@@ -37,6 +41,7 @@ impl AppState {
         Self {
             pool,
             jwt_config: Arc::new(JwtConfig::with_header_auth(jwt_secret, allow_header_auth)),
+            http_client: reqwest::Client::new(),
         }
     }
 }
@@ -153,6 +158,14 @@ pub fn platform_router_with_rate_limit(state: AppState, rate_limit: bool) -> Rou
             "/v1/learner/progress",
             axum::routing::post(handlers::progress::update_progress),
         )
+        .route(
+            "/v1/ml/alignments:predict",
+            axum::routing::post(handlers::ml_proxy::proxy_predict_alignment),
+        )
+        .route(
+            "/v1/ml/tajweed-findings:predict",
+            axum::routing::post(handlers::ml_proxy::proxy_predict_tajweed),
+        )
         .layer(TraceLayer::new_for_http())
         .with_state(state);
 
@@ -233,36 +246,7 @@ pub fn realtime_ticket_secret() -> String {
     std::env::var("REALTIME_GATEWAY_TICKET_SECRET").unwrap_or_else(|_| "smoke-secret".to_owned())
 }
 
-pub fn issue_realtime_ticket(
-    session_id: &str,
-    tenant_id: &str,
-    learner_id: &str,
-    external_asr_processing: bool,
-    expires_at_unix_seconds: u64,
-    nonce: &str,
-    secret: &str,
-) -> String {
-    let payload = format!(
-        "{session_id}.{tenant_id}.{learner_id}.{external_asr_processing}.{expires_at_unix_seconds}.{nonce}"
-    );
-    let mut mac =
-        HmacSha256::new_from_slice(secret.as_bytes()).expect("HMAC accepts any key length");
-    mac.update(payload.as_bytes());
-    let signature = to_hex(&mac.finalize().into_bytes());
-    format!(
-        "rt_v1.{session_id}.{tenant_id}.{learner_id}.{external_asr_processing}.{expires_at_unix_seconds}.{nonce}.{signature}"
-    )
-}
-
-fn to_hex(bytes: &[u8]) -> String {
-    const HEX: &[u8; 16] = b"0123456789abcdef";
-    let mut output = String::with_capacity(bytes.len() * 2);
-    for byte in bytes {
-        output.push(HEX[(byte >> 4) as usize] as char);
-        output.push(HEX[(byte & 0x0f) as usize] as char);
-    }
-    output
-}
+// issue_realtime_ticket is now re-exported from quran_ai_shared_ticket.
 
 pub fn unix_now_seconds() -> u64 {
     use std::time::{SystemTime, UNIX_EPOCH};

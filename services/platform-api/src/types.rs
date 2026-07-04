@@ -335,6 +335,10 @@ pub enum ApiError {
     Database(String),
     #[error("{0}")]
     BadRequest(String),
+    /// An upstream/proxied service (e.g. ML inference) failed. The message is GENERIC and safe to
+    /// return to clients — detailed errors are logged server-side, never surfaced (no topology leak).
+    #[error("{0}")]
+    Upstream(String),
 }
 
 impl From<sqlx::Error> for ApiError {
@@ -357,6 +361,7 @@ impl IntoResponse for ApiError {
                 StatusCode::BAD_REQUEST
             }
             Self::Database(_) => StatusCode::INTERNAL_SERVER_ERROR,
+            Self::Upstream(_) => StatusCode::BAD_GATEWAY,
         };
         (
             status,

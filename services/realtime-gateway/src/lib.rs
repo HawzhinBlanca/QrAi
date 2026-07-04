@@ -10,13 +10,18 @@ use axum::extract::{Path, Query, State, WebSocketUpgrade};
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::routing::get;
-use hmac::{Hmac, Mac};
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 use thiserror::Error;
 use tokio::sync::{RwLock, mpsc};
 
-type HmacSha256 = Hmac<Sha256>;
+pub use quran_ai_shared_ticket::{
+    RealtimeTicketClaims, TicketError, issue_realtime_ticket, validate_realtime_ticket,
+};
+
+/// How long a session stays counted as "active" in the shared Redis set before it self-expires by
+/// score (bounds counter drift from unclean terminations). Matches the realtime ticket TTL window.
+const ACTIVE_SESSION_TTL_SECONDS: u64 = 300;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AudioChunk {
@@ -130,14 +135,26 @@ impl RealtimeGateway {
                     e
                 })
         {
-            let key = format!("quran-ai:gateway:session:{session_id}");
+            // Active sessions live in a SORTED SET scored by expiry (unix seconds). This SELF-HEALS: a
+            // session whose "end" is never recorded (dropped socket, panicking task, gateway crash or
+            // restart) simply expires by score and is evicted on the next count. The previous bare
+            // INCR/DECR counter had no TTL and no reconciliation, so any unclean termination or restart
+            // drifted `active-session-count` upward forever with no recovery short of a manual reset.
+            let zkey = "quran-ai:gateway:active-sessions";
             let _: Result<(), _> = match action {
-                "start" => redis::cmd("SETEX")
-                    .arg(&key)
-                    .arg(300)
-                    .arg("active")
+                "start" => {
+                    // Bound a session's tracked lifetime to the ticket TTL window.
+                    let expiry = unix_now_seconds().saturating_add(ACTIVE_SESSION_TTL_SECONDS);
+                    redis::cmd("ZADD")
+                        .arg(zkey)
+                        .arg(expiry)
+                        .arg(session_id)
+                        .query(&mut conn)
+                }
+                "end" => redis::cmd("ZREM")
+                    .arg(zkey)
+                    .arg(session_id)
                     .query(&mut conn),
-                "end" => redis::cmd("DEL").arg(&key).query(&mut conn),
                 _ => Ok(()),
             };
         }
@@ -267,30 +284,23 @@ impl RealtimeGateway {
                     e
                 })
         {
-            let mut cursor = 0_u64;
-            let mut count = 0;
-            loop {
-                let (next_cursor, keys): (u64, Vec<String>) = match redis::cmd("SCAN")
-                    .arg(cursor)
-                    .arg("MATCH")
-                    .arg("quran-ai:gateway:session:*")
-                    .arg("COUNT")
-                    .arg(100)
-                    .query(&mut conn)
-                {
-                    Ok(res) => res,
-                    Err(e) => {
-                        tracing::warn!("Redis SCAN failed: {e}");
-                        break;
-                    }
-                };
-                count += keys.len();
-                cursor = next_cursor;
-                if cursor == 0 {
-                    break;
+            let zkey = "quran-ai:gateway:active-sessions";
+            let now = unix_now_seconds();
+            // Evict entries whose expiry has passed (stale sessions left by crashes/restarts), then
+            // count the live ones. `(now` makes the bound exclusive so a session expiring exactly now
+            // is still counted until the next tick.
+            let _: Result<(), _> = redis::cmd("ZREMRANGEBYSCORE")
+                .arg(zkey)
+                .arg("-inf")
+                .arg(format!("({now}"))
+                .query(&mut conn);
+            let count: Result<i64, _> = redis::cmd("ZCARD").arg(zkey).query(&mut conn);
+            match count {
+                Ok(c) => return c.max(0) as usize,
+                Err(e) => {
+                    tracing::warn!("Redis ZCARD active-sessions failed: {e}");
                 }
             }
-            return count;
         }
         self.sessions.read().await.len()
     }
@@ -370,6 +380,7 @@ struct GatewayServerState {
     // ticket string -> its expiry (unix seconds). Per-process fast path for single-use
     // enforcement; the authoritative cross-restart/cross-instance check is Redis when set.
     consumed_tickets: Arc<RwLock<HashMap<String, u64>>>,
+    http_client: reqwest::Client,
 }
 
 #[derive(Debug, Serialize, PartialEq, Eq)]
@@ -387,6 +398,7 @@ pub fn gateway_router(config: GatewayServerConfig) -> Router {
     let redis_url = std::env::var("REDIS_URL").ok();
     let gateway = RealtimeGateway::with_redis(config.chunk_capacity, redis_url);
     let consumed_tickets: Arc<RwLock<HashMap<String, u64>>> = Arc::new(RwLock::new(HashMap::new()));
+    let http_client = reqwest::Client::new();
 
     // Spawn periodic cleanup that evicts ONLY expired consumed tickets (every 60s).
     // Only spawn if we're inside a Tokio runtime (not in tests).
@@ -412,12 +424,16 @@ pub fn gateway_router(config: GatewayServerConfig) -> Router {
 
     let base_router = Router::new()
         .route("/health", get(health))
-        .route("/v1/recitation-sessions/{session_id}/audio", get(audio_ws))
+        .route(
+            "/v1/recitation-sessions/{session_id}/audio",
+            get(audio_ws).route_layer(axum::middleware::from_fn(validate_origin)),
+        )
         .route("/metrics", get(metrics))
         .with_state(GatewayServerState {
             gateway,
             config,
             consumed_tickets,
+            http_client,
         });
 
     if rate_limited {
@@ -455,6 +471,54 @@ async fn health() -> impl IntoResponse {
     (StatusCode::OK, "ok")
 }
 
+async fn validate_origin(
+    headers: axum::http::HeaderMap,
+    request: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> impl IntoResponse {
+    let allow_insecure = std::env::var("ALLOW_INSECURE_DEFAULTS")
+        .map(|v| v == "1" || v == "true")
+        .unwrap_or(false);
+
+    if !allow_insecure {
+        if let Some(origin_str) = headers
+            .get(axum::http::header::ORIGIN)
+            .and_then(|h| h.to_str().ok())
+        {
+            if let Ok(allowed_origins_env) = std::env::var("CORS_ALLOWED_ORIGINS") {
+                let mut allowed = false;
+                for allowed_origin in allowed_origins_env.split(',') {
+                    if allowed_origin.trim() == origin_str.trim() {
+                        allowed = true;
+                        break;
+                    }
+                }
+                if !allowed {
+                    tracing::warn!(
+                        "CSWSH check failed: Origin '{origin_str}' not in CORS_ALLOWED_ORIGINS"
+                    );
+                    return StatusCode::FORBIDDEN.into_response();
+                }
+            } else {
+                tracing::warn!("CSWSH check failed: CORS_ALLOWED_ORIGINS unset in production");
+                return StatusCode::FORBIDDEN.into_response();
+            }
+        } else if headers.contains_key(axum::http::header::ORIGIN) {
+            tracing::warn!("CSWSH check failed: Invalid Origin header");
+            return StatusCode::FORBIDDEN.into_response();
+        } else {
+            // No Origin header at all. Browsers ALWAYS send Origin on a cross-origin WebSocket
+            // upgrade, so in strict (production) mode we fail CLOSED here rather than let the origin
+            // allowlist be silently bypassed by simply omitting the header. Dev and non-browser
+            // clients opt out via ALLOW_INSECURE_DEFAULTS.
+            tracing::warn!("CSWSH check failed: missing Origin header");
+            return StatusCode::FORBIDDEN.into_response();
+        }
+    }
+
+    next.run(request).await
+}
+
 async fn audio_ws(
     State(state): State<GatewayServerState>,
     Path(session_id): Path<String>,
@@ -474,6 +538,19 @@ async fn audio_ws(
         Ok(claims) => claims,
         Err(_) => return StatusCode::UNAUTHORIZED.into_response(),
     };
+
+    // Tenant binding: a gateway instance serves exactly one tenant (GATEWAY_TENANT_ID). The HMAC
+    // ticket secret is shared across services, so a ticket validly signed for ANOTHER tenant must not
+    // be accepted here just because the session_id string matches — otherwise embedding tenant_id in
+    // the ticket would be pointless. Reject a cross-tenant ticket.
+    if claims.tenant_id != state.config.tenant_id {
+        tracing::warn!(
+            "realtime ticket tenant '{}' does not match gateway tenant '{}'",
+            claims.tenant_id,
+            state.config.tenant_id
+        );
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
 
     // Single-use enforcement. Redis (when configured) makes this survive gateway
     // restarts and span multiple instances; the in-memory map is the always-on fast path
@@ -517,29 +594,7 @@ async fn audio_ws(
         .into_response()
 }
 
-#[derive(Debug, Error, PartialEq, Eq)]
-pub enum TicketError {
-    #[error("missing realtime ticket")]
-    Missing,
-    #[error("malformed realtime ticket")]
-    Malformed,
-    #[error("realtime ticket is bound to another session")]
-    SessionMismatch,
-    #[error("realtime ticket expired")]
-    Expired,
-    #[error("realtime ticket signature is invalid")]
-    InvalidSignature,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct RealtimeTicketClaims {
-    pub session_id: String,
-    pub tenant_id: String,
-    pub learner_id: String,
-    pub external_asr_processing: bool,
-    pub expires_at_unix_seconds: u64,
-    pub nonce: String,
-}
+// TicketError and RealtimeTicketClaims are re-exported from quran_ai_shared_ticket above.
 
 /// Outcome of the cross-instance replay check (see `RealtimeGateway::redis_mark_ticket`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -569,135 +624,8 @@ fn evict_expired(consumed: &mut HashMap<String, u64>, now_unix_seconds: u64) -> 
     before - consumed.len()
 }
 
-pub fn issue_realtime_ticket(
-    session_id: &str,
-    tenant_id: &str,
-    learner_id: &str,
-    external_asr_processing: bool,
-    expires_at_unix_seconds: u64,
-    nonce: &str,
-    secret: &str,
-) -> String {
-    let payload = ticket_payload(
-        session_id,
-        tenant_id,
-        learner_id,
-        external_asr_processing,
-        expires_at_unix_seconds,
-        nonce,
-    );
-    let signature = sign_ticket_payload(&payload, secret);
-    format!(
-        "rt_v1.{session_id}.{tenant_id}.{learner_id}.{external_asr_processing}.{expires_at_unix_seconds}.{nonce}.{signature}"
-    )
-}
-
-pub fn validate_realtime_ticket(
-    expected_session_id: &str,
-    ticket: &str,
-    secret: &str,
-    now_unix_seconds: u64,
-) -> Result<RealtimeTicketClaims, TicketError> {
-    let trimmed = ticket.trim();
-    if trimmed.is_empty() {
-        return Err(TicketError::Missing);
-    }
-
-    let mut parts = trimmed.split('.');
-    let version = parts.next().ok_or(TicketError::Malformed)?;
-    let session_id = parts.next().ok_or(TicketError::Malformed)?;
-    let tenant_id = parts.next().ok_or(TicketError::Malformed)?;
-    let learner_id = parts.next().ok_or(TicketError::Malformed)?;
-    let external_asr_processing = parts.next().ok_or(TicketError::Malformed)?;
-    let expires_at = parts.next().ok_or(TicketError::Malformed)?;
-    let nonce = parts.next().ok_or(TicketError::Malformed)?;
-    let signature = parts.next().ok_or(TicketError::Malformed)?;
-    if parts.next().is_some()
-        || version != "rt_v1"
-        || tenant_id.trim().is_empty()
-        || learner_id.trim().is_empty()
-        || nonce.trim().is_empty()
-    {
-        return Err(TicketError::Malformed);
-    }
-
-    if session_id != expected_session_id {
-        return Err(TicketError::SessionMismatch);
-    }
-
-    let expires_at = expires_at
-        .parse::<u64>()
-        .map_err(|_| TicketError::Malformed)?;
-    if expires_at <= now_unix_seconds {
-        return Err(TicketError::Expired);
-    }
-    let external_asr_processing = external_asr_processing
-        .parse::<bool>()
-        .map_err(|_| TicketError::Malformed)?;
-
-    let payload = ticket_payload(
-        session_id,
-        tenant_id,
-        learner_id,
-        external_asr_processing,
-        expires_at,
-        nonce,
-    );
-    let expected_signature = sign_ticket_payload(&payload, secret);
-    if !constant_time_eq(signature.as_bytes(), expected_signature.as_bytes()) {
-        return Err(TicketError::InvalidSignature);
-    }
-
-    Ok(RealtimeTicketClaims {
-        session_id: session_id.to_owned(),
-        tenant_id: tenant_id.to_owned(),
-        learner_id: learner_id.to_owned(),
-        external_asr_processing,
-        expires_at_unix_seconds: expires_at,
-        nonce: nonce.to_owned(),
-    })
-}
-
-fn ticket_payload(
-    session_id: &str,
-    tenant_id: &str,
-    learner_id: &str,
-    external_asr_processing: bool,
-    expires_at_unix_seconds: u64,
-    nonce: &str,
-) -> String {
-    format!(
-        "{session_id}.{tenant_id}.{learner_id}.{external_asr_processing}.{expires_at_unix_seconds}.{nonce}"
-    )
-}
-
-fn sign_ticket_payload(payload: &str, secret: &str) -> String {
-    let mut mac = HmacSha256::new_from_slice(secret.as_bytes())
-        .expect("HMAC accepts any key length for realtime ticket signing");
-    mac.update(payload.as_bytes());
-    to_hex(&mac.finalize().into_bytes())
-}
-
-fn constant_time_eq(left: &[u8], right: &[u8]) -> bool {
-    if left.len() != right.len() {
-        return false;
-    }
-
-    left.iter()
-        .zip(right)
-        .fold(0_u8, |acc, (left, right)| acc | (left ^ right))
-        == 0
-}
-
-fn to_hex(bytes: &[u8]) -> String {
-    const HEX: &[u8; 16] = b"0123456789abcdef";
-    let mut output = String::with_capacity(bytes.len() * 2);
-    for byte in bytes {
-        output.push(HEX[(byte >> 4) as usize] as char);
-        output.push(HEX[(byte & 0x0f) as usize] as char);
-    }
-    output
-}
+// issue_realtime_ticket, validate_realtime_ticket, and related helpers are now
+// provided by the quran-ai-shared-ticket crate (re-exported at the top of this file).
 
 fn base64_encode(bytes: &[u8]) -> String {
     const CHARS: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
@@ -764,7 +692,7 @@ async fn handle_audio_socket(
     let ml_api_key = std::env::var("ML_API_KEY").unwrap_or_else(|_| "smoke-ml-api-key".to_owned());
     let mut reader = reader;
     tokio::spawn(async move {
-        let client = reqwest::Client::new();
+        let client = state.http_client.clone();
         while let Some(chunk) = reader.recv().await {
             let chunk_id = chunk.chunk_id.clone();
             let session_id = chunk.session_id.clone();
@@ -1117,5 +1045,90 @@ mod tests {
             AudioChunk::new("session-1", "empty", 0, 20, 16_000, Vec::new()).unwrap_err(),
             GatewayError::EmptyAudioChunk
         );
+    }
+
+    /// Serializes tests that mutate the process-wide env vars `validate_origin` reads per-request
+    /// (ALLOW_INSECURE_DEFAULTS / CORS_ALLOWED_ORIGINS). Any future test touching those MUST take this
+    /// lock, or it can race this one (cargo runs unit tests multi-threaded in one process).
+    static ORIGIN_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    #[tokio::test]
+    async fn test_audio_ws_origin_validation() {
+        use axum::http::{Request, StatusCode};
+        use tower::ServiceExt;
+
+        let _env = ORIGIN_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+
+        // Set up env variables
+        unsafe {
+            std::env::set_var("ALLOW_INSECURE_DEFAULTS", "false");
+            std::env::set_var(
+                "CORS_ALLOWED_ORIGINS",
+                "http://localhost:5173,https://quran-ai.example.com",
+            );
+        }
+
+        let router = gateway_router(GatewayServerConfig::default());
+
+        // 1. Strict mode: a MISSING Origin header fails closed (403). Browsers always send Origin on a
+        //    cross-origin WS upgrade, so the allowlist must not be bypassable by omitting the header.
+        let req = Request::builder()
+            .uri("/v1/recitation-sessions/session-1/audio?ticket=invalid")
+            .header("upgrade", "websocket")
+            .header("connection", "upgrade")
+            .header("sec-websocket-key", "dGhlIHNhbXBsZSBub25jZQ==")
+            .header("sec-websocket-version", "13")
+            .body(axum::body::Body::empty())
+            .unwrap();
+        let resp = router.clone().oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+
+        // 2. Disallowed origin should fail with 403 Forbidden
+        let req = Request::builder()
+            .uri("/v1/recitation-sessions/session-1/audio?ticket=invalid")
+            .header("upgrade", "websocket")
+            .header("connection", "upgrade")
+            .header("sec-websocket-key", "dGhlIHNhbXBsZSBub25jZQ==")
+            .header("sec-websocket-version", "13")
+            .header("origin", "https://malicious.example.com")
+            .body(axum::body::Body::empty())
+            .unwrap();
+        let resp = router.clone().oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+
+        // 3. Allowed origin should pass origin check and return 426 Upgrade Required
+        let req = Request::builder()
+            .uri("/v1/recitation-sessions/session-1/audio?ticket=invalid")
+            .header("upgrade", "websocket")
+            .header("connection", "upgrade")
+            .header("sec-websocket-key", "dGhlIHNhbXBsZSBub25jZQ==")
+            .header("sec-websocket-version", "13")
+            .header("origin", "http://localhost:5173")
+            .body(axum::body::Body::empty())
+            .unwrap();
+        let resp = router.clone().oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::UPGRADE_REQUIRED);
+
+        // 4. Insecure defaults allowed: disallowed origin should pass origin check
+        unsafe {
+            std::env::set_var("ALLOW_INSECURE_DEFAULTS", "true");
+        }
+        let req = Request::builder()
+            .uri("/v1/recitation-sessions/session-1/audio?ticket=invalid")
+            .header("upgrade", "websocket")
+            .header("connection", "upgrade")
+            .header("sec-websocket-key", "dGhlIHNhbXBsZSBub25jZQ==")
+            .header("sec-websocket-version", "13")
+            .header("origin", "https://malicious.example.com")
+            .body(axum::body::Body::empty())
+            .unwrap();
+        let resp = router.clone().oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::UPGRADE_REQUIRED);
+
+        // Restore env
+        unsafe {
+            std::env::remove_var("ALLOW_INSECURE_DEFAULTS");
+            std::env::remove_var("CORS_ALLOWED_ORIGINS");
+        }
     }
 }

@@ -23,4 +23,6 @@ tracing = "0.1.41"
 tracing-subscriber = { version = "0.3.20", features = ["env-filter"] }
 bcrypt = "0.17"
 argon2 = "0.5"
+reqwest = { version = "0.12.15", default-features = false, features = ["json", "rustls-tls"] }
+quran-ai-shared-ticket = { path = "../shared-ticket" }
 

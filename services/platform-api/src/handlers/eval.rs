@@ -25,11 +25,12 @@ pub async fn get_eval_run(
                 teacher_agreement_rate::float8 as teacher_agreement_rate,
                 unsourced_learner_outputs, passed
          FROM eval_runs
-         WHERE model_version_id = $1
+         WHERE model_version_id = $1 AND tenant_id = $2
          ORDER BY created_at DESC
          LIMIT 1",
     )
     .bind(&model_version)
+    .bind(&actor.tenant_id)
     .fetch_optional(&mut *tx)
     .await?
     .ok_or(ApiError::NotFound)?;

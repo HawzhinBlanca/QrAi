@@ -50,3 +50,42 @@ reachable until the flag is on.
 **Consequences.** No credentials are required to use the pilot. The platform-api still
 supports real auth (JWT + `/v1/auth/*`) for when login is turned on. Because there is no
 per-user identity in bypass mode, all pilot activity is attributed to the default learner.
+
+---
+
+## ADR-0003 — ML inference accessed only through platform-api proxy
+**Date:** 2026-07-03 · **Status:** Accepted
+
+**Context.** The web frontend was calling the ML inference service directly, exposing
+`VITE_ML_API_KEY` in the browser bundle. Any user could extract this key and call the ML
+service without authentication.
+
+**Decision.** Add `/v1/ml/alignments:predict` and `/v1/ml/tajweed-findings:predict` proxy
+routes to `platform-api`. The frontend calls these endpoints (authenticated via JWT). The
+platform-api forwards requests to the ML service, attaching the `ML_API_KEY` server-side.
+New runtime dependency: `reqwest` (HTTP client) in `platform-api`, with a shared
+`reqwest::Client` on `AppState` for connection pooling.
+
+**Consequences.** ML API key never reaches the browser. The ML service is no longer
+exposed on the public network (only reachable from `platform-api` on the internal Docker
+network). Adds ~1ms of proxy latency per ML call.
+
+---
+
+## ADR-0004 — Canonical checksum upgraded from FNV-1a 32-bit to SHA-256
+**Date:** 2026-07-03 · **Status:** Accepted
+
+**Context.** Canonical Quran data checksums used FNV-1a 32-bit (`fnv1a32:` prefix), which
+has a 32-bit collision space (~77k records for 50% collision probability). While adequate
+for the current dataset, this is insufficient for long-term integrity guarantees.
+
+**Decision.** New checksums use SHA-256 (`sha256:` prefix). The `verifyCanonicalWord` and
+`verifyCanonicalAyah` functions accept both formats: they first check against SHA-256, then
+fall back to FNV-1a for backward compatibility with existing seed data (which is immutable
+per AGENTS.md). Implementation uses a pure-JS SHA-256 (FIPS 180-4) — no Node.js-only
+dependencies — so it works in both the Node test environment and the browser bundle.
+
+**Consequences.** Existing `fnv1a32:` checksums in seed SQL remain valid. New imports
+produce `sha256:` checksums. A backward-compatibility test locks this contract. The pure-JS
+implementation adds ~0.1ms per checksum vs. the native `node:crypto` path, which is
+acceptable for the import/verification use case (not on a hot path).

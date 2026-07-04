@@ -7,7 +7,9 @@ services:
     environment:
       POSTGRES_USER: hawzhin
       POSTGRES_DB: quran_ai
-      POSTGRES_HOST_AUTH_METHOD: trust
+      POSTGRES_PASSWORD: "${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}"
+      POSTGRES_HOST_AUTH_METHOD: scram-sha-256
+      POSTGRES_INITDB_ARGS: --auth=scram-sha-256
     ports:
       - "5432:5432"
     volumes:
@@ -36,11 +38,13 @@ services:
       context: .
       dockerfile: services/platform-api/Dockerfile
     environment:
-      DATABASE_URL: "postgresql://hawzhin@postgres:5432/quran_ai"
+      DATABASE_URL: "postgresql://hawzhin:${POSTGRES_PASSWORD}@postgres:5432/quran_ai"
       JWT_SECRET: "${JWT_SECRET:?JWT_SECRET is required in production}"
       REALTIME_GATEWAY_TICKET_SECRET: "${REALTIME_GATEWAY_TICKET_SECRET:?REALTIME_GATEWAY_TICKET_SECRET is required in production}"
       PLATFORM_API_BIND: "0.0.0.0:8080"
-      ML_API_KEY: "${ML_API_KEY:-smoke-ml-api-key}"
+      ML_API_KEY: "${ML_API_KEY:?ML_API_KEY is required}"
+      ALLOW_INSECURE_DEFAULTS: "${ALLOW_INSECURE_DEFAULTS:-0}"
+      ML_INFERENCE_URL: "http://ml-inference:8090"
     ports:
       - "8080:8080"
     depends_on:
@@ -62,7 +66,8 @@ services:
       REALTIME_GATEWAY_TICKET_SECRET: "${REALTIME_GATEWAY_TICKET_SECRET:?REALTIME_GATEWAY_TICKET_SECRET is required in production}"
       ML_INFERENCE_URL: "http://ml-inference:8090"
       GATEWAY_TENANT_ID: "hikmah-pilot-erbil"
-      ML_API_KEY: "${ML_API_KEY:-smoke-ml-api-key}"
+      ML_API_KEY: "${ML_API_KEY:?ML_API_KEY is required}"
+      ALLOW_INSECURE_DEFAULTS: "${ALLOW_INSECURE_DEFAULTS:-0}"
     ports:
       - "8081:8081"
     depends_on:
@@ -83,7 +88,7 @@ services:
       ML_INFERENCE_PORT: "8090"
       ASR_SERVICE_URL: "http://asr-inference:8091"
       AUDIO_STORAGE_DIR: "/data/audio-storage"
-      ML_API_KEY: "${ML_API_KEY:-smoke-ml-api-key}"
+      ML_API_KEY: "${ML_API_KEY:?ML_API_KEY is required}"
     ports:
       - "8090:8090"
     volumes:
@@ -121,8 +126,6 @@ services:
     environment:
       VITE_PLATFORM_API_URL: "http://localhost:8080"
       VITE_REALTIME_GATEWAY_URL: "ws://localhost:8081"
-      VITE_ML_INFERENCE_URL: "http://localhost:8090"
-      VITE_ML_API_KEY: "${ML_API_KEY:-smoke-ml-api-key}"
     ports:
       - "5173:80"
     depends_on:

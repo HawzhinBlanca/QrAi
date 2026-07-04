@@ -40,6 +40,8 @@ describe("Quran AI platform contracts", () => {
       "GET /v1/eval-runs/:modelVersion",
       "POST /v1/privacy/export",
       "POST /v1/privacy/delete",
+      "POST /v1/ml/alignments:predict",
+      "POST /v1/ml/tajweed-findings:predict",
     ]);
   });
 
@@ -78,6 +80,32 @@ describe("Quran AI platform contracts", () => {
     expect(verifyCanonicalWord(canonicalWord)).toBe(true);
     expect(verifyCanonicalWord(modifiedWord)).toBe(false);
     expect(hasCanonicalTextChanged(canonicalWord, modifiedWord)).toBe(true);
+
+    // New checksums use sha256: prefix
+    expect(canonicalWord.sourceChecksum.startsWith("sha256:")).toBe(true);
+  });
+
+  it("accepts legacy fnv1a32 checksums from existing seed data", () => {
+    // This is the pre-upgrade checksum for the same canonical word record.
+    // If this test fails, existing seed SQL data would silently fail verification.
+    const legacyWord: CanonicalWordRecord = {
+      id: "1:1:1",
+      quranRef: fatihahRef,
+      ayahId: "1:1",
+      wordIndex: 1,
+      text: "بِسْمِ",
+      sourceId: "tanzil" as const,
+      edition: "uthmani-v1",
+      scriptType: "uthmani" as const,
+      importVersion: "2026-06-24-seed",
+      sourceChecksum: "fnv1a32:785efc35",
+    };
+
+    expect(verifyCanonicalWord(legacyWord)).toBe(true);
+
+    // Tampered text should still fail with legacy checksum
+    const tamperedLegacy: CanonicalWordRecord = { ...legacyWord, text: "بسم" };
+    expect(verifyCanonicalWord(tamperedLegacy)).toBe(false);
   });
 
   it("blocks learner-facing AI output without sources, confidence, or human review", () => {
