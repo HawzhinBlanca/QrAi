@@ -66,7 +66,7 @@ if [[ "$FAST" != "--fast" ]]; then
   # node:test suites by explicit path. server.mjs gates its side effects (listen/timers) on
   # `isMain`, so server.test.mjs can import it directly; keep explicit paths (a dir glob would
   # still pick up non-test .mjs files).
-  run "test: node services"       "node --test services/ml-inference/alignment.test.mjs services/ml-inference/tajweed.test.mjs services/ml-inference/server.test.mjs services/agents/agents.test.mjs"
+  run "test: node services"       "node --test services/ml-inference/alignment.test.mjs services/ml-inference/tajweed.test.mjs services/ml-inference/golden-regression.test.mjs services/ml-inference/server.test.mjs services/agents/agents.test.mjs"
   run "test: rust gateway"        "cargo test --manifest-path $GW"
   run "test: rust platform-api"   "cargo test --manifest-path $API"
 

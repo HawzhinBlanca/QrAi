@@ -38,9 +38,10 @@ jobs:
       - name: docker compose build
         run: docker compose build
 
-      # Assert the four service images run as the non-root appuser (uid 10001), not root. Overrides the
-      # entrypoint to print the effective uid; --no-deps so it doesn't start Postgres/other services.
-      - name: Assert containers run as non-root (uid 10001)
+      # Assert every service image runs as a non-root user. Backend services use appuser (uid 10001);
+      # web uses nginxinc/nginx-unprivileged which defaults to uid 101. Overrides the entrypoint to
+      # print the effective uid; --no-deps so it doesn't start Postgres/other services.
+      - name: Assert containers run as non-root
         run: |
           set -euo pipefail
           fail=0
@@ -52,4 +53,11 @@ jobs:
               fail=1
             fi
           done
+          # web uses nginxinc/nginx-unprivileged (uid 101), not appuser.
+          uid=$(docker compose run --rm --no-deps --entrypoint sh web -c 'id -u' | tr -d '\r')
+          echo "web -> uid $uid"
+          if [ "$uid" = "0" ]; then
+            echo "::error::web is running as root (uid 0)"
+            fail=1
+          fi
           exit $fail
