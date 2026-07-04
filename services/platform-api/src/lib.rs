@@ -88,6 +88,10 @@ pub fn platform_router_with_rate_limit(state: AppState, rate_limit: bool) -> Rou
                 .post(handlers::recitation::create_session),
         )
         .route(
+            "/v1/learners/active",
+            axum::routing::get(handlers::recitation::list_active_learners),
+        )
+        .route(
             "/v1/recitation-sessions/{id}",
             axum::routing::get(handlers::recitation::get_session),
         )

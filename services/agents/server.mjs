@@ -35,12 +35,6 @@ async function fetchTajweedFindings() {
   return res.json();
 }
 
-async function fetchRecitationSessions() {
-  const res = await fetch(`${PLATFORM_API_URL}/v1/recitation-sessions`, { headers: authHeaders() });
-  if (!res.ok) throw new Error(`recitation-sessions ${res.status}`);
-  return res.json();
-}
-
 async function fetchLearnerProgress(learnerId) {
   const url = `${PLATFORM_API_URL}/v1/learner/progress?learnerId=${encodeURIComponent(learnerId)}`;
   const res = await fetch(url, { headers: authHeaders() });
@@ -48,14 +42,13 @@ async function fetchLearnerProgress(learnerId) {
   return res.json();
 }
 
-/** Distinct learner ids that have at least one recitation session. */
+/** The COMPLETE set of distinct learner ids with at least one recitation session — from the dedicated
+ *  /v1/learners/active endpoint, NOT the UI-capped session listing (which silently drops learners past
+ *  its 50-row LIMIT and made the recommender skip them). */
 async function fetchActiveLearnerIds() {
-  const sessions = await fetchRecitationSessions();
-  const ids = new Set();
-  for (const session of Array.isArray(sessions) ? sessions : []) {
-    if (session && session.learnerId) ids.add(session.learnerId);
-  }
-  return [...ids];
+  const res = await fetch(`${PLATFORM_API_URL}/v1/learners/active`, { headers: authHeaders() });
+  if (!res.ok) throw new Error(`learners-active ${res.status}`);
+  return toArray(await res.json());
 }
 
 async function recordAgentRun(run) {

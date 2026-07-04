@@ -338,6 +338,50 @@ async fn progress_quality_out_of_range_is_clamped_not_500() {
     assert_eq!(body["quality"], 5); // 6 clamped to the SM-2 / DB max of 5
 }
 
+/// The un-capped active-learners endpoint returns the COMPLETE distinct learner set for the tenant
+/// (not the 50-row session listing that silently drops learners), staff only. The seed gives
+/// learner-1 a recitation session.
+#[tokio::test]
+#[ignore = "requires live Postgres"]
+async fn list_active_learners_is_distinct_and_staff_only() {
+    let router = platform_router_with_rate_limit(test_state(), false);
+
+    let ok = send_json(
+        &router,
+        Method::GET,
+        "/v1/learners/active",
+        Some("hikmah-pilot-erbil"),
+        Some("ops"),
+        json!({}),
+    )
+    .await;
+    assert_eq!(ok.status(), StatusCode::OK);
+    let arr: Value = read_json(ok).await;
+    let ids = arr.as_array().expect("array of learner ids");
+    assert!(
+        ids.iter().any(|v| v == "learner-1"),
+        "seeded learner present"
+    );
+    let mut seen = std::collections::HashSet::new();
+    assert!(
+        ids.iter()
+            .all(|v| seen.insert(v.as_str().unwrap_or_default().to_owned())),
+        "learner ids are distinct"
+    );
+
+    // A learner may NOT enumerate the tenant's active learners.
+    let denied = send_json(
+        &router,
+        Method::GET,
+        "/v1/learners/active",
+        Some("hikmah-pilot-erbil"),
+        Some("learner"),
+        json!({}),
+    )
+    .await;
+    assert_eq!(denied.status(), StatusCode::FORBIDDEN);
+}
+
 /// Persist + read-back of a session's real alignment (the link that surfaces a learner's
 /// recitation in the console). Synthetic "extra" ids are skipped; a non-owner learner is denied.
 #[tokio::test]
