@@ -1,0 +1,39 @@
+# Keep the Docker build context lean and free of secrets, PII, and regenerated artifacts.
+# Dockerfiles COPY source dirs then reinstall/rebuild inside the image, so none of the excluded
+# paths are needed at build time. (Only affects the LOCAL build context — inter-stage
+# `COPY --from=builder` is unaffected, so the builder's freshly-built target/dist still ship.)
+
+# Version control + CI (never needed in an image; .git is ~18MB of context)
+.git
+.gitignore
+.github
+
+# Dependencies + build caches — reinstalled/rebuilt inside the image
+**/node_modules
+**/target
+**/.venv
+**/.venv312
+**/__pycache__
+**/*.pyc
+
+# Runtime data / PII — must NEVER be baked into a distributable image.
+# e.g. services/ml-inference/audio-storage holds real learner recordings (gitignored, but present
+# on disk, so a bare `COPY services/ml-inference/ ...` would otherwise pull it into the image).
+**/audio-storage
+services/ml-inference/audio-storage
+
+# Secrets and local env
+.env
+.env.*
+secrets
+**/*.pem
+**/*.key
+
+# Logs, coverage, OS/editor + agent/scratch cruft
+**/*.log
+coverage
+.DS_Store
+.vscode
+.idea
+.claude
+scratchpad
