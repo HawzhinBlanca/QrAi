@@ -6,7 +6,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { predictAlignment, predictTajweed, getAuditEvents } from "./server.mjs";
+import { predictAlignment, predictTajweed, createEvalRun, getAuditEvents } from "./server.mjs";
 
 // These tests run in the DEFAULT (production) configuration: ML_USE_GOLDEN_FIXTURES is unset, so
 // every request computes REAL alignment/tajweed even for the golden ref Al-Fatihah 1:1-7. The bug
@@ -73,4 +73,37 @@ test("every returned alignment/finding is stamped with the audit event id it is 
     tajweed.findings.every((f) => f.auditEventId === tajweed.auditEventId),
     "each finding carries the response's auditEventId",
   );
+});
+
+test("createEvalRun ignores caller-supplied metrics — they cannot forge the recorded eval or its pass", async () => {
+  // A caller POSTing garbage (or perfect) metrics must not influence the recorded eval. Previously
+  // `requestBody.metrics ?? fixtureMetrics` let any caller set passed:true with fabricated numbers.
+  const forged = await createEvalRun({
+    modelVersion: "forge-attempt",
+    metrics: {
+      wordAlignmentF1: 0.01,
+      tajweedF1: 0.01,
+      falsePositiveRate: 0.99,
+      teacherAgreementRate: 0.01,
+      unsourcedLearnerOutputs: 999,
+      sourceBackedFindings: 0,
+    },
+  });
+
+  // Accuracy metrics come from the committed offline artifact, not the caller's fabricated 0.01s.
+  assert.notEqual(forged.wordAlignmentF1, 0.01);
+  assert.ok(forged.wordAlignmentF1 >= forged.thresholds.wordAlignmentF1);
+  assert.ok(forged.tajweedF1 >= forged.thresholds.tajweedF1);
+  assert.equal(forged.metricsProvenance.accuracy, "committed-offline-eval");
+
+  // Source-integrity is recomputed live from the committed golden findings, not taken from the
+  // caller's 999 — every golden tajweed finding is sourced, so this is 0.
+  assert.equal(forged.unsourcedLearnerOutputs, 0);
+  assert.ok(forged.sourceBackedFindings > 0);
+  assert.notEqual(forged.sourceBackedFindings, 0);
+  assert.equal(forged.metricsProvenance.sourceIntegrity, "recomputed-live");
+
+  // The fabricated caller metrics did NOT flip the gate to a false fail either — pass reflects the
+  // committed artifact + the live source check.
+  assert.equal(forged.passed, true);
 });

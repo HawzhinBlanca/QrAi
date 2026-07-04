@@ -588,7 +588,6 @@ async function predictTajweed(requestBody) {
 async function createEvalRun(requestBody) {
   const modelVersion = requestBody.modelVersion ?? MODEL_VERSION;
   const fixtureMetrics = fixtures.metrics ?? {};
-  const metrics = requestBody.metrics ?? fixtureMetrics;
 
   const thresholds = fixtures.thresholds ?? {
     wordAlignmentF1: 0.9,
@@ -598,23 +597,48 @@ async function createEvalRun(requestBody) {
     unsourcedLearnerOutputs: 0,
   };
 
+  // Source-integrity is RECOMPUTED here, not trusted from the request or an asserted number: count how
+  // many committed golden tajweed findings actually carry a source. This is the honesty invariant the
+  // service can prove on the spot — every learner-facing tajweed output must be sourced — so if a
+  // golden finding is ever added without sources the eval fails here instead of rubber-stamping a
+  // hand-written count.
+  const goldenFindings = fixtures.cases.flatMap((c) => c.tajweedFindings ?? []);
+  const sourceBackedFindings = goldenFindings.filter(
+    (f) => Array.isArray(f.sources) && f.sources.length > 0,
+  ).length;
+  const unsourcedLearnerOutputs = goldenFindings.length - sourceBackedFindings;
+
+  // The F1 / agreement metrics require a labeled eval set the service does not hold, so they come from
+  // the committed, checksummed golden-evals.json — an OFFLINE eval artifact — NOT from caller-supplied
+  // input. Previously `requestBody.metrics ?? fixtureMetrics` let any caller POST perfect numbers and
+  // force passed:true; the caller no longer influences the recorded metrics or the pass/fail decision.
+  const wordAlignmentF1 = Number(fixtureMetrics.wordAlignmentF1);
+  const tajweedF1 = Number(fixtureMetrics.tajweedF1);
+  const falsePositiveRate = Number(fixtureMetrics.falsePositiveRate);
+  const teacherAgreementRate = Number(fixtureMetrics.teacherAgreementRate);
+
   const evalRun = {
     modelVersion,
     datasetVersion: requestBody.datasetVersion ?? DATASET_VERSION,
-    wordAlignmentF1: Number(metrics.wordAlignmentF1 ?? fixtureMetrics.wordAlignmentF1),
-    tajweedF1: Number(metrics.tajweedF1 ?? fixtureMetrics.tajweedF1),
-    falsePositiveRate: Number(metrics.falsePositiveRate ?? fixtureMetrics.falsePositiveRate),
-    teacherAgreementRate: Number(metrics.teacherAgreementRate ?? fixtureMetrics.teacherAgreementRate),
-    unsourcedLearnerOutputs: Number(metrics.unsourcedLearnerOutputs ?? 0),
-    caseCount: Number(metrics.caseCount ?? fixtureMetrics.caseCount ?? fixtures.cases.length),
-    sourceBackedFindings: Number(metrics.sourceBackedFindings ?? fixtureMetrics.sourceBackedFindings ?? 0),
+    wordAlignmentF1,
+    tajweedF1,
+    falsePositiveRate,
+    teacherAgreementRate,
+    unsourcedLearnerOutputs,
+    caseCount: fixtures.cases.length,
+    sourceBackedFindings,
+    // Honest provenance so the "proof" surface never overstates what was measured live.
+    metricsProvenance: {
+      sourceIntegrity: "recomputed-live",
+      accuracy: "committed-offline-eval",
+    },
     thresholds,
     passed:
-      Number(metrics.wordAlignmentF1 ?? fixtureMetrics.wordAlignmentF1) >= thresholds.wordAlignmentF1 &&
-      Number(metrics.tajweedF1 ?? fixtureMetrics.tajweedF1) >= thresholds.tajweedF1 &&
-      Number(metrics.falsePositiveRate ?? fixtureMetrics.falsePositiveRate) <= thresholds.falsePositiveRate &&
-      Number(metrics.teacherAgreementRate ?? fixtureMetrics.teacherAgreementRate) >= thresholds.teacherAgreementRate &&
-      Number(metrics.unsourcedLearnerOutputs ?? 0) <= thresholds.unsourcedLearnerOutputs,
+      wordAlignmentF1 >= thresholds.wordAlignmentF1 &&
+      tajweedF1 >= thresholds.tajweedF1 &&
+      falsePositiveRate <= thresholds.falsePositiveRate &&
+      teacherAgreementRate >= thresholds.teacherAgreementRate &&
+      unsourcedLearnerOutputs <= thresholds.unsourcedLearnerOutputs,
   };
 
   evalRuns.set(modelVersion, evalRun);
