@@ -82,6 +82,24 @@ export function analyzeWord(wordId, word) {
       explanation: "Shaddah indicates doubling of the consonant.",
       confidence: 0.86, sources: [TAJWEED_SOURCE],
     });
+
+    // Mushaddad ghunnah: when noon (ن) or meem (م) carries a shaddah, ghunnah (nasalization
+    // held for two counts) is obligatory on the doubled letter. This is distinct from the
+    // noon-sakin/tanween ghunnah above — mushaddad ghunnah applies to the DOUBLED consonant.
+    //
+    // Unicode combining mark order varies: shaddah (U+0651) may appear before or after vowel
+    // diacritics (fatha U+064E, kasra U+0650, damma U+064F, etc.). We allow optional
+    // combining marks [\u064B-\u065E] between the letter and the shaddah, and vice versa.
+    const noonMushaddad = /\u0646[\u064B-\u065E]*\u0651/.test(word) || /\u0646\u0651/.test(word);
+    const meemMushaddad = /\u0645[\u064B-\u065E]*\u0651/.test(word) || /\u0645\u0651/.test(word);
+    if (noonMushaddad || meemMushaddad) {
+      findings.push({
+        wordId, rule: "ghunnah", arabicName: "غنة", category: "ghunnah",
+        severity: "practice",
+        explanation: "Ghunnah (nasalization) is obligatory on the mushaddad (doubled) noon/meem. Hold for two counts.",
+        confidence: 0.92, sources: [TAJWEED_SOURCE],
+      });
+    }
   }
 
   return findings;

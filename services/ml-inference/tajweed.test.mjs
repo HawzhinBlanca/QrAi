@@ -74,13 +74,22 @@ test("inter-word: idgham (noon-sakin + yaa) and ikhfa (noon-sakin + qaf)", () =>
   assert.ok(ayahRules("مِن", "قَبْلِكَ").includes("ikhfa"), "bare noon sakin + qaf → ikhfa");
 });
 
-// KNOWN LIMITATION (for scholar review, not yet implemented): ghunnah also applies to a noon or meem
-// MUSHADDAD (نّ / مّ). The engine currently reports only "shaddah" for these, not "ghunnah".
-test(
-  "ghunnah on noon/meem mushaddad (إِنَّ, ثُمَّ)",
-  { todo: "mushaddad ghunnah not yet implemented — flagged for scholar review" },
-  () => {
-    assert.ok(rules("إِنَّ").includes("ghunnah"), "noon mushaddad");
-    assert.ok(rules("ثُمَّ").includes("ghunnah"), "meem mushaddad");
-  },
-);
+// Mushaddad ghunnah: when noon (ن) or meem (م) carries shaddah (ّ), BOTH shaddah and ghunnah fire.
+test("ghunnah on noon/meem mushaddad (إِنَّ, ثُمَّ)", () => {
+  assert.ok(rules("إِنَّ").includes("ghunnah"), "noon mushaddad → ghunnah");
+  assert.ok(rules("إِنَّ").includes("shaddah"), "noon mushaddad → shaddah (still fires)");
+  assert.ok(rules("ثُمَّ").includes("ghunnah"), "meem mushaddad → ghunnah");
+  assert.ok(rules("ثُمَّ").includes("shaddah"), "meem mushaddad → shaddah (still fires)");
+});
+
+// Shaddah on a letter that is NOT noon/meem should NOT trigger mushaddad ghunnah.
+test("shaddah on non-noon/meem does NOT produce ghunnah", () => {
+  // ٱللَّهِ has lam mushaddad (لّ) — shaddah yes, ghunnah no.
+  const lamsRules = rules("ٱللَّهِ");
+  assert.ok(lamsRules.includes("shaddah"), "lam mushaddad → shaddah");
+  // If ghunnah fires here it should be from some other pattern, not from mushaddad.
+  // Lam is not noon/meem, so mushaddad-ghunnah must not fire.
+  const ghunnahCount = lamsRules.filter((r) => r === "ghunnah").length;
+  assert.equal(ghunnahCount, 0, "lam mushaddad should not trigger mushaddad-ghunnah");
+});
+

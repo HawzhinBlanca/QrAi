@@ -297,3 +297,72 @@ test("golden: computed metrics meet golden-evals thresholds", () => {
   );
   assert.equal(unsourced, goldenEvals.thresholds.unsourcedLearnerOutputs, "all findings must be sourced");
 });
+
+// ============================================================================
+// A2: MUSHADDAD-GHUNNAH — WHOLE-QURAN ASSERTION
+// ============================================================================
+
+test("golden: mushaddad-ghunnah fires on every noon/meem with shaddah across all 114 surahs", () => {
+  const FULL_QURAN_DIR = join(__dirname, "..", "..", "packages", "quran-data", "src", "data", "full-quran");
+
+  // U+0651 = shaddah, ن = noon (U+0646), م = meem (U+0645)
+  const SHADDAH = "\u0651";
+  const noonMushaddadRe = new RegExp(`\u0646${SHADDAH}`);
+  const meemMushaddadRe = new RegExp(`\u0645${SHADDAH}`);
+
+  let totalWords = 0;
+  let mushaddadNoonMeemWords = 0;
+  let ghunnahFired = 0;
+  const misses = [];
+
+  for (let surahNum = 1; surahNum <= 114; surahNum++) {
+    const fileName = `surah-${String(surahNum).padStart(3, "0")}.json`;
+    const surah = JSON.parse(readFileSync(join(FULL_QURAN_DIR, fileName), "utf8"));
+
+    for (const ayah of surah.ayahs) {
+      for (let i = 0; i < ayah.words.length; i++) {
+        totalWords++;
+        const word = ayah.words[i];
+        const hasNoonMushaddad = noonMushaddadRe.test(word);
+        const hasMeemMushaddad = meemMushaddadRe.test(word);
+
+        if (hasNoonMushaddad || hasMeemMushaddad) {
+          mushaddadNoonMeemWords++;
+          const wordId = `${ayah.surahNumber}:${ayah.ayahNumber}:${i + 1}`;
+          const findings = analyzeWord(wordId, word);
+          const ghunnahFindings = findings.filter((f) => f.rule === "ghunnah");
+          if (ghunnahFindings.length > 0) {
+            ghunnahFired++;
+          } else {
+            misses.push({
+              surah: surahNum,
+              ayah: ayah.ayahNumber,
+              word: i + 1,
+              text: word,
+              type: hasNoonMushaddad ? "noon" : "meem",
+            });
+          }
+        }
+      }
+    }
+  }
+
+  console.log(`  [mushaddad-ghunnah] scanned ${totalWords} words across 114 surahs`);
+  console.log(`  [mushaddad-ghunnah] found ${mushaddadNoonMeemWords} words with noon/meem mushaddad`);
+  console.log(`  [mushaddad-ghunnah] ghunnah fired on ${ghunnahFired}/${mushaddadNoonMeemWords}`);
+
+  if (misses.length > 0) {
+    console.log(`  [mushaddad-ghunnah] MISSES (first 10):`);
+    for (const m of misses.slice(0, 10)) {
+      console.log(`    ${m.surah}:${m.ayah}:${m.word} "${m.text}" (${m.type} mushaddad)`);
+    }
+  }
+
+  assert.ok(mushaddadNoonMeemWords > 0, "sanity: must find at least some noon/meem mushaddad in the Quran");
+  assert.equal(
+    misses.length,
+    0,
+    `mushaddad-ghunnah missed on ${misses.length} words (first: ${misses[0]?.surah}:${misses[0]?.ayah} "${misses[0]?.text}")`,
+  );
+  assert.equal(ghunnahFired, mushaddadNoonMeemWords, "100% coverage");
+});
