@@ -11,7 +11,10 @@ services:
       POSTGRES_HOST_AUTH_METHOD: scram-sha-256
       POSTGRES_INITDB_ARGS: --auth=scram-sha-256
     ports:
-      - "5432:5432"
+      # Internal-only service: bind to loopback so it is reachable on the host (debugging, psql,
+      # migrations) but NOT from other machines. Only platform-api (8080), the realtime gateway
+      # (8081), and the web app are meant to be exposed off-host; postgres/ml/asr stay private.
+      - "127.0.0.1:5432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
       - ./infra/sql/0001_core_schema.sql:/docker-entrypoint-initdb.d/01_schema.sql:ro
@@ -93,7 +96,9 @@ services:
       AUDIO_STORAGE_DIR: "/data/audio-storage"
       ML_API_KEY: "${ML_API_KEY:?ML_API_KEY is required}"
     ports:
-      - "8090:8090"
+      # Internal-only: loopback bind. The browser/mobile never hit ML directly — platform-api proxies
+      # it with the server-side x-ml-api-key. Not exposed off-host.
+      - "127.0.0.1:8090:8090"
     volumes:
       - audio_storage:/data/audio-storage
     depends_on:
@@ -115,7 +120,9 @@ services:
       ASR_MODEL: "base"
       ASR_API_KEY: "${ASR_API_KEY:?ASR_API_KEY is required}"
     ports:
-      - "8091:8091"
+      # Internal-only: loopback bind. Reached only server-side via the platform-api ASR proxy
+      # (server-side x-asr-api-key) and ml-inference. Not exposed off-host.
+      - "127.0.0.1:8091:8091"
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8091/health"]
       interval: 10s
