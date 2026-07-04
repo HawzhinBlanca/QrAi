@@ -45,51 +45,96 @@ export function similarity(a, b) {
   return 1.0 - dist / maxLen;
 }
 
+// Align the recited words to the canonical words with a GLOBAL sequence alignment
+// (Needleman-Wunsch over word similarity) rather than a fixed local window. The old greedy window
+// (recognized[i-2 .. i+3], centered on the CANONICAL index) permanently desynced the moment a reciter
+// inserted, repeated, or restarted more than 2 words — false starts, tasbih repetition, self-correction,
+// hesitation fillers — and then scored correctly-recited words as "missed" or matched them to the wrong
+// neighbour. A global alignment follows the actual recited stream and survives insertions/deletions/repeats.
 export function alignWords(canonicalWords, recognizedWords) {
-  const results = [];
   const matchThreshold = 0.85;
   const reviewThreshold = 0.65;
-  const usedRecognized = new Set();
+  // Gap penalty. Aligning a pair scores its similarity; skipping BOTH a canonical and a recognized word
+  // (a missed word + an unrelated extra) scores 2·GAP. So a pair is aligned iff its similarity exceeds
+  // 2·GAP — set to reviewThreshold, matching the old "similarity ≥ 0.65 ⇒ a (mis)read, else missed" cut.
+  const GAP = reviewThreshold / 2;
 
-  for (let i = 0; i < canonicalWords.length; i++) {
-    const canonical = canonicalWords[i];
+  const m = canonicalWords.length;
+  const n = recognizedWords.length;
 
-    let bestMatch = -1;
-    let bestSim = 0;
+  // Pairwise similarity, computed once.
+  const sim = Array.from({ length: m }, (_, i) =>
+    Array.from({ length: n }, (_, j) => similarity(canonicalWords[i].text, recognizedWords[j])),
+  );
 
-    const windowStart = Math.max(0, i - 2);
-    const windowEnd = Math.min(recognizedWords.length, i + 3);
-
-    for (let j = windowStart; j < windowEnd; j++) {
-      if (usedRecognized.has(j)) continue;
-      const sim = similarity(canonical.text, recognizedWords[j]);
-      if (sim > bestSim) {
-        bestSim = sim;
-        bestMatch = j;
+  // dp[i][j] = best alignment score of canonical[0..i) vs recognized[0..j); back[i][j] = the move.
+  const dp = Array.from({ length: m + 1 }, () => new Array(n + 1).fill(0));
+  const back = Array.from({ length: m + 1 }, () => new Array(n + 1).fill(null));
+  for (let i = 1; i <= m; i++) {
+    dp[i][0] = dp[i - 1][0] + GAP;
+    back[i][0] = "up"; // canonical deleted (missed)
+  }
+  for (let j = 1; j <= n; j++) {
+    dp[0][j] = dp[0][j - 1] + GAP;
+    back[0][j] = "left"; // recognized inserted (extra)
+  }
+  for (let i = 1; i <= m; i++) {
+    for (let j = 1; j <= n; j++) {
+      const diag = dp[i - 1][j - 1] + sim[i - 1][j - 1];
+      const up = dp[i - 1][j] + GAP;
+      const left = dp[i][j - 1] + GAP;
+      let best = diag;
+      let move = "diag";
+      if (up > best) {
+        best = up;
+        move = "up";
       }
+      if (left > best) {
+        best = left;
+        move = "left";
+      }
+      dp[i][j] = best;
+      back[i][j] = move;
     }
+  }
 
-    if (bestMatch >= 0 && bestSim >= matchThreshold) {
-      usedRecognized.add(bestMatch);
+  // Backtrack: pair each canonical word with a recognized index (or -1 if missed).
+  const alignedRecognized = new Array(m).fill(-1);
+  const recognizedUsed = new Array(n).fill(false);
+  let i = m;
+  let j = n;
+  while (i > 0 || j > 0) {
+    const move = back[i][j];
+    if (move === "diag") {
+      alignedRecognized[i - 1] = j - 1;
+      recognizedUsed[j - 1] = true;
+      i--;
+      j--;
+    } else if (move === "up") {
+      i--;
+    } else {
+      j--;
+    }
+  }
+
+  const results = [];
+  for (let k = 0; k < m; k++) {
+    const canonical = canonicalWords[k];
+    const rj = alignedRecognized[k];
+    if (rj >= 0 && sim[k][rj] >= reviewThreshold) {
+      const s = sim[k][rj];
       results.push({
         wordId: canonical.id,
         canonicalText: canonical.text,
-        heardText: recognizedWords[bestMatch],
-        status: bestSim >= 0.95 ? "matched" : "needs-review",
-        confidence: bestSim,
-        similarity: bestSim,
-      });
-    } else if (bestMatch >= 0 && bestSim >= reviewThreshold) {
-      usedRecognized.add(bestMatch);
-      results.push({
-        wordId: canonical.id,
-        canonicalText: canonical.text,
-        heardText: recognizedWords[bestMatch],
-        status: "misread",
-        confidence: bestSim,
-        similarity: bestSim,
+        heardText: recognizedWords[rj],
+        status: s >= matchThreshold ? (s >= 0.95 ? "matched" : "needs-review") : "misread",
+        confidence: s,
+        similarity: s,
       });
     } else {
+      // Not aligned, or aligned only below the review threshold → missed; free any weakly-paired
+      // recognized word so it is reported as an "extra" instead of silently consumed.
+      if (rj >= 0) recognizedUsed[rj] = false;
       results.push({
         wordId: canonical.id,
         canonicalText: canonical.text,
@@ -101,12 +146,12 @@ export function alignWords(canonicalWords, recognizedWords) {
     }
   }
 
-  for (let j = 0; j < recognizedWords.length; j++) {
-    if (!usedRecognized.has(j)) {
+  for (let rj = 0; rj < n; rj++) {
+    if (!recognizedUsed[rj]) {
       results.push({
-        wordId: `extra-${j}`,
+        wordId: `extra-${rj}`,
         canonicalText: "",
-        heardText: recognizedWords[j],
+        heardText: recognizedWords[rj],
         status: "extra",
         confidence: 0.5,
         similarity: 0,

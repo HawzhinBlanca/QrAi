@@ -27,6 +27,9 @@ const manifest = JSON.parse(readFileSync(join(QURAN_DATA_DIR, "manifest.json"), 
 const ML_API_KEY = process.env.ML_API_KEY ?? "smoke-ml-api-key";
 
 const MODEL_VERSION = process.env.ML_MODEL_VERSION ?? "ml-aligner-v0.2";
+// Upper bound on words per alignment request (both canonical range and recognized text), bounding the
+// O(m·n) alignment DP. Far above any real practice session (the web caps a session at 7 ayahs).
+const MAX_ALIGN_WORDS = 1000;
 const DATASET_VERSION = fixtures.datasetVersion;
 const GOLDEN_CASE_IDS = fixtures.cases.map((c) => c.id);
 // Golden fixtures are ONLY for smoke/eval. By default (flag unset) every request
@@ -175,6 +178,15 @@ function getCanonicalWords(surahNumber, ayahStart, ayahEnd) {
         });
       }
     }
+  }
+  // Bound the O(m·n) alignment DP: a single practice request is far smaller (the web caps a session at
+  // 7 ayahs). Without this a caller could ask for a whole surah/juz and block the handler for tens of
+  // seconds. 1000 words is well above any real 7-ayah span but bounds the worst case to ~1s.
+  if (words.length > MAX_ALIGN_WORDS) {
+    throw httpError(
+      400,
+      `ayah range ${ayahStart}-${ayahEnd} spans ${words.length} words (max ${MAX_ALIGN_WORDS} per request); align a smaller range`,
+    );
   }
   return words;
 }
@@ -404,6 +416,15 @@ async function predictAlignment(requestBody) {
       recognizedWords = requestBody.recognizedTextString.trim().split(/\s+/);
     } else {
       recognizedWords = canonicalWords.map((w) => w.text);
+    }
+
+    // Bound the recognized side of the O(m·n) alignment DP too (the canonical side is capped in
+    // getCanonicalWords). Prevents a huge recognizedText from blocking the handler.
+    if (recognizedWords.length > MAX_ALIGN_WORDS) {
+      throw httpError(
+        400,
+        `recognizedText has ${recognizedWords.length} words (max ${MAX_ALIGN_WORDS} per request)`,
+      );
     }
 
     const alignmentResults = alignWords(canonicalWords, recognizedWords);
