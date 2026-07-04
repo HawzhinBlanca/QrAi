@@ -43,8 +43,10 @@ services:
       REALTIME_GATEWAY_TICKET_SECRET: "${REALTIME_GATEWAY_TICKET_SECRET:?REALTIME_GATEWAY_TICKET_SECRET is required in production}"
       PLATFORM_API_BIND: "0.0.0.0:8080"
       ML_API_KEY: "${ML_API_KEY:?ML_API_KEY is required}"
+      ASR_API_KEY: "${ASR_API_KEY:?ASR_API_KEY is required}"
       ALLOW_INSECURE_DEFAULTS: "${ALLOW_INSECURE_DEFAULTS:-0}"
       ML_INFERENCE_URL: "http://ml-inference:8090"
+      ASR_INFERENCE_URL: "http://asr-inference:8091"
     ports:
       - "8080:8080"
     depends_on:
@@ -87,6 +89,7 @@ services:
     environment:
       ML_INFERENCE_PORT: "8090"
       ASR_SERVICE_URL: "http://asr-inference:8091"
+      ASR_API_KEY: "${ASR_API_KEY:?ASR_API_KEY is required}"
       AUDIO_STORAGE_DIR: "/data/audio-storage"
       ML_API_KEY: "${ML_API_KEY:?ML_API_KEY is required}"
     ports:
@@ -110,6 +113,7 @@ services:
     environment:
       ASR_PORT: "8091"
       ASR_MODEL: "base"
+      ASR_API_KEY: "${ASR_API_KEY:?ASR_API_KEY is required}"
     ports:
       - "8091:8091"
     healthcheck:

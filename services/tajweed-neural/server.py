@@ -21,12 +21,23 @@ import os
 import tempfile
 import time
 
-from fastapi import FastAPI, HTTPException
+from typing import Optional
+
+from fastapi import Depends, FastAPI, Header, HTTPException
 from pydantic import BaseModel
 
 from model_loader import NeuralTajweedModel, MODEL_ID
 
 app = FastAPI(title="Quran AI Neural Tajweed (experimental)")
+
+# API-key gate (mirrors asr-inference / ml-inference). This experimental service must never be
+# reachable directly by the browser; a caller fronts it with the key server-side. Health stays open.
+TAJWEED_NEURAL_API_KEY = os.environ.get("TAJWEED_NEURAL_API_KEY", "smoke-tajweed-neural-api-key")
+
+
+def require_neural_key(x_neural_api_key: Optional[str] = Header(default=None)) -> None:
+    if x_neural_api_key != TAJWEED_NEURAL_API_KEY:
+        raise HTTPException(status_code=401, detail="unauthorized")
 
 # Whitelist of accepted audio container formats (mirrors the asr-inference service). The
 # client-controlled audioFormat becomes a tempfile suffix; without this a value with a NUL byte
@@ -97,7 +108,11 @@ def health():
     }
 
 
-@app.post("/v1/analyze-tajweed-neural", response_model=AnalyzeResponse)
+@app.post(
+    "/v1/analyze-tajweed-neural",
+    response_model=AnalyzeResponse,
+    dependencies=[Depends(require_neural_key)],
+)
 def analyze_tajweed_neural(req: AnalyzeRequest):
     if not req.audioBase64:
         raise HTTPException(status_code=400, detail="audioBase64 is required")

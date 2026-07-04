@@ -471,6 +471,11 @@ function AuthenticatedApp({ bypassLogin = false }: { bypassLogin?: boolean }) {
     if (isServerAsrSupported()) {
       const controller = await startServerAsr({
         language: "ar",
+        // Authenticate the transcription request: the browser posts audio to the platform-api ASR
+        // proxy (which holds the ASR key), never to the ASR service directly.
+        auth: effectiveUser
+          ? { tenantId: effectiveUser.tenantId, userId: effectiveUser.userId, authToken }
+          : undefined,
         onStatusChange: () => {},
         onError: (message) => {
           setIsRecording(false);

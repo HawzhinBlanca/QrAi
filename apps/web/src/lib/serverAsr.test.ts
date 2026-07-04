@@ -34,7 +34,7 @@ describe("server ASR (trained Quran model path)", () => {
     expect(b64).toBe(btoa(String.fromCharCode(0, 1, 2, 253, 254, 255)));
   });
 
-  it("POSTs WAV audio to the ASR /v1/transcribe endpoint and returns the model text", async () => {
+  it("POSTs WAV audio to the platform-api ASR proxy with actor auth and returns the model text", async () => {
     const fetchMock = vi.fn(async (_url: string, init?: RequestInit) => {
       const body = JSON.parse(String(init?.body));
       expect(body.audioFormat).toBe("wav");
@@ -49,10 +49,18 @@ describe("server ASR (trained Quran model path)", () => {
     });
     vi.stubGlobal("fetch", fetchMock);
 
-    const text = await transcribeWav(encodeWav(new Float32Array([0.1, 0.2]), 16000), "ar");
+    const text = await transcribeWav(encodeWav(new Float32Array([0.1, 0.2]), 16000), "ar", {
+      tenantId: "hikmah-pilot-erbil",
+      userId: "learner-1",
+      authToken: "tok-123",
+    });
 
     expect(fetchMock).toHaveBeenCalledOnce();
-    expect(String(fetchMock.mock.calls[0][0])).toContain("/v1/transcribe");
+    // The browser hits the platform-api proxy, NOT the ASR service directly.
+    expect(String(fetchMock.mock.calls[0][0])).toContain("/v1/asr/transcribe");
+    // A Bearer token is forwarded so the proxy can authenticate the caller.
+    const headers = (fetchMock.mock.calls[0][1] as RequestInit).headers as Record<string, string>;
+    expect(headers.authorization).toBe("Bearer tok-123");
     expect(text).toBe("الْحَمْدُ لِلَّهِ رَبِّ الْعَالَمِينَ");
   });
 

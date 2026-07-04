@@ -23,6 +23,7 @@ npx -y pnpm@11.7.0 --filter @quran-ai/web test
 npx -y pnpm@11.7.0 --filter @quran-ai/web build
 ```
 
-Requires Node 22 (see repo root notes). Service URLs are overridable via
-`VITE_PLATFORM_API_URL`, `VITE_ML_INFERENCE_URL`, `VITE_ASR_INFERENCE_URL`,
-`VITE_REALTIME_GATEWAY_URL`.
+Requires Node 22 (see repo root notes). The browser only talks to the platform API and the
+realtime gateway — ML inference and ASR are reached server-side through the platform-API proxy
+(so their API keys never ship to the browser). Overridable service URLs:
+`VITE_PLATFORM_API_URL`, `VITE_REALTIME_GATEWAY_URL`.

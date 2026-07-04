@@ -32,8 +32,20 @@ import soundfile as sf
 import numpy as np
 import whisper
 import uvicorn
-from fastapi import FastAPI, HTTPException
+from fastapi import Depends, FastAPI, Header, HTTPException
 from pydantic import BaseModel, Field
+
+# API-key gate. The browser must NOT reach this service directly — it is fronted by the platform-api
+# /v1/asr/* proxy, which holds ASR_API_KEY server-side (like ML_API_KEY for ml-inference). ml-inference
+# also sends the key on its server-to-server transcribe call. Health stays open. In dev/CI the default
+# key is used on both sides; in production ASR_API_KEY is set (platform-api boot-refuses a weak value).
+ASR_API_KEY = os.environ.get("ASR_API_KEY", "smoke-asr-api-key")
+
+
+def require_asr_key(x_asr_api_key: Optional[str] = Header(default=None)) -> None:
+    if x_asr_api_key != ASR_API_KEY:
+        raise HTTPException(status_code=401, detail="unauthorized")
+
 
 # Whitelist of accepted audio container formats. The client-controlled audioFormat is turned into a
 # tempfile suffix; without this guard a value with a NUL byte ("wav\0") or path traversal ("../../x")
@@ -180,7 +192,7 @@ async def health():
     }
 
 
-@app.post("/v1/transcribe", response_model=TranscribeResponse)
+@app.post("/v1/transcribe", response_model=TranscribeResponse, dependencies=[Depends(require_asr_key)])
 async def transcribe(req: TranscribeRequest):
     start = time.time()
 
@@ -251,7 +263,7 @@ async def transcribe(req: TranscribeRequest):
         os.unlink(tmp_path)
 
 
-@app.post("/v1/force-align", response_model=ForceAlignResponse)
+@app.post("/v1/force-align", response_model=ForceAlignResponse, dependencies=[Depends(require_asr_key)])
 async def force_align(req: ForceAlignRequest):
     """Force align audio against known canonical text using Whisper word timestamps."""
     start = time.time()
@@ -326,7 +338,7 @@ async def force_align(req: ForceAlignRequest):
         os.unlink(tmp_path)
 
 
-@app.post("/v1/analyze-tajweed", response_model=TajweedAnalysisResponse)
+@app.post("/v1/analyze-tajweed", response_model=TajweedAnalysisResponse, dependencies=[Depends(require_asr_key)])
 async def analyze_tajweed(req: TajweedAnalysisRequest):
     """
     Analyze audio for tajweed features using real signal processing.

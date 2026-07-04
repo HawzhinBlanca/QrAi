@@ -1,17 +1,32 @@
 /**
  * Server-side ASR using the trained Quran model in the asr-inference service
- * (tarteel-ai/whisper-base-ar-quran on :8091). This is the REAL recitation path:
- * capture microphone audio, decode + resample to 16 kHz mono WAV in the browser
- * (universally decodable by the model), and POST it to /v1/transcribe.
+ * (tarteel-ai/whisper-base-ar-quran). This is the REAL recitation path: capture microphone audio,
+ * decode + resample to 16 kHz mono WAV in the browser (universally decodable by the model), and POST
+ * it to the platform API's ASR proxy (`/v1/asr/transcribe`).
  *
- * Preferred over the browser Web Speech API (generic ar-SA recognition) because the
- * fine-tuned checkpoint returns diacritized Quran text. Falls back to Web Speech
+ * The browser talks to the platform API, NOT the ASR service directly: the ASR service now requires
+ * an API key that must stay server-side, so the platform API authenticates the actor and forwards
+ * the audio with the key. Preferred over the browser Web Speech API (generic ar-SA recognition)
+ * because the fine-tuned checkpoint returns diacritized Quran text. Falls back to Web Speech
  * (lib/asr.ts) when a microphone/MediaRecorder is unavailable or the service is down.
  */
 
 import type { AsrStatus } from "./asr";
 
-const ASR_BASE = import.meta.env.VITE_ASR_INFERENCE_URL || "http://127.0.0.1:8091";
+const PLATFORM_API_BASE = import.meta.env.VITE_PLATFORM_API_URL || "http://127.0.0.1:8080";
+
+/** Actor identity forwarded to the platform API so the ASR proxy can authenticate the caller. */
+export interface AsrAuth {
+  tenantId: string;
+  userId: string;
+  authToken?: string;
+}
+
+function asrAuthHeaders(auth?: AsrAuth): Record<string, string> {
+  if (auth?.authToken) return { authorization: `Bearer ${auth.authToken}` };
+  if (auth) return { "x-tenant-id": auth.tenantId, "x-user-id": auth.userId, "x-user-role": "learner" };
+  return {};
+}
 
 export interface ServerAsrResult {
   transcript: string;
@@ -24,6 +39,8 @@ export interface ServerAsrResult {
 
 export interface StartServerAsrOptions {
   language?: string;
+  /** Actor identity so the platform-api ASR proxy can authenticate the transcription request. */
+  auth?: AsrAuth;
   onStatusChange: (status: AsrStatus) => void;
   onError: (message: string) => void;
 }
@@ -71,7 +88,7 @@ export async function startServerAsr(options: StartServerAsrOptions): Promise<Se
 
   return startRecordedAudio(options, async (recorded) => {
     const wav = await decodeToWav16kMono(recorded);
-    const transcript = await transcribeWav(wav, options.language ?? "ar");
+    const transcript = await transcribeWav(wav, options.language ?? "ar", options.auth);
     return { transcript, confidence: 0.9 };
   });
 }
@@ -206,11 +223,11 @@ export async function blobToBase64(blob: Blob): Promise<string> {
   return btoa(binary);
 }
 
-export async function transcribeWav(wav: Blob, language: string): Promise<string> {
+export async function transcribeWav(wav: Blob, language: string, auth?: AsrAuth): Promise<string> {
   const audioBase64 = await blobToBase64(wav);
-  const response = await fetch(`${ASR_BASE}/v1/transcribe`, {
+  const response = await fetch(`${PLATFORM_API_BASE}/v1/asr/transcribe`, {
     method: "POST",
-    headers: { "content-type": "application/json" },
+    headers: { "content-type": "application/json", ...asrAuthHeaders(auth) },
     body: JSON.stringify({ audioBase64, audioFormat: "wav", language, wordTimestamps: true }),
   });
   if (!response.ok) {
