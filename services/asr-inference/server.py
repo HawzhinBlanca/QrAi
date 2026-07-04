@@ -34,6 +34,22 @@ import uvicorn
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
 
+# Whitelist of accepted audio container formats. The client-controlled audioFormat is turned into a
+# tempfile suffix; without this guard a value with a NUL byte ("wav\0") or path traversal ("../../x")
+# makes tempfile.NamedTemporaryFile raise an UNHANDLED 500 (the call sits outside the endpoint's
+# try/except). Validating up front turns bad input into a clean 400.
+ALLOWED_AUDIO_FORMATS = {"webm", "wav", "mp3", "m4a", "ogg", "flac"}
+
+
+def safe_audio_suffix(audio_format: str) -> str:
+    fmt = (audio_format or "").strip().lower()
+    if fmt not in ALLOWED_AUDIO_FORMATS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"unsupported audioFormat {audio_format!r}; allowed: {sorted(ALLOWED_AUDIO_FORMATS)}",
+        )
+    return f".{fmt}"
+
 # === Structured JSON Logger ===
 class JsonFormatter(logging.Formatter):
     def format(self, record: logging.LogRecord) -> str:
@@ -175,7 +191,7 @@ async def transcribe(req: TranscribeRequest):
         audio_bytes = base64.b64decode(req.audioBase64, validate=True)
     except (ValueError, TypeError) as exc:
         raise HTTPException(status_code=400, detail=f"Invalid base64 audio: {exc}")
-    suffix = f".{req.audioFormat}"
+    suffix = safe_audio_suffix(req.audioFormat)
 
     with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
         tmp.write(audio_bytes)
@@ -255,7 +271,7 @@ async def force_align(req: ForceAlignRequest):
         audio_bytes = base64.b64decode(req.audioBase64, validate=True)
     except (ValueError, TypeError) as exc:
         raise HTTPException(status_code=400, detail=f"Invalid base64 audio: {exc}")
-    suffix = f".{req.audioFormat}"
+    suffix = safe_audio_suffix(req.audioFormat)
 
     with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
         tmp.write(audio_bytes)
@@ -327,7 +343,7 @@ async def analyze_tajweed(req: TajweedAnalysisRequest):
         audio_bytes = base64.b64decode(req.audioBase64, validate=True)
     except (ValueError, TypeError) as exc:
         raise HTTPException(status_code=400, detail=f"Invalid base64 audio: {exc}")
-    suffix = f".{req.audioFormat}"
+    suffix = safe_audio_suffix(req.audioFormat)
 
     with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
         tmp.write(audio_bytes)
