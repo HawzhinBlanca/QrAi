@@ -12,10 +12,7 @@
     "wordAlignmentF1": 0.93,
     "tajweedF1": 0.86,
     "falsePositiveRate": 0.05,
-    "teacherAgreementRate": 0.92,
-    "unsourcedLearnerOutputs": 0,
-    "caseCount": 2,
-    "sourceBackedFindings": 2
+    "teacherAgreementRate": 0.92
   },
   "cases": [
     {

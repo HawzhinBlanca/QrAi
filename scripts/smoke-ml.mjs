@@ -84,7 +84,15 @@ try {
   assert(evalRun.wordAlignmentF1 === fixture.metrics.wordAlignmentF1, "eval run did not load fixture alignment metric");
   assert(evalRun.tajweedF1 === fixture.metrics.tajweedF1, "eval run did not load fixture tajweed metric");
   assert(evalRun.unsourcedLearnerOutputs === 0, "eval run allows unsourced learner outputs");
-  assert(evalRun.sourceBackedFindings === fixture.metrics.sourceBackedFindings, "eval run did not load source-backed count");
+  // Source-integrity is recomputed live by the service from the committed golden findings; assert the
+  // endpoint's count matches an INDEPENDENT recompute over the same cases (no static, drift-prone field).
+  const expectedSourceBacked = fixture.cases
+    .flatMap((c) => c.tajweedFindings ?? [])
+    .filter((f) => Array.isArray(f.sources) && f.sources.length > 0).length;
+  assert(
+    evalRun.sourceBackedFindings === expectedSourceBacked,
+    "eval run did not recompute the source-backed finding count",
+  );
 
   const denied = await postJson("/v1/alignments:predict", buildPredictionRequest(fixture.cases[0], { externalAsrRequested: true }));
   assert(denied.traceId === smokeTraceId, "denied alignment dropped smoke trace id");
