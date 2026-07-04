@@ -19,7 +19,7 @@ export function analyzeWord(wordId, word) {
   const normalized = word.replace(/\s+/g, "");
 
   // Madd Tabii
-  if (/[\u064B]\s*ا/.test(word) || /[\u064C]\s*و/.test(word) || /[\u064D]\s*ي/.test(word)) {
+  if (/َا/.test(word) || /ُو/.test(word) || /ِي/.test(word)) {
     findings.push({
       wordId, rule: "madd-tabii", arabicName: "مد طبيعي", category: "madd",
       severity: "practice",
@@ -39,7 +39,7 @@ export function analyzeWord(wordId, word) {
   }
 
   // Ghunnah
-  if (/نْ/.test(word) || /[نًٌٍ]/.test(word)) {
+  if (/نْ/.test(word) || /ن$/.test(word) || /[ًٌٍ]/.test(word)) {
     findings.push({
       wordId, rule: "ghunnah", arabicName: "غنة", category: "ghunnah",
       severity: "practice",
@@ -97,9 +97,9 @@ export function analyzeAyah(ayahId, words) {
 
   // Inter-word rules
   for (let i = 0; i < words.length - 1; i++) {
-    const current = words[i].text;
+    const current = words[i].text.replace(/[ۖ-ۭ]+$/u, "");
     const next = words[i + 1].text;
-    const endsWithNoonSakin = /ن$/.test(current.replace(/[\u064B-\u065F\u0670]/g, "")) || /[نًٌٍ]$/.test(current);
+    const endsWithNoonSakin = /نْ?$/.test(current);
     const endsWithTanween = /[ًٌٍ]$/.test(current);
 
     if (endsWithNoonSakin || endsWithTanween) {
