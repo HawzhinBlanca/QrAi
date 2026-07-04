@@ -101,6 +101,9 @@ pub struct GatewayMetrics {
     pub chunks_accepted: u64,
     pub chunks_rejected_backpressure: u64,
     pub chunks_rejected_missing_session: u64,
+    /// Chunks that were acked to the client but could NOT be delivered to ML after retries — the
+    /// only signal that a session's analysis has gaps (see the forwarding task in handle_audio_socket).
+    pub chunks_forward_failed: u64,
 }
 
 #[derive(Debug, Default)]
@@ -110,6 +113,7 @@ struct GatewayCounters {
     chunks_accepted: AtomicU64,
     chunks_rejected_backpressure: AtomicU64,
     chunks_rejected_missing_session: AtomicU64,
+    chunks_forward_failed: AtomicU64,
 }
 
 impl RealtimeGateway {
@@ -319,7 +323,15 @@ impl RealtimeGateway {
                 .counters
                 .chunks_rejected_missing_session
                 .load(Ordering::Relaxed),
+            chunks_forward_failed: self.counters.chunks_forward_failed.load(Ordering::Relaxed),
         }
+    }
+
+    /// Record that a chunk could not be delivered to the ML service after retries (analysis gap).
+    pub fn record_forward_failure(&self) {
+        self.counters
+            .chunks_forward_failed
+            .fetch_add(1, Ordering::Relaxed);
     }
 }
 
@@ -462,6 +474,7 @@ async fn metrics(State(state): State<GatewayServerState>) -> impl IntoResponse {
             "chunks_accepted": gateway_metrics.chunks_accepted,
             "chunks_rejected_backpressure": gateway_metrics.chunks_rejected_backpressure,
             "chunks_rejected_missing_session": gateway_metrics.chunks_rejected_missing_session,
+            "chunks_forward_failed": gateway_metrics.chunks_forward_failed,
             "consumed_tickets_count": ticket_count,
         })),
     )
@@ -691,6 +704,9 @@ async fn handle_audio_socket(
     let ml_trace = trace_id.clone();
     let ml_api_key = std::env::var("ML_API_KEY").unwrap_or_else(|_| "smoke-ml-api-key".to_owned());
     let mut reader = reader;
+    // Clone the gateway (Arc-based) into the forwarding task so it can record forward failures
+    // without moving state.gateway away from the socket loop below.
+    let forward_gateway = state.gateway.clone();
     tokio::spawn(async move {
         let client = state.http_client.clone();
         while let Some(chunk) = reader.recv().await {
@@ -711,22 +727,50 @@ async fn handle_audio_socket(
                 "audioSize": chunk.bytes.len(),
                 "traceId": ml_trace,
             });
-            match client
-                .post(&url)
-                .header("x-ml-api-key", &ml_api_key)
-                .json(&body)
-                .send()
-                .await
-            {
-                Ok(resp) if resp.status().is_success() => {
-                    tracing::debug!("forwarded chunk {chunk_id} to ML service");
+            // Bounded retry: a transient ML blip (connection error / 5xx) shouldn't silently lose the
+            // chunk. A 4xx is a permanent rejection (bad body) — don't hammer it. On final failure,
+            // record the gap in metrics so a lossy session is observable, not just a warn line.
+            const MAX_ATTEMPTS: u32 = 3;
+            let mut delivered = false;
+            for attempt in 1..=MAX_ATTEMPTS {
+                match client
+                    .post(&url)
+                    .header("x-ml-api-key", &ml_api_key)
+                    // Bound each attempt so a hung ML connection can't block the forwarding task
+                    // (and thus back up the whole session's chunk queue) indefinitely.
+                    .timeout(std::time::Duration::from_secs(5))
+                    .json(&body)
+                    .send()
+                    .await
+                {
+                    Ok(resp) if resp.status().is_success() => {
+                        delivered = true;
+                        break;
+                    }
+                    Ok(resp) if resp.status().is_client_error() => {
+                        tracing::warn!(
+                            "ML service rejected chunk {chunk_id}: {} (not retrying)",
+                            resp.status()
+                        );
+                        break;
+                    }
+                    Ok(resp) => tracing::warn!(
+                        "ML service returned {} for chunk {chunk_id} (attempt {attempt}/{MAX_ATTEMPTS})",
+                        resp.status()
+                    ),
+                    Err(e) => tracing::warn!(
+                        "failed to forward chunk {chunk_id} to ML (attempt {attempt}/{MAX_ATTEMPTS}): {e}"
+                    ),
                 }
-                Ok(resp) => {
-                    tracing::warn!("ML service returned {} for chunk {chunk_id}", resp.status());
+                if attempt < MAX_ATTEMPTS {
+                    tokio::time::sleep(std::time::Duration::from_millis(100 * attempt as u64))
+                        .await;
                 }
-                Err(e) => {
-                    tracing::warn!("failed to forward chunk {chunk_id} to ML: {e}");
-                }
+            }
+            if delivered {
+                tracing::debug!("forwarded chunk {chunk_id} to ML service");
+            } else {
+                forward_gateway.record_forward_failure();
             }
         }
     });
@@ -948,6 +992,17 @@ mod tests {
         assert!(received.is_none());
         assert_eq!(gateway.active_session_count().await, 0);
         assert_eq!(gateway.metrics().await.sessions_ended, 1);
+    }
+
+    #[tokio::test]
+    async fn forward_failure_is_counted_in_metrics() {
+        // Chunks dropped after exhausting ML-forward retries must be observable (not just a warn log),
+        // so an operator can see a session had analysis gaps.
+        let gateway = RealtimeGateway::new(4);
+        assert_eq!(gateway.metrics().await.chunks_forward_failed, 0);
+        gateway.record_forward_failure();
+        gateway.record_forward_failure();
+        assert_eq!(gateway.metrics().await.chunks_forward_failed, 2);
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
