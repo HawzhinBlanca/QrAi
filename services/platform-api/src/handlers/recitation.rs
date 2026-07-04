@@ -435,7 +435,10 @@ pub struct PersistAlignmentsRequest {
 /// makes a learner's REAL recitation visible in the Command console (which reads
 /// `word_alignments`). Replaces any prior alignment for the session (idempotent re-record),
 /// skips words whose id is not a real canonical word (e.g. the synthetic "extra-N" ids that
-/// would violate the FK), and clamps confidence to [0,1].
+/// would violate the FK), and clamps confidence to [0,1]. The canonical-word check is BATCHED
+/// (one query, not one per alignment). Rows skipped for an unrecognised status vs. a non-canonical
+/// word are counted separately and returned (`skippedInvalidStatus`, `skippedUnknownWord`), and an
+/// unrecognised status is logged, so incomplete feedback is visible instead of a silent gap.
 pub async fn persist_session_alignments(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -514,18 +517,32 @@ pub async fn persist_session_alignments(
         .await?;
 
     const VALID_STATUS: [&str; 5] = ["matched", "misread", "missed", "extra", "needs-review"];
+    // Partition once. An UNRECOGNISED status is a data-quality signal from the ML service (e.g. a typo
+    // like "matche"), not something to drop silently — count it, log it, and report it to the caller
+    // so incomplete feedback is visible rather than a silent gap.
+    let (valid, invalid_status): (Vec<_>, Vec<_>) = req
+        .alignments
+        .iter()
+        .partition(|a| VALID_STATUS.contains(&a.status.as_str()));
+
+    // Batch the canonical-word existence check into ONE query (was N+1 — one SELECT per alignment,
+    // e.g. 29 round-trips for Al-Fatihah). canonical_words is global reference data (not tenant-scoped).
+    let candidate_ids: Vec<String> = valid.iter().map(|a| a.word_id.clone()).collect();
+    let known_words: std::collections::HashSet<String> =
+        sqlx::query_scalar::<_, String>("SELECT id FROM canonical_words WHERE id = ANY($1)")
+            .bind(&candidate_ids)
+            .fetch_all(&mut *tx)
+            .await?
+            .into_iter()
+            .collect();
+
     let mut persisted = 0i64;
-    for a in &req.alignments {
-        if !VALID_STATUS.contains(&a.status.as_str()) {
-            continue;
-        }
-        // Only real canonical words satisfy the word_id FK; skip synthetic ids ("extra-N").
-        let is_canonical: Option<String> =
-            sqlx::query_scalar("SELECT id FROM canonical_words WHERE id = $1")
-                .bind(&a.word_id)
-                .fetch_optional(&mut *tx)
-                .await?;
-        if is_canonical.is_none() {
+    let mut skipped_unknown_word = 0i64;
+    for a in valid {
+        // Only real canonical words satisfy the word_id FK; synthetic ids ("extra-N") are EXPECTED to
+        // be absent (an "extra" word the learner said that isn't in the canonical text) — not an error.
+        if !known_words.contains(&a.word_id) {
+            skipped_unknown_word += 1;
             continue;
         }
         let wa_id = next_id("word-alignment");
@@ -550,11 +567,24 @@ pub async fn persist_session_alignments(
         persisted += 1;
     }
 
+    let skipped_invalid_status = invalid_status.len() as i64;
+    if skipped_invalid_status > 0 {
+        // Log the actual offending status strings (not just a count) so a data-quality problem in the
+        // ML output is greppable/actionable without reproducing against the DB.
+        let bad_statuses: Vec<&str> = invalid_status.iter().map(|a| a.status.as_str()).collect();
+        tracing::warn!(
+            "persist_session_alignments session={id}: {skipped_invalid_status} alignment(s) had an \
+             unrecognised status and were skipped (ML data-quality issue): {bad_statuses:?}"
+        );
+    }
+
     tx.commit().await?;
 
     Ok(Json(serde_json::json!({
         "sessionId": id,
         "persisted": persisted,
+        "skippedInvalidStatus": skipped_invalid_status,
+        "skippedUnknownWord": skipped_unknown_word,
         "auditEventId": audit_id,
     })))
 }
