@@ -1,0 +1,55 @@
+# Builds every service image and asserts each runs as the non-root user. This is the CI verification
+# for the Dockerfile / compose / .dockerignore hardening that cannot be built locally without a Docker
+# daemon. Runs only when those files change (image builds are slow), plus on main.
+name: docker-build
+on:
+  pull_request:
+    paths:
+      - "services/*/Dockerfile"
+      - "apps/web/Dockerfile"
+      - "docker-compose.yml"
+      - ".dockerignore"
+      - ".github/workflows/docker-build.yml"
+  push:
+    branches: [main]
+    paths:
+      - "services/*/Dockerfile"
+      - "apps/web/Dockerfile"
+      - "docker-compose.yml"
+      - ".dockerignore"
+      - ".github/workflows/docker-build.yml"
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    # Dummy values ONLY to satisfy the compose ${VAR:?required} interpolation at build/parse time.
+    # `docker compose build` does not inject runtime env into images, so these never ship anywhere.
+    env:
+      JWT_SECRET: "ci-dummy-jwt-secret-at-least-32-characters-long"
+      REALTIME_GATEWAY_TICKET_SECRET: "ci-dummy-ticket-secret-at-least-32-chars"
+      ML_API_KEY: "ci-dummy-ml-key"
+      ASR_API_KEY: "ci-dummy-asr-key"
+      POSTGRES_PASSWORD: "ci-dummy-pg"
+    steps:
+      - uses: actions/checkout@v4
+
+      # Build all images — fails if any Dockerfile (incl. the non-root RUN steps and the .dockerignore
+      # context) does not build. This is what could not be verified without a local Docker daemon.
+      - name: docker compose build
+        run: docker compose build
+
+      # Assert the four service images run as the non-root appuser (uid 10001), not root. Overrides the
+      # entrypoint to print the effective uid; --no-deps so it doesn't start Postgres/other services.
+      - name: Assert containers run as non-root (uid 10001)
+        run: |
+          set -euo pipefail
+          fail=0
+          for svc in platform-api realtime-gateway ml-inference asr-inference; do
+            uid=$(docker compose run --rm --no-deps --entrypoint sh "$svc" -c 'id -u' | tr -d '\r')
+            echo "$svc -> uid $uid"
+            if [ "$uid" != "10001" ]; then
+              echo "::error::$svc is not running as the non-root uid 10001 (got '$uid')"
+              fail=1
+            fi
+          done
+          exit $fail
