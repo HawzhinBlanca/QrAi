@@ -218,7 +218,12 @@ pub async fn update_progress(
         None => Sm2State::default(),
     };
 
-    let updated = sm2_update(&prior, req.quality);
+    // Clamp the SM-2 quality to its 0..=5 domain BEFORE use: sm2_update clamps internally, but the
+    // raw value is also stored in learner_progress.last_quality, which has a CHECK (0..5) — an
+    // out-of-range input (e.g. a client bug or a future 0..10 slider) would otherwise violate the
+    // constraint and fail the whole write with a leaking 500 instead of persisting the review.
+    let quality = req.quality.min(5);
+    let updated = sm2_update(&prior, quality);
     // Defensive clamp (in case a pre-existing row stored a huge interval): never feed an
     // out-of-range day count into chrono's Add, which would panic.
     let next_review =
@@ -239,7 +244,7 @@ pub async fn update_progress(
     .bind(updated.easiness_factor)
     .bind(updated.interval_days)
     .bind(updated.repetitions)
-    .bind(req.quality as i32)
+    .bind(quality as i32)
     .bind(next_review)
     .execute(&mut *tx)
     .await?;
@@ -256,6 +261,6 @@ pub async fn update_progress(
             "repetitions": updated.repetitions,
         },
         "nextReviewAt": next_review.to_rfc3339(),
-        "quality": req.quality,
+        "quality": quality,
     })))
 }
