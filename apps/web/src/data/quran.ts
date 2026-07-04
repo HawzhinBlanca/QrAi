@@ -90,7 +90,15 @@ export async function loadSurahVerses(surahNumber = 1): Promise<QuranVerse[]> {
     cachedSurah = data.ayahs.map((ayah) => ({
       id: ayah.id,
       verseNumber: ayah.ayahNumber,
-      words: [{ id: `${ayah.id}:0`, text: ayah.text, status: "good" as WordStatus }],
+      // One entry PER WORD, with ids matching the ML alignment scheme `${surah}:${ayah}:${wordIndex}`
+      // (1-indexed; ayah.id is already `surah:ayah`). Previously a single synthetic `${ayah.id}:0`
+      // word never matched any real alignment id, so the reader always rendered every ayah "good"
+      // regardless of actual mistakes. `text.split(/\s+/)` matches the ML word tokenization exactly
+      // (verified: identical to the canonical `words[]` array across the bundle).
+      words: ayah.text
+        .split(/\s+/)
+        .filter(Boolean)
+        .map((text, i) => ({ id: `${ayah.id}:${i + 1}`, text, status: "good" as WordStatus })),
     }));
     return cachedSurah;
   } catch (err) {
@@ -114,7 +122,7 @@ export function updateVersesWithAlignment(
   return verses.map((verse) => ({
     ...verse,
     words: verse.words.map((word) => {
-      const alignment = alignmentResults.find((a) => a.wordId === word.id || a.wordId === `${verse.id}:0`);
+      const alignment = alignmentResults.find((a) => a.wordId === word.id);
       return alignment ? { ...word, status: statusFromAlignment(alignment.status) } : word;
     }),
   }));
