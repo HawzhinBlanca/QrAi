@@ -54,6 +54,23 @@ pub async fn create_agent_run(
             req.status
         )));
     }
+    // review_status drives the learner-facing gate (canShowLearnerFacingAiOutput), so validate it
+    // against the contract's allowed set here — otherwise a garbage/typo value only trips the DB CHECK
+    // and surfaces as an opaque 500 instead of a clean 400.
+    const ALLOWED_REVIEW: [&str; 6] = [
+        "draft",
+        "ai-suggested",
+        "teacher-review-required",
+        "teacher-reviewed",
+        "scholar-approved",
+        "blocked",
+    ];
+    if !ALLOWED_REVIEW.contains(&req.review_status.as_str()) {
+        return Err(ApiError::BadRequest(format!(
+            "invalid agent run review_status: {}",
+            req.review_status
+        )));
+    }
     if !(0.0..=1.0).contains(&req.confidence) {
         return Err(ApiError::BadRequest(
             "confidence must be within [0, 1]".to_owned(),

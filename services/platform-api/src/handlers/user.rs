@@ -55,10 +55,14 @@ pub async fn register(
         ));
     }
 
-    // Check email uniqueness if provided
+    // Check email uniqueness if provided. Scope explicitly by tenant_id (matching how login scopes
+    // by tenant_id + email) rather than relying on the ambient RLS policy — so the check is correct
+    // even if the connecting role ever bypasses RLS, and it cannot become a cross-tenant existence
+    // oracle. Email uniqueness is per-tenant by design.
     if let Some(ref email) = req.email {
-        let existing = sqlx::query("SELECT id FROM users WHERE email = $1")
+        let existing = sqlx::query("SELECT id FROM users WHERE email = $1 AND tenant_id = $2")
             .bind(email)
+            .bind(&req.tenant_id)
             .fetch_optional(&mut *tx)
             .await?;
         if existing.is_some() {
