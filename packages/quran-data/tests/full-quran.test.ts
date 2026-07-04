@@ -13,6 +13,12 @@ import {
   listAllSurahs,
   validateFullQuranData,
   FULL_QURAN_MANIFEST,
+  CANONICAL_AYAH_COUNTS,
+  FULL_QURAN_CONTENT_SHA256,
+  computeFullQuranContentHash,
+  checkSurahIntegrity,
+  validateFullQuranIntegrity,
+  type FullQuranSurah,
 } from "../src/full-quran";
 
 describe("Full Quran data", () => {
@@ -105,5 +111,92 @@ describe("Full Quran data", () => {
       totalWords += surah.totalWords;
     }
     expect(totalWords).toBe(FULL_QURAN_MANIFEST.totalWords);
+  });
+});
+
+describe("Full Quran integrity (independent ground truth)", () => {
+  it("canonical ayah counts: 114 surahs summing to 6236, matching known surahs", () => {
+    expect(Object.keys(CANONICAL_AYAH_COUNTS)).toHaveLength(114);
+    expect(Object.values(CANONICAL_AYAH_COUNTS).reduce((a, b) => a + b, 0)).toBe(6236);
+    expect(CANONICAL_AYAH_COUNTS[1]).toBe(7); // Al-Fatihah
+    expect(CANONICAL_AYAH_COUNTS[2]).toBe(286); // Al-Baqarah
+    expect(CANONICAL_AYAH_COUNTS[114]).toBe(6); // An-Nas
+  });
+
+  it("the bundled Quran passes deep integrity validation against canonical counts", () => {
+    const result = validateFullQuranIntegrity();
+    expect(result.errors).toEqual([]);
+    expect(result.isValid).toBe(true);
+  }, 60000);
+
+  it("the content checksum matches the pinned constant (drift tripwire)", () => {
+    expect(computeFullQuranContentHash()).toBe(FULL_QURAN_CONTENT_SHA256);
+  }, 60000);
+
+  // --- negative tests: prove the per-surah checker actually has teeth ---
+  const goodSurah = (): FullQuranSurah => ({
+    id: "1",
+    surahNumber: 1,
+    name: "x",
+    englishName: "x",
+    englishNameTranslation: "x",
+    revelationType: "Meccan",
+    numberOfAyahs: 2,
+    totalWords: 3,
+    ayahs: [
+      { surahNumber: 1, ayahNumber: 1, text: "a b", words: ["a", "b"], wordCount: 2 },
+      { surahNumber: 1, ayahNumber: 2, text: "c", words: ["c"], wordCount: 1 },
+    ],
+  });
+
+  it("accepts a well-formed surah", () => {
+    expect(checkSurahIntegrity(goodSurah(), 1, 2)).toEqual([]);
+  });
+
+  it("catches a wrong canonical ayah count", () => {
+    expect(checkSurahIntegrity(goodSurah(), 1, 3).join(";")).toMatch(/canonical count is 3/);
+  });
+
+  it("catches a surah loaded under the wrong surah number (same-ayah-count file mixup)", () => {
+    // goodSurah() is surah 1; validating it as surah 67 (both would be a 30-ayah collision in reality)
+    // must be caught by the surahNumber check, not slip through on ayah count alone.
+    expect(checkSurahIntegrity(goodSurah(), 67, 2).join(";")).toMatch(/expected 67/);
+  });
+
+  it("catches a gap/reorder in ayah numbering", () => {
+    const s = goodSurah();
+    s.ayahs[1].ayahNumber = 3; // 1,3 instead of 1,2 — total count still 2, would slip a count-only check
+    expect(checkSurahIntegrity(s, 1, 2).join(";")).toMatch(/numbered 3, expected 2/);
+  });
+
+  it("catches empty ayah text", () => {
+    const s = goodSurah();
+    s.ayahs[0].text = "   ";
+    expect(checkSurahIntegrity(s, 1, 2).join(";")).toMatch(/empty ayah text/);
+  });
+
+  it("catches a words.length / wordCount mismatch", () => {
+    const s = goodSurah();
+    s.ayahs[0].wordCount = 5; // words array still has 2
+    expect(checkSurahIntegrity(s, 1, 2).join(";")).toMatch(/2 words but wordCount=5/);
+  });
+
+  it("catches a totalWords mismatch", () => {
+    const s = goodSurah();
+    s.totalWords = 99;
+    expect(checkSurahIntegrity(s, 1, 2).join(";")).toMatch(/totalWords=99/);
+  });
+
+  it("does NOT catch a structure-preserving ayah-content swap — that is the content hash's job", () => {
+    // Swapping two ayahs' content as a unit (text+words+wordCount) while keeping their numbering
+    // correct preserves every structural invariant, so the per-surah checker is (correctly) silent.
+    // This documents the layering: the pinned FULL_QURAN_CONTENT_SHA256 is the backstop for this class.
+    // (A duplicate-text detector is NOT viable — surahs like Ar-Rahman legitimately repeat an ayah.)
+    const s = goodSurah();
+    const [a0, a1] = s.ayahs;
+    [a0.text, a1.text] = [a1.text, a0.text];
+    [a0.words, a1.words] = [a1.words, a0.words];
+    [a0.wordCount, a1.wordCount] = [a1.wordCount, a0.wordCount];
+    expect(checkSurahIntegrity(s, 1, 2)).toEqual([]);
   });
 });
