@@ -73,6 +73,8 @@ pub struct QuranReference {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct Consent {
+    #[serde(default)]
+    pub recording_consent: bool,
     pub audio_retention: AudioRetention,
     pub anonymized_learning: bool,
     #[serde(default)]

@@ -13,6 +13,14 @@ export function ConsentPanel({
       <label className="consent-row">
         <input
           type="checkbox"
+          checked={consent.recordingConsent}
+          onChange={(event) => onConsentChange({ ...consent, recordingConsent: event.target.checked })}
+        />
+        <span>I consent to recording and analyzing my recitation. (Required to record.)</span>
+      </label>
+      <label className="consent-row">
+        <input
+          type="checkbox"
           checked={consent.audioRetention === "teacher-review"}
           onChange={(event) =>
             onConsentChange({

@@ -74,6 +74,9 @@ export interface TajweedFinding {
 }
 
 export interface RecitationConsent {
+  /** Affirmative consent to record and analyze the recitation. Required before any recording starts;
+   *  the local Quran ASR still processes the audio and it may be stored per audioRetention. */
+  recordingConsent: boolean;
   audioRetention: "discard" | "teacher-review" | "training-opt-in";
   anonymizedLearning: boolean;
   externalAsrProcessing: boolean;
