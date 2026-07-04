@@ -303,7 +303,12 @@ function httpError(status, message) {
 async function transcribeAudio(audioBase64, audioFormat = "webm", language = "ar") {
   const response = await fetch(`${ASR_SERVICE_URL}/v1/transcribe`, {
     method: "POST",
-    headers: { "content-type": "application/json" },
+    headers: {
+      "content-type": "application/json",
+      // ASR now requires an API key (like this service does). Server-to-server call, so the key
+      // stays server-side; matches ASR_API_KEY on the ASR service (default dev key in dev/CI).
+      "x-asr-api-key": process.env.ASR_API_KEY ?? "smoke-asr-api-key",
+    },
     body: JSON.stringify({ audioBase64, audioFormat, language, wordTimestamps: true }),
   });
   if (!response.ok) {

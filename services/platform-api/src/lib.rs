@@ -1,4 +1,5 @@
 use axum::Router;
+use axum::extract::DefaultBodyLimit;
 use axum::response::IntoResponse;
 use sqlx::PgPool;
 use std::sync::Arc;
@@ -169,6 +170,15 @@ pub fn platform_router_with_rate_limit(state: AppState, rate_limit: bool) -> Rou
         .route(
             "/v1/ml/tajweed-findings:predict",
             axum::routing::post(handlers::ml_proxy::proxy_predict_tajweed),
+        )
+        // ASR transcription proxy: the browser posts recorded audio here (never to the ASR service
+        // directly), and the platform API forwards it with the server-side ASR_API_KEY. Audio is far
+        // larger than a JSON prediction, so this route raises the 2 MB Axum default to 16 MB (a few
+        // minutes of 16 kHz mono base64 WAV); other routes keep the small default.
+        .route(
+            "/v1/asr/transcribe",
+            axum::routing::post(handlers::ml_proxy::proxy_asr_transcribe)
+                .layer(DefaultBodyLimit::max(16 * 1024 * 1024)),
         )
         .layer(TraceLayer::new_for_http())
         .with_state(state);

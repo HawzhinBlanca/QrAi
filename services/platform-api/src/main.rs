@@ -44,6 +44,16 @@ fn ensure_secure_config() {
              gating the ML inference service). Set ALLOW_INSECURE_DEFAULTS=1 for local dev only."
         );
     }
+    // ASR_API_KEY gates the ASR inference service, which the browser reaches only via the
+    // platform-api /v1/asr/* proxy (the key stays server-side). A publicly-known default would let
+    // anyone hit the ASR service directly on a deploy that forgets to set it.
+    let asr_key = std::env::var("ASR_API_KEY").unwrap_or_default();
+    if asr_key.trim().is_empty() || asr_key == "smoke-asr-api-key" {
+        panic!(
+            "ASR_API_KEY must be set to a non-default value in production (it gates the ASR \
+             inference service, fronted by the /v1/asr proxy). Set ALLOW_INSECURE_DEFAULTS=1 for local dev only."
+        );
+    }
 }
 
 fn redact_database_url(database_url: &str) -> String {

@@ -3,7 +3,6 @@
 interface ImportMetaEnv {
   readonly VITE_PLATFORM_API_URL?: string;
   readonly VITE_REALTIME_GATEWAY_URL?: string;
-  readonly VITE_ASR_INFERENCE_URL?: string;
 }
 
 interface ImportMeta {
