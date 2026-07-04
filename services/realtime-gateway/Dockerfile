@@ -1,5 +1,8 @@
 FROM rust:1.96-bookworm AS builder
 WORKDIR /app
+# The crate has a path dependency `quran-ai-shared-ticket = { path = "../shared-ticket" }`; from the
+# /app workdir that resolves to /shared-ticket, so the crate must be copied there or cargo build fails.
+COPY services/shared-ticket /shared-ticket
 COPY services/realtime-gateway/Cargo.toml services/realtime-gateway/Cargo.lock* ./
 COPY services/realtime-gateway/src ./src
 RUN cargo build --release
