@@ -7,14 +7,22 @@
 
 import { createServer } from "node:http";
 import { randomUUID } from "node:crypto";
-import { readFileSync, existsSync, writeFileSync, mkdirSync } from "node:fs";
+import { readFileSync, existsSync, writeFileSync, mkdirSync, realpathSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 import { normalizeArabic, similarity, alignWords, calculateConfidence } from "./alignment.js";
 import { analyzeAyah, analyzeWord } from "./tajweed.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
+
+// True only when this file is the process entrypoint (node server.mjs), false when imported
+// (e.g. by server.test.mjs). Every side effect — listen(), the cleanup timers, the signal
+// handlers — is gated on this so importing the module for tests does not bind a port or start
+// timers. (verify.sh notes the same footgun: a dir glob would import server.mjs, which listens.)
+const isMain = process.argv[1]
+  ? import.meta.url === pathToFileURL(realpathSync(process.argv[1])).href
+  : false;
 
 // Load golden eval fixtures for health endpoint + smoke tests
 const FIXTURES_PATH = join(__dirname, "fixtures", "golden-evals.json");
@@ -354,17 +362,18 @@ async function predictAlignment(requestBody) {
   );
 
   const evidenceId = `evidence-${randomUUID()}`;
-  const auditEventId = appendAudit(tenantId, "ml.alignment.predicted", sessionId, {
-    modelVersion: MODEL_VERSION,
-    traceId,
-    confidence: fixtureCase?.alignment.confidence,
-    wordCount: fixtureCase?.alignment.words.length,
-    recognizedCount: fixtureCase?.alignment.words.length,
-  });
 
+  // The audit event is appended AFTER the branch below so the recorded confidence/word counts
+  // reflect what this request ACTUALLY computed (real alignment vs golden fixture), not the fixture
+  // values regardless of path. With ML_USE_GOLDEN_FIXTURES unset (the default) the golden ref still
+  // matches `fixtureCase` here, but the REAL path runs — previously the audit logged the fixture's
+  // 0.94 confidence / 8-word counts while the response returned the real confidence over the real
+  // (29-word) canonical set, so the audit trail contradicted the prediction it claimed to describe.
   let alignments;
   let confidence;
   let reviewStatus;
+  let wordCount;
+  let recognizedCount;
 
   if (fixtureCase && USE_GOLDEN_FIXTURES) {
     // Return golden fixture alignment data
@@ -373,6 +382,8 @@ async function predictAlignment(requestBody) {
     reviewStatus = !asrActuallyAllowed
       ? "teacher-review-required"
       : confidence >= 0.85 ? "ai-suggested" : "teacher-review-required";
+    wordCount = fixtureCase.alignment.words.length;
+    recognizedCount = fixtureCase.alignment.words.length;
 
     alignments = fixtureCase.alignment.words.map((w) => ({
       wordId: w.wordId,
@@ -387,7 +398,6 @@ async function predictAlignment(requestBody) {
       evidenceId,
       modelVersion: MODEL_VERSION,
       traceId,
-      auditEventId,
     }));
   } else {
     // Get canonical words for the requested ayah range
@@ -432,6 +442,8 @@ async function predictAlignment(requestBody) {
     reviewStatus = !asrAllowed
       ? "teacher-review-required"
       : confidence >= 0.85 ? "ai-suggested" : "teacher-review-required";
+    wordCount = canonicalWords.length;
+    recognizedCount = recognizedWords.length;
 
     alignments = alignmentResults.map((r) => ({
       wordId: r.wordId,
@@ -446,9 +458,19 @@ async function predictAlignment(requestBody) {
       evidenceId,
       modelVersion: MODEL_VERSION,
       traceId,
-      auditEventId,
     }));
   }
+
+  // Record the ACTUAL computed metrics (see the note above the branch), then stamp every alignment
+  // with the resulting event id.
+  const auditEventId = appendAudit(tenantId, "ml.alignment.predicted", sessionId, {
+    modelVersion: MODEL_VERSION,
+    traceId,
+    confidence,
+    wordCount,
+    recognizedCount,
+  });
+  alignments = alignments.map((a) => ({ ...a, auditEventId }));
 
   return {
     traceId,
@@ -492,12 +514,11 @@ async function predictTajweed(requestBody) {
   );
 
   const evidenceId = `evidence-${randomUUID()}`;
-  const auditEventId = appendAudit(tenantId, "ml.tajweed.predicted", sessionId, {
-    modelVersion: MODEL_VERSION,
-    traceId,
-    findingCount: fixtureCase?.tajweedFindings.length,
-  });
 
+  // Audit is appended AFTER the branch so findingCount reflects the findings ACTUALLY returned.
+  // With ML_USE_GOLDEN_FIXTURES unset (the default) the golden ref matches `fixtureCase` but the
+  // REAL rule-based analysis runs — previously the audit logged the fixture's finding count (1)
+  // while the response returned the real finding set (dozens), so the audit trail undercounted.
   let findings;
   let confidence;
 
@@ -510,7 +531,6 @@ async function predictTajweed(requestBody) {
       sourceChecksum: requestBody.sourceChecksum ?? "fnv1a32:real",
       evidenceId,
       traceId,
-      auditEventId,
     }));
     confidence = findings.length > 0
       ? findings.reduce((sum, f) => sum + f.confidence, 0) / findings.length
@@ -528,12 +548,18 @@ async function predictTajweed(requestBody) {
       sourceChecksum: requestBody.sourceChecksum ?? "fnv1a32:real",
       evidenceId,
       traceId,
-      auditEventId,
     }));
     confidence = findings.length > 0
       ? findings.reduce((sum, f) => sum + f.confidence, 0) / findings.length
       : 0.95;
   }
+
+  const auditEventId = appendAudit(tenantId, "ml.tajweed.predicted", sessionId, {
+    modelVersion: MODEL_VERSION,
+    traceId,
+    findingCount: findings.length,
+  });
+  findings = findings.map((f) => ({ ...f, auditEventId }));
 
   return {
     traceId,
@@ -691,6 +717,13 @@ async function storeAudioChunk(requestBody) {
   return { stored: true, objectKey: metadata.objectKey, audioSize: metadata.audioSize };
 }
 
+// Test-only accessors. Importing this module does not start the server (see `isMain`), so the
+// hermetic node:test suite drives the handlers directly and asserts on the audit trail.
+export function getAuditEvents(tenantId) {
+  return tenantId ? auditEvents.filter((event) => event.tenantId === tenantId) : auditEvents;
+}
+export { predictAlignment, predictTajweed, createEvalRun };
+
 // === Router ===
 async function route(request, response) {
   const url = new URL(request.url ?? "/", "http://127.0.0.1");
@@ -766,7 +799,8 @@ const RATE_LIMIT_MAX = 100;          // max requests per window
 /** @type {Map<string, number[]>} */
 const rateLimitMap = new Map();
 
-// Clean up stale entries every 5 minutes to prevent memory growth.
+// Clean up stale entries every 5 minutes to prevent memory growth. .unref() so importing this
+// module for tests does not keep the event loop alive (the timer never fires in a short test run).
 setInterval(() => {
   const cutoff = Date.now() - RATE_LIMIT_WINDOW_MS;
   for (const [ip, timestamps] of rateLimitMap) {
@@ -777,7 +811,7 @@ setInterval(() => {
       rateLimitMap.set(ip, valid);
     }
   }
-}, 5 * 60_000);
+}, 5 * 60_000).unref();
 
 /** @param {string} ip */
 function checkRateLimit(ip) {
@@ -895,26 +929,30 @@ setInterval(async () => {
   } catch (err) {
     log("error", "Failed running periodic audio storage cleanup", { error: String(err) });
   }
-}, 60 * 60 * 1000); // run every hour
+}, 60 * 60 * 1000).unref(); // run every hour; .unref() so a test import doesn't block loop exit
 
 const bindHost = process.env.ML_INFERENCE_HOST ?? "127.0.0.1";
 const bindPort = Number(process.env.ML_INFERENCE_PORT ?? 8090);
 
-server.listen(bindPort, bindHost, () => {
-  const address = server.address();
-  const port = typeof address === "object" && address ? address.port : bindPort;
-  log("info", "ml inference server started", {
-    bind: `http://${bindHost}:${port}`,
-    model: MODEL_VERSION,
-    dataset: DATASET_VERSION,
-    surahCount: manifest.surahCount,
-    totalAyahs: manifest.totalAyahs,
-    audioStorage: AUDIO_STORAGE_DIR,
+// Bind and install signal handlers only as the process entrypoint. Importing this module (e.g.
+// server.test.mjs) must not open a socket — see `isMain`.
+if (isMain) {
+  server.listen(bindPort, bindHost, () => {
+    const address = server.address();
+    const port = typeof address === "object" && address ? address.port : bindPort;
+    log("info", "ml inference server started", {
+      bind: `http://${bindHost}:${port}`,
+      model: MODEL_VERSION,
+      dataset: DATASET_VERSION,
+      surahCount: manifest.surahCount,
+      totalAyahs: manifest.totalAyahs,
+      audioStorage: AUDIO_STORAGE_DIR,
+    });
   });
-});
 
-for (const signal of ["SIGINT", "SIGTERM"]) {
-  process.on(signal, () => {
-    server.close(() => process.exit(0));
-  });
+  for (const signal of ["SIGINT", "SIGTERM"]) {
+    process.on(signal, () => {
+      server.close(() => process.exit(0));
+    });
+  }
 }
