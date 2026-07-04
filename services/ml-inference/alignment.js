@@ -134,11 +134,12 @@ const CONFIDENCE_WEIGHTS = {
 };
 
 export function calculateConfidence(results) {
-  if (results.length === 0) return 0;
-  const total = results.length;
-  const weighted = results.reduce(
-    (sum, r) => sum + (CONFIDENCE_WEIGHTS[r.status] ?? 0),
-    0,
-  );
-  return weighted / total;
+  // Score accuracy over the CANONICAL words only. "extra" entries are recognized words that matched
+  // no canonical word (ASR noise, breath/filler tokens, insertions); counting them in the denominator
+  // let a few stray tokens crater the score of an otherwise-perfect recitation — and, since this score
+  // gates auto-accept vs. teacher-review (confidence ≥ 0.85), forced needless teacher review.
+  const canonical = results.filter((r) => r.status !== "extra");
+  if (canonical.length === 0) return 0;
+  const weighted = canonical.reduce((sum, r) => sum + (CONFIDENCE_WEIGHTS[r.status] ?? 0), 0);
+  return weighted / canonical.length;
 }

@@ -74,3 +74,19 @@ test("calculateConfidence weights needs-review above misread and below matched",
 test("calculateConfidence returns 0 for an empty result set", () => {
   assert.equal(calculateConfidence([]), 0);
 });
+
+test("calculateConfidence scores canonical accuracy — a stray 'extra' word can't lower a perfect recitation", () => {
+  // All canonical words matched, plus one ASR-noise "extra" token. This previously scored 2/3 ≈ 0.67
+  // (extra counted in the denominator) and could force needless teacher review; now it is 1.0.
+  assert.equal(
+    calculateConfidence([{ status: "matched" }, { status: "matched" }, { status: "extra" }]),
+    1.0,
+  );
+  // A genuinely missed canonical word still lowers the score (independent of extras).
+  assert.equal(
+    calculateConfidence([{ status: "matched" }, { status: "missed" }, { status: "extra" }]),
+    0.5, // 1.0 over 2 canonical words
+  );
+  // All extras (nothing canonical recited) stays 0.
+  assert.equal(calculateConfidence([{ status: "extra" }, { status: "extra" }]), 0);
+});
