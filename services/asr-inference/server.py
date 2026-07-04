@@ -17,6 +17,7 @@ Endpoints:
 
 import io
 import os
+import re
 import json
 import base64
 import tempfile
@@ -442,9 +443,19 @@ async def analyze_tajweed(req: TajweedAnalysisRequest):
                     confidence=round(confidence, 3),
                 ))
 
-            # Check for ghunnah (nasalization) — high F0 variance + energy on ن/م
-            ghunnah_letters = ["ن", "م", "نْ", "نٍ", "نٌ", "نً"]
-            has_ghunnah = any(letter in word_text for letter in ghunnah_letters)
+            # Check for ghunnah (nasalization) — high F0 variance + energy on a SILENT noon/meem.
+            # Ghunnah applies to noon/meem-sakin, tanween, or a mushaddad (doubled) noon/meem — NOT a
+            # voweled (moving) noon/meem. Gating on a bare "ن"/"م" in any context flagged words like
+            # نُور (noon + damma), telling the learner to nasalize a moving noon that carries no
+            # ghunnah — a false tajweed instruction. Mirror the reference text rules in
+            # ml-inference/tajweed.js (noon-sakin / word-final noon / tanween) and extend to
+            # meem-sakin and shadda'd noon/meem. The patterns assume the canonical
+            # consonant+shadda+vowel diacritic ordering used by packages/quran-data.
+            has_ghunnah = (
+                re.search("[نم][ّْ]", word_text) is not None  # noon/meem + sukoon or shadda
+                or re.search("[ًٌٍ]", word_text) is not None       # tanween
+                or re.search("ن$", word_text) is not None                    # word-final noon (sakin at waqf)
+            )
 
             if has_ghunnah and f0_std > 10:
                 severity = "practice"
