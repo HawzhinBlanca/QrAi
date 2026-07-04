@@ -869,6 +869,7 @@ version = "0.3.0"
 dependencies = [
  "axum",
  "hmac",
+ "quran-ai-shared-ticket",
  "redis",
  "reqwest",
  "serde",
@@ -876,8 +877,17 @@ dependencies = [
  "sha2",
  "thiserror 2.0.18",
  "tokio",
+ "tower",
  "tower_governor",
  "tracing",
+]
+
+[[package]]
+name = "quran-ai-shared-ticket"
+version = "0.1.0"
+dependencies = [
+ "hmac",
+ "sha2",
 ]
 
 [[package]]

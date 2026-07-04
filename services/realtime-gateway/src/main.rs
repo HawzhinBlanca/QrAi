@@ -23,6 +23,14 @@ fn ensure_secure_config() {
              production (shared with platform-api, at least 32 characters). Set ALLOW_INSECURE_DEFAULTS=1 for local dev only."
         );
     }
+    // ML_API_KEY is the only credential gating the ML inference service; refuse the public default.
+    let ml_key = std::env::var("ML_API_KEY").unwrap_or_default();
+    if ml_key.trim().is_empty() || ml_key == "smoke-ml-api-key" {
+        panic!(
+            "ML_API_KEY must be set to a non-default value in production (it is the only credential \
+             gating the ML inference service). Set ALLOW_INSECURE_DEFAULTS=1 for local dev only."
+        );
+    }
 }
 
 #[tokio::main]

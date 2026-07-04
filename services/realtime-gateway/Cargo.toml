@@ -16,3 +16,7 @@ tracing = "0.1.41"
 reqwest = { version = "0.12.15", default-features = false, features = ["json", "rustls-tls"] }
 redis = { version = "0.32", features = ["tokio-comp"] }
 tower_governor = "0.7"
+quran-ai-shared-ticket = { path = "../shared-ticket" }
+
+[dev-dependencies]
+tower = { version = "0.5.3", features = ["util"] }

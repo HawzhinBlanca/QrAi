@@ -647,6 +647,7 @@ async function storeAudioChunk(requestBody) {
     startMs: requestBody.startMs ?? 0,
     endMs: requestBody.endMs ?? 0,
     audioSize: requestBody.audioSize ?? 0,
+    audioRetention: requestBody.audioRetention ?? "discard",
     storedAt: new Date().toISOString(),
     objectKey: `${tenantId}/${learnerId}/${chunkId}.bin`,
   };
@@ -805,12 +806,18 @@ const server = createServer((request, response) => {
   });
 });
 
-// Periodic cleanup for audio-storage: delete files older than 24 hours.
-// Scans the directory recursively and deletes bin/meta files.
+// Consent-aware retention TTLs (configurable via env).
+const AUDIO_TTL_DISCARD_HOURS = Number(process.env.AUDIO_RETENTION_DISCARD_TTL_HOURS ?? 1);
+const AUDIO_TTL_REVIEW_HOURS = Number(process.env.AUDIO_RETENTION_REVIEW_TTL_HOURS ?? 168); // 7 days
+
+// Periodic cleanup for audio-storage: respects consent-based retention.
+// - 'discard': delete after AUDIO_TTL_DISCARD_HOURS (default: 1 hour)
+// - 'teacher-review': delete after AUDIO_TTL_REVIEW_HOURS (default: 7 days)
+// - 'training-opt-in': keep indefinitely (skip)
+// Files without metadata default to 'discard' behavior.
 setInterval(async () => {
   try {
     const now = Date.now();
-    const cutoff = now - 24 * 60 * 60 * 1000; // 24 hours ago
     const fs = await import("node:fs");
     const { join } = await import("node:path");
 
@@ -827,12 +834,35 @@ setInterval(async () => {
               fs.rmdirSync(fullPath);
             }
           } catch {}
-        } else {
+        } else if (entry.name.endsWith(".bin")) {
+          // Determine retention from companion .meta.json
+          const metaPath = fullPath.replace(/\.bin$/, ".meta.json");
+          let retention = "discard";
+          try {
+            if (fs.existsSync(metaPath)) {
+              const meta = JSON.parse(fs.readFileSync(metaPath, "utf8"));
+              retention = meta.audioRetention ?? "discard";
+            }
+          } catch {}
+
+          // training-opt-in: keep indefinitely
+          if (retention === "training-opt-in") continue;
+
+          const ttlMs = retention === "teacher-review"
+            ? AUDIO_TTL_REVIEW_HOURS * 60 * 60 * 1000
+            : AUDIO_TTL_DISCARD_HOURS * 60 * 60 * 1000;
+
           try {
             const stat = fs.statSync(fullPath);
-            if (stat.mtimeMs < cutoff) {
+            if (stat.mtimeMs < now - ttlMs) {
               fs.unlinkSync(fullPath);
-              log("info", "Evicted old audio-storage file", { path: fullPath });
+              // Also remove the companion metadata file
+              try { fs.unlinkSync(metaPath); } catch {}
+              log("info", "Evicted audio file per retention policy", {
+                path: fullPath,
+                retention,
+                ttlHours: ttlMs / (60 * 60 * 1000),
+              });
             }
           } catch (err) {
             log("error", "Failed to stat/unlink file", { path: fullPath, error: String(err) });

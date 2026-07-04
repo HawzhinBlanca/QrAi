@@ -35,6 +35,15 @@ fn ensure_secure_config() {
              production (shared with the realtime gateway, at least 32 characters). Set ALLOW_INSECURE_DEFAULTS=1 for local dev only."
         );
     }
+    // ML_API_KEY is the only credential gating the ML inference service; a hardcoded default would
+    // leave it reachable with a publicly-known key on any non-compose deploy that forgets to set it.
+    let ml_key = std::env::var("ML_API_KEY").unwrap_or_default();
+    if ml_key.trim().is_empty() || ml_key == "smoke-ml-api-key" {
+        panic!(
+            "ML_API_KEY must be set to a non-default value in production (it is the only credential \
+             gating the ML inference service). Set ALLOW_INSECURE_DEFAULTS=1 for local dev only."
+        );
+    }
 }
 
 fn redact_database_url(database_url: &str) -> String {
