@@ -259,6 +259,29 @@ pub async fn list_sessions(
     Ok(Json(out))
 }
 
+/// The COMPLETE set of distinct learner ids that have at least one recitation session in this tenant
+/// (no LIMIT), for internal batch consumers like the agents practice recommender. `list_sessions` is
+/// capped at 50 recent rows for UI use, so deriving "active learners" from it silently drops learners
+/// once tenant session volume exceeds the cap — this endpoint is the un-truncated source. Staff only.
+pub async fn list_active_learners(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> Result<Json<Vec<String>>, ApiError> {
+    let actor = actor_from_headers(&headers, &state.jwt_config)?;
+    actor.require_any(&[ActorRole::Teacher, ActorRole::Admin, ActorRole::Ops])?;
+
+    let mut tx = crate::begin_tenant_tx(&state.pool, &actor.tenant_id).await?;
+    let ids = sqlx::query_scalar::<_, String>(
+        "SELECT DISTINCT learner_id FROM recitation_sessions WHERE tenant_id = $1 ORDER BY learner_id",
+    )
+    .bind(&actor.tenant_id)
+    .fetch_all(&mut *tx)
+    .await?;
+    tx.commit().await?;
+
+    Ok(Json(ids))
+}
+
 pub async fn create_realtime_ticket(
     State(state): State<AppState>,
     headers: HeaderMap,
