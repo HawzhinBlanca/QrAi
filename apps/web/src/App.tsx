@@ -1,13 +1,9 @@
 import { Suspense, lazy, useEffect, useMemo, useRef, useState } from "react";
 import { motion } from "motion/react";
-import { AlertTriangle, ArrowRight, CheckCircle2, Clock3, Headphones, Mic, RotateCcw, Send, ShieldCheck, Sparkles } from "lucide-react";
-import { AudioCoach } from "./components/AudioCoach";
-import { IssuePanel } from "./components/IssuePanel";
-import { TajweedPanel } from "./components/TajweedPanel";
-import { MutashabihatPanel } from "./components/MutashabihatPanel";
-const PlatformCommand = lazy(() => import("./components/PlatformCommand").then(m => ({ default: m.PlatformCommand })));
-import { ProgressPanel } from "./components/ProgressPanel";
-import { QuranReader } from "./components/QuranReader";
+import { Send } from "lucide-react";
+import { InternalSurface } from "./components/InternalSurface";
+import { LearnerHome } from "./components/LearnerHome";
+import { PracticeFlow } from "./components/PracticeFlow";
 import { Sidebar } from "./components/Sidebar";
 import { TopBar } from "./components/TopBar";
 import { ErrorBoundary } from "./components/ErrorBoundary";
@@ -29,7 +25,6 @@ import {
   type RecitationConsent,
   type SurahInfo,
 } from "./lib/api";
-import { SurahPicker } from "./components/SurahPicker";
 import {
   DEFAULT_SURAH,
   practiceRange,
@@ -44,23 +39,10 @@ import {
   type MemorizationPlan,
   type LearnerProgress,
 } from "./data/platform";
-import { getQuranVerses, similarVerses, loadSurahVerses, loadWeeklyProgress, getWeeklyProgress, updateVersesWithAlignment, buildRecitationEvents, type QuranVerse, type RecitationEvent, type ProgressBar } from "./data/quran";
+import { getQuranVerses, loadSurahVerses, loadWeeklyProgress, getWeeklyProgress, updateVersesWithAlignment, buildRecitationEvents, type QuranVerse, type RecitationEvent, type ProgressBar } from "./data/quran";
+import type { AppSection, PracticeMode, MicState } from "./types/practice";
+import { practiceSteps } from "./types/practice";
 import type { SupportedLanguageCode } from "./types/platform";
-
-type AppSection = "learner" | "teacher" | "scholar" | "model-ops" | "trust" | "admin" | "badges" | "teachers" | "settings";
-type PracticeMode = "home" | "listen" | "guided-recite" | "memory-recite" | "correction" | "drill" | "complete";
-type MicState = "idle" | "checking" | "ready" | "denied" | "unavailable";
-
-const practiceSteps: Array<{ id: Exclude<PracticeMode, "home">; label: string; helper: string }> = [
-  { id: "listen", label: "Listen", helper: "Hear the teacher-paced model once." },
-  { id: "guided-recite", label: "Guided recite", helper: "Recite with the mushaf visible." },
-  { id: "memory-recite", label: "Memory recite", helper: "Try without looking first." },
-  { id: "correction", label: "Correction", helper: "Review only the words that need care." },
-  { id: "drill", label: "Drill", helper: "Repeat the short phrase three times." },
-  { id: "complete", label: "Complete", helper: "Save progress and next review." },
-];
-
-const waveformBars = Array.from({ length: 88 }, (_, index) => 28 + ((index * 17) % 54));
 
 // ─────────────────────────────────────────────────────────────────────────────
 // LOGIN IS INTENTIONALLY DISABLED until the product owner enables it for production.
@@ -200,7 +182,7 @@ function AuthenticatedApp({ bypassLogin = false }: { bypassLogin?: boolean }) {
 
   useEffect(() => {
     if (effectiveUser) {
-      void loadWeeklyProgress(effectiveUser.tenantId).then(setWeeklyProgress).catch(() => {});
+      void loadWeeklyProgress(effectiveUser.tenantId, effectiveUser.userId, authToken).then(setWeeklyProgress).catch(() => {});
       void fetchMemorizationPlan(effectiveUser.tenantId, effectiveUser.userId, authToken)
         .then(setMemorizationPlan)
         .catch(() => {});
@@ -374,6 +356,8 @@ function AuthenticatedApp({ bypassLogin = false }: { bypassLogin?: boolean }) {
       const range = practiceRange(selectedSurah);
       const alignment = await predictAlignment({
         tenantId: effectiveUser.tenantId,
+        userId: effectiveUser.userId,
+        authToken,
         sessionId: activeSessionId,
         surahNumber: selectedSurah.surahNumber,
         ayahStart: range.ayahStart,
@@ -399,6 +383,8 @@ function AuthenticatedApp({ bypassLogin = false }: { bypassLogin?: boolean }) {
 
       const tajweed = await predictTajweed({
         tenantId: effectiveUser.tenantId,
+        userId: effectiveUser.userId,
+        authToken,
         sessionId: activeSessionId,
         surahNumber: selectedSurah.surahNumber,
         ayahStart: range.ayahStart,
@@ -409,10 +395,10 @@ function AuthenticatedApp({ bypassLogin = false }: { bypassLogin?: boolean }) {
       const networkFailure = err instanceof TypeError; // e.g. "Failed to fetch"
       setApiError(
         networkFailure
-          ? "Could not reach the alignment service (port 8090). Please try again."
+          ? "Could not reach the platform API. Please try again."
           : err instanceof Error
             ? err.message
-            : "ML service unreachable. Make sure the ML service is running on port 8090.",
+            : "ML analysis unavailable. Make sure the platform API and ML service are running.",
       );
     } finally {
       setIsLoading(false);
@@ -768,454 +754,10 @@ function LayoutSmokeProbe({ report }: { report: LayoutSmokeReport }) {
   );
 }
 
-function ConsentPanel({
-  consent,
-  onConsentChange,
-}: {
-  consent: RecitationConsent;
-  onConsentChange: (consent: RecitationConsent) => void;
-}) {
-  return (
-    <div className="consent-panel" aria-label="Recording consent">
-      <p className="quiet-label">Recording consent</p>
-      <label className="consent-row">
-        <input
-          type="checkbox"
-          checked={consent.audioRetention === "teacher-review"}
-          onChange={(event) =>
-            onConsentChange({
-              ...consent,
-              audioRetention: event.target.checked ? "teacher-review" : "discard",
-            })
-          }
-        />
-        <span>Keep my recitation for teacher review (otherwise it is discarded after analysis).</span>
-      </label>
-      <label className="consent-row">
-        <input
-          type="checkbox"
-          checked={consent.anonymizedLearning}
-          onChange={(event) => onConsentChange({ ...consent, anonymizedLearning: event.target.checked })}
-        />
-        <span>Help improve the model with anonymized data.</span>
-      </label>
-      <label className="consent-row">
-        <input
-          type="checkbox"
-          checked={consent.externalAsrProcessing}
-          onChange={(event) => onConsentChange({ ...consent, externalAsrProcessing: event.target.checked })}
-        />
-        <span>Allow browser or cloud speech processing if the local Quran ASR is unavailable.</span>
-      </label>
-      <label className="consent-row">
-        <input
-          type="checkbox"
-          checked={consent.guardianApproved}
-          onChange={(event) => onConsentChange({ ...consent, guardianApproved: event.target.checked })}
-        />
-        <span>A parent/guardian approves this (required for learners under 13).</span>
-      </label>
-    </div>
-  );
-}
+// ConsentPanel has been extracted to src/components/ConsentPanel.tsx.
 
-function LearnerHome({
-  micState,
-  onCheckMic,
-  onStartPractice,
-  memorizationPlan,
-  progress,
-  consent,
-  onConsentChange,
-  surahList,
-  selectedSurah,
-  onSelectSurah,
-}: {
-  micState: MicState;
-  onCheckMic: () => void;
-  onStartPractice: () => void;
-  memorizationPlan: MemorizationPlan | null;
-  progress: LearnerProgress | null;
-  consent: RecitationConsent;
-  onConsentChange: (consent: RecitationConsent) => void;
-  surahList: SurahInfo[];
-  selectedSurah: SurahInfo;
-  onSelectSurah: (surah: SurahInfo) => void;
-}) {
-  const masteryPct = Math.round((progress?.mastery ?? 0) * 100);
-  return (
-    <section className="learner-home" aria-label="Learner home">
-      <div className="mission-hero">
-        <div className="mission-copy">
-          <p className="quiet-label">Today's mission</p>
-          <h1>Strengthen {surahLabel(selectedSurah)} with a calm mastery loop.</h1>
-          <p>
-            Listen once, recite with guidance, try from memory, then repeat only the words that need attention.
-          </p>
-          <SurahPicker surahs={surahList} selected={selectedSurah} onSelect={onSelectSurah} />
-          <ConsentPanel consent={consent} onConsentChange={onConsentChange} />
-          <div className="mission-actions">
-            <button className="primary-action start-practice-button" onClick={onStartPractice} type="button">
-              <Mic size={18} />
-              Start Practice
-            </button>
-            <button className="secondary-action" onClick={onCheckMic} type="button">
-              Check microphone
-            </button>
-          </div>
-          <MicNotice micState={micState} />
-        </div>
-        <div className="mission-card" aria-label="Mastery summary">
-          <div className="mastery-ring" style={{ "--score": `${masteryPct * 3.6}deg` } as React.CSSProperties}>
-            <strong>{masteryPct}%</strong>
-            <span>Mastery</span>
-          </div>
-          <dl>
-            <div>
-              <dt>Next review</dt>
-              <dd>{memorizationPlan?.nextReviewAt ?? "Not scheduled"}</dd>
-            </div>
-            <div>
-              <dt>Due today</dt>
-              <dd>{memorizationPlan?.intervals?.[0]?.dueCount ?? 0}</dd>
-            </div>
-            <div>
-              <dt>Streak</dt>
-              <dd>{progress?.streak ?? 0} days</dd>
-            </div>
-          </dl>
-        </div>
-      </div>
 
-      <div className="learner-summary-grid">
-        <article className="summary-tile">
-          <Headphones size={20} />
-          <span>Practice mode</span>
-          <strong>Listen first, then recite</strong>
-        </article>
-        <article className="summary-tile">
-          <Clock3 size={20} />
-          <span>Estimated time</span>
-          <strong>8 minutes</strong>
-        </article>
-        <article className="summary-tile">
-          <ShieldCheck size={20} />
-          <span>Trust state</span>
-          <strong>Teacher review available</strong>
-        </article>
-      </div>
-    </section>
-  );
-}
+// LearnerHome and PracticeFlow have been extracted to their own files under src/components/.
 
-function PracticeFlow({
-  activeStepIndex,
-  isRecording,
-  micState,
-  mode,
-  onAdvance,
-  onCheckMic,
-  onReset,
-  onSelectMode,
-  onSelectWord,
-  onSendToTeacher,
-  onToggleRecording,
-  isPlaying,
-  onTogglePlay,
-  hasRecording,
-  isPlayingRecording,
-  onPlayRecording,
-  liveBars,
-  selectedWordId,
-  surahTitle,
-  quranVerses,
-  recitationEvents,
-  alignmentResults,
-  tajweedResults,
-  weeklyProgress,
-  memorizationPlan,
-  progress,
-  apiError,
-  isLoading,
-}: {
-  activeStepIndex: number;
-  isRecording: boolean;
-  micState: MicState;
-  mode: Exclude<PracticeMode, "home">;
-  onAdvance: () => void;
-  onCheckMic: () => void;
-  onReset: () => void;
-  onSelectMode: (mode: PracticeMode) => void;
-  onSelectWord: (wordId: string) => void;
-  onSendToTeacher: () => void;
-  onToggleRecording: () => void;
-  isPlaying: boolean;
-  onTogglePlay: () => void;
-  hasRecording: boolean;
-  isPlayingRecording: boolean;
-  onPlayRecording: () => void;
-  liveBars: number[];
-  selectedWordId: string;
-  surahTitle: string;
-  quranVerses: QuranVerse[];
-  recitationEvents: RecitationEvent[];
-  alignmentResults: AlignmentResult[];
-  tajweedResults: TajweedFinding[];
-  weeklyProgress: ProgressBar[];
-  memorizationPlan: MemorizationPlan | null;
-  progress: LearnerProgress | null;
-  apiError: string | null;
-  isLoading: boolean;
-}) {
-  const activeWordId = quranVerses.flatMap((verse) => verse.words)[Math.min(activeStepIndex + 3, 12)]?.id ?? selectedWordId;
-  const selectedStep = practiceSteps.find((step) => step.id === mode) ?? practiceSteps[0];
-  const isComplete = mode === "complete";
-  const needsTeacherReview = mode === "correction" || mode === "drill";
-
-  // Real accuracy from live alignment results (replaces the old hardcoded 78/32/3).
-  const correctWords = alignmentResults.filter((a) => a.status === "matched").length;
-  const mistakes = alignmentResults.filter(
-    (a) =>
-      a.status === "misread" ||
-      a.status === "missed" ||
-      a.status === "needs-review" ||
-      a.status === "extra",
-  ).length;
-  const scoredWords = correctWords + mistakes;
-  const accuracy = scoredWords > 0 ? Math.round((correctWords / scoredWords) * 100) : 0;
-
-  return (
-    <section className="practice-flow" aria-label="Learner practice">
-      <header className="learner-practice-header">
-        <div>
-          <button className="text-link" onClick={onReset} type="button">
-            <RotateCcw size={15} />
-            Back to home
-          </button>
-          <h1>{surahTitle}</h1>
-          <p>{selectedStep.helper}</p>
-        </div>
-        <button className="primary-action" disabled={isComplete} onClick={onAdvance} type="button">
-          {isComplete ? <CheckCircle2 size={18} /> : <ArrowRight size={18} />}
-          {isComplete ? "Practice complete" : "Next step"}
-        </button>
-      </header>
-
-      <nav className="practice-stepper" aria-label="Practice steps">
-        {practiceSteps.map((step, index) => (
-          <button
-            aria-current={mode === step.id ? "step" : undefined}
-            className={index <= activeStepIndex ? "step-chip active" : "step-chip"}
-            key={step.id}
-            onClick={() => onSelectMode(step.id)}
-            type="button"
-          >
-            <span>{index + 1}</span>
-            {step.label}
-          </button>
-        ))}
-      </nav>
-
-      <div className="practice-main-grid">
-        <div className="learner-reader-column">
-          <ModeBanner mode={mode} micState={micState} onCheckMic={onCheckMic} onSendToTeacher={onSendToTeacher} />
-          {isLoading && (
-            <div className="state-banner calm" role="status">
-              <Sparkles size={18} />
-              Analyzing your recitation with Whisper ASR...
-            </div>
-          )}
-          {apiError && (
-            <div className="state-banner warning" role="alert">
-              <AlertTriangle size={18} />
-              {apiError}
-            </div>
-          )}
-          <QuranReader activeWordId={activeWordId} onSelectWord={onSelectWord} selectedWordId={selectedWordId} verses={quranVerses} />
-          <AudioCoach
-            activeIndex={isRecording ? liveBars.length - 1 : activeStepIndex * 12}
-            bars={isRecording && liveBars.length > 0 ? liveBars : waveformBars}
-            isRecording={isRecording}
-            isAnalyzing={isLoading}
-            hasRecording={hasRecording}
-            isPlayingRecording={isPlayingRecording}
-            isPlayingReference={isPlaying}
-            onToggleRecording={onToggleRecording}
-            onPlayRecording={onPlayRecording}
-            onPlayReference={onTogglePlay}
-          />
-        </div>
-        <aside className="learner-insight-column" aria-label="Practice guidance">
-          {isComplete ? (
-            <CompletePanel onReset={onReset} memorizationPlan={memorizationPlan} />
-          ) : needsTeacherReview ? (
-            <IssuePanel events={recitationEvents} onSelectWord={onSelectWord} selectedWordId={selectedWordId} />
-          ) : (
-            <ProgressPanel
-              accuracy={accuracy}
-              correctWords={correctWords}
-              mistakes={mistakes}
-              recitations={progress?.totalSessions ?? 0}
-              streak={progress?.streak ?? 0}
-              mastery={progress?.mastery ?? 0}
-              weeklyProgress={weeklyProgress}
-            />
-          )}
-          {tajweedResults.length > 0 && <TajweedPanel findings={tajweedResults} />}
-          <MutashabihatPanel verses={similarVerses.slice(0, 2)} />
-        </aside>
-      </div>
-    </section>
-  );
-}
-
-function ModeBanner({
-  micState,
-  mode,
-  onCheckMic,
-  onSendToTeacher,
-}: {
-  micState: MicState;
-  mode: Exclude<PracticeMode, "home">;
-  onCheckMic: () => void;
-  onSendToTeacher: () => void;
-}) {
-  if (micState === "denied") {
-    return (
-      <div className="state-banner warning" role="status">
-        <AlertTriangle size={18} />
-        Microphone access is denied. You can still listen and practice, then ask a teacher to review in class.
-        <button onClick={onCheckMic} type="button">Try again</button>
-      </div>
-    );
-  }
-
-  if (micState === "unavailable") {
-    return (
-      <div className="state-banner warning" role="status">
-        <AlertTriangle size={18} />
-        Microphone capture is unavailable on this device. Continue with listen mode or teacher review.
-      </div>
-    );
-  }
-
-  if (mode === "correction") {
-    return (
-      <div className="state-banner low-confidence" role="status">
-        <Sparkles size={18} />
-        Low-confidence guidance: three words need a gentle review before feedback is shown as final.
-        <button onClick={onSendToTeacher} type="button">
-          <Send size={15} />
-          Send to teacher
-        </button>
-      </div>
-    );
-  }
-
-  if (mode === "drill") {
-    return (
-      <div className="state-banner teacher" role="status">
-        <ShieldCheck size={18} />
-        Sent to teacher. For now, repeat the short phrase slowly three times.
-      </div>
-    );
-  }
-
-  return (
-    <div className="state-banner calm" role="status">
-      <Headphones size={18} />
-      Learner view keeps model and gateway details hidden. Focus on the verse, pacing, and review.
-    </div>
-  );
-}
-
-function MicNotice({ micState }: { micState: MicState }) {
-  const copyByState: Record<MicState, string> = {
-    idle: "Microphone is optional until guided recite.",
-    checking: "Checking microphone permission...",
-    ready: "Microphone is ready for guided recite.",
-    denied: "Microphone denied. Practice still works in listen and teacher-review mode.",
-    unavailable: "Microphone unavailable on this device.",
-  };
-
-  return <p className={`mic-notice ${micState}`}>{copyByState[micState]}</p>;
-}
-
-function CompletePanel({ onReset, memorizationPlan }: { onReset: () => void; memorizationPlan: MemorizationPlan | null }) {
-  return (
-    <section className="panel complete-panel" aria-label="Complete state">
-      <div className="complete-mark">
-        <CheckCircle2 size={34} />
-      </div>
-      <h2>Practice complete</h2>
-      <p>Progress saved. Your next review stays scheduled for {memorizationPlan?.nextReviewAt ?? "your next session"}.</p>
-      <button className="secondary-action" onClick={onReset} type="button">Return home</button>
-    </section>
-  );
-}
-
-function InternalSurface({
-  tenantId,
-  authToken,
-  activeLanguage,
-  activeSection,
-  activeTab,
-  onLanguageChange,
-  onTabChange,
-}: {
-  tenantId: string;
-  authToken?: string;
-  activeLanguage: SupportedLanguageCode;
-  activeSection: AppSection;
-  activeTab: string;
-  onLanguageChange: (language: SupportedLanguageCode) => void;
-  onTabChange: (tab: string) => void;
-}) {
-  if (activeSection !== "admin") {
-    return (
-      <section className="internal-placeholder" aria-label="Internal surface">
-        <h1>{internalTitle(activeSection)}</h1>
-        <p>Internal review tools stay out of the learner path. Use Internal Command for the full platform console.</p>
-        <button className="secondary-action" onClick={() => onTabChange(activeSection === "model-ops" ? "model-ops" : "review")} type="button">
-          Open related command tab
-        </button>
-      </section>
-    );
-  }
-
-  return (
-    <Suspense fallback={<div className="internal-placeholder"><p>Loading platform console…</p></div>}>
-      <PlatformCommand
-        tenantId={tenantId}
-        authToken={authToken}
-        activeLanguage={activeLanguage}
-        activeTab={activeTab}
-        onLanguageChange={onLanguageChange}
-        onTabChange={onTabChange}
-      />
-    </Suspense>
-  );
-}
-
-function internalTitle(section: AppSection): string {
-  switch (section) {
-    case "teacher":
-      return "Teacher Review";
-    case "scholar":
-      return "Scholar Review";
-    case "model-ops":
-      return "Model Ops";
-    case "trust":
-      return "Trust Ledger";
-    case "badges":
-      return "Learner Badges";
-    case "teachers":
-      return "Teachers";
-    case "settings":
-      return "Settings";
-    case "admin":
-      return "Internal Command";
-    case "learner":
-      return "Learner";
-  }
-}
+// ModeBanner, MicNotice, CompletePanel, InternalSurface, and internalTitle have been
+// extracted to their own files under src/components/ and src/types/practice.ts.
