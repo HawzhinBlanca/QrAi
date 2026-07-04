@@ -12,7 +12,7 @@ const LoginScreen = lazy(() => import("./components/LoginScreen").then(m => ({ d
 import { AuthProvider, useAuth } from "./lib/auth";
 import { startAsr, splitTranscript, isAsrSupported, type AsrController } from "./lib/asr";
 import { startLocalAudioRecording, startServerAsr, isServerAsrSupported, type ServerAsrController } from "./lib/serverAsr";
-import { canUseExternalSpeechFallback } from "./lib/consent";
+import { canRecordRecitation, canUseExternalSpeechFallback } from "./lib/consent";
 import { startMicVisualizer, type MicVisualizerStop } from "./lib/micVisualizer";
 import {
   predictAlignment,
@@ -125,6 +125,7 @@ function AuthenticatedApp({ bypassLogin = false }: { bypassLogin?: boolean }) {
   const [selectedSurah, setSelectedSurah] = useState<SurahInfo>(DEFAULT_SURAH);
   // Privacy-preserving defaults; the learner opts in explicitly before practice.
   const [consent, setConsent] = useState<RecitationConsent>({
+    recordingConsent: false,
     audioRetention: "discard",
     anonymizedLearning: false,
     externalAsrProcessing: false,
@@ -451,7 +452,15 @@ function AuthenticatedApp({ bypassLogin = false }: { bypassLogin?: boolean }) {
       return;
     }
 
-    // START
+    // START — gate on explicit consent to record & analyze. The primary (first-party Quran ASR) path
+    // still processes the audio and it may be stored per the retention consent, so recording must not
+    // begin until the learner has affirmatively consented (previously this path recorded ungated).
+    if (!canRecordRecitation(consent)) {
+      setApiError(
+        "Please consent to recording and analysis in the consent panel before recording your recitation.",
+      );
+      return;
+    }
     stopPlayback();
     stopRecordingPlayback();
     setAsrTranscript("");

@@ -206,6 +206,7 @@ pub async fn get_session(
         // If a session predates consent_snapshot, fall back to the MOST RESTRICTIVE consent
         // — never fabricate consent (e.g. anonymized-learning) the learner may not have given.
         consent: serde_json::from_value(row.try_get("consent_snapshot")?).unwrap_or(Consent {
+            recording_consent: false,
             audio_retention: AudioRetention::Discard,
             anonymized_learning: false,
             external_asr_processing: false,
