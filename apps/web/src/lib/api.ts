@@ -142,7 +142,7 @@ export async function persistSessionAlignments(params: {
   sessionId: string;
   alignments: AlignmentResult[];
   modelVersion?: string;
-}): Promise<{ persisted: number }> {
+}): Promise<{ persisted: number; skippedInvalidStatus: number; skippedUnknownWord: number }> {
   const response = await fetchWithTimeout(
     `${API_BASE}/v1/recitation-sessions/${encodeURIComponent(params.sessionId)}/alignments`,
     {
@@ -165,7 +165,11 @@ export async function persistSessionAlignments(params: {
     },
   );
   if (!response.ok) throw new Error(`Persist alignments ${response.status}`);
-  return response.json() as Promise<{ persisted: number }>;
+  return response.json() as Promise<{
+    persisted: number;
+    skippedInvalidStatus: number;
+    skippedUnknownWord: number;
+  }>;
 }
 
 async function fetchJson(path: string): Promise<unknown> {

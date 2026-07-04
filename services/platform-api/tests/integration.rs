@@ -370,14 +370,19 @@ async fn persists_and_reads_back_session_alignment() {
             "modelVersion": "model-v0.3",
             "alignments": [
                 {"wordId": "1:1:1", "heardText": "بسم", "startMs": 0, "endMs": 400, "confidence": 0.97, "status": "matched"},
-                {"wordId": "extra-0", "heardText": "x", "startMs": 0, "endMs": 0, "confidence": 0.5, "status": "extra"}
+                {"wordId": "extra-0", "heardText": "x", "startMs": 0, "endMs": 0, "confidence": 0.5, "status": "extra"},
+                {"wordId": "nope-1", "heardText": "y", "startMs": 0, "endMs": 0, "confidence": 0.5, "status": "matche"}
             ]
         }),
     )
     .await;
     assert_eq!(persisted.status(), StatusCode::OK);
     let body: Value = read_json(persisted).await;
-    assert_eq!(body["persisted"], 1); // extra skipped
+    // "nope-1" is invalid-status AND non-canonical: it must be counted ONCE (invalid status,
+    // partitioned out BEFORE the canonical-word batch query), proving the two skip reasons are disjoint.
+    assert_eq!(body["persisted"], 1); // only the real canonical "matched" word (1:1:1)
+    assert_eq!(body["skippedUnknownWord"], 1); // synthetic "extra-0" is not a canonical word
+    assert_eq!(body["skippedInvalidStatus"], 1); // "matche" typo is surfaced, not silently dropped
 
     // Staff reads it back (with canonical text joined).
     let read = send_json(
