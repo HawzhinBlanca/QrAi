@@ -202,19 +202,19 @@ export async function fetchAyah(surahNumber: number, ayahNumber: number): Promis
 
 export async function predictAlignment(params: {
   tenantId: string;
+  userId: string;
+  authToken?: string;
   sessionId: string;
   surahNumber: number;
   ayahStart: number;
   ayahEnd: number;
   recognizedText?: string[];
 }): Promise<{ alignments: AlignmentResult[]; confidence: number }> {
-  const mlBase = import.meta.env.VITE_ML_INFERENCE_URL || "http://127.0.0.1:8090";
-  const mlApiKey = import.meta.env.VITE_ML_API_KEY || "smoke-ml-api-key";
-  const response = await fetchWithTimeout(`${mlBase}/v1/alignments:predict`, {
+  const response = await fetchWithTimeout(`${API_BASE}/v1/ml/alignments:predict`, {
     method: "POST",
     headers: {
       "content-type": "application/json",
-      "x-ml-api-key": mlApiKey,
+      ...actorHeaders(params.tenantId, params.userId, "learner", params.authToken),
     },
     body: JSON.stringify({
       tenantId: params.tenantId,
@@ -228,24 +228,24 @@ export async function predictAlignment(params: {
       ...(params.recognizedText ? { recognizedText: params.recognizedText } : {}),
     }),
   });
-  if (!response.ok) throw new Error(`ML ${response.status}`);
+  if (!response.ok) throw new Error(`ML alignment ${response.status}`);
   return response.json();
 }
 
 export async function predictTajweed(params: {
   tenantId: string;
+  userId: string;
+  authToken?: string;
   sessionId: string;
   surahNumber: number;
   ayahStart: number;
   ayahEnd: number;
 }): Promise<{ findings: TajweedFinding[]; confidence: number }> {
-  const mlBase = import.meta.env.VITE_ML_INFERENCE_URL || "http://127.0.0.1:8090";
-  const mlApiKey = import.meta.env.VITE_ML_API_KEY || "smoke-ml-api-key";
-  const response = await fetchWithTimeout(`${mlBase}/v1/tajweed-findings:predict`, {
+  const response = await fetchWithTimeout(`${API_BASE}/v1/ml/tajweed-findings:predict`, {
     method: "POST",
     headers: {
       "content-type": "application/json",
-      "x-ml-api-key": mlApiKey,
+      ...actorHeaders(params.tenantId, params.userId, "learner", params.authToken),
     },
     body: JSON.stringify({
       tenantId: params.tenantId,
@@ -258,6 +258,7 @@ export async function predictTajweed(params: {
       },
     }),
   });
-  if (!response.ok) throw new Error(`ML ${response.status}`);
+  if (!response.ok) throw new Error(`ML tajweed ${response.status}`);
   return response.json();
 }
+

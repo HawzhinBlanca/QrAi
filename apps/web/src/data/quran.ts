@@ -1,5 +1,6 @@
 import { fetchSurah, type SurahDetail } from "../lib/api";
 import type { AlignmentResult } from "../lib/api";
+import { actorHeaders } from "./platform";
 
 export type WordStatus = "good" | "mistake" | "needs-work" | "missed";
 
@@ -137,16 +138,12 @@ export function buildRecitationEvents(alignmentResults: AlignmentResult[]): Reci
 // Real progress data from API
 let cachedProgress: ProgressBar[] | null = null;
 
-export async function loadWeeklyProgress(tenantId: string): Promise<ProgressBar[]> {
+export async function loadWeeklyProgress(tenantId: string, userId?: string, authToken?: string): Promise<ProgressBar[]> {
   if (cachedProgress) return cachedProgress;
   try {
     const apiBase = import.meta.env.VITE_PLATFORM_API_URL || "http://127.0.0.1:8080";
     const response = await fetch(`${apiBase}/v1/learner/progress`, {
-      headers: {
-        "x-tenant-id": tenantId,
-        "x-user-id": "learner-1",
-        "x-user-role": "learner",
-      },
+      headers: actorHeaders(tenantId, userId ?? "learner-1", "learner", authToken),
     });
     if (!response.ok) throw new Error(`Progress API ${response.status}`);
     const data = await response.json();
