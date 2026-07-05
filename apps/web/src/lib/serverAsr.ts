@@ -14,7 +14,7 @@
 import type { AsrStatus } from "./asr";
 import { fetchWithTimeout } from "./http";
 
-const PLATFORM_API_BASE = import.meta.env.VITE_PLATFORM_API_URL || "http://127.0.0.1:8080";
+const PLATFORM_API_BASE = import.meta.env.VITE_PLATFORM_API_URL || (import.meta.env.DEV ? "http://127.0.0.1:8080" : "");
 
 /** Actor identity forwarded to the platform API so the ASR proxy can authenticate the caller. */
 export interface AsrAuth {

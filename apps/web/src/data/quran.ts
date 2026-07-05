@@ -150,7 +150,7 @@ let cachedProgress: ProgressBar[] | null = null;
 export async function loadWeeklyProgress(tenantId: string, userId?: string, authToken?: string): Promise<ProgressBar[]> {
   if (cachedProgress) return cachedProgress;
   try {
-    const apiBase = import.meta.env.VITE_PLATFORM_API_URL || "http://127.0.0.1:8080";
+    const apiBase = import.meta.env.VITE_PLATFORM_API_URL || (import.meta.env.DEV ? "http://127.0.0.1:8080" : "");
     const response = await fetchWithTimeout(`${apiBase}/v1/learner/progress`, {
       headers: actorHeaders(tenantId, userId ?? "learner-1", "learner", authToken),
     });

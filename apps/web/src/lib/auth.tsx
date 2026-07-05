@@ -46,7 +46,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   async function login(userId: string, tenantId: string, password: string): Promise<boolean> {
     setLoading(true);
     try {
-      const apiBase = import.meta.env.VITE_PLATFORM_API_URL || "http://127.0.0.1:8080";
+      const apiBase = import.meta.env.VITE_PLATFORM_API_URL || (import.meta.env.DEV ? "http://127.0.0.1:8080" : "");
       const response = await fetchWithTimeout(`${apiBase}/v1/auth/login`, {
         method: "POST",
         headers: { "content-type": "application/json" },
@@ -74,7 +74,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   async function register(tenantId: string, displayName: string, role: string, language: string, password: string, email?: string): Promise<boolean> {
     setLoading(true);
     try {
-      const apiBase = import.meta.env.VITE_PLATFORM_API_URL || "http://127.0.0.1:8080";
+      const apiBase = import.meta.env.VITE_PLATFORM_API_URL || (import.meta.env.DEV ? "http://127.0.0.1:8080" : "");
       const response = await fetchWithTimeout(`${apiBase}/v1/auth/register`, {
         method: "POST",
         headers: { "content-type": "application/json" },

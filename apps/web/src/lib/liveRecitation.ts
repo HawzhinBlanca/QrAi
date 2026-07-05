@@ -98,7 +98,10 @@ export function buildRealtimeAudioUrl(baseUrl: string, sessionId: string): strin
 }
 
 export function getConfiguredRealtimeAudioUrl(sessionId: string): string {
-  const baseUrl = import.meta.env.VITE_REALTIME_GATEWAY_URL || "ws://127.0.0.1:8081";
+  const defaultWsUrl = import.meta.env.DEV
+    ? "ws://127.0.0.1:8081"
+    : `${window.location.protocol === "https:" ? "wss:" : "ws:"}//${window.location.host}`;
+  const baseUrl = import.meta.env.VITE_REALTIME_GATEWAY_URL || defaultWsUrl;
   return buildRealtimeAudioUrl(baseUrl, sessionId);
 }
 

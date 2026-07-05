@@ -134,9 +134,6 @@ services:
     build:
       context: .
       dockerfile: apps/web/Dockerfile
-    environment:
-      VITE_PLATFORM_API_URL: "http://localhost:8080"
-      VITE_REALTIME_GATEWAY_URL: "ws://localhost:8081"
     ports:
       - "5173:8080"
     depends_on:

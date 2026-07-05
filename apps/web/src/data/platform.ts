@@ -78,7 +78,7 @@ export const governanceItems = [
 
 // === Real API-backed data ===
 
-const API_BASE = import.meta.env.VITE_PLATFORM_API_URL || "http://127.0.0.1:8080";
+const API_BASE = import.meta.env.VITE_PLATFORM_API_URL || (import.meta.env.DEV ? "http://127.0.0.1:8080" : "");
 
 export function actorHeaders(tenantId: string, userId: string, role: string, authToken?: string): Record<string, string> {
   if (authToken) {
