@@ -12,6 +12,7 @@
  */
 
 import type { AsrStatus } from "./asr";
+import { fetchWithTimeout } from "./http";
 
 const PLATFORM_API_BASE = import.meta.env.VITE_PLATFORM_API_URL || "http://127.0.0.1:8080";
 
@@ -225,11 +226,11 @@ export async function blobToBase64(blob: Blob): Promise<string> {
 
 export async function transcribeWav(wav: Blob, language: string, auth?: AsrAuth): Promise<string> {
   const audioBase64 = await blobToBase64(wav);
-  const response = await fetch(`${PLATFORM_API_BASE}/v1/asr/transcribe`, {
+  const response = await fetchWithTimeout(`${PLATFORM_API_BASE}/v1/asr/transcribe`, {
     method: "POST",
     headers: { "content-type": "application/json", ...asrAuthHeaders(auth) },
     body: JSON.stringify({ audioBase64, audioFormat: "wav", language, wordTimestamps: true }),
-  });
+  }, 30000);  // 30s timeout — ASR transcription may take longer than the default 15s
   if (!response.ok) {
     throw new Error(`ASR service ${response.status}`);
   }

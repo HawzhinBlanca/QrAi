@@ -1,5 +1,6 @@
 import { fetchSurah, type SurahDetail } from "../lib/api";
 import type { AlignmentResult } from "../lib/api";
+import { fetchWithTimeout } from "../lib/http";
 import { actorHeaders } from "./platform";
 
 export type WordStatus = "good" | "mistake" | "needs-work" | "missed";
@@ -150,7 +151,7 @@ export async function loadWeeklyProgress(tenantId: string, userId?: string, auth
   if (cachedProgress) return cachedProgress;
   try {
     const apiBase = import.meta.env.VITE_PLATFORM_API_URL || "http://127.0.0.1:8080";
-    const response = await fetch(`${apiBase}/v1/learner/progress`, {
+    const response = await fetchWithTimeout(`${apiBase}/v1/learner/progress`, {
       headers: actorHeaders(tenantId, userId ?? "learner-1", "learner", authToken),
     });
     if (!response.ok) throw new Error(`Progress API ${response.status}`);

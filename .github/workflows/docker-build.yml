@@ -61,3 +61,35 @@ jobs:
             fail=1
           fi
           exit $fail
+
+      # Vulnerability scan: report HIGH/CRITICAL CVEs in all images. Report-only (continue-on-error)
+      # so upstream base-image CVEs don't block PRs, but the report is uploaded for review.
+      - name: Scan images for vulnerabilities (trivy)
+        continue-on-error: true
+        run: |
+          # Install trivy from the official deb repo
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq wget apt-transport-https gnupg lsb-release
+          wget -qO - https://aquasecurity.github.io/trivy-repo/deb/public.key | sudo gpg --dearmor -o /usr/share/keyrings/trivy.gpg
+          echo "deb [signed-by=/usr/share/keyrings/trivy.gpg] https://aquasecurity.github.io/trivy-repo/deb $(lsb_release -sc) main" | sudo tee /etc/apt/sources.list.d/trivy.list
+          sudo apt-get update -qq && sudo apt-get install -y -qq trivy
+
+          mkdir -p /tmp/trivy-reports
+          for svc in platform-api realtime-gateway ml-inference asr-inference web; do
+            img=$(docker compose images "$svc" --format '{{.Repository}}:{{.Tag}}' 2>/dev/null | head -1)
+            if [ -n "$img" ] && [ "$img" != ":" ]; then
+              echo "==> Scanning $svc ($img)"
+              trivy image --severity HIGH,CRITICAL --format table "$img" | tee "/tmp/trivy-reports/${svc}.txt" || true
+            else
+              echo "==> Skipping $svc (no image found)"
+            fi
+          done
+          echo "Vulnerability scan complete (report-only)"
+
+      - name: Upload scan reports
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: trivy-reports
+          path: /tmp/trivy-reports/
+          retention-days: 14

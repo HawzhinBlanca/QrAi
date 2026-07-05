@@ -1,4 +1,5 @@
 import { createContext, useContext, useState, useEffect, type ReactNode } from "react";
+import { fetchWithTimeout } from "./http";
 
 interface AuthUser {
   userId: string;
@@ -46,7 +47,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setLoading(true);
     try {
       const apiBase = import.meta.env.VITE_PLATFORM_API_URL || "http://127.0.0.1:8080";
-      const response = await fetch(`${apiBase}/v1/auth/login`, {
+      const response = await fetchWithTimeout(`${apiBase}/v1/auth/login`, {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ userId, tenantId, password }),
@@ -74,7 +75,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setLoading(true);
     try {
       const apiBase = import.meta.env.VITE_PLATFORM_API_URL || "http://127.0.0.1:8080";
-      const response = await fetch(`${apiBase}/v1/auth/register`, {
+      const response = await fetchWithTimeout(`${apiBase}/v1/auth/register`, {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ tenantId, displayName, role, language, password, email }),
