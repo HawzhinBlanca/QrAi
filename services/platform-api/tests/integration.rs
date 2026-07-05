@@ -223,6 +223,20 @@ async fn registers_then_logs_in_a_new_user() {
     )
     .await;
     assert_eq!(bad.status(), StatusCode::UNAUTHORIZED);
+
+    // A NON-EXISTENT user must also be rejected with 401 (never 404/500) — this exercises the login
+    // path's "no row" branch, which now still runs one bcrypt verify against a decoy hash so response
+    // latency can't distinguish "no such user" from "wrong password" (account-enumeration side-channel).
+    let missing = send_json(
+        &router,
+        Method::POST,
+        "/v1/auth/login",
+        None,
+        None,
+        json!({ "userId": "user-does-not-exist-xyz", "tenantId": "hikmah-pilot-erbil", "password": "whatever12345" }),
+    )
+    .await;
+    assert_eq!(missing.status(), StatusCode::UNAUTHORIZED);
 }
 
 #[test]
