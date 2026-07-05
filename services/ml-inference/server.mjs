@@ -226,27 +226,39 @@ function textResponse(response, status, body) {
 function readJson(request) {
   return new Promise((resolve, reject) => {
     let data = "";
+    let settled = false;
+    const settle = (fn, value) => {
+      if (settled) return;
+      settled = true;
+      fn(value);
+    };
     request.setEncoding("utf8");
     request.on("data", (chunk) => {
+      if (settled) return;
       data += chunk;
       if (data.length > 5_000_000) {
-        reject(httpError(413, "request body too large"));
-        request.destroy();
+        // Stop consuming, but do NOT destroy the socket: destroying it tears the connection down
+        // before the request handler's .catch can write the 413, so the client sees a raw connection
+        // reset (ECONNRESET) instead of a clean 413. Pause and reject; the 413 is then written on the
+        // still-open socket.
+        request.pause();
+        settle(reject, httpError(413, "request body too large"));
       }
     });
     request.on("end", () => {
       if (!data.trim()) {
-        resolve({});
+        settle(resolve, {});
         return;
       }
       try {
-        resolve(JSON.parse(data));
+        const parsed = JSON.parse(data);
+        settle(resolve, parsed);
       } catch {
         // Malformed JSON is a client error (400), not an internal failure (500).
-        reject(httpError(400, "request body is not valid JSON"));
+        settle(reject, httpError(400, "request body is not valid JSON"));
       }
     });
-    request.on("error", reject);
+    request.on("error", (err) => settle(reject, err));
   });
 }
 
@@ -280,6 +292,11 @@ function requiredString(value, fieldName) {
 function safeStorageSegment(value, fieldName) {
   const segment = requiredString(value, fieldName);
   if (
+    // Cap the length well under the filesystem's ~255-byte path-component limit. Without this, an
+    // over-long (but otherwise valid-charset) id passed validation and only blew up at write time as
+    // an uncaught ENAMETOOLONG — surfaced as a 500 that leaked the raw filesystem path. 128 leaves
+    // room for the ".bin" / ".meta.json" suffixes this segment is joined with.
+    segment.length > 128 ||
     segment === "." ||
     segment === ".." ||
     segment.includes("..") ||
@@ -751,7 +768,7 @@ async function storeAudioChunk(requestBody) {
 export function getAuditEvents(tenantId) {
   return tenantId ? auditEvents.filter((event) => event.tenantId === tenantId) : auditEvents;
 }
-export { predictAlignment, predictTajweed, createEvalRun };
+export { predictAlignment, predictTajweed, createEvalRun, safeStorageSegment };
 
 // === Router ===
 async function route(request, response) {
