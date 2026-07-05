@@ -6,7 +6,13 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { predictAlignment, predictTajweed, createEvalRun, getAuditEvents } from "./server.mjs";
+import {
+  predictAlignment,
+  predictTajweed,
+  createEvalRun,
+  getAuditEvents,
+  safeStorageSegment,
+} from "./server.mjs";
 
 // These tests run in the DEFAULT (production) configuration: ML_USE_GOLDEN_FIXTURES is unset, so
 // every request computes REAL alignment/tajweed even for the golden ref Al-Fatihah 1:1-7. The bug
@@ -106,4 +112,23 @@ test("createEvalRun ignores caller-supplied metrics — they cannot forge the re
   // The fabricated caller metrics did NOT flip the gate to a false fail either — pass reflects the
   // committed artifact + the live source check.
   assert.equal(forged.passed, true);
+});
+
+// safeStorageSegment guards the audio-storage path components. Besides traversal/charset, it must
+// bound the LENGTH: an over-long id used to pass validation and only fail at writeFileSync time as an
+// uncaught ENAMETOOLONG — a 500 that leaked the raw filesystem path. It must reject cleanly (400).
+test("safeStorageSegment rejects over-long ids with a 400, not a write-time 500", () => {
+  // A valid id passes through unchanged.
+  assert.equal(safeStorageSegment("tenant_abc-123", "tenantId"), "tenant_abc-123");
+
+  // 129 chars (one over the 128 cap) — valid charset, but too long for a path component.
+  const is400 = (e) => e.status === 400;
+  assert.throws(() => safeStorageSegment("a".repeat(129), "chunkId"), is400, "over-long segment must be a client 400");
+
+  // Exactly 128 is still allowed.
+  assert.equal(safeStorageSegment("a".repeat(128), "chunkId").length, 128);
+
+  // Traversal / bad charset still rejected (unchanged behaviour).
+  assert.throws(() => safeStorageSegment("../etc", "tenantId"), is400);
+  assert.throws(() => safeStorageSegment("a/b", "tenantId"), is400);
 });
