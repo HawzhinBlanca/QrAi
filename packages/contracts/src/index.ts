@@ -422,7 +422,10 @@ const K: number[] = [
   0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2,
 ];
 
-function sha256Hex(message: string): string {
+// Exported so the primitive can be pinned against NIST known-answer vectors — a self-referential
+// "checksum changes when text changes" test cannot catch a subtly-broken hash (it would just pin its
+// own wrong output), and this underlies the canonical-content integrity checks.
+export function sha256Hex(message: string): string {
   // UTF-8 encode
   const encoder = typeof TextEncoder !== "undefined" ? new TextEncoder() : null;
   let bytes: Uint8Array;
