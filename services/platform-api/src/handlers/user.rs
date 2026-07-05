@@ -165,26 +165,41 @@ pub async fn login(
         ));
     };
 
-    let row = row.ok_or(ApiError::Unauthorized)?;
+    // Do NOT early-return when the user is absent or has no password: that makes "no such user"
+    // measurably faster than "wrong password" and leaks account existence through response latency.
+    // Instead always run exactly one bcrypt verify — against the real hash when present, otherwise a
+    // fixed well-formed decoy of the same cost (12) — and only then decide. DUMMY_PASSWORD_HASH is a
+    // bcrypt hash of a fixed placeholder string; it is NOT a credential, only a timing-equalising
+    // decoy so verify burns the same CPU whether or not the account exists.
+    const DUMMY_PASSWORD_HASH: &str =
+        "$2b$12$ahpuA0AfJhkR6u02DgpHHu8tZ4hhhIXwUJbG8gUGLOpyWD7XCaBWq";
+    let stored_hash: Option<String> = match &row {
+        Some(r) => r.try_get("password_hash")?,
+        None => None,
+    };
+    let hash_for_verify = stored_hash
+        .clone()
+        .unwrap_or_else(|| DUMMY_PASSWORD_HASH.to_string());
+    let password_for_verify = req.password.clone();
+    // bcrypt::verify is CPU-bound; keep it off the async workers. A malformed hash → treat as invalid
+    // (not an error) so it still can't be distinguished by latency.
+    let verified =
+        tokio::task::spawn_blocking(move || bcrypt::verify(&password_for_verify, &hash_for_verify))
+            .await
+            .map_err(|_| ApiError::Unauthorized)?
+            .unwrap_or(false);
+    let row = match row {
+        Some(r) if stored_hash.is_some() && verified => r,
+        _ => {
+            tracing::warn!(user_id = ?req.user_id, "failed login attempt");
+            return Err(ApiError::Unauthorized);
+        }
+    };
 
     let user_id: String = row.try_get("id")?;
     let tenant_id: String = row.try_get("tenant_id")?;
     let role: String = row.try_get("role")?;
     let display_name: String = row.try_get("display_name")?;
-    let password_hash: Option<String> = row.try_get("password_hash")?;
-
-    // Verify password. bcrypt::verify is CPU-bound; keep it off the async workers.
-    let stored_hash = password_hash.ok_or(ApiError::Unauthorized)?;
-    let password_for_verify = req.password.clone();
-    let valid =
-        tokio::task::spawn_blocking(move || bcrypt::verify(&password_for_verify, &stored_hash))
-            .await
-            .map_err(|_| ApiError::Unauthorized)?
-            .map_err(|_| ApiError::Unauthorized)?;
-    if !valid {
-        tracing::warn!(user_id = ?req.user_id, "failed login attempt");
-        return Err(ApiError::Unauthorized);
-    }
 
     tracing::info!(user_id = %user_id, tenant_id = %tenant_id, "user logged in");
 
