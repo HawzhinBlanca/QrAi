@@ -63,6 +63,30 @@ def safe_audio_suffix(audio_format: str) -> str:
         )
     return f".{fmt}"
 
+
+# Cap the base64 payload so a single request cannot force an unbounded decode into memory + a
+# large temp file on disk. ~20M base64 chars ≈ 15 MB of decoded audio — ample for a recitation
+# clip; the platform-api /v1/asr proxy additionally caps the request body at 16 MB for browser
+# traffic, so this is defence-in-depth for any direct (server-side) caller.
+MAX_AUDIO_B64_CHARS = 20_000_000
+
+
+def decode_audio_b64(b64: str) -> bytes:
+    """Validate and decode a base64 audio payload. Every failure is a client error (4xx) — an empty,
+    oversized, malformed, or empty-when-decoded payload must never fall through to a 500."""
+    if not b64 or not b64.strip():
+        raise HTTPException(status_code=400, detail="audioBase64 is required")
+    if len(b64) > MAX_AUDIO_B64_CHARS:
+        raise HTTPException(status_code=413, detail="audioBase64 is too large")
+    try:
+        audio_bytes = base64.b64decode(b64, validate=True)
+    except (ValueError, TypeError) as exc:
+        raise HTTPException(status_code=400, detail=f"Invalid base64 audio: {exc}")
+    if not audio_bytes:
+        # e.g. "==" — valid base64 that decodes to zero bytes; downstream would 500 on empty audio.
+        raise HTTPException(status_code=400, detail="audioBase64 decoded to empty audio")
+    return audio_bytes
+
 # === Structured JSON Logger ===
 class JsonFormatter(logging.Formatter):
     def format(self, record: logging.LogRecord) -> str:
@@ -245,10 +269,7 @@ async def transcribe(req: TranscribeRequest):
         raise HTTPException(status_code=400, detail="audioBase64 is required")
 
     # Decode base64 audio → temp file. Malformed base64 is a client error (400), not a 500.
-    try:
-        audio_bytes = base64.b64decode(req.audioBase64, validate=True)
-    except (ValueError, TypeError) as exc:
-        raise HTTPException(status_code=400, detail=f"Invalid base64 audio: {exc}")
+    audio_bytes = decode_audio_b64(req.audioBase64)
     suffix = safe_audio_suffix(req.audioFormat)
 
     with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
@@ -329,10 +350,7 @@ async def force_align(req: ForceAlignRequest):
             "Please configure ASR_MODEL to a standard Whisper model size (e.g., 'base') to enable force-alignment."
         )
 
-    try:
-        audio_bytes = base64.b64decode(req.audioBase64, validate=True)
-    except (ValueError, TypeError) as exc:
-        raise HTTPException(status_code=400, detail=f"Invalid base64 audio: {exc}")
+    audio_bytes = decode_audio_b64(req.audioBase64)
     suffix = safe_audio_suffix(req.audioFormat)
 
     with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
@@ -405,10 +423,7 @@ async def analyze_tajweed(req: TajweedAnalysisRequest):
     if not req.words:
         raise HTTPException(status_code=400, detail="words (with timestamps) are required")
 
-    try:
-        audio_bytes = base64.b64decode(req.audioBase64, validate=True)
-    except (ValueError, TypeError) as exc:
-        raise HTTPException(status_code=400, detail=f"Invalid base64 audio: {exc}")
+    audio_bytes = decode_audio_b64(req.audioBase64)
     suffix = safe_audio_suffix(req.audioFormat)
 
     with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
