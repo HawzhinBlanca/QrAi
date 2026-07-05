@@ -90,26 +90,63 @@ ASR_MODEL = os.environ.get("ASR_MODEL", "tarteel-ai/whisper-base-ar-quran")
 MODEL_NAME = ASR_MODEL
 _USE_HF = "/" in ASR_MODEL
 
-if _USE_HF:
-    from transformers import pipeline as hf_pipeline
+# Model handles, populated by _load_model(). They stay None until a successful load. A load failure
+# (bad ASR_MODEL, Hugging Face Hub unreachable, OOM) must NOT crash the process before it can serve:
+# previously the model was loaded at import time with no guard, so any failure raised before
+# `app = FastAPI(...)` and uvicorn never bound the port — there was no way to even reach /health to
+# see why. Now the failure is captured in _load_error, the port still binds, /health reports the
+# error, and requests return 503 (require_loaded_model) until a subsequent load succeeds.
+asr_pipe = None
+model = None
+DEVICE_STR = "cpu"
+_load_error: Optional[str] = None
 
-    DEVICE_STR = (
-        "mps"
-        if torch.backends.mps.is_available()
-        else ("cuda" if torch.cuda.is_available() else "cpu")
-    )
-    logger.info("Loading HF Quran ASR model: %s on %s", ASR_MODEL, DEVICE_STR)
-    asr_pipe = hf_pipeline("automatic-speech-recognition", model=ASR_MODEL, device=DEVICE_STR)
-    model = None
-    logger.info("HF Quran ASR %s loaded on %s", ASR_MODEL, DEVICE_STR)
-else:
-    logger.info("Loading Whisper model: %s", ASR_MODEL)
-    model = whisper.load_model(ASR_MODEL)
-    asr_pipe = None
-    DEVICE_STR = str(model.device)
-    logger.info("Whisper %s loaded. Device: %s", ASR_MODEL, model.device)
+
+def _load_model() -> None:
+    """Load the ASR model into the module globals. Never raises — a failure is recorded in
+    _load_error so the service degrades (503) instead of failing to start."""
+    global asr_pipe, model, DEVICE_STR, _load_error
+    try:
+        if _USE_HF:
+            from transformers import pipeline as hf_pipeline
+
+            DEVICE_STR = (
+                "mps"
+                if torch.backends.mps.is_available()
+                else ("cuda" if torch.cuda.is_available() else "cpu")
+            )
+            logger.info("Loading HF Quran ASR model: %s on %s", ASR_MODEL, DEVICE_STR)
+            asr_pipe = hf_pipeline(
+                "automatic-speech-recognition", model=ASR_MODEL, device=DEVICE_STR
+            )
+            logger.info("HF Quran ASR %s loaded on %s", ASR_MODEL, DEVICE_STR)
+        else:
+            logger.info("Loading Whisper model: %s", ASR_MODEL)
+            model = whisper.load_model(ASR_MODEL)
+            DEVICE_STR = str(model.device)
+            logger.info("Whisper %s loaded. Device: %s", ASR_MODEL, model.device)
+        _load_error = None
+    except Exception as exc:  # noqa: BLE001 — any load failure must degrade, not crash startup
+        _load_error = f"{type(exc).__name__}: {exc}"
+        logger.error(
+            "ASR model %s failed to load; serving DEGRADED (requests will 503): %s",
+            ASR_MODEL,
+            _load_error,
+        )
+
+
+_load_model()
 
 app = FastAPI(title="Quran AI ASR Inference", version="0.1.0")
+
+
+def require_loaded_model() -> None:
+    """503 until the ASR model is loaded, so a degraded start returns a clean error, not a 500."""
+    if asr_pipe is None and model is None:
+        raise HTTPException(
+            status_code=503,
+            detail=f"ASR model not loaded: {_load_error or 'still loading'}",
+        )
 
 # === Models ===
 
@@ -183,16 +220,24 @@ class TajweedAnalysisResponse(BaseModel):
 
 @app.get("/health")
 async def health():
+    loaded = asr_pipe is not None or model is not None
     return {
+        # Liveness stays true (the process is up and serving); `loaded` is the readiness signal.
         "ok": True,
         "service": "quran-ai-asr-inference",
         "model": MODEL_NAME,
         "device": DEVICE_STR,
+        "loaded": loaded,
+        "loadError": _load_error,
         "supportedLanguages": ["ar", "en", "tr", "ur", "id", "ms", "fr", "de"],
     }
 
 
-@app.post("/v1/transcribe", response_model=TranscribeResponse, dependencies=[Depends(require_asr_key)])
+@app.post(
+    "/v1/transcribe",
+    response_model=TranscribeResponse,
+    dependencies=[Depends(require_asr_key), Depends(require_loaded_model)],
+)
 async def transcribe(req: TranscribeRequest):
     start = time.time()
 
@@ -263,7 +308,11 @@ async def transcribe(req: TranscribeRequest):
         os.unlink(tmp_path)
 
 
-@app.post("/v1/force-align", response_model=ForceAlignResponse, dependencies=[Depends(require_asr_key)])
+@app.post(
+    "/v1/force-align",
+    response_model=ForceAlignResponse,
+    dependencies=[Depends(require_asr_key), Depends(require_loaded_model)],
+)
 async def force_align(req: ForceAlignRequest):
     """Force align audio against known canonical text using Whisper word timestamps."""
     start = time.time()
@@ -338,7 +387,11 @@ async def force_align(req: ForceAlignRequest):
         os.unlink(tmp_path)
 
 
-@app.post("/v1/analyze-tajweed", response_model=TajweedAnalysisResponse, dependencies=[Depends(require_asr_key)])
+@app.post(
+    "/v1/analyze-tajweed",
+    response_model=TajweedAnalysisResponse,
+    dependencies=[Depends(require_asr_key), Depends(require_loaded_model)],
+)
 async def analyze_tajweed(req: TajweedAnalysisRequest):
     """
     Analyze audio for tajweed features using real signal processing.
