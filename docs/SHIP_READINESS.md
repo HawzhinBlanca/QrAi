@@ -31,8 +31,10 @@ human runs them)**, or **needs a human/external decision that no code can supply
 | shaddah (شدة) | `U+0651` present | 0.86 | Reports doubling; correct. |
 | idgham / iqlab / ikhfa | noon-sakin/tanween at word boundary + next letter class | 0.80–0.83 | Standard Hafs letter sets; inter-word only (validated whole-Qur'an in earlier PRs). |
 
-**A1 — Scholar sign-off on the engine · 🚫 human-gated.**
-Give a qualified Qur'an/tajweed scholar the table above + `tajweed.js`. Ask them to confirm, per rule:
+**A1 — Scholar sign-off on the engine · 🚫 human-gated (packet ready → [`docs/SCHOLAR_REVIEW.md`](SCHOLAR_REVIEW.md)).**
+The turnkey review packet is written: it lists every rule, its exact detection site, each known
+simplification, and the specific questions to answer. Hand it (with `tajweed.js`) to a qualified scholar.
+Ask them to confirm, per rule:
 (1) the detection produces **no incorrect ruling**, and (2) the **scope is acceptable for a learning
 aid** (it is a subset — it does not teach madd lengths, makharij, or full ra/lam rules). Record the
 outcome (approve / disable-rule / fix) in `docs/DECISIONS.md`. **Until this exists, learner-facing
@@ -72,10 +74,12 @@ sifat output on pilot data.
 - **D8 — TLS/HTTPS + HSTS · 🧰.** Terminate TLS in front of `platform-api`, `realtime-gateway`, and
   the web (a load balancer or an nginx TLS front). Then add `Strict-Transport-Security` at that edge.
   The app already serves over the compose network; only the public edge needs certs (Let's Encrypt).
-- **D9 — Secrets · 🧰.** The code **refuses weak/default secrets in prod** (`ensure_secure_config`).
-  Provision, in your secrets manager, strong values (≥32 chars) for: `JWT_SECRET`,
-  `REALTIME_GATEWAY_TICKET_SECRET`, `ML_API_KEY`, `ASR_API_KEY`, `POSTGRES_PASSWORD`. Do **not** set
-  `ALLOW_INSECURE_DEFAULTS` in prod.
+- **D9 — Secrets · 🧰 (one command → `scripts/gen-production-secrets.sh`).** The code **refuses
+  weak/default secrets in prod** (`ensure_secure_config`). Run `bash scripts/gen-production-secrets.sh`
+  to generate strong (48-char, non-default) values for `JWT_SECRET`, `REALTIME_GATEWAY_TICKET_SECRET`,
+  `ML_API_KEY`, `ASR_API_KEY`, `POSTGRES_PASSWORD` into a gitignored `.env.production` (mode 600), with
+  `ALLOW_INSECURE_DEFAULTS=0`. Load it at deploy (`docker compose --env-file .env.production up -d`) or
+  import into your secrets manager. Do **not** commit it or set `ALLOW_INSECURE_DEFAULTS` in prod.
 - **D10 — DB posture · 🧰.** Run `platform-api` as the **restricted `quran_ai_app` role** (see
   `infra/sql/rls-app-role.sql`; nosuperuser + nobypassrls, so RLS actually bites). Add automated
   Postgres backups (pg_dump or a managed snapshot schedule) + a tested restore. Migrations apply in
