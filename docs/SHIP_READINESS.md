@@ -102,7 +102,9 @@ sifat output on pilot data.
 - **F17 — Accessibility · 🧰.** Run an axe/Lighthouse pass on the web app; fix keyboard nav / ARIA /
   Arabic-RTL findings.
 - **F18 — i18n completeness · 🧰.** Audit UI strings for full coverage across supported languages.
-- **F20 — Mobile tests · 🧰.** `apps/mobile` has no tests; add unit tests for the auth/consent gate.
+- **F20 — Mobile tests · ✅.** `apps/mobile/lib/session.ts` extracts the auth-header / consent /
+  ASR-parsing logic; `apps/mobile/lib/session.test.ts` (node:test) gates it via the new `mobile` CI
+  workflow (8/8 green). Pure logic only — the RN UI / `expo-av` path still needs a device (see B5).
 - **F16 — Legal / compliance · 🚫 needs a lawyer.** Privacy policy, terms, **COPPA** review
   (under-13 + guardian consent — the consent gate exists; the *policy* is legal), a data-retention
   policy, and a DPA for the pilot tenant.
