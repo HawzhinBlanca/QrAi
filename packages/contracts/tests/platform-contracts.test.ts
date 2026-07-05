@@ -9,6 +9,7 @@ import {
   hasCanonicalTextChanged,
   modelEvalPassesReleaseGate,
   mustDiscardAudio,
+  sha256Hex,
   verifyCanonicalWord,
   type AgentRun,
   type CanonicalWordRecord,
@@ -83,6 +84,20 @@ describe("Quran AI platform contracts", () => {
 
     // New checksums use sha256: prefix
     expect(canonicalWord.sourceChecksum.startsWith("sha256:")).toBe(true);
+  });
+
+  it("computes real SHA-256 (NIST known-answer vectors), not just a self-consistent hash", () => {
+    // The checksum tests above only prove the hash CHANGES with the input — a subtly-broken hash would
+    // pass them while pinning its own wrong output. These NIST FIPS 180-4 vectors prove sha256Hex is
+    // genuinely SHA-256, so `sha256:` is honest and the canonical-content pins match any real tool.
+    expect(sha256Hex("")).toBe("e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855");
+    expect(sha256Hex("abc")).toBe("ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad");
+    // 56-byte input forces the two-block padding path.
+    expect(sha256Hex("abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq")).toBe(
+      "248d6a61d20638b8e5c026930c3e6039a33ce45964ff2167f6ecedd419db06c1",
+    );
+    // Arabic (multi-byte UTF-8) — the bismillah word (12 UTF-8 bytes) — vs the digest of its bytes.
+    expect(sha256Hex("بِسْمِ")).toBe("1c562fd4a7951a03c69ed9f9a10f9423120f439d4fea482d35f3a5c6062dc006");
   });
 
   it("accepts legacy fnv1a32 checksums from existing seed data", () => {
