@@ -24,6 +24,13 @@ import {
 } from "react-native";
 import { Audio } from "expo-av";
 
+import {
+  authHeaders as buildAuthHeaders,
+  buildConsentPayload,
+  canStartRecording,
+  parseRecognizedText,
+} from "./lib/session";
+
 // The mobile client talks ONLY to the platform API. ML inference and ASR are reached server-side
 // through the platform API's proxies, so their API keys never ship in the app.
 const API_BASE = "http://127.0.0.1:8080";
@@ -63,12 +70,8 @@ export default function App() {
   const [recordingConsent, setRecordingConsent] = useState(false);
   const [guardianApproved, setGuardianApproved] = useState(false);
 
-  // Actor auth headers for the platform API (Bearer once logged in).
-  const authHeaders = useCallback((): Record<string, string> => {
-    if (user?.token) return { authorization: `Bearer ${user.token}` };
-    if (user) return { "x-tenant-id": user.tenantId, "x-user-id": user.userId, "x-user-role": "learner" };
-    return {};
-  }, [user]);
+  // Actor auth headers for the platform API (Bearer once logged in). Pure logic in ./lib/session.
+  const authHeaders = useCallback((): Record<string, string> => buildAuthHeaders(user), [user]);
 
   // === Auth ===
   const login = async (userId: string, tenantId: string, password: string) => {
@@ -98,7 +101,7 @@ export default function App() {
 
   // === Audio Recording ===
   const startRecording = useCallback(async () => {
-    if (!recordingConsent) {
+    if (!canStartRecording(recordingConsent)) {
       Alert.alert(
         "Consent required",
         "Please consent to recording and analyzing your recitation before you begin.",
@@ -161,10 +164,7 @@ export default function App() {
       });
       if (!asrResp.ok) throw new Error(`ASR error: ${asrResp.status}`);
       const asr = await asrResp.json();
-      const recognizedText = String(asr.text ?? "")
-        .trim()
-        .split(/\s+/)
-        .filter(Boolean);
+      const recognizedText = parseRecognizedText(asr.text);
 
       // 2) Align via the platform API's ML proxy (server-side ML key; tenant taken from the actor).
       const alignResp = await fetch(`${API_BASE}/v1/ml/alignments:predict`, {
@@ -182,14 +182,7 @@ export default function App() {
           recognizedText,
           sourceChecksum: "fnv1a32:real",
           // Real consent — reflects the learner's toggles, not a hardcoded approval.
-          consent: {
-            recordingConsent,
-            audioRetention: "discard",
-            anonymizedLearning: true,
-            externalAsrProcessing: false,
-            guardianApproved,
-            consentVersion: "mobile-v1",
-          },
+          consent: buildConsentPayload(recordingConsent, guardianApproved),
         }),
       });
 

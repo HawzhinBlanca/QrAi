@@ -1,0 +1,28 @@
+# Runs the mobile app's pure-logic unit tests. apps/mobile is a standalone Expo package (NOT a pnpm
+# workspace member), so verify.sh does not cover it — this is its gate. The tests import only
+# ./lib/session.ts (no react-native / expo), so they run with zero installed dependencies via Node's
+# built-in test runner + native TypeScript type-stripping. Runs only when the mobile app changes.
+name: mobile
+on:
+  pull_request:
+    paths:
+      - "apps/mobile/**"
+      - ".github/workflows/mobile.yml"
+  push:
+    branches: [main]
+    paths:
+      - "apps/mobile/**"
+      - ".github/workflows/mobile.yml"
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: "22" }
+      # No install: the pure session helpers have no runtime deps, and node:test + --experimental-strip-types
+      # run the .ts suite directly. If a future test needs expo/react-native, add `pnpm install` here.
+      - name: mobile unit tests
+        working-directory: apps/mobile
+        run: node --experimental-strip-types --test lib/*.test.ts
