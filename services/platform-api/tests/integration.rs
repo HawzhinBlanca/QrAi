@@ -299,6 +299,63 @@ async fn concurrent_registration_with_same_email_is_race_safe() {
     );
 }
 
+/// Data-integrity regression: update_progress reads the prior SM-2 state, computes the next state IN
+/// RUST, then writes it — two separate round trips, so `INSERT ... ON CONFLICT DO UPDATE` alone does
+/// NOT close a lost-update race (unlike the email-uniqueness race above, a DB constraint can't help
+/// here — the race is in the compute step, not the write). Verified empirically before the fix: 8
+/// concurrent quality=5 submissions for one ayah left `repetitions=4`, not 8 — half were silently
+/// lost. Fixed with a `pg_advisory_xact_lock` keyed on (tenant, learner, ayah) that serializes the
+/// whole read-compute-write section, including a learner's very first review of an ayah (where there
+/// is no existing row yet for `SELECT ... FOR UPDATE` to lock).
+#[tokio::test]
+#[ignore = "requires live Postgres"]
+async fn concurrent_progress_updates_for_the_same_ayah_do_not_lose_repetitions() {
+    let state = test_state();
+    let router = platform_router_with_rate_limit(state.clone(), false);
+    let ayah_ref = format!("1:lost-update-itest-{}", next_suffix());
+
+    let handles: Vec<_> = (0..8)
+        .map(|_| {
+            let router = router.clone();
+            let ayah_ref = ayah_ref.clone();
+            tokio::spawn(async move {
+                send_json(
+                    &router,
+                    Method::POST,
+                    "/v1/learner/progress",
+                    Some("hikmah-pilot-erbil"),
+                    Some("learner"),
+                    json!({ "quality": 5, "ayahRef": ayah_ref }),
+                )
+                .await
+                .status()
+            })
+        })
+        .collect();
+
+    for handle in handles {
+        assert_eq!(
+            handle.await.expect("progress task panicked"),
+            StatusCode::OK
+        );
+    }
+
+    let repetitions: i32 = sqlx::query_scalar(
+        "SELECT repetitions FROM learner_progress
+         WHERE tenant_id = 'hikmah-pilot-erbil' AND learner_id = 'learner-1' AND ayah_ref = $1",
+    )
+    .bind(&ayah_ref)
+    .fetch_one(&state.pool)
+    .await
+    .expect("progress row must exist after 8 successful submissions");
+
+    assert_eq!(
+        repetitions, 8,
+        "every one of the 8 concurrent perfect-quality reviews must be reflected — a lower count means \
+         the advisory lock is not serializing the read-compute-write section"
+    );
+}
+
 #[test]
 fn sm2_spaced_repetition_updates_correctly() {
     use quran_ai_platform_api::handlers::progress::{Sm2State, sm2_update};
