@@ -844,6 +844,12 @@ const RATE_LIMIT_WINDOW_MS = 60_000; // 1 minute
 const RATE_LIMIT_MAX = 100;          // max requests per window
 /** @type {Map<string, number[]>} */
 const rateLimitMap = new Map();
+// Trusting X-Forwarded-For unconditionally lets a DIRECT client bypass the limiter entirely by
+// varying the header per request (verified empirically: 130/130 requests succeeded this way,
+// vs. 100/130 without a spoofed header). Only trust it when explicitly opted in for a deployment
+// that sits behind a real reverse proxy which OVERWRITES the header — mirrors platform-api's
+// identical TRUST_PROXY_HEADERS gate for the same problem on its own rate limiter.
+const TRUST_PROXY_HEADERS = process.env.TRUST_PROXY_HEADERS === "1" || process.env.TRUST_PROXY_HEADERS === "true";
 
 // Clean up stale entries every 5 minutes to prevent memory growth. .unref() so importing this
 // module for tests does not keep the event loop alive (the timer never fires in a short test run).
@@ -883,9 +889,10 @@ const server = createServer((request, response) => {
 
   // --- Per-IP sliding-window rate limiter (100 req/min for non-health endpoints) ---
   if (url.pathname !== "/health") {
-    const clientIp = request.headers["x-forwarded-for"]?.toString().split(",")[0]?.trim()
-      || request.socket.remoteAddress
-      || "unknown";
+    const forwardedFor = TRUST_PROXY_HEADERS
+      ? request.headers["x-forwarded-for"]?.toString().split(",")[0]?.trim()
+      : undefined;
+    const clientIp = forwardedFor || request.socket.remoteAddress || "unknown";
     if (!checkRateLimit(clientIp)) {
       jsonResponse(response, 429, { error: "Too many requests. Please try again later." });
       return;
