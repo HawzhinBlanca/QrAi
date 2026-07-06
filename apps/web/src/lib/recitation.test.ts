@@ -38,6 +38,15 @@ describe("recitation helpers", () => {
     expect(summary.missed).toBe(1);
   });
 
+  it("reports 0% accuracy (not NaN) when there are no words", () => {
+    // Empty verses (e.g. the passage hasn't loaded) must not divide 0/0 → NaN, which renders "NaN%".
+    const summary = summarizeSession([], []);
+    expect(summary.totalWords).toBe(0);
+    expect(summary.correctWords).toBe(0);
+    expect(summary.accuracy).toBe(0);
+    expect(Number.isNaN(summary.accuracy)).toBe(false);
+  });
+
   it("generates deterministic waveform bars for repeatable UI tests", () => {
     expect(createWaveform(7, 4)).toEqual([45, 28, 44, 35]);
   });

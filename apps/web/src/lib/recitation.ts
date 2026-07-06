@@ -13,7 +13,8 @@ export function summarizeSession(verses: QuranVerse[], events: RecitationEvent[]
   const words = flattenWords(verses);
   const flagged = getFlaggedWords(verses);
   const correctWords = words.length - flagged.length;
-  const accuracy = Math.round((correctWords / words.length) * 100);
+  // Guard the empty case: with no words this is 0/0 → NaN, which would render as "NaN%".
+  const accuracy = words.length > 0 ? Math.round((correctWords / words.length) * 100) : 0;
 
   return {
     totalWords: words.length,
