@@ -17,7 +17,13 @@ try {
   await runStep("smoke:sql", ["pnpm", "smoke:sql"]);
   await runStep("smoke:browser", ["pnpm", "smoke:browser"], { SMOKE_ARTIFACT_DIR: artifactRoot });
 
-  const platformApi = await platformApiServiceConfig();
+  // Privacy delete erases the learner's audio from ml-inference BEFORE the DB transaction (fail-closed
+  // right-to-erasure), so smoke:api's privacy-delete step needs ml-inference reachable — otherwise it
+  // returns 502. Start ml-inference first and point platform-api at it.
+  const mlInference = await mlInferenceServiceConfig();
+  const mlUp = await ensureHttpService(mlInference);
+
+  const platformApi = await platformApiServiceConfig(mlUp ? mlInference.baseUrl : undefined);
   if (await ensureHttpService(platformApi)) {
     await runStep("smoke:api", ["pnpm", "smoke:api"], platformApi.smokeEnv);
   }
@@ -79,7 +85,7 @@ async function ensureHttpService({ name, healthUrl, command, serviceEnv = {} }) 
   return true;
 }
 
-async function platformApiServiceConfig() {
+async function platformApiServiceConfig(mlInferenceUrl) {
   if (process.env.PLATFORM_API_SMOKE_URL || process.env.PLATFORM_API_HEALTH_URL) {
     const baseUrl = process.env.PLATFORM_API_SMOKE_URL ?? "http://127.0.0.1:8080";
     return {
@@ -92,12 +98,32 @@ async function platformApiServiceConfig() {
 
   const port = await getFreePort();
   const baseUrl = `http://127.0.0.1:${port}`;
+  const serviceEnv = { PLATFORM_API_BIND: `127.0.0.1:${port}`, ML_API_KEY: "smoke-ml-api-key" };
+  // Point platform-api at the ml-inference started above so the privacy-delete audio erasure resolves.
+  if (mlInferenceUrl) serviceEnv.ML_INFERENCE_URL = mlInferenceUrl;
   return {
     name: "platform-api",
     healthUrl: `${baseUrl}/health`,
     command: ["pnpm", "api:dev"],
-    serviceEnv: { PLATFORM_API_BIND: `127.0.0.1:${port}` },
+    serviceEnv,
     smokeEnv: { PLATFORM_API_SMOKE_URL: baseUrl },
+  };
+}
+
+async function mlInferenceServiceConfig() {
+  if (process.env.ML_INFERENCE_URL) {
+    const baseUrl = process.env.ML_INFERENCE_URL;
+    return { name: "ml-inference", healthUrl: `${baseUrl}/health`, baseUrl, command: ["true"], serviceEnv: {} };
+  }
+  const port = await getFreePort();
+  const baseUrl = `http://127.0.0.1:${port}`;
+  return {
+    name: "ml-inference",
+    healthUrl: `${baseUrl}/health`,
+    baseUrl,
+    command: [process.execPath, "services/ml-inference/server.mjs"],
+    // Match platform-api's ML_API_KEY so the server-side proxy key check passes.
+    serviceEnv: { ML_INFERENCE_PORT: String(port), ML_API_KEY: "smoke-ml-api-key" },
   };
 }
 
@@ -124,6 +150,11 @@ async function realtimeGatewayServiceConfig() {
     serviceEnv: {
       REALTIME_GATEWAY_BIND: `127.0.0.1:${port}`,
       REALTIME_GATEWAY_TICKET_SECRET: "smoke-secret",
+      // The gateway binds to exactly one tenant (GATEWAY_TENANT_ID) and rejects a ticket whose
+      // tenant_id doesn't match (services/realtime-gateway/src/lib.rs). smoke-gateway.mjs issues its
+      // ticket for `tenant-smoke`, so the gateway must serve that tenant — otherwise the valid-ticket
+      // WebSocket is rejected (non-101) even though everything else is correct.
+      GATEWAY_TENANT_ID: "tenant-smoke",
     },
     smokeEnv: {
       REALTIME_GATEWAY_BASE_URL: `ws://127.0.0.1:${port}`,
