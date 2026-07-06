@@ -424,6 +424,23 @@ pub struct AudioIngressAck {
 }
 
 pub fn gateway_router(config: GatewayServerConfig) -> Router {
+    // Secure by default, matching platform-api's identical DISABLE_RATE_LIMIT pattern (and every
+    // other security control in this codebase — ALLOW_INSECURE_DEFAULTS, ALLOW_HEADER_AUTH,
+    // TRUST_PROXY_HEADERS are all opt-in for LESS security). This was previously ENABLE_RATE_LIMIT
+    // (opt-IN), the one place that inverted the convention: rate limiting was OFF unless an
+    // operator explicitly turned it on, and docker-compose.yml never did — verified empirically
+    // that a live gateway with no env var set took 350/350 rapid requests with zero throttling.
+    let rate_limited = !std::env::var("DISABLE_RATE_LIMIT")
+        .map(|v| v == "1" || v == "true")
+        .unwrap_or(false);
+    gateway_router_with_rate_limit(config, rate_limited)
+}
+
+/// Like [`gateway_router`], but with explicit control over rate limiting instead of reading it from
+/// `DISABLE_RATE_LIMIT`. Tests that exercise the router via `tower::ServiceExt::oneshot` (no real TCP
+/// connection, so `tower_governor`'s peer-IP key extractor has nothing to read) must pass `false` —
+/// mirrors platform-api's `platform_router_with_rate_limit` split for the identical reason.
+pub fn gateway_router_with_rate_limit(config: GatewayServerConfig, rate_limited: bool) -> Router {
     let redis_url = std::env::var("REDIS_URL").ok();
     let gateway = RealtimeGateway::with_redis(config.chunk_capacity, redis_url);
     let consumed_tickets: Arc<RwLock<HashMap<String, u64>>> = Arc::new(RwLock::new(HashMap::new()));
@@ -446,10 +463,6 @@ pub fn gateway_router(config: GatewayServerConfig) -> Router {
             }
         });
     }
-
-    let rate_limited = std::env::var("ENABLE_RATE_LIMIT")
-        .map(|v| v == "1" || v == "true")
-        .unwrap_or(false);
 
     let base_router = Router::new()
         .route("/health", get(health))
@@ -879,8 +892,8 @@ mod tests {
 
     use super::{
         AudioChunk, GatewayError, GatewayServerConfig, MAX_CHUNK_BYTES, RealtimeGateway,
-        TicketDedup, TicketError, evict_expired, gateway_router, issue_realtime_ticket,
-        ticket_hash, validate_realtime_ticket,
+        TicketDedup, TicketError, evict_expired, gateway_router, gateway_router_with_rate_limit,
+        issue_realtime_ticket, ticket_hash, validate_realtime_ticket,
     };
 
     fn chunk(session_id: &str, chunk_id: &str) -> AudioChunk {
@@ -1174,7 +1187,9 @@ mod tests {
             );
         }
 
-        let router = gateway_router(GatewayServerConfig::default());
+        // Rate limiting off: this test drives the router via `oneshot` (no real TCP connection), so
+        // tower_governor's peer-IP key extractor has nothing to read and would 500 every request.
+        let router = gateway_router_with_rate_limit(GatewayServerConfig::default(), false);
 
         // 1. Strict mode: a MISSING Origin header fails closed (403). Browsers always send Origin on a
         //    cross-origin WS upgrade, so the allowlist must not be bypassable by omitting the header.
