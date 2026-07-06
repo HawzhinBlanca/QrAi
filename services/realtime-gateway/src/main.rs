@@ -43,7 +43,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let listener = tokio::net::TcpListener::bind(addr).await?;
 
     println!("quran-ai realtime gateway listening on http://{addr}");
-    axum::serve(listener, gateway_router(GatewayServerConfig::default())).await?;
+    // `into_make_service_with_connect_info` is required for tower_governor's default (non-proxy)
+    // key extractor to read the peer IP — without it every request 500s with "Unable To Extract
+    // Key!" the instant rate limiting is enabled. Verified empirically: this is the actual reason
+    // the gateway shipped with rate limiting off by default — turning it on without this wiring
+    // broke every request. Matches platform-api's main.rs, which already wires this correctly.
+    axum::serve(
+        listener,
+        gateway_router(GatewayServerConfig::default())
+            .into_make_service_with_connect_info::<SocketAddr>(),
+    )
+    .await?;
 
     Ok(())
 }
