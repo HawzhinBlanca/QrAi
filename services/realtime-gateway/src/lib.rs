@@ -33,6 +33,14 @@ pub struct AudioChunk {
     pub bytes: Vec<u8>,
 }
 
+// A real chunk is `chunk_duration_ms` (480ms) of audio at up to 48kHz stereo 16-bit PCM —
+// 48_000 * 2 bytes/sample * 2 channels * 0.48s ≈ 92 KB, the largest realistic case. Cap at 2 MB
+// (20x+ headroom) so no legitimate chunk is ever rejected, while closing an unbounded-size DoS:
+// verified empirically that a 10 MB binary WebSocket frame was accepted with no size check at
+// all — `bytes.to_vec()` materializes the whole frame in memory before this point, and a handful
+// of malicious/buggy connections sending nearly-max-size frames could exhaust gateway memory.
+const MAX_CHUNK_BYTES: usize = 2 * 1024 * 1024;
+
 impl AudioChunk {
     pub fn new(
         session_id: impl Into<String>,
@@ -52,6 +60,13 @@ impl AudioChunk {
 
         if bytes.is_empty() {
             return Err(GatewayError::EmptyAudioChunk);
+        }
+
+        if bytes.len() > MAX_CHUNK_BYTES {
+            return Err(GatewayError::ChunkTooLarge {
+                size: bytes.len(),
+                max: MAX_CHUNK_BYTES,
+            });
         }
 
         Ok(Self {
@@ -83,6 +98,8 @@ pub enum GatewayError {
     UnsupportedSampleRate(u32),
     #[error("audio chunk must contain bytes")]
     EmptyAudioChunk,
+    #[error("audio chunk too large: {size} bytes exceeds the {max} byte limit")]
+    ChunkTooLarge { size: usize, max: usize },
 }
 
 #[derive(Clone)]
@@ -861,9 +878,9 @@ mod tests {
     use std::collections::HashMap;
 
     use super::{
-        AudioChunk, GatewayError, GatewayServerConfig, RealtimeGateway, TicketDedup, TicketError,
-        evict_expired, gateway_router, issue_realtime_ticket, ticket_hash,
-        validate_realtime_ticket,
+        AudioChunk, GatewayError, GatewayServerConfig, MAX_CHUNK_BYTES, RealtimeGateway,
+        TicketDedup, TicketError, evict_expired, gateway_router, issue_realtime_ticket,
+        ticket_hash, validate_realtime_ticket,
     };
 
     fn chunk(session_id: &str, chunk_id: &str) -> AudioChunk {
@@ -1099,6 +1116,40 @@ mod tests {
         assert_eq!(
             AudioChunk::new("session-1", "empty", 0, 20, 16_000, Vec::new()).unwrap_err(),
             GatewayError::EmptyAudioChunk
+        );
+    }
+
+    /// Regression: verified empirically that a 10 MB binary WebSocket frame was accepted with NO
+    /// size check at all before this limit existed (a real chunk is ~92 KB at most: 480ms of 48kHz
+    /// stereo 16-bit PCM). A handful of malicious/buggy connections sending near-max-size frames
+    /// could otherwise exhaust gateway memory.
+    #[test]
+    fn rejects_oversized_audio_chunk() {
+        assert!(
+            AudioChunk::new(
+                "session-1",
+                "at-cap",
+                0,
+                20,
+                16_000,
+                vec![0u8; MAX_CHUNK_BYTES]
+            )
+            .is_ok()
+        );
+        assert_eq!(
+            AudioChunk::new(
+                "session-1",
+                "over-cap",
+                0,
+                20,
+                16_000,
+                vec![0u8; MAX_CHUNK_BYTES + 1]
+            )
+            .unwrap_err(),
+            GatewayError::ChunkTooLarge {
+                size: MAX_CHUNK_BYTES + 1,
+                max: MAX_CHUNK_BYTES,
+            }
         );
     }
 
