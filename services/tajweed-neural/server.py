@@ -55,6 +55,27 @@ def safe_audio_suffix(audio_format: str) -> str:
     return f".{fmt}"
 
 
+# ~20M base64 chars ≈ 15 MB of audio — matches the asr-inference cap so a single request cannot force
+# an unbounded decode into memory + a large temp file.
+MAX_AUDIO_B64_CHARS = 20_000_000
+
+
+def decode_audio_b64(b64: str) -> bytes:
+    """Validate and decode a base64 audio payload. Every failure is a client error (4xx) — empty,
+    oversized, malformed, or empty-when-decoded must not fall through to a 500. Mirrors asr-inference."""
+    if not b64 or not b64.strip():
+        raise HTTPException(status_code=400, detail="audioBase64 is required")
+    if len(b64) > MAX_AUDIO_B64_CHARS:
+        raise HTTPException(status_code=413, detail="audioBase64 is too large")
+    try:
+        audio_bytes = base64.b64decode(b64, validate=True)
+    except (ValueError, TypeError) as exc:
+        raise HTTPException(status_code=400, detail=f"Invalid base64 audio: {exc}")
+    if not audio_bytes:
+        raise HTTPException(status_code=400, detail="audioBase64 decoded to empty audio")
+    return audio_bytes
+
+
 _model: NeuralTajweedModel | None = None
 _model_load_error: str | None = None
 
@@ -119,11 +140,8 @@ def analyze_tajweed_neural(req: AnalyzeRequest):
     # Acquire the model before touching the request body: an unloaded model is a 503, not a 500.
     model = require_loaded_model()
     start = time.time()
-    # Malformed base64 / audioFormat are client errors (400), not an unhandled 500.
-    try:
-        audio_bytes = base64.b64decode(req.audioBase64, validate=True)
-    except (ValueError, TypeError) as exc:
-        raise HTTPException(status_code=400, detail=f"Invalid base64 audio: {exc}")
+    # Validate + decode the audio payload (empty / oversized / malformed / empty-decoded → 4xx).
+    audio_bytes = decode_audio_b64(req.audioBase64)
     suffix = safe_audio_suffix(req.audioFormat)
     with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
         tmp.write(audio_bytes)
