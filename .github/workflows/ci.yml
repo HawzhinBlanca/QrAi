@@ -60,7 +60,8 @@ jobs:
             infra/sql/0009_learner_progress_rls.sql \
             infra/sql/0010_review_status_check.sql \
             infra/sql/0011_teacher_review_required_status.sql \
-            infra/sql/0012_superuser_only_rls_bypass.sql; do
+            infra/sql/0012_superuser_only_rls_bypass.sql \
+            infra/sql/0013_unique_email_per_tenant.sql; do
             psql "$DATABASE_URL" -f "$sql"
           done
 

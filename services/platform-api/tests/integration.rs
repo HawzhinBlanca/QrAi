@@ -239,6 +239,66 @@ async fn registers_then_logs_in_a_new_user() {
     assert_eq!(missing.status(), StatusCode::UNAUTHORIZED);
 }
 
+/// Security/data-integrity regression: registration's email-uniqueness check is SELECT-then-INSERT,
+/// which under READ COMMITTED is a TOCTOU race — verified empirically that 10 truly concurrent
+/// registrations with an identical email ALL succeeded before this was fixed (0013 migration adds a
+/// partial unique index; the handler maps the resulting unique_violation to a clean 400). Fire several
+/// genuinely concurrent registrations with the same email and assert exactly one wins.
+#[tokio::test]
+#[ignore = "requires live Postgres"]
+async fn concurrent_registration_with_same_email_is_race_safe() {
+    let router = platform_router_with_rate_limit(test_state(), false);
+    let email = format!("race-itest-{}@example.com", next_suffix());
+
+    // Collect the JoinHandles FIRST (tokio::spawn starts the task immediately) so all 5 requests are
+    // genuinely in flight together before we await any of them — a sequential await-per-iteration
+    // would serialize the requests and never exercise the race.
+    let handles: Vec<_> = (0..5)
+        .map(|i| {
+            let router = router.clone();
+            let email = email.clone();
+            tokio::spawn(async move {
+                send_json(
+                    &router,
+                    Method::POST,
+                    "/v1/auth/register",
+                    None,
+                    None,
+                    json!({
+                        "tenantId": "hikmah-pilot-erbil",
+                        "displayName": format!("Racer {i}"),
+                        "role": "learner",
+                        "language": "en",
+                        "email": email,
+                        "password": "RaceTest1234"
+                    }),
+                )
+                .await
+                .status()
+            })
+        })
+        .collect();
+
+    let mut statuses = Vec::with_capacity(handles.len());
+    for handle in handles {
+        statuses.push(handle.await.expect("register task panicked"));
+    }
+
+    let ok_count = statuses.iter().filter(|s| **s == StatusCode::OK).count();
+    let bad_request_count = statuses
+        .iter()
+        .filter(|s| **s == StatusCode::BAD_REQUEST)
+        .count();
+    assert_eq!(
+        ok_count, 1,
+        "exactly one concurrent registration must win: {statuses:?}"
+    );
+    assert_eq!(
+        bad_request_count, 4,
+        "every loser must get a clean 400 (never a 500 leaking the DB constraint error): {statuses:?}"
+    );
+}
+
 #[test]
 fn sm2_spaced_repetition_updates_correctly() {
     use quran_ai_platform_api::handlers::progress::{Sm2State, sm2_update};

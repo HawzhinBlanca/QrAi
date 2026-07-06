@@ -82,6 +82,13 @@ pub async fn register(
 
     let user_id = next_id("user");
 
+    // The SELECT-based email check above is a fast pre-check, not the enforcement: under READ
+    // COMMITTED, two concurrent registrations with the same email can both pass that SELECT before
+    // either commits (verified empirically — 10 concurrent requests all previously succeeded,
+    // creating 10 users sharing one email, after which login-by-email non-deterministically picked
+    // one). idx_users_tenant_email_unique (0013) is the real enforcement; the losing side of the
+    // race gets a unique_violation here, which must map to the same clean 400 as the pre-check
+    // rather than leak a raw "duplicate key value violates constraint ..." Postgres error as a 500.
     sqlx::query(
         "INSERT INTO users (id, tenant_id, display_name, role, language, password_hash, email)
          VALUES ($1, $2, $3, $4, $5, $6, $7)",
@@ -94,7 +101,15 @@ pub async fn register(
     .bind(&password_hash)
     .bind(&req.email)
     .execute(&mut *tx)
-    .await?;
+    .await
+    .map_err(|e| {
+        if let sqlx::Error::Database(ref db_err) = e
+            && db_err.constraint() == Some("idx_users_tenant_email_unique")
+        {
+            return ApiError::BadRequest("Email already registered".to_string());
+        }
+        ApiError::from(e)
+    })?;
 
     // Issue JWT token
     let token = state
