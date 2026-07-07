@@ -118,6 +118,19 @@ services:
       dockerfile: services/asr-inference/Dockerfile
     environment:
       ASR_PORT: "8091"
+      # NOTE: this pins the service to generic openai-whisper "base", NOT the specialized
+      # Quran-fine-tuned model (tarteel-ai/whisper-base-ar-quran) that server.py defaults to and
+      # that pyproject.toml's own description names as the primary model ("Quranic Arabic ASR
+      # service (tarteel-ai/whisper-base-ar-quran via transformers, Whisper fallback)"). The
+      # Dockerfile only installs fastapi/uvicorn/openai-whisper/torchaudio/soundfile — never
+      # `transformers` — and pre-warms `whisper.load_model('base')`, not the HF model, so this
+      # override is required for the image to boot un-degraded as currently built; without it,
+      # `_load_model()` hits `ModuleNotFoundError: No module named 'transformers'` and every
+      # transcribe/align/tajweed request 503s (verified empirically). Switching to the
+      # specialized model is a real product/accuracy decision (recitation-tuned vs. generic
+      # transcription) with real costs (transformers as a new prod dependency — see the pinned
+      # CVEs already tracked for it in services/tajweed-neural's lockfile — a larger image, and
+      # an HF model download during build), so it isn't flipped here without an explicit call.
       ASR_MODEL: "base"
       ASR_API_KEY: "${ASR_API_KEY:?ASR_API_KEY is required}"
     ports:

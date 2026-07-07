@@ -10,6 +10,11 @@ RUN pip install --no-cache-dir fastapi uvicorn openai-whisper torchaudio soundfi
 RUN useradd --system --uid 10001 --create-home appuser && chown appuser /app
 USER appuser
 # Pre-download the Whisper model during build so it's cached in the image layer (no cold-start).
+# This warms the generic openai-whisper 'base' model — the model this image actually runs
+# (ASR_MODEL=base is set in docker-compose.yml). `transformers` is deliberately NOT installed
+# above, so the specialized HF model (tarteel-ai/whisper-base-ar-quran, server.py's own default)
+# cannot load in this image; see the ASR_MODEL comment in docker-compose.yml for why, and what's
+# needed to switch.
 RUN python -c "import whisper; whisper.load_model('base')"
 COPY --chown=appuser:appuser services/asr-inference/server.py ./
 EXPOSE 8091
