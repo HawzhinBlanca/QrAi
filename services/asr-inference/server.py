@@ -21,6 +21,7 @@ import re
 import json
 import base64
 import tempfile
+import threading
 import time
 import logging
 from typing import Optional
@@ -32,7 +33,7 @@ import soundfile as sf
 import numpy as np
 import whisper
 import uvicorn
-from fastapi import Depends, FastAPI, Header, HTTPException
+from fastapi import Depends, FastAPI, Header, HTTPException, Request
 from pydantic import BaseModel, Field
 
 # API-key gate. The browser must NOT reach this service directly — it is fronted by the platform-api
@@ -45,6 +46,59 @@ ASR_API_KEY = os.environ.get("ASR_API_KEY", "smoke-asr-api-key")
 def require_asr_key(x_asr_api_key: Optional[str] = Header(default=None)) -> None:
     if x_asr_api_key != ASR_API_KEY:
         raise HTTPException(status_code=401, detail="unauthorized")
+
+
+# === Rate limiter (sliding window, per-IP) ===
+# This is the compute-heaviest service in the fleet (real Whisper inference) and, until now, the
+# only backend service with NO self-protection at all — platform-api, the realtime gateway, and
+# ml-inference all already have an equivalent per-IP limiter. Not reachable by an external client
+# today (fronted by the platform-api /v1/asr proxy, itself rate-limited, and bound to 127.0.0.1),
+# but defence-in-depth for anyone with direct network access to this service and a valid
+# ASR_API_KEY (a compromised sibling container, a future architecture change).
+RATE_LIMIT_WINDOW_SECONDS = 60.0
+RATE_LIMIT_MAX = 100
+_rate_limit_state: dict[str, list[float]] = {}
+# `require_rate_limit` is a SYNC dependency, and FastAPI runs sync dependencies in a threadpool —
+# true parallel OS threads, not just cooperative async interleaving. Without this lock, concurrent
+# requests race on the read-check-write of `_rate_limit_state` (the same lost-update class as an
+# unlocked check-then-increment counter): verified empirically that 130 concurrent requests all
+# passed the "check" step before any committed their "write", so far more than RATE_LIMIT_MAX got
+# through. A plain threading.Lock (not asyncio.Lock, which only guards the event loop, not threads)
+# serializes the whole check-and-update per call.
+_rate_limit_lock = threading.Lock()
+# Only trust X-Forwarded-For when explicitly opted in for a deployment behind a real reverse proxy
+# that OVERWRITES the header — trusting it unconditionally lets a direct client bypass the whole
+# limiter by varying the header per request (this exact bug was found and fixed in ml-inference's
+# rate limiter; applying the lesson here from the start). Matches platform-api's naming/posture.
+TRUST_PROXY_HEADERS = os.environ.get("TRUST_PROXY_HEADERS", "").strip().lower() in ("1", "true")
+
+
+def require_rate_limit(request: Request) -> None:
+    if TRUST_PROXY_HEADERS:
+        forwarded = request.headers.get("x-forwarded-for")
+        client_ip = forwarded.split(",")[0].strip() if forwarded else None
+    else:
+        client_ip = None
+    if not client_ip:
+        client_ip = request.client.host if request.client else "unknown"
+
+    now = time.time()
+    cutoff = now - RATE_LIMIT_WINDOW_SECONDS
+    with _rate_limit_lock:
+        timestamps = [t for t in _rate_limit_state.get(client_ip, []) if t > cutoff]
+        if len(timestamps) >= RATE_LIMIT_MAX:
+            raise HTTPException(status_code=429, detail="Too many requests. Please try again later.")
+        timestamps.append(now)
+        _rate_limit_state[client_ip] = timestamps
+
+        # Opportunistic cleanup: once the tracked-IP count grows large, sweep out any key whose
+        # entries are now entirely stale. Bounds memory without a background task/thread — this
+        # service handles far lower request volume than ml-inference, so an occasional O(n) sweep
+        # triggered by dict growth is cheap relative to a real transcription request.
+        if len(_rate_limit_state) > 10_000:
+            stale = [ip for ip, ts in _rate_limit_state.items() if not any(t > cutoff for t in ts)]
+            for ip in stale:
+                del _rate_limit_state[ip]
 
 
 # Whitelist of accepted audio container formats. The client-controlled audioFormat is turned into a
@@ -260,7 +314,7 @@ async def health():
 @app.post(
     "/v1/transcribe",
     response_model=TranscribeResponse,
-    dependencies=[Depends(require_asr_key), Depends(require_loaded_model)],
+    dependencies=[Depends(require_rate_limit), Depends(require_asr_key), Depends(require_loaded_model)],
 )
 async def transcribe(req: TranscribeRequest):
     start = time.time()
@@ -332,7 +386,7 @@ async def transcribe(req: TranscribeRequest):
 @app.post(
     "/v1/force-align",
     response_model=ForceAlignResponse,
-    dependencies=[Depends(require_asr_key), Depends(require_loaded_model)],
+    dependencies=[Depends(require_rate_limit), Depends(require_asr_key), Depends(require_loaded_model)],
 )
 async def force_align(req: ForceAlignRequest):
     """Force align audio against known canonical text using Whisper word timestamps."""
@@ -408,7 +462,7 @@ async def force_align(req: ForceAlignRequest):
 @app.post(
     "/v1/analyze-tajweed",
     response_model=TajweedAnalysisResponse,
-    dependencies=[Depends(require_asr_key), Depends(require_loaded_model)],
+    dependencies=[Depends(require_rate_limit), Depends(require_asr_key), Depends(require_loaded_model)],
 )
 async def analyze_tajweed(req: TajweedAnalysisRequest):
     """
@@ -607,4 +661,13 @@ async def analyze_tajweed(req: TajweedAnalysisRequest):
 if __name__ == "__main__":
     host = os.environ.get("ASR_HOST", "127.0.0.1")
     port = int(os.environ.get("ASR_PORT", "8091"))
-    uvicorn.run(app, host=host, port=port)
+    # uvicorn's OWN default (proxy_headers=True, forwarded_allow_ips="127.0.0.1") silently rewrites
+    # request.client to whatever X-Forwarded-For claims whenever the connecting peer is loopback —
+    # BEFORE require_rate_limit's TRUST_PROXY_HEADERS gate ever runs. That made the application-level
+    # gate a no-op: verified empirically that 130 concurrent requests, each with a different spoofed
+    # X-Forwarded-For, ALL passed the rate limiter even with TRUST_PROXY_HEADERS unset, because
+    # request.client.host had already been substituted at the ASGI layer. Disabling uvicorn's own
+    # proxy-header trust makes request.client.host always the genuine raw TCP peer, so this
+    # application's own TRUST_PROXY_HEADERS check is the sole, correct authority (matching how the
+    # Rust/Node services in this fleet already work — neither has an equivalent lower-layer override).
+    uvicorn.run(app, host=host, port=port, proxy_headers=False)

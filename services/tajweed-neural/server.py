@@ -19,11 +19,12 @@ Run (isolated venv):
 import base64
 import os
 import tempfile
+import threading
 import time
 
 from typing import Optional
 
-from fastapi import Depends, FastAPI, Header, HTTPException
+from fastapi import Depends, FastAPI, Header, HTTPException, Request
 from pydantic import BaseModel
 
 from model_loader import NeuralTajweedModel, MODEL_ID
@@ -38,6 +39,43 @@ TAJWEED_NEURAL_API_KEY = os.environ.get("TAJWEED_NEURAL_API_KEY", "smoke-tajweed
 def require_neural_key(x_neural_api_key: Optional[str] = Header(default=None)) -> None:
     if x_neural_api_key != TAJWEED_NEURAL_API_KEY:
         raise HTTPException(status_code=401, detail="unauthorized")
+
+
+# === Rate limiter (sliding window, per-IP) — mirrors asr-inference's, same rationale: the most
+# compute-heavy services in the fleet had no self-protection while platform-api/gateway/ml-inference
+# all already do. See asr-inference/server.py for the full history (an unconditional X-Forwarded-For
+# trust that was trivially bypassable, PLUS uvicorn's own default proxy-header trust silently
+# overriding request.client before this code ever runs — both fixed here from the start). ===
+RATE_LIMIT_WINDOW_SECONDS = 60.0
+RATE_LIMIT_MAX = 100
+_rate_limit_state: dict[str, list[float]] = {}
+# `require_rate_limit` is a sync FastAPI dependency, run in a threadpool (true parallel OS threads,
+# not just async interleaving) — this lock serializes the read-check-write per call.
+_rate_limit_lock = threading.Lock()
+TRUST_PROXY_HEADERS = os.environ.get("TRUST_PROXY_HEADERS", "").strip().lower() in ("1", "true")
+
+
+def require_rate_limit(request: Request) -> None:
+    if TRUST_PROXY_HEADERS:
+        forwarded = request.headers.get("x-forwarded-for")
+        client_ip = forwarded.split(",")[0].strip() if forwarded else None
+    else:
+        client_ip = None
+    if not client_ip:
+        client_ip = request.client.host if request.client else "unknown"
+
+    now = time.time()
+    cutoff = now - RATE_LIMIT_WINDOW_SECONDS
+    with _rate_limit_lock:
+        timestamps = [t for t in _rate_limit_state.get(client_ip, []) if t > cutoff]
+        if len(timestamps) >= RATE_LIMIT_MAX:
+            raise HTTPException(status_code=429, detail="Too many requests. Please try again later.")
+        timestamps.append(now)
+        _rate_limit_state[client_ip] = timestamps
+        if len(_rate_limit_state) > 10_000:
+            stale = [ip for ip, ts in _rate_limit_state.items() if not any(t > cutoff for t in ts)]
+            for ip in stale:
+                del _rate_limit_state[ip]
 
 # Whitelist of accepted audio container formats (mirrors the asr-inference service). The
 # client-controlled audioFormat becomes a tempfile suffix; without this a value with a NUL byte
@@ -132,7 +170,7 @@ def health():
 @app.post(
     "/v1/analyze-tajweed-neural",
     response_model=AnalyzeResponse,
-    dependencies=[Depends(require_neural_key)],
+    dependencies=[Depends(require_rate_limit), Depends(require_neural_key)],
 )
 def analyze_tajweed_neural(req: AnalyzeRequest):
     if not req.audioBase64:
@@ -182,4 +220,8 @@ if __name__ == "__main__":
             f"/health loaded=false, requests return 503 until the model loads",
             flush=True,
         )
-    uvicorn.run(app, host=host, port=port)
+    # proxy_headers=False: uvicorn's own default silently rewrites request.client to whatever
+    # X-Forwarded-For claims for loopback peers, BEFORE require_rate_limit's TRUST_PROXY_HEADERS gate
+    # ever runs — verified in asr-inference that this made the application-level gate a no-op.
+    # Disabling it makes request.client.host always the genuine raw TCP peer.
+    uvicorn.run(app, host=host, port=port, proxy_headers=False)
