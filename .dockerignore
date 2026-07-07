@@ -16,6 +16,14 @@
 **/__pycache__
 **/*.pyc
 
+# cargo-mutants output (local mutation-testing runs, gitignored but present on disk) — realtime-
+# gateway's and platform-api's Dockerfiles COPY services/shared-ticket wholesale (a path
+# dependency), so without this a `docker build` run while mutants.out exists on disk (a normal
+# state during/after a mutation-testing session) bakes ~1.3MB of unrelated test-run logs into
+# both images' build context.
+**/mutants.out
+**/mutants.out.old
+
 # Runtime data / PII — must NEVER be baked into a distributable image.
 # e.g. services/ml-inference/audio-storage holds real learner recordings (gitignored, but present
 # on disk, so a bare `COPY services/ml-inference/ ...` would otherwise pull it into the image).
