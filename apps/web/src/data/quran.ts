@@ -103,7 +103,11 @@ export async function loadSurahVerses(surahNumber = 1): Promise<QuranVerse[]> {
     return cachedSurah;
   } catch (err) {
     loadError = err instanceof Error ? err.message : "Failed to load Quran data";
-    cachedSurah = [];
+    // Leave cachedSurah as-is (null if nothing has ever loaded, or the last successful load) —
+    // NOT []. getQuranVerses()'s `cachedSurah ?? staticVerses` only falls back to the static
+    // Al-Fatihah bundle when cachedSurah is null/undefined; setting it to [] here used to defeat
+    // that fallback and leave every caller of getQuranVerses() with a genuinely empty reader for
+    // the rest of the session, even though a perfectly good offline fallback exists.
     return [];
   } finally {
     isLoading = false;
