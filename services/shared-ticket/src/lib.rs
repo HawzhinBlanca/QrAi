@@ -239,4 +239,61 @@ mod tests {
             Err(TicketError::Malformed)
         );
     }
+
+    #[test]
+    fn rejects_ticket_with_blank_tenant_id() {
+        let ticket = "rt_v1.s1..l1.false.2000.n1.deadbeef";
+        assert_eq!(
+            validate_realtime_ticket("s1", ticket, "sec", 1_000),
+            Err(TicketError::Malformed)
+        );
+    }
+
+    #[test]
+    fn rejects_ticket_with_blank_learner_id() {
+        let ticket = "rt_v1.s1.t1..false.2000.n1.deadbeef";
+        assert_eq!(
+            validate_realtime_ticket("s1", ticket, "sec", 1_000),
+            Err(TicketError::Malformed)
+        );
+    }
+
+    #[test]
+    fn rejects_ticket_with_blank_nonce() {
+        let ticket = "rt_v1.s1.t1.l1.false.2000..deadbeef";
+        assert_eq!(
+            validate_realtime_ticket("s1", ticket, "sec", 1_000),
+            Err(TicketError::Malformed)
+        );
+    }
+
+    #[test]
+    fn rejects_wrong_version_tag() {
+        let ticket = "rt_v2.s1.t1.l1.false.2000.n1.deadbeef";
+        assert_eq!(
+            validate_realtime_ticket("s1", ticket, "sec", 1_000),
+            Err(TicketError::Malformed)
+        );
+    }
+
+    #[test]
+    fn rejects_ticket_with_trailing_extra_parts() {
+        let secret = "test-secret";
+        let ticket = issue_realtime_ticket("s1", "t1", "l1", false, 2_000, "n1", secret);
+        let with_trailer = format!("{ticket}.extra");
+        assert_eq!(
+            validate_realtime_ticket("s1", &with_trailer, secret, 1_000),
+            Err(TicketError::Malformed)
+        );
+    }
+
+    #[test]
+    fn constant_time_eq_rejects_differences_that_would_cancel_under_xor_fold() {
+        // A fold using `^` instead of `|` would let two differing bytes cancel
+        // each other out (1 ^ 1 == 0), wrongly reporting equality. `|` cannot
+        // cancel: any nonzero byte-diff keeps the accumulator nonzero.
+        let left = [0b0000_0001, 0b0000_0010];
+        let right = [0b0000_0000, 0b0000_0011];
+        assert!(!constant_time_eq(&left, &right));
+    }
 }
