@@ -227,7 +227,7 @@ pub async fn list_sessions(
     let mut tx = crate::begin_tenant_tx(&state.pool, &actor.tenant_id).await?;
 
     let rows = sqlx::query(
-        "SELECT id, learner_id, quran_ref, mode, confidence, review_status, started_at, latency_ms
+        "SELECT id, learner_id, quran_ref, mode, confidence::float8 AS confidence, review_status, started_at, latency_ms
          FROM recitation_sessions WHERE tenant_id = $1 ORDER BY started_at DESC LIMIT 50",
     )
     .bind(&actor.tenant_id)

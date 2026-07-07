@@ -580,6 +580,99 @@ async fn agent_run_invalid_review_status_is_bad_request() {
     assert_eq!(res.status(), StatusCode::BAD_REQUEST);
 }
 
+/// `confidence` is stored as Postgres NUMERIC but list_sessions/list_agent_runs used to decode it
+/// straight into f64 without a `::float8` cast — sqlx cannot decode NUMERIC as f64 at all (a type
+/// mismatch, not a NULL), so the decode always failed and `unwrap_or(0.0)` silently reported every
+/// session/agent-run's confidence as 0.0 regardless of its real value. Pin a non-zero DB value and
+/// confirm the list endpoints actually return it, not a fallback zero.
+#[tokio::test]
+#[ignore = "requires live Postgres"]
+async fn list_endpoints_decode_real_numeric_confidence_not_a_fallback_zero() {
+    let state = test_state();
+    let router = platform_router_with_rate_limit(state.clone(), false);
+    let learner_id = format!("learner-confidence-{}", next_suffix());
+
+    sqlx::query(
+        "INSERT INTO users (id, tenant_id, display_name, role, language)
+         VALUES ($1, 'hikmah-pilot-erbil', 'Confidence Learner', 'learner', 'ckb')",
+    )
+    .bind(&learner_id)
+    .execute(&state.pool)
+    .await
+    .unwrap();
+
+    let session_id = create_test_session_for_learner(&router, &learner_id).await;
+    sqlx::query("UPDATE recitation_sessions SET confidence = 0.87 WHERE id = $1")
+        .bind(&session_id)
+        .execute(&state.pool)
+        .await
+        .unwrap();
+
+    let sessions = send_json(
+        &router,
+        Method::GET,
+        "/v1/recitation-sessions",
+        Some("hikmah-pilot-erbil"),
+        Some("admin"),
+        json!({}),
+    )
+    .await;
+    assert_eq!(sessions.status(), StatusCode::OK);
+    let sessions_body: Vec<Value> = read_json(sessions).await;
+    let listed = sessions_body
+        .iter()
+        .find(|s| s["id"] == session_id)
+        .unwrap_or_else(|| panic!("seeded session {session_id} missing from list_sessions"));
+    assert_eq!(
+        listed["confidence"].as_f64(),
+        Some(0.87),
+        "list_sessions must decode real NUMERIC confidence, not fall back to 0.0"
+    );
+
+    let agent_run_id = format!("agent-confidence-{}", next_suffix());
+    let audit_id = format!("audit-confidence-{}", next_suffix());
+    sqlx::query(
+        "INSERT INTO audit_events (id, tenant_id, actor_id, action, subject_type, subject_id)
+         VALUES ($1, 'hikmah-pilot-erbil', 'ops-1', 'test.seed', 'agent_run', $2)",
+    )
+    .bind(&audit_id)
+    .bind(&agent_run_id)
+    .execute(&state.pool)
+    .await
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO agent_runs
+           (id, tenant_id, name, goal, status, confidence, review_status, source_refs, trace, audit_event_id)
+         VALUES ($1, 'hikmah-pilot-erbil', 'Confidence Agent', 'test goal', 'approved', 0.73, 'draft', '[]'::jsonb, '{}'::jsonb, $2)",
+    )
+    .bind(&agent_run_id)
+    .bind(&audit_id)
+    .execute(&state.pool)
+    .await
+    .unwrap();
+
+    let agent_runs = send_json(
+        &router,
+        Method::GET,
+        "/v1/agent-runs",
+        Some("hikmah-pilot-erbil"),
+        Some("ops"),
+        json!({}),
+    )
+    .await;
+    assert_eq!(agent_runs.status(), StatusCode::OK);
+    let agent_runs_body: Vec<Value> = read_json(agent_runs).await;
+    let listed_agent_run = agent_runs_body
+        .iter()
+        .find(|a| a["id"] == agent_run_id)
+        .unwrap_or_else(|| panic!("seeded agent run {agent_run_id} missing from list_agent_runs"));
+    assert_eq!(
+        listed_agent_run["confidence"].as_f64(),
+        Some(0.73),
+        "list_agent_runs must decode real NUMERIC confidence, not fall back to 0.0"
+    );
+}
+
 /// Persist + read-back of a session's real alignment (the link that surfaces a learner's
 /// recitation in the console). Synthetic "extra" ids are skipped; a non-owner learner is denied.
 #[tokio::test]

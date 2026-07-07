@@ -151,7 +151,7 @@ pub async fn list_agent_runs(
     let mut tx = crate::begin_tenant_tx(&state.pool, &actor.tenant_id).await?;
 
     let rows = sqlx::query(
-        "SELECT id, name, goal, status, confidence, review_status, source_refs, trace
+        "SELECT id, name, goal, status, confidence::float8 AS confidence, review_status, source_refs, trace
          FROM agent_runs WHERE tenant_id = $1 ORDER BY created_at DESC LIMIT 50",
     )
     .bind(&actor.tenant_id)
