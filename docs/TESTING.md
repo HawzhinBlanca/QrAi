@@ -11,7 +11,10 @@
    (`ml-inference/alignment.test.mjs`, `ml-inference/tajweed.test.mjs`,
    `ml-inference/server.test.mjs`, `agents/agents.test.mjs`, run by explicit path
    because a dir glob would import the listening `server.mjs`); `cargo test` for both
-   Rust services.
+   Rust services. `ml-inference/golden-regression.test.mjs` (live-computed alignment/
+   tajweed metrics against the real canonical Quran data) is NOT in this list yet — it's
+   wired into `scripts/proof.sh` but adding it to `verify.sh` needs an edit to that
+   CI-protected file; tracked as an open follow-up.
 5. **build** — `pnpm build` (contracts + quran-data + web).
 
 `bash scripts/verify.sh --fast` runs only lint + typecheck (used by the PostToolUse hook).
@@ -19,7 +22,10 @@
 > **verify.sh vs `pnpm test` / `pnpm proof`.** The two legacy commands run the platform-api
 > integration tests with `--include-ignored` *unconditionally*, so they **fail** without a
 > live Postgres. `verify.sh` is the gate that **skips** those tests when no DB is reachable
-> (it never fakes them) — that's why CI (which has no DB) stays green on `verify.sh`.
+> (it never fakes them) — this matters for a local run with no Postgres started, not for CI:
+> `.github/workflows/ci.yml` runs a real `postgres:16-alpine` service container and applies the
+> full migration list before `verify.sh` runs, so the DB-gated tests DO execute (and are asserted)
+> in CI, same as a local run with Postgres up.
 > `scripts/proof.sh` (`pnpm proof`, also what `scripts/smoke-all.mjs`'s first step runs) covers
 > more test suites than it used to: it now also runs `apps/mobile`'s and
 > `services/ml-inference`/`services/agents`' `node:test` suites directly by path (none of the
