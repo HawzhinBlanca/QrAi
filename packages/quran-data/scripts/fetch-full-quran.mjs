@@ -57,25 +57,6 @@ function splitWords(text) {
     .filter((word) => word.length > 0);
 }
 
-// FNV-1a32 checksum (same as contracts)
-function fnv1a32(input) {
-  let hash = 0x811c9dc5;
-  for (let i = 0; i < input.length; i++) {
-    hash ^= input.charCodeAt(i);
-    hash = Math.imul(hash, 0x01000193);
-  }
-  return `fnv1a32:${(hash >>> 0).toString(16).padStart(8, "0")}`;
-}
-
-// SHA-256 using Web Crypto (available in Node 22)
-async function sha256(input) {
-  const encoder = new TextEncoder();
-  const data = encoder.encode(input);
-  const hashBuffer = await crypto.subtle.digest("SHA-256", data);
-  const hashArray = Array.from(new Uint8Array(hashBuffer));
-  return hashArray.map((b) => b.toString(16).padStart(2, "0")).join("");
-}
-
 async function processSurah(surahMeta) {
   const surah = await fetchSurah(surahMeta.number);
   const ayahs = surah.ayahs.map((ayah) => {

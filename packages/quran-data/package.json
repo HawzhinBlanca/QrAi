@@ -18,6 +18,7 @@
     "seed:all": "pnpm seed:sql && pnpm seed:json",
     "seed:json": "jiti scripts/write-json-seed.mjs",
     "seed:sql": "jiti scripts/write-sql-seed.mjs",
+    "seed:full-quran:sql": "jiti scripts/write-full-quran-sql-seed.mjs",
     "fetch:quran": "node scripts/fetch-full-quran.mjs",
     "test": "vitest run",
     "typecheck": "tsc -p tsconfig.json --pretty false"

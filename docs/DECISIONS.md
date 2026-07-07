@@ -89,3 +89,61 @@ dependencies — so it works in both the Node test environment and the browser b
 produce `sha256:` checksums. A backward-compatibility test locks this contract. The pure-JS
 implementation adds ~0.1ms per checksum vs. the native `node:crypto` path, which is
 acceptable for the import/verification use case (not on a hot path).
+
+---
+
+## ADR-0005 — Full-Quran seed script now shares the real checksum builder; re-seed required for any already-seeded database
+**Date:** 2026-07-07 · **Status:** Accepted
+
+**Context.** `packages/quran-data/scripts/seed-full-quran-to-db.sh` computed each row's
+`source_checksum` inline as `fnv1a32(rawText)` — a hash of the Arabic text alone. Both
+`verifyCanonicalWord`/`verifyCanonicalAyah` (the only functions in the codebase that
+validate these checksums) reconstruct the checksum from `canonicalWordPayload`/
+`canonicalAyahPayload` — a pipe-joined string of `id|quranRef.display|ayahId|wordIndex|
+text|sourceId|edition|scriptType|importVersion` — and this is true of *both* the SHA-256
+path and the legacy FNV-1a fallback added in ADR-0004 (`legacyFnv1aChecksum` also hashes
+the full payload, not raw text). So every row the production seed script wrote for the
+real 114-surah corpus — including the currently-deployed `hikmah-pilot-erbil` database, if
+already seeded from this script — has a `source_checksum` that neither verification path
+can validate. This was latent (nothing calls `verifyCanonicalWord`/`verifyCanonicalAyah`
+against the live DB today), not an active bug, but a real integrity gap: if a periodic
+integrity sweep or a future write-path check is ever added, every full-Quran row fails it.
+
+**Decision.** Reuse the existing, tested checksum machinery instead of re-deriving it a
+third time:
+1. `packages/quran-data/src/index.ts` gains `buildFullQuranSurahBundle(surah, sourceId,
+   importVersion)`, generalizing `buildCanonicalAyah`/`buildCanonicalWords`/
+   `createAyahReference`/`createWordReference` (previously Fatihah-only, hardcoding the
+   `"Al-Fatihah"` display label) with a `surahLabel` parameter that defaults to
+   `"Al-Fatihah"` — so `buildFatihahImportBundle`'s existing checksums are byte-for-byte
+   unchanged. It calls the same `createCanonicalChecksum`/`createCanonicalAyahChecksum`
+   functions `verifyCanonicalWord`/`verifyCanonicalAyah` actually check against.
+2. `toCanonicalSqlSeed` now emits `ON CONFLICT (id) DO UPDATE SET ... source_checksum =
+   excluded.source_checksum` (previously no conflict handling at all) for both
+   `canonical_ayahs` and `canonical_words` — re-running the seed against an
+   already-seeded database corrects every row's checksum in place; no separate migration
+   or one-off `UPDATE` script is needed.
+3. `packages/quran-data/scripts/write-full-quran-sql-seed.mjs` (run via `jiti`, the
+   existing pattern used by `seed:sql`/`seed:json`) generates the full 114-surah SQL from
+   `buildFullQuranSurahBundle`, printed to stdout rather than committed (at ~12MB it is a
+   regenerable build artifact, not a migration).
+   `seed-full-quran-to-db.sh` now pipes this script's output into `psql` instead of its
+   previous broken embedded `node -e` snippet.
+4. `packages/quran-data/tests/full-quran-checksum-integrity.test.ts` proves
+   `verifyCanonicalAyah`/`verifyCanonicalWord` accept every one of the real 6236 ayahs and
+   all their words across all 114 surahs — not just the 7-ayah Fatihah fixture.
+5. The dead, never-invoked `fnv1a32`/`sha256` helper functions in
+   `packages/quran-data/scripts/fetch-full-quran.mjs` are removed (a third, unused
+   duplicate of this same logic).
+
+**Consequences.** Any database already seeded by the old
+`seed-full-quran-to-db.sh` (this includes the `hikmah-pilot-erbil` pilot database, if it
+was seeded from the full-Quran script rather than only the Fatihah migration) has
+`canonical_ayahs`/`canonical_words` rows with checksums in the old, unvalidatable format.
+**Re-running `seed-full-quran-to-db.sh` against that database self-heals it** (the new
+`ON CONFLICT ... DO UPDATE` corrects `source_checksum` — and defensively `text_uthmani` —
+in place; no downtime or manual migration required), but this must be run deliberately by
+whoever operates that database, and coordinated with them before running it against a
+live pilot. No production code path currently depends on these checksums validating (the
+gap was latent), so there is no user-facing regression from delaying the re-seed — but it
+should happen before any integrity-sweep or write-path checksum validation is added.
