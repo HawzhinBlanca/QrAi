@@ -512,12 +512,27 @@ async fn progress_quality_out_of_range_is_clamped_not_500() {
 }
 
 /// The un-capped active-learners endpoint returns the COMPLETE distinct learner set for the tenant
-/// (not the 50-row session listing that silently drops learners), staff only. The seed gives
-/// learner-1 a recitation session.
+/// (not the 50-row session listing that silently drops learners), staff only. Self-seeds its own
+/// learner + session rather than depending on a fixed "learner-1" seed row: this test used to assert
+/// on the seeded learner-1's presence, but smoke-api.mjs's privacy-delete success path deletes
+/// learner-1's recitation_sessions row against this same persistent local Postgres — any
+/// `pnpm smoke:all` run (or a plain re-run of smoke-api.mjs) before this test made it fail with
+/// "seeded learner present", even though nothing about the endpoint itself was broken.
 #[tokio::test]
 #[ignore = "requires live Postgres"]
 async fn list_active_learners_is_distinct_and_staff_only() {
     let router = platform_router_with_rate_limit(test_state(), false);
+    let learner_id = format!("learner-active-{}", next_suffix());
+
+    sqlx::query(
+        "INSERT INTO users (id, tenant_id, display_name, role, language)
+         VALUES ($1, 'hikmah-pilot-erbil', 'Active Learners Probe', 'learner', 'ckb')",
+    )
+    .bind(&learner_id)
+    .execute(&test_state().pool)
+    .await
+    .unwrap();
+    create_test_session_for_learner(&router, &learner_id).await;
 
     let ok = send_json(
         &router,
@@ -532,8 +547,8 @@ async fn list_active_learners_is_distinct_and_staff_only() {
     let arr: Value = read_json(ok).await;
     let ids = arr.as_array().expect("array of learner ids");
     assert!(
-        ids.iter().any(|v| v == "learner-1"),
-        "seeded learner present"
+        ids.iter().any(|v| v == learner_id.as_str()),
+        "self-seeded learner present"
     );
     let mut seen = std::collections::HashSet::new();
     assert!(
