@@ -350,7 +350,7 @@ async def transcribe(req: TranscribeRequest):
             model,
             tmp_path,
             language=req.language,
-            word_timestamps=req.wordTimestamps if req.wordTimestamps else True,
+            word_timestamps=req.wordTimestamps,
             verbose=False,
         )
 
