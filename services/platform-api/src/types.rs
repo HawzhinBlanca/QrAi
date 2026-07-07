@@ -365,16 +365,50 @@ impl IntoResponse for ApiError {
             Self::Database(_) => StatusCode::INTERNAL_SERVER_ERROR,
             Self::Upstream(_) => StatusCode::BAD_GATEWAY,
         };
-        (
-            status,
-            Json(ApiErrorBody {
-                error: self.to_string(),
-            }),
-        )
-            .into_response()
+        // Database errors get the SAME treatment as Upstream (see its doc comment): the raw sqlx/
+        // Postgres error text can embed table/constraint names and, for constraint-violation DETAIL
+        // lines, the actual conflicting VALUES (e.g. an email address that collided on a unique
+        // index) — verified by constructing a real duplicate-key error and observing it serialize
+        // straight into the response body. Log the detail server-side; return a generic message.
+        let message = match &self {
+            Self::Database(detail) => {
+                tracing::error!("database error: {detail}");
+                "a database error occurred".to_owned()
+            }
+            _ => self.to_string(),
+        };
+        (status, Json(ApiErrorBody { error: message })).into_response()
     }
 }
 
 pub fn next_id(prefix: &str) -> String {
     format!("{prefix}-{}", uuid::Uuid::new_v4())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A client-facing 500 for a DB error must never echo the raw sqlx/Postgres error text: it can
+    /// contain table/constraint names and, for constraint-violation DETAIL lines, the actual
+    /// conflicting VALUES (e.g. another user's email that collided on a unique index).
+    #[tokio::test]
+    async fn database_error_response_never_leaks_the_raw_message() {
+        let raw = "error returned from database: duplicate key value violates unique constraint \
+                    \"idx_users_tenant_email_unique\" DETAIL: Key (tenant_id, email)=\
+                    (hikmah-pilot-erbil, someone@example.com) already exists.";
+        let response = ApiError::Database(raw.to_owned()).into_response();
+        assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let text = String::from_utf8_lossy(&body);
+        assert!(
+            !text.contains("someone@example.com")
+                && !text.contains("idx_users_tenant_email_unique"),
+            "response body leaked the raw database error: {text}",
+        );
+        assert!(text.contains("a database error occurred"), "got: {text}");
+    }
 }
