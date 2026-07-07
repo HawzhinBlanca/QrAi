@@ -55,7 +55,14 @@ impl AppState {
         Self {
             pool,
             jwt_config: Arc::new(jwt_config),
-            http_client: reqwest::Client::new(),
+            // A bare `Client::new()` has no request timeout, so a stuck/hung ML or ASR upstream
+            // (e.g. a GPU/MPS fault mid-inference) would block the calling request indefinitely
+            // instead of failing over with a 502 in bounded time. 60s comfortably covers Whisper
+            // transcription on CPU, which can legitimately take tens of seconds.
+            http_client: reqwest::Client::builder()
+                .timeout(std::time::Duration::from_secs(60))
+                .build()
+                .expect("reqwest client with a fixed timeout is always constructible"),
             ml_inference_url: env_or("ML_INFERENCE_URL", "http://127.0.0.1:8090"),
             ml_api_key: env_or("ML_API_KEY", "smoke-ml-api-key"),
             asr_inference_url: env_or("ASR_INFERENCE_URL", "http://127.0.0.1:8091"),

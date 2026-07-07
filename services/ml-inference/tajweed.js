@@ -100,7 +100,11 @@ export function analyzeAyah(ayahId, words) {
     const current = words[i].text.replace(/[ۖ-ۭ]+$/u, "");
     const next = words[i + 1].text;
     const endsWithNoonSakin = /نْ?$/.test(current);
-    const endsWithTanween = /[ًٌٍ]$/.test(current);
+    // Tanween fath (ً) is almost always followed by a bare trailing alef in standard Uthmani
+    // orthography (e.g. كِتَابًا) - the mark sits on the letter before the alef, not on the final
+    // character, so it needs an optional trailing alef to match. Tanween damm/kasr (ٌ/ٍ) have no
+    // trailing letter and already match without it.
+    const endsWithTanween = /[ًٌٍ]ا?$/.test(current);
 
     if (endsWithNoonSakin || endsWithTanween) {
       const nextLetter = next.replace(/[\u064B-\u065F\u0670\u0640]/g, "").trim()[0];
