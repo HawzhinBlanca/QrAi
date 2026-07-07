@@ -245,6 +245,16 @@ button:disabled {
   border: 0;
   color: #5c564d;
   background: transparent;
+  cursor: pointer;
+}
+
+.language-button select {
+  border: 0;
+  color: inherit;
+  background: transparent;
+  outline: 0;
+  font: inherit;
+  cursor: pointer;
 }
 
 .profile-chip {
