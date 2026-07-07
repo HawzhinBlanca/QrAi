@@ -153,6 +153,30 @@ describe("Quran AI platform contracts", () => {
     expect(canShowLearnerFacingAiOutput(weakRun)).toBe(false);
   });
 
+  it("also allows scholar-approved output through the gate (not just teacher-reviewed)", () => {
+    const scholarApprovedRun: Pick<AgentRun, "confidence" | "reviewStatus" | "sources"> = {
+      confidence: 0.9,
+      reviewStatus: "scholar-approved",
+      sources: [{ id: "scholar-board", title: "Scholar Board", citation: "Approved tajweed note" }],
+    };
+    expect(canShowLearnerFacingAiOutput(scholarApprovedRun)).toBe(true);
+  });
+
+  it("fails CLOSED on an unrecognized reviewStatus, not open", () => {
+    // reviewStatus is a closed TypeScript union at compile time, but its runtime value on both
+    // AgentRun and TajweedFinding is deserialized from an HTTP JSON response (services/ml-inference
+    // sets it via a plain JS string literal, with no server-side schema enforcement) — a typo or a
+    // future status value added upstream, with this gate not updated to match, would arrive here as
+    // an unrecognized string. The gate must treat that as "not approved," never as "not explicitly
+    // blocked, so allow it" — the cast below simulates exactly that runtime mismatch.
+    const unrecognizedStatusRun = {
+      confidence: 0.99,
+      reviewStatus: "under-review" as unknown as AgentRun["reviewStatus"],
+      sources: [{ id: "scholar-board", title: "Scholar Board", citation: "Approved tajweed note" }],
+    };
+    expect(canShowLearnerFacingAiOutput(unrecognizedStatusRun)).toBe(false);
+  });
+
   it("keeps discard-mode audio out of storage paths", () => {
     expect(mustDiscardAudio("discard")).toBe(true);
     expect(mustDiscardAudio("teacher-review")).toBe(false);
