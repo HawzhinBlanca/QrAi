@@ -10,7 +10,7 @@
  * - Tajweed/alignment findings display
  */
 
-import React, { useState, useEffect, useCallback } from "react";
+import React, { useState, useEffect, useCallback, useRef } from "react";
 import {
   View,
   Text,
@@ -74,6 +74,12 @@ export default function App() {
   // and the consent sent to the backend reflects the learner's actual choices (no fabricated approval).
   const [recordingConsent, setRecordingConsent] = useState(false);
   const [guardianApproved, setGuardianApproved] = useState(false);
+  // Guards startRecording against a double-tap: `recording` only flips true after several awaited
+  // calls (a real mic permission prompt among them, which can take real wall-clock time), so a
+  // second tap before that resolves would otherwise pass the `recording` check too, create a
+  // second Audio.Recording, and overwrite globalThis.__recording — orphaning the first recording
+  // (never stopped) and requesting mic permission twice. Set synchronously, before any await.
+  const startingRecordingRef = useRef(false);
 
   // Actor auth headers for the platform API (Bearer once logged in). Pure logic in ./lib/session.
   const authHeaders = useCallback((): Record<string, string> => buildAuthHeaders(user), [user]);
@@ -113,6 +119,12 @@ export default function App() {
       );
       return;
     }
+    // See startingRecordingRef's declaration comment: block re-entry synchronously, before the
+    // mic-permission await, so a double-tap can't create a second Audio.Recording.
+    if (startingRecordingRef.current) {
+      return;
+    }
+    startingRecordingRef.current = true;
     try {
       const { status } = await Audio.requestPermissionsAsync();
       if (status !== "granted") {
@@ -131,6 +143,8 @@ export default function App() {
       (globalThis as any).__recording = rec;
     } catch (e) {
       setError("Recording failed to start");
+    } finally {
+      startingRecordingRef.current = false;
     }
   }, [recordingConsent]);
 
