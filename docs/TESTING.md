@@ -8,7 +8,8 @@
    (TS has no separate linter; type safety is the TS lint, run next.)
 3. **typecheck** — `tsc` for `@quran-ai/contracts`, `@quran-ai/quran-data`, `@quran-ai/web`.
 4. **test** — vitest for the three TS packages; `node --test` for the Node services
-   (`ml-inference/alignment.test.mjs`, `agents/agents.test.mjs`, run by explicit path
+   (`ml-inference/alignment.test.mjs`, `ml-inference/tajweed.test.mjs`,
+   `ml-inference/server.test.mjs`, `agents/agents.test.mjs`, run by explicit path
    because a dir glob would import the listening `server.mjs`); `cargo test` for both
    Rust services.
 5. **build** — `pnpm build` (contracts + quran-data + web).
@@ -66,7 +67,8 @@ The **live SQL RLS smoke** proves the policies in isolation without the app:
 
 ```bash
 POSTGRES_RLS_SMOKE_URL="$DATABASE_URL" node scripts/smoke-sql.mjs
-# -> live.status "passed", 14 tenant tables, transaction-rollback mode
+# -> live.status "passed", 15 tenant tables (see `tenantTables` in scripts/smoke-sql.mjs
+# for the current list — it's grown since this doc was first written), transaction-rollback mode
 ```
 
 ## Conventions
