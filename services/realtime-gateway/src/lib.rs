@@ -584,24 +584,43 @@ async fn validate_origin(
     next.run(request).await
 }
 
-async fn audio_ws(
-    State(state): State<GatewayServerState>,
-    Path(session_id): Path<String>,
-    Query(query): Query<HashMap<String, String>>,
-    upgrade: WebSocketUpgrade,
-) -> impl IntoResponse {
+/// Outcome of validating a realtime ticket for a WebSocket upgrade attempt, decided BEFORE any
+/// actual upgrade is attempted.
+enum TicketCheckOutcome {
+    Accepted {
+        learner_id: String,
+        trace_id: Option<String>,
+    },
+    Rejected(StatusCode),
+}
+
+/// All of `audio_ws`'s ticket validation, tenant binding, and single-use/replay enforcement,
+/// split into its own function so this security-critical logic is unit-testable directly.
+/// axum's `WebSocketUpgrade` extractor cannot complete an upgrade inside an in-process
+/// `oneshot()` test (it requires a real HTTP/1.1 upgrade) — confirmed empirically: a test that
+/// asserts `StatusCode::UPGRADE_REQUIRED` from a `oneshot()` call never actually enters the
+/// handler body at all, regardless of ticket validity, tenant match, or replay state. That means
+/// any logic left inside `audio_ws` itself is unreachable by `cargo test` and was, before this
+/// split, exercised ONLY by `scripts/smoke-gateway.mjs` against a live process — a script that is
+/// not part of `scripts/verify.sh`'s CI gate. `check_ticket` has no such dependency, so it can be
+/// tested directly (see `mod tests`).
+async fn check_ticket(
+    state: &GatewayServerState,
+    session_id: &str,
+    query: &HashMap<String, String>,
+) -> TicketCheckOutcome {
     let Some(ticket) = query.get("ticket").map(String::as_str) else {
-        return StatusCode::UNAUTHORIZED.into_response();
+        return TicketCheckOutcome::Rejected(StatusCode::UNAUTHORIZED);
     };
 
     let claims = match validate_realtime_ticket(
-        &session_id,
+        session_id,
         ticket,
         &state.config.ticket_secret,
         unix_now_seconds(),
     ) {
         Ok(claims) => claims,
-        Err(_) => return StatusCode::UNAUTHORIZED.into_response(),
+        Err(_) => return TicketCheckOutcome::Rejected(StatusCode::UNAUTHORIZED),
     };
 
     // Tenant binding: a gateway instance serves exactly one tenant (GATEWAY_TENANT_ID). The HMAC
@@ -614,7 +633,7 @@ async fn audio_ws(
             claims.tenant_id,
             state.config.tenant_id
         );
-        return StatusCode::UNAUTHORIZED.into_response();
+        return TicketCheckOutcome::Rejected(StatusCode::UNAUTHORIZED);
     }
 
     // Single-use enforcement. Redis (when configured) makes this survive gateway
@@ -633,7 +652,7 @@ async fn audio_ws(
         && state.gateway.redis_configured()
         && redis_dedup == TicketDedup::Unavailable
     {
-        return StatusCode::SERVICE_UNAVAILABLE.into_response();
+        return TicketCheckOutcome::Rejected(StatusCode::SERVICE_UNAVAILABLE);
     }
     let mem_replay = {
         let mut consumed_tickets = state.consumed_tickets.write().await;
@@ -642,7 +661,7 @@ async fn audio_ws(
             .is_some()
     };
     if mem_replay || redis_dedup == TicketDedup::Replay {
-        return StatusCode::UNAUTHORIZED.into_response();
+        return TicketCheckOutcome::Rejected(StatusCode::UNAUTHORIZED);
     }
 
     let trace_id = query
@@ -652,11 +671,29 @@ async fn audio_ws(
         .filter(|value| !value.is_empty())
         .map(ToOwned::to_owned);
 
-    upgrade
-        .on_upgrade(move |socket| {
-            handle_audio_socket(socket, session_id, claims.learner_id, trace_id, state)
-        })
-        .into_response()
+    TicketCheckOutcome::Accepted {
+        learner_id: claims.learner_id,
+        trace_id,
+    }
+}
+
+async fn audio_ws(
+    State(state): State<GatewayServerState>,
+    Path(session_id): Path<String>,
+    Query(query): Query<HashMap<String, String>>,
+    upgrade: WebSocketUpgrade,
+) -> impl IntoResponse {
+    match check_ticket(&state, &session_id, &query).await {
+        TicketCheckOutcome::Rejected(status) => status.into_response(),
+        TicketCheckOutcome::Accepted {
+            learner_id,
+            trace_id,
+        } => upgrade
+            .on_upgrade(move |socket| {
+                handle_audio_socket(socket, session_id, learner_id, trace_id, state)
+            })
+            .into_response(),
+    }
 }
 
 // TicketError and RealtimeTicketClaims are re-exported from quran_ai_shared_ticket above.
@@ -913,9 +950,10 @@ mod tests {
     use std::collections::HashMap;
 
     use super::{
-        AudioChunk, GatewayError, GatewayServerConfig, MAX_CHUNK_BYTES, RealtimeGateway,
-        TicketDedup, TicketError, evict_expired, gateway_router, gateway_router_with_rate_limit,
-        issue_realtime_ticket, ticket_hash, validate_realtime_ticket,
+        AudioChunk, GatewayError, GatewayServerConfig, GatewayServerState, MAX_CHUNK_BYTES,
+        RealtimeGateway, TicketCheckOutcome, TicketDedup, TicketError, check_ticket, evict_expired,
+        gateway_router, gateway_router_with_rate_limit, issue_realtime_ticket, ticket_hash,
+        unix_now_seconds, validate_realtime_ticket,
     };
 
     fn chunk(session_id: &str, chunk_id: &str) -> AudioChunk {
@@ -1272,6 +1310,188 @@ mod tests {
         unsafe {
             std::env::remove_var("ALLOW_INSECURE_DEFAULTS");
             std::env::remove_var("CORS_ALLOWED_ORIGINS");
+        }
+    }
+
+    // check_ticket tests: this is the logic that used to live directly inside audio_ws, where it
+    // was unreachable by cargo test at all (see check_ticket's own doc comment). Extracting it let
+    // these tests exercise ticket validity, tenant binding, and replay rejection directly.
+    use axum::http::StatusCode;
+
+    fn state_for_ticket_tests(config: GatewayServerConfig) -> GatewayServerState {
+        GatewayServerState {
+            gateway: RealtimeGateway::new(config.chunk_capacity),
+            config,
+            consumed_tickets: std::sync::Arc::new(tokio::sync::RwLock::new(HashMap::new())),
+            http_client: reqwest::Client::new(),
+        }
+    }
+
+    #[tokio::test]
+    async fn check_ticket_accepts_a_valid_ticket_and_extracts_learner_and_trace_id() {
+        let secret = "check-ticket-secret";
+        let tenant_id = "tenant-check-ticket";
+        let state = state_for_ticket_tests(GatewayServerConfig {
+            ticket_secret: secret.to_owned(),
+            tenant_id: tenant_id.to_owned(),
+            ..GatewayServerConfig::default()
+        });
+        let ticket = issue_realtime_ticket(
+            "session-1",
+            tenant_id,
+            "learner-1",
+            false,
+            unix_now_seconds() + 300,
+            "nonce-1",
+            secret,
+        );
+        let mut query = HashMap::new();
+        query.insert("ticket".to_owned(), ticket);
+        query.insert("trace_id".to_owned(), "trace-abc".to_owned());
+
+        match check_ticket(&state, "session-1", &query).await {
+            TicketCheckOutcome::Accepted {
+                learner_id,
+                trace_id,
+            } => {
+                assert_eq!(learner_id, "learner-1");
+                assert_eq!(trace_id.as_deref(), Some("trace-abc"));
+            }
+            TicketCheckOutcome::Rejected(status) => {
+                panic!("expected a valid ticket to be accepted, got {status}")
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn check_ticket_rejects_missing_ticket() {
+        let state = state_for_ticket_tests(GatewayServerConfig::default());
+        let query = HashMap::new();
+        match check_ticket(&state, "session-1", &query).await {
+            TicketCheckOutcome::Rejected(status) => {
+                assert_eq!(status, StatusCode::UNAUTHORIZED);
+            }
+            TicketCheckOutcome::Accepted { .. } => panic!("expected missing ticket to be rejected"),
+        }
+    }
+
+    /// A ticket validly signed for a DIFFERENT tenant must be rejected even though the shared HMAC
+    /// secret verifies its signature — otherwise embedding tenant_id in the ticket is pointless.
+    #[tokio::test]
+    async fn check_ticket_rejects_cross_tenant_ticket() {
+        let secret = "cross-tenant-secret";
+        let state = state_for_ticket_tests(GatewayServerConfig {
+            ticket_secret: secret.to_owned(),
+            tenant_id: "tenant-gateway-serves".to_owned(),
+            ..GatewayServerConfig::default()
+        });
+        let ticket = issue_realtime_ticket(
+            "session-1",
+            "tenant-someone-else",
+            "learner-1",
+            false,
+            unix_now_seconds() + 300,
+            "nonce-1",
+            secret,
+        );
+        let mut query = HashMap::new();
+        query.insert("ticket".to_owned(), ticket);
+
+        match check_ticket(&state, "session-1", &query).await {
+            TicketCheckOutcome::Rejected(status) => {
+                assert_eq!(status, StatusCode::UNAUTHORIZED);
+            }
+            TicketCheckOutcome::Accepted { .. } => {
+                panic!("expected a cross-tenant ticket to be rejected")
+            }
+        }
+    }
+
+    /// A valid, unexpired, correctly-tenant-bound ticket must be usable exactly once — a second
+    /// check with the SAME ticket must be rejected as a replay, never silently accepted again.
+    /// This exact check (`mem_replay || redis_dedup == TicketDedup::Replay`) was the mutation
+    /// cargo-mutants found genuinely uncaught by any Rust test before check_ticket existed.
+    #[tokio::test]
+    async fn check_ticket_rejects_a_replayed_ticket() {
+        let secret = "replay-secret";
+        let tenant_id = "tenant-replay-test";
+        let state = state_for_ticket_tests(GatewayServerConfig {
+            ticket_secret: secret.to_owned(),
+            tenant_id: tenant_id.to_owned(),
+            ..GatewayServerConfig::default()
+        });
+        let ticket = issue_realtime_ticket(
+            "session-1",
+            tenant_id,
+            "learner-1",
+            false,
+            unix_now_seconds() + 300,
+            "nonce-1",
+            secret,
+        );
+        let mut query = HashMap::new();
+        query.insert("ticket".to_owned(), ticket);
+
+        match check_ticket(&state, "session-1", &query).await {
+            TicketCheckOutcome::Accepted { .. } => {}
+            TicketCheckOutcome::Rejected(status) => {
+                panic!("expected the first use to be accepted, got {status}")
+            }
+        }
+
+        match check_ticket(&state, "session-1", &query).await {
+            TicketCheckOutcome::Rejected(status) => {
+                assert_eq!(status, StatusCode::UNAUTHORIZED);
+            }
+            TicketCheckOutcome::Accepted { .. } => {
+                panic!("expected the replayed ticket to be rejected")
+            }
+        }
+    }
+
+    /// ticket_fail_closed (opt-in, REALTIME_TICKET_FAIL_CLOSED=1) must refuse the connection
+    /// (503) when Redis is configured but unreachable, rather than silently degrading to
+    /// per-process-only replay protection — a cross-instance replay could otherwise slip through
+    /// during the outage. An unreachable (not just absent) Redis URL is enough to trigger this:
+    /// `redis_mark_ticket` attempts to connect, fails, and returns `TicketDedup::Unavailable`.
+    #[tokio::test]
+    async fn check_ticket_fails_closed_when_redis_configured_but_unreachable() {
+        let secret = "fail-closed-secret";
+        let tenant_id = "tenant-fail-closed";
+        let config = GatewayServerConfig {
+            ticket_secret: secret.to_owned(),
+            tenant_id: tenant_id.to_owned(),
+            ticket_fail_closed: true,
+            ..GatewayServerConfig::default()
+        };
+        let state = GatewayServerState {
+            gateway: RealtimeGateway::with_redis(
+                config.chunk_capacity,
+                Some("redis://127.0.0.1:1/".to_owned()),
+            ),
+            config,
+            consumed_tickets: std::sync::Arc::new(tokio::sync::RwLock::new(HashMap::new())),
+            http_client: reqwest::Client::new(),
+        };
+        let ticket = issue_realtime_ticket(
+            "session-1",
+            tenant_id,
+            "learner-1",
+            false,
+            unix_now_seconds() + 300,
+            "nonce-1",
+            secret,
+        );
+        let mut query = HashMap::new();
+        query.insert("ticket".to_owned(), ticket);
+
+        match check_ticket(&state, "session-1", &query).await {
+            TicketCheckOutcome::Rejected(status) => {
+                assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+            }
+            TicketCheckOutcome::Accepted { .. } => {
+                panic!("expected fail-closed to refuse the connection when Redis is unreachable")
+            }
         }
     }
 }
