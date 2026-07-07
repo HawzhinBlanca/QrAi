@@ -36,6 +36,7 @@ export function InternalSurface({
   onLanguageChange,
   onTabChange,
   onOpenCommand,
+  onSectionChange,
 }: {
   tenantId: string;
   authToken?: string;
@@ -45,6 +46,7 @@ export function InternalSurface({
   onLanguageChange: (language: SupportedLanguageCode) => void;
   onTabChange: (tab: string) => void;
   onOpenCommand: (tab: string) => void;
+  onSectionChange: (section: string) => void;
 }) {
   if (activeSection !== "admin") {
     return (
@@ -70,6 +72,8 @@ export function InternalSurface({
         activeTab={activeTab}
         onLanguageChange={onLanguageChange}
         onTabChange={onTabChange}
+        activeSection={activeSection}
+        onSectionChange={onSectionChange}
       />
     </Suspense>
   );
