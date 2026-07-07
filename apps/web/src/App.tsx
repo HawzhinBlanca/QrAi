@@ -106,7 +106,7 @@ function AuthenticatedApp({ bypassLogin = false }: { bypassLogin?: boolean }) {
   const authToken = effectiveUser?.token || undefined;
   const [activeLanguage, setActiveLanguage] = useState<SupportedLanguageCode>("ckb");
   const [activeTab, setActiveTab] = useState("recitation");
-  const [activeSection, setActiveSection] = useState<AppSection>("learner");
+  const [activeSection, setActiveSection] = useState<AppSection>(getInitialSection);
   const [practiceMode, setPracticeMode] = useState<PracticeMode>(getInitialPracticeMode);
   const [selectedWordId, setSelectedWordId] = useState("");
   const [isRecording, setIsRecording] = useState(false);
@@ -237,9 +237,18 @@ function AuthenticatedApp({ bypassLogin = false }: { bypassLogin?: boolean }) {
 
     const frame = requestAnimationFrame(updateSmokeReport);
     window.addEventListener("resize", updateSmokeReport);
+    // Recomputing only on [micState, practiceMode]/resize misses async DOM changes with no
+    // corresponding React state change here — e.g. navigating to Internal Command changes
+    // activeSection (not tracked in this effect's deps) and PlatformCommand is React.lazy, so its
+    // content lands well after this effect's initial requestAnimationFrame already fired,
+    // leaving hasCommandHero permanently stuck at a stale `false`. A MutationObserver reacts to
+    // the actual DOM settling regardless of which state caused it.
+    const observer = new MutationObserver(() => requestAnimationFrame(updateSmokeReport));
+    observer.observe(document.body, { childList: true, subtree: true, characterData: true });
     return () => {
       cancelAnimationFrame(frame);
       window.removeEventListener("resize", updateSmokeReport);
+      observer.disconnect();
     };
   }, [micState, practiceMode]);
 
@@ -773,6 +782,19 @@ interface LayoutSmokeReport {
   hasMicDenied: boolean;
   hasMicUnavailable: boolean;
   micState: MicState;
+}
+
+function getInitialSection(): AppSection {
+  if (typeof window === "undefined") {
+    return "learner";
+  }
+
+  const smokeMode = new URLSearchParams(window.location.search).get("smokeMode");
+  if (smokeMode === "admin") {
+    return "admin";
+  }
+
+  return "learner";
 }
 
 function getInitialPracticeMode(): PracticeMode {

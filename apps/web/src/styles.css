@@ -1631,6 +1631,11 @@ button:disabled {
   color: #544d42;
   background: rgba(255, 253, 248, 0.92);
   text-align: left;
+  /* Same min-width:auto grid-item trap as .reader-panel/.audio-coach: .platform-apps' own
+     minmax(0, 1fr) columns can't actually shrink below this item's min-content (driven by its
+     nowrap label/description) without this — overflowing the viewport around the 1320-1330px
+     range where practice-main-grid-style widths get tight. */
+  min-width: 0;
 }
 
 .platform-app svg {
@@ -2245,7 +2250,12 @@ button:disabled {
   color: var(--warning);
 }
 
-@media (max-width: 1320px) {
+/* 1320px left a real overflow gap: .command-grid's base (non-media) column minimums
+   (440px + 300px + 280px + 2*18px gaps = 1056px) plus the sidebar/padding overhead (~274px,
+   measured live) only actually fit starting at ~1330px viewport width — verified live: 1321px
+   overflowed by 9px, 1330px did not. 1340px adds a small safety margin against browser/font
+   rendering variance. */
+@media (max-width: 1340px) {
   .mission-hero,
   .practice-main-grid {
     grid-template-columns: minmax(0, 1fr);

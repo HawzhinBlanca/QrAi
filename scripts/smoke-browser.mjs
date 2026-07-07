@@ -25,6 +25,12 @@ try {
     // grid children. Neither existing case caught it since 1440 stays two-column and 390 already
     // had the mobile min-width:0 fix.
     { name: "laptop-practice", width: 1280, height: 900, path: "?smoke=layout&smokeMode=practice" },
+    // 1321px is the exact width that overflowed on Internal Command: .command-grid's base
+    // (non-media) column minimums (440+300+280px + 2*18px gaps = 1056px) plus sidebar/padding
+    // overhead only fit starting at ~1330px, but the layout's 1320px breakpoint switched to the
+    // safe 2-column fallback one pixel too early to cover it. No prior case exercised Internal
+    // Command's own layout at any width — this closes that gap too.
+    { name: "laptop-admin", width: 1321, height: 900, path: "?smoke=layout&smokeMode=admin", expectAdmin: true },
     { name: "desktop-home", width: 1440, height: 1100, path: "?smoke=layout" },
     { name: "desktop-practice", width: 1440, height: 1100, path: "?smoke=layout&smokeMode=practice" },
     {
@@ -56,21 +62,25 @@ try {
   for (const testCase of cases) {
     const url = `${appUrl}${testCase.path}`;
     const screenshotPath = join(artifactDir, `${testCase.name}.png`);
-    const dom = testCase.expectedMicState
+    const dom = testCase.expectedMicState || testCase.expectAdmin
       ? await runChromeWithDevTools(testCase, url, screenshotPath)
       : runChrome(testCase, url, screenshotPath).stdout;
     const report = parseSmokeReport(dom, testCase.name);
 
     assert(report.scrollWidth <= report.clientWidth + 1, `${testCase.name}: horizontal overflow ${report.scrollWidth} > ${report.clientWidth}`);
-    assert(report.hasCommandHero === false, `${testCase.name}: platform command leaked into learner screen`);
-    if (testCase.name.endsWith("home") || testCase.expectedMicState) {
-      assert(report.mode === "home", `${testCase.name}: expected home mode`);
-      assert(report.hasLearnerHome, `${testCase.name}: learner home missing`);
-      assert(report.hasStartPractice, `${testCase.name}: start practice missing`);
+    if (testCase.expectAdmin) {
+      assert(report.hasCommandHero === true, `${testCase.name}: Internal Command console did not render`);
     } else {
-      assert(report.mode === "listen", `${testCase.name}: expected practice listen mode`);
-      assert(report.hasPractice, `${testCase.name}: practice screen missing`);
-      assert(report.hasHiddenInternalsCopy, `${testCase.name}: hidden internals learner copy missing`);
+      assert(report.hasCommandHero === false, `${testCase.name}: platform command leaked into learner screen`);
+      if (testCase.name.endsWith("home") || testCase.expectedMicState) {
+        assert(report.mode === "home", `${testCase.name}: expected home mode`);
+        assert(report.hasLearnerHome, `${testCase.name}: learner home missing`);
+        assert(report.hasStartPractice, `${testCase.name}: start practice missing`);
+      } else {
+        assert(report.mode === "listen", `${testCase.name}: expected practice listen mode`);
+        assert(report.hasPractice, `${testCase.name}: practice screen missing`);
+        assert(report.hasHiddenInternalsCopy, `${testCase.name}: hidden internals learner copy missing`);
+      }
     }
     if (testCase.expectedMicState) {
       assert(report.micState === testCase.expectedMicState, `${testCase.name}: expected mic ${testCase.expectedMicState}, got ${report.micState}`);
@@ -103,7 +113,9 @@ function runChrome(testCase, url, screenshotPath) {
     "--no-first-run",
     "--no-default-browser-check",
     `--window-size=${testCase.width},${testCase.height}`,
-    "--virtual-time-budget=3000",
+    // PlatformCommand is React.lazy-loaded (Suspense); admin-section cases need a beat longer
+    // than the default budget for that chunk's dynamic import to resolve before dump-dom fires.
+    `--virtual-time-budget=${testCase.expectAdmin ? 6000 : 3000}`,
     `--screenshot=${screenshotPath}`,
     "--dump-dom",
     ...(testCase.chromeFlags ?? []),
@@ -158,7 +170,9 @@ async function runChromeWithDevTools(testCase, url, screenshotPath) {
     try {
       await client.send("Page.enable");
       await client.send("Runtime.enable");
-      const report = await waitForMicReport(client, testCase.expectedMicState);
+      const report = testCase.expectAdmin
+        ? await waitForSmokeReport(client, (r) => r.hasCommandHero === "true", "Internal Command console to render")
+        : await waitForSmokeReport(client, (r) => r.micState === testCase.expectedMicState, `mic state ${testCase.expectedMicState}`);
       const screenshot = await client.send("Page.captureScreenshot", { format: "png", fromSurface: true });
       await writeFile(screenshotPath, Buffer.from(screenshot.data, "base64"));
       return report.outerHTML;
@@ -242,7 +256,13 @@ function connectDevTools(webSocketUrl) {
   });
 }
 
-async function waitForMicReport(client, expectedMicState) {
+// Polls the #browser-smoke-report probe until `isReady` passes — used both for mic-permission
+// smoke (waiting on data-mic-state) and for the admin/Internal Command case (waiting on
+// data-has-command-hero), whose React.lazy-loaded PlatformCommand chunk needs a real polling
+// wait rather than the fixed --virtual-time-budget the non-DevTools runChrome() path uses (that
+// budget accelerates JS timers but not the real dev-server round-trip for an as-yet-uncompiled
+// lazy chunk on a cold Vite server, so a fixed budget can expire before it resolves).
+async function waitForSmokeReport(client, isReady, describeExpectation) {
   const deadline = Date.now() + 12_000;
   let lastReport;
   while (Date.now() < deadline) {
@@ -253,19 +273,20 @@ async function waitForMicReport(client, expectedMicState) {
         if (!probe) return null;
         return {
           micState: probe.getAttribute('data-mic-state'),
+          hasCommandHero: probe.getAttribute('data-has-command-hero'),
           outerHTML: probe.outerHTML,
           bodyText: document.body.innerText
         };
       })()`,
     });
     lastReport = result.result?.value ?? null;
-    if (lastReport?.micState === expectedMicState) {
+    if (lastReport && isReady(lastReport)) {
       return lastReport;
     }
     await sleep(150);
   }
 
-  throw new Error(`mic smoke expected ${expectedMicState}, last report ${JSON.stringify(lastReport)}`);
+  throw new Error(`browser smoke expected ${describeExpectation}, last report ${JSON.stringify(lastReport)}`);
 }
 
 function parseSmokeReport(dom, name) {
