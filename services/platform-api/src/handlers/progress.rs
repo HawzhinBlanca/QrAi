@@ -281,3 +281,95 @@ pub async fn update_progress(
         "quality": quality,
     })))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use chrono::Duration;
+
+    #[test]
+    fn sm2_update_pins_the_exact_ef_arithmetic() {
+        // EF' = EF + (0.1 - (5-q)*(0.08 + (5-q)*0.02)), floored at 1.3. The existing tests only
+        // assert direction (EF rose/fell), which a `+`/`-`/`*`/`/` slip in the formula can still
+        // satisfy. Pin exact values for two quality grades so the arithmetic itself is checked.
+        let state = Sm2State::default(); // ef = 2.5
+        let q5 = sm2_update(&state, 5);
+        // q=5: (5-q)=0 -> term = 0.1 - 0*(0.08+0) = 0.1 -> ef' = 2.6
+        assert!(
+            (q5.easiness_factor - 2.6).abs() < 1e-9,
+            "expected ef 2.6, got {}",
+            q5.easiness_factor
+        );
+
+        let q3 = sm2_update(&state, 3);
+        // q=3: (5-q)=2 -> term = 0.1 - 2*(0.08+2*0.02) = 0.1 - 2*0.12 = -0.14 -> ef' = 2.36
+        assert!(
+            (q3.easiness_factor - 2.36).abs() < 1e-9,
+            "expected ef 2.36, got {}",
+            q3.easiness_factor
+        );
+    }
+
+    fn days_ago(n: i64) -> chrono::NaiveDate {
+        chrono::Utc::now().date_naive() - Duration::days(n)
+    }
+
+    #[test]
+    fn compute_streak_is_zero_for_no_sessions() {
+        assert_eq!(compute_streak(&[]), 0);
+    }
+
+    #[test]
+    fn compute_streak_is_zero_when_the_most_recent_session_is_not_today_or_yesterday() {
+        assert_eq!(compute_streak(&[days_ago(2)]), 0);
+    }
+
+    #[test]
+    fn compute_streak_counts_a_single_session_today() {
+        assert_eq!(compute_streak(&[days_ago(0)]), 1);
+    }
+
+    #[test]
+    fn compute_streak_counts_a_single_session_yesterday_as_a_live_streak() {
+        // A streak "ending today or yesterday" still counts — the learner has until end of day
+        // to keep it alive, not lose credit the moment midnight passes.
+        assert_eq!(compute_streak(&[days_ago(1)]), 1);
+    }
+
+    #[test]
+    fn compute_streak_counts_consecutive_days_ending_today() {
+        assert_eq!(compute_streak(&[days_ago(0), days_ago(1), days_ago(2)]), 3);
+    }
+
+    #[test]
+    fn compute_streak_stops_at_the_first_gap() {
+        // Sessions today, yesterday, then a gap (2 days ago missing), then 3/4 days ago. Only the
+        // unbroken run counting back from today should count.
+        assert_eq!(
+            compute_streak(&[days_ago(0), days_ago(1), days_ago(3), days_ago(4)]),
+            2
+        );
+    }
+
+    #[test]
+    fn compute_streak_never_resumes_counting_after_a_gap_even_if_a_later_date_realigns() {
+        // Sessions today, yesterday, then a gap (5 days ago instead of the expected 2 days ago),
+        // then a date that WOULD match `expected` (2 days ago) if the loop kept scanning instead
+        // of breaking on the gap. A `break` -> "just don't match, keep looping" regression (e.g.
+        // `<` mutated to `==`) would let this later entry re-match and wrongly extend the streak
+        // to 3; the real streak, ending at the 5-days-ago gap, is 2.
+        assert_eq!(
+            compute_streak(&[days_ago(0), days_ago(1), days_ago(5), days_ago(2)]),
+            2
+        );
+    }
+
+    #[test]
+    fn compute_streak_ignores_a_duplicate_day_without_double_counting() {
+        // Two sessions on the same day (already deduped by the DISTINCT query in practice, but
+        // compute_streak itself must not silently double-count if that ever changes) must not
+        // inflate the streak — the loop's `*d == expected` / `*d < expected` branches must not
+        // treat a repeated date as a fresh day.
+        assert_eq!(compute_streak(&[days_ago(0), days_ago(0), days_ago(1)]), 2);
+    }
+}

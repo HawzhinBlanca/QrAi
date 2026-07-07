@@ -83,10 +83,26 @@ pub async fn create_agent_run(
             "confidence must be within [0, 1]".to_owned(),
         ));
     }
+    // Full server-side mirror of canShowLearnerFacingAiOutput (packages/contracts/src/index.ts)
+    // / statusForRun (services/agents/lib/gate.mjs): a status of "approved" is a claim that this
+    // run's output may reach a learner directly, so it must independently satisfy every gate
+    // condition here, not just the source-count check this endpoint used to enforce alone. There
+    // is no separate human-approval endpoint for agent runs (unlike teacher_reviews/
+    // scholar_approvals) — this POST is the ONLY place status is ever set, so trusting a
+    // client-computed "approved" without re-deriving it here would let one new or misbehaving
+    // agent module ship unreviewed, low-confidence content as approved.
     let source_count = req.sources.as_array().map(|a| a.len()).unwrap_or(0);
-    if req.status == "approved" && source_count == 0 {
+    let is_approved_review_status = matches!(
+        req.review_status.as_str(),
+        "teacher-reviewed" | "scholar-approved"
+    );
+    if req.status == "approved"
+        && !(is_approved_review_status && req.confidence >= 0.82 && source_count > 0)
+    {
         return Err(ApiError::BadRequest(
-            "an approved agent run must cite at least one source".to_owned(),
+            "an approved agent run must have reviewStatus teacher-reviewed or scholar-approved, \
+             confidence >= 0.82, and at least one source"
+                .to_owned(),
         ));
     }
 

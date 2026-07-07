@@ -500,6 +500,58 @@ async fn learner_progress_learner_id_is_authorized() {
     assert_eq!(cross.status(), StatusCode::FORBIDDEN);
 }
 
+/// get_progress's mastery formula (mean of per-card `min(repetitions/4, 1)`, rounded to 3
+/// decimals) is inlined in the handler, not a standalone function, so pin its exact output here.
+#[tokio::test]
+#[ignore = "requires live Postgres"]
+async fn get_progress_mastery_is_the_exact_mean_of_capped_per_card_repetitions() {
+    let state = test_state();
+    let router = platform_router_with_rate_limit(state.clone(), false);
+    let learner_id = format!("learner-mastery-{}", next_suffix());
+
+    sqlx::query(
+        "INSERT INTO users (id, tenant_id, display_name, role, language)
+         VALUES ($1, 'hikmah-pilot-erbil', 'Mastery Learner', 'learner', 'ckb')",
+    )
+    .bind(&learner_id)
+    .execute(&state.pool)
+    .await
+    .unwrap();
+
+    // repetitions 2, 4, 8 -> per-card 0.5, 1.0 (capped from 1.0), 1.0 (capped from 2.0)
+    // -> mean = (0.5 + 1.0 + 1.0) / 3 = 0.8333... -> rounded to 3 decimals = 0.833.
+    for (ayah, reps) in [("1:1", 2), ("1:2", 4), ("1:3", 8)] {
+        sqlx::query(
+            "INSERT INTO learner_progress (tenant_id, learner_id, ayah_ref, repetitions)
+             VALUES ('hikmah-pilot-erbil', $1, $2, $3)",
+        )
+        .bind(&learner_id)
+        .bind(ayah)
+        .bind(reps)
+        .execute(&state.pool)
+        .await
+        .unwrap();
+    }
+
+    let response = send_json(
+        &router,
+        Method::GET,
+        &format!("/v1/learner/progress?learnerId={learner_id}"),
+        Some("hikmah-pilot-erbil"),
+        Some("admin"),
+        json!({}),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let body: Value = read_json(response).await;
+    assert_eq!(
+        body["mastery"],
+        json!(0.833),
+        "expected the exact mean of capped per-card repetitions, got {:?}",
+        body["mastery"]
+    );
+}
+
 /// SM-2 quality is clamped to its 0..=5 domain: an out-of-range quality must NOT violate the
 /// learner_progress.last_quality CHECK (0..5) and fail the write with a 500 — it is clamped and the
 /// review still persists.
@@ -519,6 +571,17 @@ async fn progress_quality_out_of_range_is_clamped_not_500() {
     assert_eq!(res.status(), StatusCode::OK); // clamped, not a CHECK-constraint 500
     let body: Value = read_json(res).await;
     assert_eq!(body["quality"], 5); // 6 clamped to the SM-2 / DB max of 5
+
+    // nextReviewAt must be in the future (now + interval_days) — a `+` -> `-` regression in
+    // update_progress would schedule the review in the past instead.
+    let next_review_at =
+        chrono::DateTime::parse_from_rfc3339(body["nextReviewAt"].as_str().unwrap())
+            .unwrap()
+            .with_timezone(&chrono::Utc);
+    assert!(
+        next_review_at > chrono::Utc::now(),
+        "nextReviewAt {next_review_at} must be in the future"
+    );
 }
 
 /// The un-capped active-learners endpoint returns the COMPLETE distinct learner set for the tenant
@@ -1644,6 +1707,93 @@ async fn create_agent_run_rejects_approved_without_sources() {
         response.status(),
         StatusCode::BAD_REQUEST,
         "an approved agent run must cite at least one source, mirroring the learner-facing gate"
+    );
+}
+
+#[tokio::test]
+#[ignore = "requires live Postgres"]
+async fn create_agent_run_rejects_approved_with_low_confidence() {
+    // canShowLearnerFacingAiOutput (packages/contracts) requires confidence >= 0.82. This
+    // endpoint used to only check the source count, so a caller could claim "approved" at any
+    // confidence as long as it cited a source.
+    let router = platform_router_with_rate_limit(test_state(), false);
+    let response = send_json(
+        &router,
+        Method::POST,
+        "/v1/agent-runs",
+        Some("hikmah-pilot-erbil"),
+        Some("ops"),
+        json!({
+            "name": "run",
+            "goal": "goal",
+            "status": "approved",
+            "confidence": 0.5,
+            "reviewStatus": "scholar-approved",
+            "sources": [{"id": "s", "title": "t", "citation": "c", "url": null}]
+        }),
+    )
+    .await;
+    assert_eq!(
+        response.status(),
+        StatusCode::BAD_REQUEST,
+        "an approved agent run must meet the 0.82 confidence floor, mirroring the learner-facing gate"
+    );
+}
+
+#[tokio::test]
+#[ignore = "requires live Postgres"]
+async fn create_agent_run_rejects_approved_with_an_unreviewed_review_status() {
+    // canShowLearnerFacingAiOutput only allows reviewStatus "teacher-reviewed" or
+    // "scholar-approved" to clear the gate. "ai-suggested" is a valid AgentRunRequest.review_status
+    // value (agents write it on every fresh candidate) but must never itself justify "approved".
+    let router = platform_router_with_rate_limit(test_state(), false);
+    let response = send_json(
+        &router,
+        Method::POST,
+        "/v1/agent-runs",
+        Some("hikmah-pilot-erbil"),
+        Some("ops"),
+        json!({
+            "name": "run",
+            "goal": "goal",
+            "status": "approved",
+            "confidence": 0.99,
+            "reviewStatus": "ai-suggested",
+            "sources": [{"id": "s", "title": "t", "citation": "c", "url": null}]
+        }),
+    )
+    .await;
+    assert_eq!(
+        response.status(),
+        StatusCode::BAD_REQUEST,
+        "an approved agent run must have a reviewed reviewStatus, mirroring the learner-facing gate"
+    );
+}
+
+#[tokio::test]
+#[ignore = "requires live Postgres"]
+async fn create_agent_run_accepts_approved_when_every_gate_condition_is_met() {
+    let router = platform_router_with_rate_limit(test_state(), false);
+    let response = send_json(
+        &router,
+        Method::POST,
+        "/v1/agent-runs",
+        Some("hikmah-pilot-erbil"),
+        Some("ops"),
+        json!({
+            "name": "run",
+            "goal": "goal",
+            "status": "approved",
+            "confidence": 0.82,
+            "reviewStatus": "teacher-reviewed",
+            "sources": [{"id": "s", "title": "t", "citation": "c", "url": null}]
+        }),
+    )
+    .await;
+    assert_eq!(
+        response.status(),
+        StatusCode::OK,
+        "a run genuinely meeting every gate condition (confidence exactly at the 0.82 floor) must be accepted"
     );
 }
 
