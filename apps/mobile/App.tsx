@@ -33,7 +33,12 @@ import {
 
 // The mobile client talks ONLY to the platform API. ML inference and ASR are reached server-side
 // through the platform API's proxies, so their API keys never ship in the app.
-const API_BASE = "http://127.0.0.1:8080";
+//
+// EXPO_PUBLIC_-prefixed vars are inlined by the Expo/Metro bundler at build time (no extra config
+// needed, unlike react-native's own env story) — mirrors apps/web's VITE_PLATFORM_API_URL pattern.
+// Without this override a physical device or a staging/prod build could only ever reach its own
+// loopback interface, never the actual API host.
+const API_BASE = process.env.EXPO_PUBLIC_PLATFORM_API_URL || "http://127.0.0.1:8080";
 
 interface User {
   userId: string;
