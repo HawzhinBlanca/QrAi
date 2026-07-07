@@ -3,9 +3,12 @@ WORKDIR /app
 # The crate has a path dependency `quran-ai-shared-ticket = { path = "../shared-ticket" }`; from the
 # /app workdir that resolves to /shared-ticket, so the crate must be copied there or cargo build fails.
 COPY services/shared-ticket /shared-ticket
+# packages/contracts and packages/quran-data (TypeScript) are NOT copied here — Cargo.toml has no
+# path dependency on either, and nothing under src/ or tests/ reads them (confirmed: only a doc
+# comment cross-references packages/contracts by name, no include_str!/file read). Copying them
+# used to bust this build stage's Docker layer cache on every unrelated TS-only change, forcing a
+# full `cargo build --release` re-run for no reason.
 COPY services/platform-api/Cargo.toml services/platform-api/Cargo.lock* ./
-COPY packages/contracts ./packages/contracts/
-COPY packages/quran-data ./packages/quran-data/
 COPY services/platform-api/src ./src
 COPY services/platform-api/tests ./tests
 RUN cargo build --release
