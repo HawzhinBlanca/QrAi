@@ -31,6 +31,7 @@ services:
       - ./infra/sql/0012_superuser_only_rls_bypass.sql:/docker-entrypoint-initdb.d/12_superuser_only_rls_bypass.sql:ro
       - ./infra/sql/0013_unique_email_per_tenant.sql:/docker-entrypoint-initdb.d/13_unique_email_per_tenant.sql:ro
       - ./infra/sql/0015_teacher_review_scholar_approval_indexes.sql:/docker-entrypoint-initdb.d/15_teacher_review_scholar_approval_indexes.sql:ro
+      - ./infra/sql/0016_missing_tenant_indexes.sql:/docker-entrypoint-initdb.d/16_missing_tenant_indexes.sql:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U hawzhin -d quran_ai"]
       interval: 5s
