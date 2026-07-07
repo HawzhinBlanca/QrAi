@@ -203,3 +203,40 @@ smoke:a11y` now passes with 0 violations across all three audited screens. axe-c
 mechanically-detectable issues (contrast, missing labels/roles/landmarks) — it cannot verify
 keyboard-only task completion or screen-reader announcement quality, so F17's manual pass remains
 open (see `docs/SHIP_READINESS.md`).
+
+---
+
+## ADR-0008 — Dependency vulnerability scanning via cargo-audit (best-effort)
+
+**Date:** 2026-07-07 · **Status:** Proposed (implementation blocked — see Consequences)
+
+**Context.** `scripts/verify.sh` has no dependency-vulnerability scanning for either Rust
+service. Running `cargo audit` locally against `services/platform-api` surfaces
+`RUSTSEC-2023-0071` (the `rsa` crate's Marvin Attack timing side-channel, no fixed version
+available upstream) via `sqlx-macros-core`, which lists `sqlx-mysql` (which depends on `rsa`) as a
+Cargo.lock dependency edge — even though `platform-api`'s enabled `sqlx` features are
+`["runtime-tokio", "postgres", "uuid", "json", "chrono"]`, with no `"mysql"` feature requested
+anywhere in the workspace. Verified with `cargo tree -e normal,build,dev -i rsa` (and the same for
+`-i sqlx-mysql`) across all targets from `services/platform-api`: both print "nothing to print",
+confirming `rsa` is not part of the actually-compiled dependency graph. `services/realtime-gateway`
+(no `sqlx` dependency) audits clean with zero findings. This is `cargo-audit`'s documented
+lockfile-vs-feature-graph limitation — it scans every package recorded in `Cargo.lock`, not what a
+given feature selection actually compiles — not a real vulnerability reachable in the shipped
+binary.
+
+**Decision.** `scripts/verify.sh` should add a best-effort `cargo audit` step, matching the exact
+pattern already used for the live-Postgres-gated integration tests: run it if `cargo-audit` is
+installed, SKIP with an honest message (never a false "VERIFY OK") if it isn't. When run, it should
+pass `--ignore RUSTSEC-2023-0071` for `platform-api` only (not `realtime-gateway`, which has no
+occasion to need it), with a comment pointing back to this ADR for the justification above.
+`.github/workflows/ci.yml` does not currently install `cargo-audit` (only
+`dtolnay/rust-toolchain@stable` + `Swatinem/rust-cache@v2`), so this only protects local runs by
+default until a maintainer separately decides whether the ~30s `cargo install cargo-audit --locked`
+step is worth the added CI time on every run — that tradeoff belongs in `ci.yml`, not here.
+
+**Consequences.** `scripts/verify.sh` is a CODYSTEM enforcement file requiring a human-audited
+`.codystem-allow-self-edit` sentinel to modify — the agent that investigated this (confirmed the
+`rsa` finding is a false positive, and worked out the exact ignore-flag fix above) could not apply
+it. This ADR exists so the next session/human implementing the change doesn't have to re-derive the
+investigation. Until implemented, neither Rust service has automated dependency-vulnerability
+scanning in the gate.
