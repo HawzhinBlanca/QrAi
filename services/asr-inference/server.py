@@ -389,7 +389,16 @@ async def transcribe(req: TranscribeRequest):
     dependencies=[Depends(require_rate_limit), Depends(require_asr_key), Depends(require_loaded_model)],
 )
 async def force_align(req: ForceAlignRequest):
-    """Force align audio against known canonical text using Whisper word timestamps."""
+    """Transcribe audio with Whisper word timestamps, using `req.transcript` as a decoding
+    bias (Whisper's `initial_prompt`) rather than a true forced/constrained alignment. This
+    is NOT presented as a guarantee that the returned words match the canonical transcript —
+    `initial_prompt` only nudges Whisper's own decoding toward text resembling it; Whisper can
+    still decode different words entirely (e.g. on a genuine misreading), and this endpoint does
+    not compare or reconcile its output against `req.transcript` at all. A real constrained
+    alignment (e.g. a CTC/Viterbi-based forced aligner) would guarantee word-for-word
+    correspondence; this does not. (Currently unreached in the live product — no caller of
+    /v1/force-align exists elsewhere in this repo.)
+    """
     start = time.time()
 
     if not req.audioBase64:
@@ -423,9 +432,9 @@ async def force_align(req: ForceAlignRequest):
             verbose=False,
         )
 
-        # Build aligned words from Whisper's word segments
+        # Build aligned words from Whisper's own word segments (see the docstring above: these
+        # are Whisper's own decoded words, not reconciled against req.transcript in any way).
         aligned_words = []
-        transcript_words = req.transcript.split()
 
         if "segments" in result:
             for segment in result["segments"]:
