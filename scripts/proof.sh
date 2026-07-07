@@ -12,9 +12,12 @@ pnpm --filter @quran-ai/web test
 pnpm --filter @quran-ai/web build
 # apps/mobile is not a pnpm workspace member (Expo's own dependency tree), so it has no
 # `pnpm --filter` target — run its hermetic node:test suite directly, matching how
-# apps/mobile/package.json's own "test" script invokes it. Previously never run by proof.sh,
-# verify.sh, or CI, so a real regression here (e.g. hardcoded guardianApproved:true, the exact
-# class of bug lib/session.ts's own tests guard against) would have gone undetected.
+# apps/mobile/package.json's own "test" script invokes it. Note: apps/mobile DOES already have
+# real CI coverage via .github/workflows/mobile.yml (path-filtered on apps/mobile/** changes) —
+# an earlier version of this comment incorrectly claimed no CI coverage existed at all. What this
+# line actually fixes: `pnpm proof` / `scripts/smoke-all.mjs`'s "proof" step, a LOCAL pre-flight
+# check, previously never exercised apps/mobile, so a developer running it before pushing
+# wouldn't catch a mobile regression until mobile.yml ran separately in CI.
 node --experimental-strip-types --test apps/mobile/lib/*.test.ts
 # ml-inference/agents have no pnpm workspace membership either — same gap as apps/mobile above,
 # same fix. Explicit paths (not a dir glob) since server.mjs gates its side effects (listen/timers)
