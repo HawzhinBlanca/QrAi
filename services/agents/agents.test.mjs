@@ -10,7 +10,24 @@ import {
   runMistakePatternSummarizerBatch,
   runPracticeRecommenderBatch,
   runAllAgents,
+  server,
 } from "./server.mjs";
+
+/** Fire a real HTTP request at the exported server (no listen() call in tests, so this
+ *  binds an ephemeral port itself and tears it down after). */
+async function request(method, path, headers = {}) {
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const { port } = server.address();
+  try {
+    const res = await fetch(`http://127.0.0.1:${port}${path}`, {
+      method,
+      headers: { ...headers, connection: "close" },
+    });
+    return { status: res.status, body: await res.json() };
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+  }
+}
 
 test("gate blocks AI-suggested output even when confident and sourced", () => {
   assert.equal(
@@ -175,6 +192,27 @@ test("batch runners tolerate a non-array upstream (no 'not iterable' crash)", as
   assert.equal(mp.created, 0);
   const pr = await runPracticeRecommenderBatch({ fetchLearnerIds: async () => "not-an-array", fetchProgress: async () => ({}), record: async () => ({}), now: NOW });
   assert.equal(pr.created, 0);
+});
+
+// --- HTTP-level auth gate ----------------------------------------------------
+
+test("GET /health requires no auth", async () => {
+  const { status, body } = await request("GET", "/health");
+  assert.equal(status, 200);
+  assert.equal(body.service, "agents");
+});
+
+test("POST /run* without the api key is rejected, does not run agents", async () => {
+  for (const path of ["/run", "/run/tajweed", "/run/mistakes", "/run/recommend"]) {
+    const { status, body } = await request("POST", path);
+    assert.equal(status, 401, `${path} should require x-agents-api-key`);
+    assert.equal(body.error, "unauthorized");
+  }
+});
+
+test("POST /run* with the wrong api key is rejected", async () => {
+  const { status } = await request("POST", "/run", { "x-agents-api-key": "wrong-key" });
+  assert.equal(status, 401);
 });
 
 test("runAllAgents aggregates every agent's runs (injected IO)", async () => {
