@@ -17,8 +17,15 @@ const appUrl = process.env.WEB_SMOKE_URL ?? `http://127.0.0.1:${webPort}/`;
 
 try {
   const cases = [
-    { name: "mobile-home", width: 390, height: 844, path: "?smoke=layout" },
-    { name: "mobile-practice", width: 390, height: 844, path: "?smoke=layout&smokeMode=practice" },
+    // forceViewport: headless Chrome's `--window-size` launch flag silently clamps widths below
+    // ~500px in `--headless=new` mode (a known Chromium quirk, not app-specific) — these two cases
+    // previously ran at an effective ~500px instead of the requested 390px, and since the only
+    // overflow assertion compares scrollWidth to clientWidth (both measured under the SAME wrong
+    // width), it could never have caught a regression that only broke below 500px. forceViewport
+    // routes these through runChromeWithDevTools and applies a real CDP
+    // Emulation.setDeviceMetricsOverride so the true mobile width is exercised.
+    { name: "mobile-home", width: 390, height: 844, path: "?smoke=layout", forceViewport: true },
+    { name: "mobile-practice", width: 390, height: 844, path: "?smoke=layout&smokeMode=practice", forceViewport: true },
     // 1280px falls in the gap between the mobile breakpoints and the 1440px desktop case above —
     // practice-main-grid drops to a single column at <=1320px (a common laptop width), which
     // previously overflowed because .reader-panel/.audio-coach lacked min-width:0 as direct
@@ -71,12 +78,21 @@ try {
   for (const testCase of cases) {
     const url = `${appUrl}${testCase.path}`;
     const screenshotPath = join(artifactDir, `${testCase.name}.png`);
-    const dom = testCase.expectedMicState || testCase.expectAdmin
+    const dom = testCase.expectedMicState || testCase.expectAdmin || testCase.forceViewport
       ? await runChromeWithDevTools(testCase, url, screenshotPath)
       : runChrome(testCase, url, screenshotPath).stdout;
     const report = parseSmokeReport(dom, testCase.name);
 
     assert(report.scrollWidth <= report.clientWidth + 1, `${testCase.name}: horizontal overflow ${report.scrollWidth} > ${report.clientWidth}`);
+    // Guards against the exact blind spot forceViewport fixes for mobile-home/mobile-practice: the
+    // overflow check above only compares scrollWidth to clientWidth, which both silently agree with
+    // each other even if the browser rendered at the wrong width entirely (e.g. headless Chrome
+    // clamping a narrow --window-size). Asserting the real viewport was honored means a future case
+    // added at a width Chrome clamps would fail loudly instead of silently testing the wrong size.
+    assert(
+      report.clientWidth === testCase.width,
+      `${testCase.name}: rendered at ${report.clientWidth}px, requested ${testCase.width}px`,
+    );
     if (testCase.expectAdmin) {
       assert(report.hasCommandHero === true, `${testCase.name}: Internal Command console did not render`);
       if (testCase.minCaptureStateWidth) {
@@ -185,9 +201,23 @@ async function runChromeWithDevTools(testCase, url, screenshotPath) {
     try {
       await client.send("Page.enable");
       await client.send("Runtime.enable");
+      if (testCase.forceViewport) {
+        // The launch-time --window-size may already be wrong (see forceViewport's comment above),
+        // so force the true viewport via CDP and reload — reloading (rather than trusting whatever
+        // the initial navigation rendered) avoids racing the override against the page's first paint.
+        await client.send("Emulation.setDeviceMetricsOverride", {
+          width: testCase.width,
+          height: testCase.height,
+          deviceScaleFactor: 1,
+          mobile: true,
+        });
+        await client.send("Page.reload", {});
+      }
       const report = testCase.expectAdmin
         ? await waitForSmokeReport(client, (r) => r.hasCommandHero === "true", "Internal Command console to render")
-        : await waitForSmokeReport(client, (r) => r.micState === testCase.expectedMicState, `mic state ${testCase.expectedMicState}`);
+        : testCase.expectedMicState
+          ? await waitForSmokeReport(client, (r) => r.micState === testCase.expectedMicState, `mic state ${testCase.expectedMicState}`)
+          : await waitForSmokeReport(client, (r) => r.outerHTML.includes('data-client-width="'), "layout smoke report to render");
       const screenshot = await client.send("Page.captureScreenshot", { format: "png", fromSurface: true });
       await writeFile(screenshotPath, Buffer.from(screenshot.data, "base64"));
       return report.outerHTML;
