@@ -1839,8 +1839,14 @@ button:disabled {
 }
 
 .live-capture-panel {
-  display: grid;
-  grid-template-columns: 190px minmax(0, 1fr) minmax(0, 1fr);
+  /* flex-wrap, not a fixed 3-column grid: this card's own available width is a fraction of
+     .command-grid's dynamic (viewport-width-dependent) column split, not the viewport itself, so
+     no single media-query breakpoint here can track when the parent column gets narrow. A rigid
+     grid with minmax(0, 1fr) columns just squeezed .capture-state/.gateway-state down to
+     unreadable ~12px-wide slivers (one character per line) at in-between widths instead of
+     wrapping to a second row. */
+  display: flex;
+  flex-wrap: wrap;
   gap: 10px;
   margin: 12px 16px 0;
   padding: 10px;
@@ -1851,7 +1857,9 @@ button:disabled {
 
 .capture-button {
   display: inline-flex;
+  flex: 0 0 auto;
   min-height: 42px;
+  padding: 0 16px;
   align-items: center;
   justify-content: center;
   gap: 8px;
@@ -1871,7 +1879,8 @@ button:disabled {
 .capture-state,
 .gateway-state {
   display: grid;
-  min-width: 0;
+  flex: 1 1 140px;
+  min-width: 140px;
   align-content: center;
   gap: 2px;
 }
@@ -2431,10 +2440,6 @@ button:disabled {
   .benchmark-grid,
   .governance-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-
-  .live-capture-panel {
-    grid-template-columns: 1fr;
   }
 
   .topbar {
