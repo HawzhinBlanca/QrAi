@@ -20,6 +20,12 @@
 > integration tests with `--include-ignored` *unconditionally*, so they **fail** without a
 > live Postgres. `verify.sh` is the gate that **skips** those tests when no DB is reachable
 > (it never fakes them) — that's why CI (which has no DB) stays green on `verify.sh`.
+> `scripts/proof.sh` (`pnpm proof`, also what `scripts/smoke-all.mjs`'s first step runs) covers
+> more test suites than it used to: it now also runs `apps/mobile`'s and
+> `services/ml-inference`/`services/agents`' `node:test` suites directly by path (none of the
+> three are pnpm workspace members, so none are reachable via `pnpm --filter`).
+> `ml-inference`/`agents` were already covered this way in `verify.sh` (see step 4 above);
+> `apps/mobile` is not yet — its regression coverage currently only runs via `pnpm proof`.
 
 ## Database-gated tests (platform-api)
 `services/platform-api/tests/integration.rs` has tests marked
