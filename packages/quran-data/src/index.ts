@@ -21,6 +21,7 @@ export type {
   FullQuranSurah,
   FullQuranManifest,
 } from "./full-quran";
+import type { FullQuranSurah } from "./full-quran";
 
 export const CANONICAL_IMPORT_VERSION = "2026-06-24-fatihah-seed-v1";
 
@@ -60,6 +61,33 @@ export function buildFatihahImportBundle(sourceId: CanonicalSourceManifest["id"]
   const source = getCanonicalSourceManifest(sourceId);
   const ayahs = FATIHAH_SEED.map((seedAyah) => buildCanonicalAyah(seedAyah, source));
   const words = FATIHAH_SEED.flatMap((seedAyah) => buildCanonicalWords(seedAyah, source));
+
+  return freezeBundle({ source, ayahs, words });
+}
+
+/**
+ * Build a checksummed CanonicalImportBundle for one full-Quran surah, using the SAME checksum
+ * functions (createCanonicalChecksum/createCanonicalAyahChecksum, which verifyCanonicalWord/
+ * verifyCanonicalAyah in @quran-ai/contracts can actually validate) as buildFatihahImportBundle —
+ * closing the gap where the production seed-full-quran-to-db.sh script computed source_checksum
+ * as a hash of the raw text alone, a format verifyCanonicalWord/verifyCanonicalAyah cannot
+ * validate (see docs/DECISIONS.md). Pure and browser-safe: takes an already-loaded FullQuranSurah
+ * (no node:fs); the caller is responsible for loading it (see full-quran.ts, server-only).
+ */
+export function buildFullQuranSurahBundle(
+  surah: FullQuranSurah,
+  sourceId: CanonicalSourceManifest["id"],
+  importVersion: string,
+): CanonicalImportBundle {
+  const source = { ...getCanonicalSourceManifest(sourceId), importVersion };
+  const seedAyahs: SeedAyah[] = surah.ayahs.map((ayah) => ({
+    surahNumber: ayah.surahNumber,
+    ayahNumber: ayah.ayahNumber,
+    text: ayah.text,
+    words: ayah.words,
+  }));
+  const ayahs = seedAyahs.map((seedAyah) => buildCanonicalAyah(seedAyah, source, surah.englishName));
+  const words = seedAyahs.flatMap((seedAyah) => buildCanonicalWords(seedAyah, source, surah.englishName));
 
   return freezeBundle({ source, ayahs, words });
 }
@@ -157,19 +185,44 @@ export function toCanonicalSqlSeed(bundle: CanonicalImportBundle): string {
     .map((row) => `  (${row})`)
     .join(",\n");
 
+  // ON CONFLICT ... DO UPDATE (not DO NOTHING): re-running this seed against an already-seeded
+  // database must actually correct a row's source_checksum, not silently skip it — the whole
+  // reason this needs to be idempotent-and-self-healing is that any database seeded before the
+  // checksum-format fix (docs/DECISIONS.md) has a canonical_words/canonical_ayahs row whose
+  // stored checksum verifyCanonicalWord/verifyCanonicalAyah cannot validate. text_uthmani is
+  // re-affirmed too (defensively; canonical Quran text is immutable per AGENTS.md, so it should
+  // never actually differ) rather than left stale if it or the checksum-affecting metadata ever
+  // legitimately changes (e.g. a new import_version).
   return [
     "insert into canonical_ayahs (id, surah_number, ayah_number, text_uthmani, source_id, edition, script_type, import_version, source_checksum) values",
-    `${ayahValues};`,
+    `${ayahValues}`,
+    "on conflict (id) do update set",
+    "  text_uthmani = excluded.text_uthmani,",
+    "  source_id = excluded.source_id,",
+    "  edition = excluded.edition,",
+    "  script_type = excluded.script_type,",
+    "  import_version = excluded.import_version,",
+    "  source_checksum = excluded.source_checksum;",
     "",
     "insert into canonical_words (id, ayah_id, word_index, text_uthmani, source_checksum) values",
-    `${wordValues};`,
+    `${wordValues}`,
+    "on conflict (id) do update set",
+    "  text_uthmani = excluded.text_uthmani,",
+    "  source_checksum = excluded.source_checksum;",
   ].join("\n");
 }
 
-function buildCanonicalAyah(seedAyah: SeedAyah, source: CanonicalSourceManifest): CanonicalAyahRecord {
+// `surahLabel` defaults to "Al-Fatihah" so buildFatihahImportBundle's existing checksums are
+// byte-for-byte unchanged (the label is part of the hashed payload via QuranReference.display) —
+// buildFullQuranSurahBundle below passes the real surah name for every other surah.
+function buildCanonicalAyah(
+  seedAyah: SeedAyah,
+  source: CanonicalSourceManifest,
+  surahLabel = "Al-Fatihah",
+): CanonicalAyahRecord {
   const record = {
     id: `${seedAyah.surahNumber}:${seedAyah.ayahNumber}`,
-    quranRef: createAyahReference(seedAyah),
+    quranRef: createAyahReference(seedAyah, surahLabel),
     text: seedAyah.text,
     wordCount: seedAyah.words.length,
     sourceId: source.id,
@@ -184,13 +237,17 @@ function buildCanonicalAyah(seedAyah: SeedAyah, source: CanonicalSourceManifest)
   });
 }
 
-function buildCanonicalWords(seedAyah: SeedAyah, source: CanonicalSourceManifest): CanonicalWordRecord[] {
+function buildCanonicalWords(
+  seedAyah: SeedAyah,
+  source: CanonicalSourceManifest,
+  surahLabel = "Al-Fatihah",
+): CanonicalWordRecord[] {
   return seedAyah.words.map((text, wordOffset) => {
     const wordIndex = wordOffset + 1;
     const record = {
       id: `${seedAyah.surahNumber}:${seedAyah.ayahNumber}:${wordIndex}`,
       ayahId: `${seedAyah.surahNumber}:${seedAyah.ayahNumber}`,
-      quranRef: createWordReference(seedAyah, wordIndex),
+      quranRef: createWordReference(seedAyah, wordIndex, surahLabel),
       wordIndex,
       text,
       sourceId: source.id,
@@ -206,21 +263,21 @@ function buildCanonicalWords(seedAyah: SeedAyah, source: CanonicalSourceManifest
   });
 }
 
-function createAyahReference(seedAyah: SeedAyah): QuranReference {
+function createAyahReference(seedAyah: SeedAyah, surahLabel: string): QuranReference {
   return {
     surahNumber: seedAyah.surahNumber,
     ayahStart: seedAyah.ayahNumber,
     ayahEnd: seedAyah.ayahNumber,
-    display: `Al-Fatihah ${seedAyah.surahNumber}:${seedAyah.ayahNumber}`,
+    display: `${surahLabel} ${seedAyah.surahNumber}:${seedAyah.ayahNumber}`,
   };
 }
 
-function createWordReference(seedAyah: SeedAyah, wordIndex: number): QuranReference {
+function createWordReference(seedAyah: SeedAyah, wordIndex: number, surahLabel: string): QuranReference {
   return {
-    ...createAyahReference(seedAyah),
+    ...createAyahReference(seedAyah, surahLabel),
     wordStart: wordIndex,
     wordEnd: wordIndex,
-    display: `Al-Fatihah ${seedAyah.surahNumber}:${seedAyah.ayahNumber}:${wordIndex}`,
+    display: `${surahLabel} ${seedAyah.surahNumber}:${seedAyah.ayahNumber}:${wordIndex}`,
   };
 }
 
