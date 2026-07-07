@@ -59,6 +59,13 @@ test("inter-word iqlab: a noon-sakin/tanween word followed by baa", () => {
   assert.ok(ayahRules(tanweenWithMark, "بِمَا").includes("iqlab"), "tanween + trailing mark + baa");
 });
 
+test("inter-word iqlab: standard tanween-fath spelling (mark + trailing bare alef) before baa", () => {
+  // Standard Uthmani tanween-fath orthography carries a trailing bare alef after the mark (e.g.
+  // كِتَابًا) - the mark sits on the letter BEFORE the alef, not on the word's final character. A
+  // regex anchored to the literal last character silently misses this common, standard spelling.
+  assert.ok(ayahRules("كِتَابًا", "بَعْدِ").includes("iqlab"), "tanween-fath + trailing alef + baa");
+});
+
 test("inter-word: NO iqlab/idgham/ikhfa after a word ending in a VOWELED noon (the bug)", () => {
   // ٱلَّذِينَ ends in a voweled noon (نَ) → no noon rule across the boundary, despite baa next. The
   // old rule stripped ALL harakat then matched a final noon.
