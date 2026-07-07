@@ -7,6 +7,7 @@ dependencies = [
     "fastapi>=0.110",
     "uvicorn>=0.29",
     "openai-whisper>=20240930",
+    "torchaudio",
     "transformers>=4.40",
     "soundfile>=0.12",
 ]
