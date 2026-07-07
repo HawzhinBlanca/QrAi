@@ -5,6 +5,54 @@ architectural change. Newest first.
 
 ---
 
+## ADR-0010 — Web image runs nginx-unprivileged with a full restrictive CSP
+**Date:** 2026-07-08 · **Status:** Accepted
+
+**Context.** `apps/web`'s Docker image ran `FROM nginx:alpine`, which starts its master process as
+root by default — the only one of the five service images not enforcing the non-root posture the
+other four (`platform-api`, `realtime-gateway`, `ml-inference`, `asr-inference`) already have via
+an explicit `useradd`/`USER appuser` (uid 10001). Separately, `nginx.conf`'s Content-Security-Policy
+only set the directives that could never break the SPA regardless of deployment (`frame-ancestors`,
+`base-uri`, `object-src`, `form-action`) — `default-src`/`script-src`/`style-src`/`connect-src` were
+deliberately left unset, with a comment explaining they needed per-deployment testing against the
+running app.
+
+**Decision.** Switched the base image to `nginxinc/nginx-unprivileged:alpine`, which runs as UID 101
+by default (a different UID than the backend services', since it's a different upstream image's
+convention — no `useradd` needed). Unprivileged processes can't bind ports under 1024, so nginx now
+listens on 8080 instead of 80, with `docker-compose.yml`'s port mapping and healthcheck updated to
+match. Added the full CSP this deployment's real requirements support: `default-src 'none'` with
+explicit per-directive allowlists, `script-src 'self'` (no `unsafe-inline`/`unsafe-eval`),
+`style-src 'self' 'unsafe-inline'` (React's dynamic inline styles — the mastery ring, accuracy ring,
+and audio waveform bars all set `style={{ ... }}` directly), `connect-src 'self' ws: wss:` (the
+nginx `/v1/` proxy plus the realtime gateway's WebSocket, which currently connects on a different
+port than the page's own origin), and `media-src` including `cdn.islamic.network` (the real
+reference-recitation audio source).
+
+A strict `connect-src 'self'` only holds if the web app's own `fetch` calls are same-origin in
+production. Every API-base-URL fallback across the client/data modules hardcoded an absolute
+`http://127.0.0.1:8080`, which would bypass the nginx proxy and violate `connect-src 'self'`
+outside dev — fixed by branching on Vite's build-time dev flag (absolute in dev, relative in the
+production build). While touching those call sites, also switched every remaining raw `fetch()`
+among them to the existing timeout-wrapped helper (`lib/http.ts`), so a hung backend can no longer
+leave a login/register/progress call unresolved indefinitely.
+
+Also discovered and fixed while verifying this: `nginx-unprivileged:alpine` has no `curl` (only the
+four backend images install it for their healthchecks), so the compose healthcheck's `curl -f`
+would have failed every 10 seconds forever once bound to the new base image — switched to a
+`wget`-based check, available in Alpine by default. The same curl-availability gap was found and
+fixed independently in `services/ml-inference/Dockerfile` around the same time.
+
+**Consequences.** All five service images now run non-root. CI's `docker-build.yml` still only
+asserts the non-root UID for the four backend services (uid 10001) — a matching assertion for the
+web image's uid 101 has not been added, since that requires editing a CI-protected workflow file;
+tracked as an open follow-up. The CSP is a hard boundary going forward: any new third-party script,
+font, image, or media source added to the web app must be added to the corresponding directive in
+`apps/web/nginx.conf`, or the browser will silently block it in production while dev keeps working
+uninterrupted (CSP is only enforced by nginx, not the Vite dev server).
+
+---
+
 ## ADR-0001 — Adopt the CODYSTEM harness as the governance + gate layer
 **Date:** 2026-06-30 · **Status:** Accepted
 
