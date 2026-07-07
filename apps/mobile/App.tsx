@@ -186,6 +186,12 @@ export default function App() {
       const recognizedText = parseRecognizedText(asr.text);
 
       // 2) Align via the platform API's ML proxy (server-side ML key; tenant taken from the actor).
+      // ayahEnd must never exceed the selected surah's real ayah count — the ML service's
+      // getCanonicalWords only validates ayahStart against it, so an out-of-range ayahEnd (e.g. 7
+      // for Surah 97 Al-Qadr, which has 5 ayahs) used to silently align a shorter range with no
+      // error. Cap at 7 to match the practice-session length used elsewhere in this app.
+      const selectedSurahAyahCount = surahs.find((s) => s.surahNumber === selectedSurah)?.ayahCount ?? 7;
+      const ayahEnd = Math.min(selectedSurahAyahCount, 7);
       const alignResp = await fetch(`${API_BASE}/v1/ml/alignments:predict`, {
         method: "POST",
         headers,
@@ -195,8 +201,8 @@ export default function App() {
           quranRef: {
             surahNumber: selectedSurah,
             ayahStart: 1,
-            ayahEnd: 7,
-            display: `Surah ${selectedSurah} 1-7`,
+            ayahEnd,
+            display: `Surah ${selectedSurah} 1-${ayahEnd}`,
           },
           recognizedText,
           sourceChecksum: "fnv1a32:real",
@@ -213,7 +219,7 @@ export default function App() {
     } finally {
       setLoading(false);
     }
-  }, [user, selectedSurah, recordingConsent, guardianApproved, authHeaders]);
+  }, [user, selectedSurah, surahs, recordingConsent, guardianApproved, authHeaders]);
 
   // === Login Screen ===
   if (!user) {
