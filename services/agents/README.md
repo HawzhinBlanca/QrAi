@@ -20,7 +20,15 @@ node --test agents.test.mjs   # unit tests
 
 Env: `AGENTS_PORT` (8092), `PLATFORM_API_URL` (http://127.0.0.1:8080),
 `AGENTS_TENANT_ID` (hikmah-pilot-erbil), `AGENTS_API_TOKEN` (ops Bearer JWT; in dev the
-header fallback works when platform-api runs with `ALLOW_HEADER_AUTH=1`).
+header fallback works when platform-api runs with `ALLOW_HEADER_AUTH=1`),
+`AGENTS_SERVICE_API_KEY` (dev default `smoke-agents-api-key`; must be overridden in
+production — same posture as `ML_API_KEY`/`ASR_API_KEY`).
+
+Every `POST /run*` requires the `x-agents-api-key` header to match
+`AGENTS_SERVICE_API_KEY` (`GET /health` stays open). This service is not currently
+containerized or fronted by a proxy — it runs loopback-only and is meant to be triggered
+by a trusted operator/cron on the same host — but the key gate is defense-in-depth from
+the start, since a successful call spends real ops-level credentials against platform-api.
 
 ## Roadmap agents (not yet built)
 

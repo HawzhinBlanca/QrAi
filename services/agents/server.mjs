@@ -24,6 +24,19 @@ function authHeaders() {
   return { "x-tenant-id": TENANT_ID, "x-user-id": "ops-1", "x-user-role": "ops" };
 }
 
+// Inbound gate on this service's own HTTP surface (mirrors ML_API_KEY / ASR_API_KEY /
+// TAJWEED_NEURAL_API_KEY on the other internal services). Every POST /run* here spends real
+// ops-level credentials against platform-api (writes agent_run rows, fans out over every
+// active learner) — unlike the other services this one is not currently containerized or
+// fronted by any proxy, but that is exactly the state ml-inference/asr-inference were in
+// before they were exposed further, so the same defense-in-depth applies from the start
+// rather than being retrofitted later under time pressure.
+const AGENTS_SERVICE_API_KEY = process.env.AGENTS_SERVICE_API_KEY ?? "smoke-agents-api-key";
+
+function isAuthorized(req) {
+  return req.headers["x-agents-api-key"] === AGENTS_SERVICE_API_KEY;
+}
+
 /** Defensive: an upstream that returns a non-array (with HTTP 200) means "no items". */
 function toArray(value) {
   return Array.isArray(value) ? value : [];
@@ -135,18 +148,22 @@ const server = http.createServer(async (req, res) => {
         tenant: TENANT_ID,
       });
     }
-    if (req.method === "POST" && req.url === "/run") {
-      const summary = await runAllAgents();
-      return sendJson(res, 200, summary);
-    }
-    if (req.method === "POST" && req.url === "/run/tajweed") {
-      return sendJson(res, 200, await runTajweedExplainerBatch());
-    }
-    if (req.method === "POST" && req.url === "/run/mistakes") {
-      return sendJson(res, 200, await runMistakePatternSummarizerBatch());
-    }
-    if (req.method === "POST" && req.url === "/run/recommend") {
-      return sendJson(res, 200, await runPracticeRecommenderBatch());
+    if (req.method === "POST" && req.url.startsWith("/run")) {
+      if (!isAuthorized(req)) {
+        return sendJson(res, 401, { error: "unauthorized" });
+      }
+      if (req.url === "/run") {
+        return sendJson(res, 200, await runAllAgents());
+      }
+      if (req.url === "/run/tajweed") {
+        return sendJson(res, 200, await runTajweedExplainerBatch());
+      }
+      if (req.url === "/run/mistakes") {
+        return sendJson(res, 200, await runMistakePatternSummarizerBatch());
+      }
+      if (req.url === "/run/recommend") {
+        return sendJson(res, 200, await runPracticeRecommenderBatch());
+      }
     }
     return sendJson(res, 404, { error: "not found" });
   } catch (err) {
