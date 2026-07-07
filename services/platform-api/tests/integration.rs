@@ -943,12 +943,30 @@ async fn privacy_delete_preserves_other_learners_teacher_reviews() {
     // Right-to-erasure: the delete must have erased the learner's audio via the ML service and
     // reported the erased object keys (previously this was always an empty list).
     let deleted_body: Value = read_json(deleted).await;
+    // Assert the exact keys the mock ML service reported, not just "some non-empty list" — the
+    // handler parses `deletedAudioObjectKeys`/`deletedMetadataObjectKeys` out of the upstream JSON
+    // response, and a bug that fabricated a placeholder list instead would still pass a "non-empty"
+    // check.
+    assert_eq!(
+        deleted_body["audioObjectKeysDeleted"],
+        json!([
+            "hikmah-pilot-erbil/learner/chunk-1.bin",
+            "hikmah-pilot-erbil/learner/chunk-1.meta.json"
+        ]),
+        "privacy delete must report the exact erased audio object keys from the ML service"
+    );
+    // A delete job must report the records it actually deleted, not an empty list — this is the
+    // caller-facing proof of erasure, distinct from (and in addition to) the DB-level checks below.
+    assert_eq!(
+        deleted_body["deletedRecords"], deleted_body["includedRecords"],
+        "a delete job's deletedRecords must equal includedRecords"
+    );
     assert!(
-        deleted_body["audioObjectKeysDeleted"]
+        deleted_body["deletedRecords"]
             .as_array()
-            .is_some_and(|keys| !keys.is_empty()),
-        "privacy delete must report erased audio object keys, got {:?}",
-        deleted_body["audioObjectKeysDeleted"]
+            .is_some_and(|records| !records.is_empty()),
+        "delete job must have deleted at least the seeded session, got {:?}",
+        deleted_body["deletedRecords"]
     );
 
     let target_review_count: i64 =
@@ -1004,6 +1022,113 @@ async fn privacy_delete_preserves_other_learners_teacher_reviews() {
     assert_eq!(
         other_session_count, 1,
         "privacy delete must preserve other learners' sessions"
+    );
+}
+
+#[tokio::test]
+#[ignore = "requires live Postgres"]
+async fn privacy_export_reports_included_records_but_deletes_nothing() {
+    let state = test_state();
+    let router = platform_router_with_rate_limit(state.clone(), false);
+    let learner_id = format!("learner-privacy-export-{}", next_suffix());
+
+    sqlx::query(
+        "INSERT INTO users (id, tenant_id, display_name, role, language)
+         VALUES ($1, 'hikmah-pilot-erbil', 'Privacy Export', 'learner', 'ckb')",
+    )
+    .bind(&learner_id)
+    .execute(&state.pool)
+    .await
+    .unwrap();
+
+    let session_id = create_test_session_for_learner(&router, &learner_id).await;
+
+    let exported = send_json(
+        &router,
+        Method::POST,
+        "/v1/privacy/export",
+        Some("hikmah-pilot-erbil"),
+        Some("admin"),
+        json!({ "learnerId": learner_id }),
+    )
+    .await;
+    assert_eq!(exported.status(), StatusCode::OK);
+    let exported_body: Value = read_json(exported).await;
+
+    // An export must list what it found (the seeded session) but must not report anything deleted,
+    // and must not report any audio erasure — this is the path guarded by the `kind == Delete` check
+    // in create_privacy_job; if that check were ever inverted, an export would silently start
+    // deleting the caller's data.
+    assert!(
+        exported_body["includedRecords"]
+            .as_array()
+            .is_some_and(|records| records.iter().any(|r| r == &json!(session_id))),
+        "export must include the learner's session, got {:?}",
+        exported_body["includedRecords"]
+    );
+    assert_eq!(
+        exported_body["deletedRecords"],
+        json!([]),
+        "export must not delete any records"
+    );
+    assert_eq!(
+        exported_body["audioObjectKeysDeleted"],
+        json!([]),
+        "export must not erase any audio"
+    );
+
+    let session_count: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM recitation_sessions WHERE id = $1")
+            .bind(&session_id)
+            .fetch_one(&state.pool)
+            .await
+            .unwrap();
+    assert_eq!(
+        session_count, 1,
+        "export must not delete the learner's session"
+    );
+}
+
+#[tokio::test]
+#[ignore = "requires live Postgres"]
+async fn list_audit_events_returns_real_rows_not_a_fallback_empty_list() {
+    let state = test_state();
+    let router = platform_router_with_rate_limit(state.clone(), false);
+    let learner_id = format!("learner-audit-list-{}", next_suffix());
+
+    sqlx::query(
+        "INSERT INTO users (id, tenant_id, display_name, role, language)
+         VALUES ($1, 'hikmah-pilot-erbil', 'Audit List Learner', 'learner', 'ckb')",
+    )
+    .bind(&learner_id)
+    .execute(&state.pool)
+    .await
+    .unwrap();
+
+    // Creating a session writes an audit_events row (via the session-create handler); this proves
+    // list_audit_events actually reads that row back rather than always returning [].
+    create_test_session_for_learner(&router, &learner_id).await;
+
+    let listed = send_json(
+        &router,
+        Method::GET,
+        "/v1/audit-events",
+        Some("hikmah-pilot-erbil"),
+        Some("admin"),
+        Value::Null,
+    )
+    .await;
+    assert_eq!(listed.status(), StatusCode::OK);
+    let events: Vec<Value> = read_json(listed).await;
+    assert!(
+        !events.is_empty(),
+        "audit events list must not be empty after seeding an action that logs one"
+    );
+    assert!(
+        events
+            .iter()
+            .any(|e| e["actorId"].as_str() == Some("admin-1")),
+        "expected to find the session-create action attributed to the test actor, got {events:?}"
     );
 }
 
