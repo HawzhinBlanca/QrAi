@@ -480,4 +480,41 @@ describe("Quran AI app smoke", () => {
 
     expect(document.body.textContent).toContain("Quran AI intelligence platform");
   });
+
+  it("the Internal Command 'platform-apps' segmented control actually navigates between sections", async () => {
+    // Regression test: PlatformCommand hardcoded `app.id === "learner" ? "active" : ""` with no
+    // onClick handler at all, so this control always highlighted "Learner" regardless of the real
+    // active section, and clicking any of its buttons did nothing.
+    const root = createRoot(container);
+    await act(async () => {
+      root.render(<App />);
+    });
+
+    const internalCommandButton = Array.from(document.querySelectorAll<HTMLButtonElement>("button")).find(
+      (button) => button.textContent?.includes("Internal Command"),
+    );
+    await act(async () => {
+      internalCommandButton?.click();
+    });
+    for (let i = 0; i < 10; i++) {
+      await act(async () => {
+        await new Promise((r) => setTimeout(r, 10));
+      });
+      if (document.body.textContent?.includes("Quran AI intelligence platform")) break;
+    }
+
+    const teacherAppButton = Array.from(document.querySelectorAll<HTMLButtonElement>(".platform-app")).find(
+      (button) => button.querySelector("span")?.textContent === "Teacher",
+    );
+    expect(teacherAppButton?.className).not.toContain("active");
+
+    await act(async () => {
+      teacherAppButton?.click();
+    });
+
+    // Clicking must navigate OUT of Internal Command into the Teacher placeholder — not just
+    // relabel which button in the still-visible console carries the "active" class.
+    expect(document.body.textContent).toContain("Teacher Review");
+    expect(document.body.textContent).not.toContain("Quran AI intelligence platform");
+  });
 });

@@ -72,6 +72,8 @@ interface PlatformCommandProps {
   onLanguageChange: (language: SupportedLanguageCode) => void;
   activeTab: string;
   onTabChange: (tab: string) => void;
+  activeSection: string;
+  onSectionChange: (section: string) => void;
 }
 
 interface ConsoleData {
@@ -103,6 +105,8 @@ export function PlatformCommand({
   activeTab,
   onLanguageChange,
   onTabChange,
+  activeSection,
+  onSectionChange,
 }: PlatformCommandProps) {
   const selectedLanguage =
     supportedLanguages.find((language) => language.code === activeLanguage) ?? supportedLanguages[0];
@@ -215,7 +219,13 @@ export function PlatformCommand({
         {platformApps.map((app) => {
           const Icon = app.icon;
           return (
-            <button className={app.id === "learner" ? "platform-app active" : "platform-app"} key={app.id} type="button">
+            <button
+              aria-current={activeSection === app.id ? "page" : undefined}
+              className={activeSection === app.id ? "platform-app active" : "platform-app"}
+              key={app.id}
+              onClick={() => onSectionChange(app.id)}
+              type="button"
+            >
               <Icon size={18} />
               <span>{app.label}</span>
               <small>{app.description}</small>

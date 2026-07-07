@@ -750,6 +750,7 @@ function AuthenticatedApp({ bypassLogin = false }: { bypassLogin?: boolean }) {
                 setActiveSection("admin");
                 setActiveTab(tab);
               }}
+              onSectionChange={(section) => setActiveSection(section as AppSection)}
             />
           )}
         </motion.div>
