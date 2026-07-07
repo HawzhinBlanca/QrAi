@@ -7,7 +7,12 @@ export function normalizeArabic(text) {
     .replace(/[\u0610-\u061A\u064B-\u065F\u0670\u06D6-\u06ED\u0640]/g, "")
     .replace(/[\u0622\u0623\u0625\u0671]/g, "\u0627")
     .replace(/\u0649/g, "\u064A")
-    .replace(/\u0640/g, "")
+    // U+0629 (taa marbuta) vs U+0647 (haa): a near-universal ASR/transcription variation for
+    // Arabic, since the two are acoustically similar in pause form. Without this, a correctly
+    // recited word ending in taa marbuta that ASR transcribes with haa scores as low as 0.75
+    // similarity (verified with a real word pair), landing in the "misread" band (0.65-0.85)
+    // instead of "matched" (>=0.95) -- wrongly telling a correct reciter they made a mistake.
+    .replace(/\u0629/g, "\u0647")
     .replace(/\s+/g, " ")
     .trim()
     .toLowerCase();
