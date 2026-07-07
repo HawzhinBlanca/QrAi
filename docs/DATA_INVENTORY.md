@@ -17,6 +17,7 @@
 | **Learning progress** | Postgres `learner_progress` (SM-2 spaced-repetition state) | Per-learner mastery/scheduling. |
 | **Tajweed findings** | Postgres `tajweed_findings` | Assessment of the learner's recitation. |
 | **Audit events** | Postgres `audit_events` | Actor id + action for accountability. |
+| **Agent-run records** | Postgres `agent_runs` (`goal`, `trace` — free text/JSON) | The Practice Plan Recommender agent embeds the learner's id directly in the free-text `goal` column (e.g. "Recommend the next practice step for learner-1."). **As of this writing, `agent_runs` has no dedicated learner-id column and is NOT covered by the `/v1/privacy/delete` erasure cascade in §4** — a learner's id persists here after an erasure request. A fix (adds a structured `agent_runs.learner_id` column and includes it in the delete cascade) is in review; update this row once it merges. |
 
 ## 2. Who can access it (isolation)
 
@@ -41,7 +42,8 @@
   teacher_reviews → tajweed_findings → word_alignments → audio_chunks/alignment_runs → tickets →
   sessions → consent_records, **and** calls ml-inference `/v1/privacy/delete` to erase the raw audio
   blobs first (`erase_ml_audio`, `services/platform-api/src/handlers/privacy.rs`). An ML failure aborts
-  with the DB untouched — no "success while audio survives".
+  with the DB untouched — no "success while audio survives". **Gap, as of this writing:** the cascade
+  does not yet reach `agent_runs` — see the note on that row in §1.
 - **Access/portability:** a privacy **export** endpoint returns the subject's data.
 
 ## 5. Children's data (COPPA / age) — decisions the lawyer must make
