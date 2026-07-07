@@ -234,16 +234,24 @@ export function PlatformCommand({
         })}
       </nav>
 
-      <div className="platform-tabs" role="tablist" aria-label="Command center views">
+      {/* role="group"/aria-pressed, not role="tablist"/role="tab"/aria-selected: the WAI-ARIA
+          Tab pattern requires each tab to control a corresponding tabpanel whose content changes
+          on selection. Nothing here does — activeTab is tracked and highlighted correctly, but
+          command-grid/command-bottom-grid below render the same fixed set of cards regardless of
+          which "tab" is active. The prior tablist/tab roles told screen reader users a content
+          switch would happen that never did. This corrects the semantics to match actual
+          behavior (a toggle-button group) without deciding whether the tabs *should* filter
+          content — that's a real product/design question, tracked separately, not something to
+          decide as an accessibility fix. */}
+      <div className="platform-tabs" role="group" aria-label="Command center views">
         {platformTabs.map((tab) => {
           const Icon = tab.icon;
           return (
             <button
-              aria-selected={activeTab === tab.id}
+              aria-pressed={activeTab === tab.id}
               className={activeTab === tab.id ? "platform-tab active" : "platform-tab"}
               key={tab.id}
               onClick={() => onTabChange(tab.id)}
-              role="tab"
               type="button"
             >
               <Icon size={16} />
