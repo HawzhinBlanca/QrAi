@@ -444,4 +444,40 @@ describe("Quran AI app smoke", () => {
 
     expect(FakeMediaRecorder.instances).toHaveLength(1);
   });
+
+  it("'Open related command tab' on a Teacher/Model Ops placeholder actually navigates to Internal Command", async () => {
+    // Regression test: InternalSurface's placeholder button used to call onTabChange alone, which
+    // only set activeTab — it never switched activeSection to "admin", so InternalSurface's own
+    // `if (activeSection !== "admin")` early-return kept rendering the SAME placeholder. Clicking
+    // the button did nothing observable.
+    const root = createRoot(container);
+    await act(async () => {
+      root.render(<App />);
+    });
+
+    const teacherButton = Array.from(document.querySelectorAll<HTMLButtonElement>("button")).find(
+      (button) => button.textContent?.trim() === "Teacher",
+    );
+    await act(async () => {
+      teacherButton?.click();
+    });
+    expect(document.body.textContent).toContain("Teacher Review");
+    expect(document.body.textContent).not.toContain("Quran AI intelligence platform");
+
+    const openCommandButton = Array.from(document.querySelectorAll<HTMLButtonElement>("button")).find((button) =>
+      button.textContent?.includes("Open related command tab"),
+    );
+    await act(async () => {
+      openCommandButton?.click();
+    });
+
+    for (let i = 0; i < 10; i++) {
+      await act(async () => {
+        await new Promise((r) => setTimeout(r, 10));
+      });
+      if (document.body.textContent?.includes("Quran AI intelligence platform")) break;
+    }
+
+    expect(document.body.textContent).toContain("Quran AI intelligence platform");
+  });
 });

@@ -746,6 +746,10 @@ function AuthenticatedApp({ bypassLogin = false }: { bypassLogin?: boolean }) {
               activeTab={activeTab}
               onLanguageChange={setActiveLanguage}
               onTabChange={setActiveTab}
+              onOpenCommand={(tab) => {
+                setActiveSection("admin");
+                setActiveTab(tab);
+              }}
             />
           )}
         </motion.div>

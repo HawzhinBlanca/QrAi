@@ -35,6 +35,7 @@ export function InternalSurface({
   activeTab,
   onLanguageChange,
   onTabChange,
+  onOpenCommand,
 }: {
   tenantId: string;
   authToken?: string;
@@ -43,13 +44,17 @@ export function InternalSurface({
   activeTab: string;
   onLanguageChange: (language: SupportedLanguageCode) => void;
   onTabChange: (tab: string) => void;
+  onOpenCommand: (tab: string) => void;
 }) {
   if (activeSection !== "admin") {
     return (
       <section className="internal-placeholder" aria-label="Internal surface">
         <h1>{internalTitle(activeSection)}</h1>
         <p>Internal review tools stay out of the learner path. Use Internal Command for the full platform console.</p>
-        <button className="secondary-action" onClick={() => onTabChange(activeSection === "model-ops" ? "model-ops" : "review")} type="button">
+        {/* onTabChange alone only set activeTab — it never switched activeSection to "admin", so
+            this button did nothing observable: InternalSurface stayed on this same placeholder
+            since its early-return only checks activeSection. onOpenCommand switches both. */}
+        <button className="secondary-action" onClick={() => onOpenCommand(activeSection === "model-ops" ? "model-ops" : "review")} type="button">
           Open related command tab
         </button>
       </section>
