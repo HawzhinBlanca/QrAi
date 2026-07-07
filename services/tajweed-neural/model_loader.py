@@ -46,7 +46,10 @@ class NeuralTajweedModel:
         self.device = torch.device(
             device or ("mps" if torch.backends.mps.is_available() else "cpu")
         )
-        # bf16 on MPS/CPU keeps the 605M model light; CTC argmax is robust to it.
+        # float32 — this ran the 605M model at full precision from the very first version of
+        # this file, despite a comment here (since removed) claiming bf16. If bf16 is adopted
+        # later for memory/speed, verify CTC argmax output doesn't shift on the target device
+        # first (this class supports both CPU and MPS).
         self.dtype = torch.float32
         self.model = Wav2Vec2BertForMultilevelCTC.from_pretrained(model_id)
         self.model.to(self.device, dtype=self.dtype)
