@@ -16,17 +16,17 @@ export const SCHOLAR_BOARD_SOURCE = {
 // substring of the finding's `rule` so classifier wording variations still resolve.
 const KNOWLEDGE = [
   {
-    match: ["makhraj", "ع", "ayn", "throat"],
+    match: ["makhraj", "ayn", "throat"],
     explanation:
       "The letter ʿayn (ع) is articulated from the middle of the throat. Aim for a clear, open throat sound and avoid letting it drift toward the softer ghayn (غ).",
   },
   {
-    match: ["tafkhim", "ص", "sad", "heavy", "mufakhkham"],
+    match: ["tafkhim", "sad", "heavy", "mufakhkham"],
     explanation:
       "Ṣād (ص) is a heavy (mufakhkham) letter: raise the back of the tongue and keep the sound full and rounded rather than thin.",
   },
   {
-    match: ["ghunnah", "nasal", "ن", "م"],
+    match: ["ghunnah", "nasal"],
     explanation:
       "Apply ghunnah — a two-count nasal resonance held in the nose — on the noon or meem where the rule requires it, without clipping it short.",
   },
