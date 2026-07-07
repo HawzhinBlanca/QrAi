@@ -39,7 +39,7 @@ import {
   type MemorizationPlan,
   type LearnerProgress,
 } from "./data/platform";
-import { getQuranVerses, loadSurahVerses, loadWeeklyProgress, getWeeklyProgress, updateVersesWithAlignment, buildRecitationEvents, type QuranVerse, type RecitationEvent, type ProgressBar } from "./data/quran";
+import { getQuranVerses, getQuranLoadError, loadSurahVerses, loadWeeklyProgress, getWeeklyProgress, updateVersesWithAlignment, buildRecitationEvents, type QuranVerse, type RecitationEvent, type ProgressBar } from "./data/quran";
 import type { AppSection, PracticeMode, MicState } from "./types/practice";
 import { practiceSteps } from "./types/practice";
 import type { SupportedLanguageCode } from "./types/platform";
@@ -115,7 +115,9 @@ function AuthenticatedApp({ bypassLogin = false }: { bypassLogin?: boolean }) {
   const [alignmentResults, setAlignmentResults] = useState<AlignmentResult[]>([]);
   const [tajweedResults, setTajweedResults] = useState<TajweedFinding[]>([]);
   const [asrTranscript, setAsrTranscript] = useState("");
-  const [quranVerses, setQuranVerses] = useState<QuranVerse[]>([]);
+  // Seeded with getQuranVerses() (the static Al-Fatihah bundle) rather than [] — otherwise the
+  // reader renders fully blank for the entire time before the first fetch resolves.
+  const [quranVerses, setQuranVerses] = useState<QuranVerse[]>(getQuranVerses());
   const [recitationEvents, setRecitationEvents] = useState<RecitationEvent[]>([]);
   const [weeklyProgress, setWeeklyProgress] = useState<ProgressBar[]>([]);
   const [memorizationPlan, setMemorizationPlan] = useState<MemorizationPlan | null>(null);
@@ -195,7 +197,7 @@ function AuthenticatedApp({ bypassLogin = false }: { bypassLogin?: boolean }) {
 
   // (Re)load the reader verses whenever the selected surah changes (and on first mount).
   useEffect(() => {
-    void loadSurahVerses(selectedSurah.surahNumber).then(setQuranVerses).catch(() => {});
+    void refreshQuranVerses(selectedSurah.surahNumber);
   }, [selectedSurah.surahNumber]);
 
   useEffect(() => {
@@ -360,7 +362,21 @@ function AuthenticatedApp({ bypassLogin = false }: { bypassLogin?: boolean }) {
       if (prev) URL.revokeObjectURL(prev);
       return "";
     });
-    void loadSurahVerses(selectedSurah.surahNumber).then(setQuranVerses).catch(() => {});
+    void refreshQuranVerses(selectedSurah.surahNumber);
+  }
+
+  // loadSurahVerses never rejects on a fetch failure — it catches internally and resolves to []
+  // (see data/quran.ts). A naive `.then(setQuranVerses)` therefore replaces a working reader with
+  // a blank one the moment the backend is slow/unreachable, with no error shown either. Fall back
+  // to getQuranVerses() (cached data, or the static Al-Fatihah bundle) and surface why.
+  async function refreshQuranVerses(surahNumber: number) {
+    const verses = await loadSurahVerses(surahNumber).catch(() => []);
+    if (verses.length > 0) {
+      setQuranVerses(verses);
+    } else {
+      setQuranVerses(getQuranVerses());
+      setApiError(getQuranLoadError() ?? "Couldn't load Quran verses from the server; showing offline data.");
+    }
   }
 
   async function runAlignmentAndTajweed(transcript: string) {
