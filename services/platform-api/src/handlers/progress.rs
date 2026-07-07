@@ -106,8 +106,7 @@ pub async fn get_progress(
     .bind(&actor.tenant_id)
     .bind(&learner_id)
     .fetch_one(&mut *tx)
-    .await
-    .unwrap_or(0);
+    .await?;
 
     // Mastery = mean per-card retention from SM-2 repetitions (4+ reps == mastered).
     let reps: Vec<i32> = sqlx::query_scalar(
@@ -116,8 +115,7 @@ pub async fn get_progress(
     .bind(&actor.tenant_id)
     .bind(&learner_id)
     .fetch_all(&mut *tx)
-    .await
-    .unwrap_or_default();
+    .await?;
     let mastery = if reps.is_empty() {
         0.0
     } else {
@@ -131,9 +129,7 @@ pub async fn get_progress(
     .bind(&actor.tenant_id)
     .bind(&learner_id)
     .fetch_one(&mut *tx)
-    .await
-    .ok()
-    .flatten();
+    .await?;
 
     let days: Vec<chrono::NaiveDate> = sqlx::query_scalar(
         "SELECT DISTINCT (started_at AT TIME ZONE 'UTC')::date AS d
@@ -142,8 +138,7 @@ pub async fn get_progress(
     .bind(&actor.tenant_id)
     .bind(&learner_id)
     .fetch_all(&mut *tx)
-    .await
-    .unwrap_or_default();
+    .await?;
     let streak = compute_streak(&days);
 
     tx.commit().await?;
