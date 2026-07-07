@@ -158,6 +158,15 @@ export interface MemorizationPlan {
   intervals: Array<{ label: string; dueCount: number; retention: number }>;
 }
 
+// The backend returns nextReviewAt as a raw ISO 8601 timestamp (e.g.
+// "2036-07-03T23:57:49.052403+00:00") — format it for display rather than showing that
+// directly to a learner. Falls back to the raw string if it's ever unparseable.
+function formatReviewDate(iso: string): string {
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) return iso;
+  return new Intl.DateTimeFormat(undefined, { dateStyle: "medium" }).format(date);
+}
+
 export async function fetchMemorizationPlan(
   tenantId: string,
   userId: string,
@@ -167,7 +176,7 @@ export async function fetchMemorizationPlan(
     const progress = await fetchLearnerProgress(tenantId, userId, authToken);
     return {
       learnerId: progress.learnerId,
-      nextReviewAt: progress.nextReviewAt ?? "Not scheduled",
+      nextReviewAt: progress.nextReviewAt ? formatReviewDate(progress.nextReviewAt) : "Not scheduled",
       currentFocus: "Al-Fatihah stability before Al-Baqarah opener",
       intervals: [
         { label: "Today", dueCount: Math.min(progress.totalSessions, 4), retention: progress.mastery || 0.5 },
