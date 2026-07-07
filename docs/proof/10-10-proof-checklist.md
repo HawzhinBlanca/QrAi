@@ -33,7 +33,9 @@
 - [x] Platform API tenant isolation tests prove one tenant cannot read another tenant's recitation sessions.
 - [x] Platform API smoke issues realtime tickets, writes a real teacher review, checks teacher review queue, validates eval metadata, exercises privacy export/delete jobs, and verifies learner RBAC denial for teacher actions.
 - [ ] Production tenant isolation tests prove one institution cannot read another institution's sessions, reviews, or audio in live Postgres/RLS and object storage.
-- [x] `pnpm smoke:sql` validates tenant RLS policy text plus forced RLS for 14 tenant-owned SQL tables.
+- [x] `pnpm smoke:sql` validates tenant RLS policy text plus forced RLS for 15 tenant-owned SQL tables
+  (see `tenantTables` in `scripts/smoke-sql.mjs` for the current list — it has grown since this
+  checklist item was last written).
 - [x] `SQL_SMOKE_REQUIRE_LIVE=true POSTGRES_RLS_SMOKE_URL=... pnpm smoke:sql` passes against live Postgres.
 - [x] `pnpm smoke:api` creates a tenant-scoped session, verifies cross-tenant 404, and checks eval lookup on the running API.
 - [x] `pnpm smoke:ml` proves local ML service health, deterministic Al-Fatihah + Juz Amma golden cases, source-backed tajweed fixtures, eval threshold gate, and external ASR consent audit.
