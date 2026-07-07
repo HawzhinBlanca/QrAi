@@ -131,9 +131,10 @@ services:
       # `_load_model()` hits `ModuleNotFoundError: No module named 'transformers'` and every
       # transcribe/align/tajweed request 503s (verified empirically). Switching to the
       # specialized model is a real product/accuracy decision (recitation-tuned vs. generic
-      # transcription) with real costs (transformers as a new prod dependency — see the pinned
-      # CVEs already tracked for it in services/tajweed-neural's lockfile — a larger image, and
-      # an HF model download during build), so it isn't flipped here without an explicit call.
+      # transcription) with real costs (transformers as a new prod dependency — pip-audit found it
+      # has real CVEs at the version tajweed-neural currently pins, see docs/DECISIONS.md ADR-0009
+      # for the actual finding and reachability analysis — a larger image, and an HF model download
+      # during build), so it isn't flipped here without an explicit call.
       ASR_MODEL: "base"
       ASR_API_KEY: "${ASR_API_KEY:?ASR_API_KEY is required}"
     ports:
