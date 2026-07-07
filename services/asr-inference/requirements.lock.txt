@@ -1,0 +1,44 @@
+# Pinned, reproducible-build lock for the exact packages services/asr-inference/Dockerfile
+# installs (fastapi uvicorn openai-whisper torchaudio soundfile) plus their transitive deps,
+# generated from a clean Python 3.11 venv. pip-audit: 0 known vulnerabilities in these 37
+# packages (checked 2026-07-08). Regenerate with:
+#   python3.11 -m venv /tmp/asr-clean-venv && /tmp/asr-clean-venv/bin/pip install \
+#     --no-cache-dir fastapi uvicorn openai-whisper torchaudio soundfile && \
+#     /tmp/asr-clean-venv/bin/pip freeze > services/asr-inference/requirements.lock.txt
+annotated-doc==0.0.4
+annotated-types==0.7.0
+anyio==4.14.1
+certifi==2026.6.17
+cffi==2.1.0
+charset-normalizer==3.4.9
+click==8.4.2
+fastapi==0.139.0
+filelock==3.29.6
+fsspec==2026.6.0
+h11==0.16.0
+idna==3.18
+Jinja2==3.1.6
+llvmlite==0.48.0
+MarkupSafe==3.0.3
+more-itertools==11.1.0
+mpmath==1.3.0
+networkx==3.6.1
+numba==0.66.0
+numpy==2.4.6
+openai-whisper==20250625
+pycparser==3.0
+pydantic==2.13.4
+pydantic_core==2.46.4
+regex==2026.6.28
+requests==2.34.2
+soundfile==0.14.0
+starlette==1.3.1
+sympy==1.14.0
+tiktoken==0.13.0
+torch==2.12.1
+torchaudio==2.11.0
+tqdm==4.68.4
+typing-inspection==0.4.2
+typing_extensions==4.16.0
+urllib3==2.7.0
+uvicorn==0.50.2
