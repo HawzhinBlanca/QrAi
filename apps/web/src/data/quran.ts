@@ -147,11 +147,17 @@ export function buildRecitationEvents(alignmentResults: AlignmentResult[]): Reci
     }));
 }
 
-// Real progress data from API
-let cachedProgress: ProgressBar[] | null = null;
+// Real progress data from API. Keyed by `${tenantId}|${userId}` (mirrors fetchLearnerProgress's
+// in-flight map in data/platform.ts) — a bare unkeyed cache previously returned the FIRST
+// logged-in learner's weekly-accuracy bars to every learner who logs in afterward in the same
+// page session (login/logout is an in-SPA state change, not a page reload, so the module-level
+// cache would otherwise outlive the user it was fetched for).
+const cachedProgress = new Map<string, ProgressBar[]>();
 
 export async function loadWeeklyProgress(tenantId: string, userId?: string, authToken?: string): Promise<ProgressBar[]> {
-  if (cachedProgress) return cachedProgress;
+  const key = `${tenantId}|${userId ?? "learner-1"}`;
+  const cached = cachedProgress.get(key);
+  if (cached) return cached;
   try {
     const apiBase = import.meta.env.VITE_PLATFORM_API_URL || "http://127.0.0.1:8080";
     const response = await fetch(`${apiBase}/v1/learner/progress`, {
@@ -162,20 +168,17 @@ export async function loadWeeklyProgress(tenantId: string, userId?: string, auth
     // Build week from real session count
     const days = ["Sat", "Sun", "Mon", "Tue", "Wed", "Thu", "Today"];
     const baseAccuracy = Math.round((data.mastery ?? 0) * 100) || 50;
-    cachedProgress = days.map((day, i) => ({
+    const progress = days.map((day, i) => ({
       day,
       accuracy: Math.min(100, baseAccuracy + (i * 3) - 5),
       minutes: 10 + (i * 4),
     }));
-    return cachedProgress;
+    cachedProgress.set(key, progress);
+    return progress;
   } catch {
     // Return empty — no fake data
     return [];
   }
-}
-
-export function getWeeklyProgress(): ProgressBar[] {
-  return cachedProgress ?? [];
 }
 
 // Similar verses — static reference data (not API-backed, but real Quranic text)
