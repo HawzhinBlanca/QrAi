@@ -148,6 +148,15 @@ async fn gets_quran_surah_list_from_postgres() {
     assert_eq!(response.status(), StatusCode::OK);
     let body: Vec<Value> = read_json(response).await;
     assert!(body.len() >= 114);
+    // Surah 1 has a real name in canonical_surahs; a bug that filtered the case backwards (keeping
+    // only empty names) would make list_surahs fall back to the synthetic "Surah 1" placeholder for
+    // every surah with real metadata.
+    let surah_1 = body
+        .iter()
+        .find(|s| s["surahNumber"] == json!(1))
+        .expect("surah 1 must be present");
+    assert_eq!(surah_1["name"], "Al-Faatiha");
+    assert_ne!(surah_1["name"], "Surah 1");
 }
 
 #[tokio::test]
@@ -1563,6 +1572,374 @@ async fn asr_transcribe_proxy_maps_upstream_error_status_to_bad_gateway() {
         StatusCode::BAD_GATEWAY,
         "a non-success upstream status must map to 502, not pass through as success"
     );
+}
+
+#[tokio::test]
+#[ignore = "requires live Postgres"]
+async fn create_agent_run_rejects_invalid_status() {
+    let router = platform_router_with_rate_limit(test_state(), false);
+    let response = send_json(
+        &router,
+        Method::POST,
+        "/v1/agent-runs",
+        Some("hikmah-pilot-erbil"),
+        Some("ops"),
+        json!({
+            "name": "run",
+            "goal": "goal",
+            "status": "not-a-real-status",
+            "confidence": 0.5,
+            "reviewStatus": "draft",
+            "sources": []
+        }),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+#[ignore = "requires live Postgres"]
+async fn create_agent_run_rejects_invalid_review_status() {
+    let router = platform_router_with_rate_limit(test_state(), false);
+    let response = send_json(
+        &router,
+        Method::POST,
+        "/v1/agent-runs",
+        Some("hikmah-pilot-erbil"),
+        Some("ops"),
+        json!({
+            "name": "run",
+            "goal": "goal",
+            "status": "queued",
+            "confidence": 0.5,
+            "reviewStatus": "not-a-real-review-status",
+            "sources": []
+        }),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+#[ignore = "requires live Postgres"]
+async fn create_agent_run_rejects_approved_without_sources() {
+    let router = platform_router_with_rate_limit(test_state(), false);
+    let response = send_json(
+        &router,
+        Method::POST,
+        "/v1/agent-runs",
+        Some("hikmah-pilot-erbil"),
+        Some("ops"),
+        json!({
+            "name": "run",
+            "goal": "goal",
+            "status": "approved",
+            "confidence": 0.9,
+            "reviewStatus": "scholar-approved",
+            "sources": []
+        }),
+    )
+    .await;
+    assert_eq!(
+        response.status(),
+        StatusCode::BAD_REQUEST,
+        "an approved agent run must cite at least one source, mirroring the learner-facing gate"
+    );
+}
+
+#[tokio::test]
+#[ignore = "requires live Postgres"]
+async fn create_agent_run_accepts_a_valid_run_and_it_is_listed() {
+    let state = test_state();
+    let router = platform_router_with_rate_limit(state.clone(), false);
+    let name = format!("run-{}", next_suffix());
+
+    let created = send_json(
+        &router,
+        Method::POST,
+        "/v1/agent-runs",
+        Some("hikmah-pilot-erbil"),
+        Some("ops"),
+        json!({
+            "name": name,
+            "goal": "goal",
+            "status": "queued",
+            "confidence": 0.42,
+            "reviewStatus": "draft",
+            "sources": []
+        }),
+    )
+    .await;
+    assert_eq!(created.status(), StatusCode::OK);
+    let created_body: Value = read_json(created).await;
+    assert_eq!(created_body["status"], "queued");
+    assert_eq!(created_body["reviewStatus"], "draft");
+
+    let listed = send_json(
+        &router,
+        Method::GET,
+        "/v1/agent-runs",
+        Some("hikmah-pilot-erbil"),
+        Some("ops"),
+        Value::Null,
+    )
+    .await;
+    assert_eq!(listed.status(), StatusCode::OK);
+    let runs: Vec<Value> = read_json(listed).await;
+    assert!(
+        runs.iter().any(|r| r["name"] == json!(name)),
+        "expected to find the created run {name} in {runs:?}"
+    );
+}
+
+#[tokio::test]
+#[ignore = "requires live Postgres"]
+async fn register_rejects_a_password_shorter_than_eight_characters() {
+    let router = platform_router_with_rate_limit(test_state(), false);
+    let response = send_json(
+        &router,
+        Method::POST,
+        "/v1/auth/register",
+        None,
+        None,
+        json!({
+            "tenantId": "hikmah-pilot-erbil",
+            "displayName": "Weak Password User",
+            "role": "learner",
+            "language": "en",
+            "password": "short1"
+        }),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+#[ignore = "requires live Postgres"]
+async fn register_accepts_a_password_exactly_eight_characters_long() {
+    let router = platform_router_with_rate_limit(test_state(), false);
+    let response = send_json(
+        &router,
+        Method::POST,
+        "/v1/auth/register",
+        None,
+        None,
+        json!({
+            "tenantId": "hikmah-pilot-erbil",
+            "displayName": "Exactly Eight User",
+            "role": "learner",
+            "language": "en",
+            "password": "exactly8"
+        }),
+    )
+    .await;
+    assert_eq!(
+        response.status(),
+        StatusCode::OK,
+        "an 8-character password is the minimum allowed length, not one below it"
+    );
+}
+
+#[tokio::test]
+#[ignore = "requires live Postgres"]
+async fn create_agent_run_defaults_sources_to_an_empty_array_when_omitted() {
+    let router = platform_router_with_rate_limit(test_state(), false);
+    let created = send_json(
+        &router,
+        Method::POST,
+        "/v1/agent-runs",
+        Some("hikmah-pilot-erbil"),
+        Some("ops"),
+        json!({
+            "name": format!("run-{}", next_suffix()),
+            "goal": "goal",
+            "status": "queued",
+            "confidence": 0.5,
+            "reviewStatus": "draft"
+        }),
+    )
+    .await;
+    assert_eq!(created.status(), StatusCode::OK);
+    let created_body: Value = read_json(created).await;
+    assert_eq!(
+        created_body["sources"],
+        json!([]),
+        "an omitted `sources` field must default to an empty array"
+    );
+}
+
+#[tokio::test]
+#[ignore = "requires live Postgres"]
+async fn create_session_external_processing_requires_both_asr_consent_and_guardian_approval() {
+    let state = test_state();
+    let router = platform_router_with_rate_limit(state.clone(), false);
+    let asr_only_learner = format!("learner-consent-asr-only-{}", next_suffix());
+    let both_learner = format!("learner-consent-both-{}", next_suffix());
+
+    sqlx::query(
+        "INSERT INTO users (id, tenant_id, display_name, role, language)
+         VALUES ($1, 'hikmah-pilot-erbil', 'Consent Learner', 'learner', 'ckb'),
+                ($2, 'hikmah-pilot-erbil', 'Consent Learner', 'learner', 'ckb')",
+    )
+    .bind(&asr_only_learner)
+    .bind(&both_learner)
+    .execute(&state.pool)
+    .await
+    .unwrap();
+
+    // ASR consent without guardian approval must NOT enable external processing — both are
+    // required (the `&&` gate), not either alone.
+    let asr_only = send_json(
+        &router,
+        Method::POST,
+        "/v1/recitation-sessions",
+        Some("hikmah-pilot-erbil"),
+        Some("admin"),
+        json!({
+            "learnerId": asr_only_learner,
+            "quranRef": {"surahNumber": 1, "ayahStart": 1, "ayahEnd": 7, "display": "Al-Fatihah 1:1-7"},
+            "sourceChecksum": "fnv1a32:consent-gate",
+            "modelVersion": "model-v0.3",
+            "language": "ckb",
+            "mode": "guided-recite",
+            "practicePlanId": "fatihah-mastery-v1",
+            "consent": {"audioRetention": "discard", "anonymizedLearning": true, "externalAsrProcessing": true, "guardianApproved": false, "consentVersion": "pilot-v1"}
+        }),
+    )
+    .await;
+    assert_eq!(asr_only.status(), StatusCode::OK);
+    let asr_only_body: Value = read_json(asr_only).await;
+    assert_eq!(asr_only_body["externalProcessingAllowed"], false);
+
+    // Both consent flags true -> external processing allowed.
+    let both = send_json(
+        &router,
+        Method::POST,
+        "/v1/recitation-sessions",
+        Some("hikmah-pilot-erbil"),
+        Some("admin"),
+        json!({
+            "learnerId": both_learner,
+            "quranRef": {"surahNumber": 1, "ayahStart": 1, "ayahEnd": 7, "display": "Al-Fatihah 1:1-7"},
+            "sourceChecksum": "fnv1a32:consent-gate",
+            "modelVersion": "model-v0.3",
+            "language": "ckb",
+            "mode": "guided-recite",
+            "practicePlanId": "fatihah-mastery-v1",
+            "consent": {"audioRetention": "discard", "anonymizedLearning": true, "externalAsrProcessing": true, "guardianApproved": true, "consentVersion": "pilot-v1"}
+        }),
+    )
+    .await;
+    assert_eq!(both.status(), StatusCode::OK);
+    let both_body: Value = read_json(both).await;
+    assert_eq!(both_body["externalProcessingAllowed"], true);
+}
+
+#[tokio::test]
+#[ignore = "requires live Postgres"]
+async fn create_realtime_ticket_expires_at_matches_the_configured_ttl() {
+    let state = test_state();
+    let router = platform_router_with_rate_limit(state.clone(), false);
+    let learner_id = format!("learner-rt-ticket-{}", next_suffix());
+
+    sqlx::query(
+        "INSERT INTO users (id, tenant_id, display_name, role, language)
+         VALUES ($1, 'hikmah-pilot-erbil', 'RT Ticket Learner', 'learner', 'ckb')",
+    )
+    .bind(&learner_id)
+    .execute(&state.pool)
+    .await
+    .unwrap();
+    let session_id = create_test_session_for_learner(&router, &learner_id).await;
+
+    let before = quran_ai_platform_api::unix_now_seconds();
+    let ticket = send_json(
+        &router,
+        Method::POST,
+        "/v1/realtime-session-tickets",
+        Some("hikmah-pilot-erbil"),
+        Some("admin"),
+        json!({ "sessionId": session_id }),
+    )
+    .await;
+    assert_eq!(ticket.status(), StatusCode::OK);
+    let ticket_body: Value = read_json(ticket).await;
+    let expires_at: u64 = ticket_body["expiresAt"].as_str().unwrap().parse().unwrap();
+
+    // Must be `now + TTL`, not `now - TTL` (an already-expired ticket) or `now * TTL`
+    // (a nonsensical value decades in the future).
+    let expected = before + quran_ai_platform_api::REALTIME_TICKET_TTL_SECONDS;
+    assert!(
+        expires_at.abs_diff(expected) <= 5,
+        "expected expiresAt near {expected}, got {expires_at}"
+    );
+}
+
+#[tokio::test]
+#[ignore = "requires live Postgres"]
+async fn get_session_round_trips_every_practice_mode() {
+    let state = test_state();
+    let router = platform_router_with_rate_limit(state.clone(), false);
+
+    for mode in [
+        "listen",
+        "guided-recite",
+        "memory-recite",
+        "correction",
+        "drill",
+        "complete",
+    ] {
+        let learner_id = format!("learner-mode-{mode}-{}", next_suffix());
+        sqlx::query(
+            "INSERT INTO users (id, tenant_id, display_name, role, language)
+             VALUES ($1, 'hikmah-pilot-erbil', 'Mode Learner', 'learner', 'ckb')",
+        )
+        .bind(&learner_id)
+        .execute(&state.pool)
+        .await
+        .unwrap();
+
+        let created = send_json(
+            &router,
+            Method::POST,
+            "/v1/recitation-sessions",
+            Some("hikmah-pilot-erbil"),
+            Some("admin"),
+            json!({
+                "learnerId": learner_id,
+                "quranRef": {"surahNumber": 1, "ayahStart": 1, "ayahEnd": 7, "display": "Al-Fatihah 1:1-7"},
+                "sourceChecksum": "fnv1a32:mode-round-trip",
+                "modelVersion": "model-v0.3",
+                "language": "ckb",
+                "mode": mode,
+                "practicePlanId": "fatihah-mastery-v1",
+                "consent": {"audioRetention": "discard", "anonymizedLearning": true, "externalAsrProcessing": false, "guardianApproved": true, "consentVersion": "pilot-v1"}
+            }),
+        )
+        .await;
+        assert_eq!(created.status(), StatusCode::OK);
+        let session_id = read_json::<Value>(created).await["id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+
+        let fetched = send_json(
+            &router,
+            Method::GET,
+            &format!("/v1/recitation-sessions/{session_id}"),
+            Some("hikmah-pilot-erbil"),
+            Some("admin"),
+            Value::Null,
+        )
+        .await;
+        assert_eq!(fetched.status(), StatusCode::OK);
+        let fetched_body: Value = read_json(fetched).await;
+        assert_eq!(
+            fetched_body["mode"],
+            json!(mode),
+            "mode must round-trip exactly for {mode}, not collapse to a fallback"
+        );
+    }
 }
 
 fn next_suffix() -> String {
