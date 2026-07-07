@@ -479,14 +479,36 @@ pub fn gateway_router_with_rate_limit(config: GatewayServerConfig, rate_limited:
         });
 
     if rate_limited {
-        let conf = tower_governor::governor::GovernorConfigBuilder::default()
-            .per_millisecond(50)
-            .burst_size(200)
-            .finish()
-            .unwrap();
-        base_router.layer(tower_governor::GovernorLayer {
-            config: conf.into(),
-        })
+        // Keying: default is the PEER IP. Behind a reverse proxy (e.g. nginx terminating TLS in
+        // front of this gateway) every connection shares the proxy's IP, collapsing per-client
+        // rate limiting into one shared bucket — set TRUST_PROXY_HEADERS=1 to key off
+        // X-Forwarded-For/X-Real-IP instead, mirroring platform-api's identical
+        // GovernorConfigBuilder split. That is spoofable if the gateway is ever exposed directly
+        // (a client sets the header to dodge the limit), so it stays opt-in and must only be
+        // enabled behind a proxy that overwrites those headers rather than passing them through.
+        let trust_proxy = std::env::var("TRUST_PROXY_HEADERS")
+            .map(|v| v == "1" || v == "true")
+            .unwrap_or(false);
+        if trust_proxy {
+            let conf = tower_governor::governor::GovernorConfigBuilder::default()
+                .per_millisecond(50)
+                .burst_size(200)
+                .key_extractor(tower_governor::key_extractor::SmartIpKeyExtractor)
+                .finish()
+                .unwrap();
+            base_router.layer(tower_governor::GovernorLayer {
+                config: conf.into(),
+            })
+        } else {
+            let conf = tower_governor::governor::GovernorConfigBuilder::default()
+                .per_millisecond(50)
+                .burst_size(200)
+                .finish()
+                .unwrap();
+            base_router.layer(tower_governor::GovernorLayer {
+                config: conf.into(),
+            })
+        }
     } else {
         base_router
     }

@@ -44,14 +44,18 @@ const GOLDEN_CASE_IDS = fixtures.cases.map((c) => c.id);
 // computes real alignment/tajweed — even for the golden refs like Al-Fatihah 1:1-7.
 const USE_GOLDEN_FIXTURES = process.env.ML_USE_GOLDEN_FIXTURES === "1";
 // === Audio storage abstraction ===
-// Uses local filesystem now, swappable to MinIO/S3 later via AUDIO_STORAGE_DRIVER env
+// Filesystem-only today. AUDIO_STORAGE_DRIVER exists so a future S3/MinIO backend has a place to
+// hang off of, but until one is actually implemented, requesting it must fail loudly at startup —
+// silently falling back to the filesystem while an operator believes audio is going to S3 would be
+// a silent privacy/compliance gap (see docs/DATA_INVENTORY.md), not a graceful degradation.
 const AUDIO_STORAGE_DRIVER = process.env.AUDIO_STORAGE_DRIVER ?? "filesystem";
+if (AUDIO_STORAGE_DRIVER !== "filesystem") {
+  throw new Error(
+    `AUDIO_STORAGE_DRIVER=${AUDIO_STORAGE_DRIVER} is not implemented (only "filesystem" is supported). ` +
+      `Refusing to start rather than silently store audio on the local filesystem while a different backend was requested.`,
+  );
+}
 const AUDIO_STORAGE_DIR = process.env.AUDIO_STORAGE_DIR ?? join(__dirname, "audio-storage");
-// S3/MinIO config (used when driver=s3)
-const S3_ENDPOINT = process.env.S3_ENDPOINT ?? "http://127.0.0.1:9000";
-const S3_BUCKET = process.env.S3_BUCKET ?? "quran-ai-audio";
-const S3_ACCESS_KEY = process.env.S3_ACCESS_KEY ?? "minioadmin";
-const S3_SECRET_KEY = process.env.S3_SECRET_KEY ?? "minioadmin";
 
 mkdirSync(AUDIO_STORAGE_DIR, { recursive: true });
 
@@ -84,19 +88,9 @@ async function storeAudioObject(tenantId, learnerId, chunkId, audioBytes) {
   learnerId = safeStorageSegment(learnerId, "learnerId");
   chunkId = safeStorageSegment(chunkId, "chunkId");
   const objectKey = `${tenantId}/${learnerId}/${chunkId}.bin`;
-  if (AUDIO_STORAGE_DRIVER === "s3") {
-    // S3/MinIO storage (when configured)
-    // In production this would use @aws-sdk/client-s3
-    // For now, store to filesystem as fallback even in S3 mode
-    const tenantDir = join(AUDIO_STORAGE_DIR, tenantId, learnerId);
-    mkdirSync(tenantDir, { recursive: true });
-    writeFileSync(join(tenantDir, `${chunkId}.bin`), audioBytes);
-  } else {
-    // Filesystem storage
-    const tenantDir = join(AUDIO_STORAGE_DIR, tenantId, learnerId);
-    mkdirSync(tenantDir, { recursive: true });
-    writeFileSync(join(tenantDir, `${chunkId}.bin`), audioBytes);
-  }
+  const tenantDir = join(AUDIO_STORAGE_DIR, tenantId, learnerId);
+  mkdirSync(tenantDir, { recursive: true });
+  writeFileSync(join(tenantDir, `${chunkId}.bin`), audioBytes);
   return objectKey;
 }
 
