@@ -77,5 +77,10 @@ export function runPracticeRecommender(progress, nowIso) {
     sources,
     lastEvent: `${rec.headline} ${rec.reason}`,
     findingId: null,
+    // Structured learner reference so platform-api can persist it into agent_runs.learner_id —
+    // without this, the ONLY place the learner's id lives is embedded as free text in `goal`
+    // above, which the privacy-delete erasure cascade has no way to search or scope a DELETE
+    // against. A learner's requested erasure would otherwise leave their id in this table forever.
+    learnerId,
   };
 }

@@ -1942,6 +1942,103 @@ async fn get_session_round_trips_every_practice_mode() {
     }
 }
 
+#[tokio::test]
+#[ignore = "requires live Postgres"]
+async fn privacy_delete_erases_the_learners_agent_runs_but_not_other_learners() {
+    let mock_ml = spawn_mock_ml_privacy_delete().await;
+    let state = test_state().with_ml_inference_url(mock_ml);
+    let router = platform_router_with_rate_limit(state.clone(), false);
+    let target_learner = format!("learner-agent-run-target-{}", next_suffix());
+    let other_learner = format!("learner-agent-run-other-{}", next_suffix());
+
+    sqlx::query(
+        "INSERT INTO users (id, tenant_id, display_name, role, language)
+         VALUES ($1, 'hikmah-pilot-erbil', 'Agent Run Target', 'learner', 'ckb'),
+                ($2, 'hikmah-pilot-erbil', 'Agent Run Other', 'learner', 'ckb')",
+    )
+    .bind(&target_learner)
+    .bind(&other_learner)
+    .execute(&state.pool)
+    .await
+    .unwrap();
+
+    let create_run = |learner_id: String| {
+        let router = router.clone();
+        async move {
+            send_json(
+                &router,
+                Method::POST,
+                "/v1/agent-runs",
+                Some("hikmah-pilot-erbil"),
+                Some("ops"),
+                json!({
+                    "name": "Practice Plan Recommender",
+                    "goal": format!("Recommend the next practice step for {learner_id}."),
+                    "status": "needs-human-review",
+                    "confidence": 0.9,
+                    "reviewStatus": "ai-suggested",
+                    "sources": [],
+                    "learnerId": learner_id,
+                }),
+            )
+            .await
+        }
+    };
+
+    let target_created = create_run(target_learner.clone()).await;
+    assert_eq!(target_created.status(), StatusCode::OK);
+    let target_run_id = read_json::<Value>(target_created).await["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let other_created = create_run(other_learner.clone()).await;
+    assert_eq!(other_created.status(), StatusCode::OK);
+    let other_run_id = read_json::<Value>(other_created).await["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let deleted = send_json(
+        &router,
+        Method::POST,
+        "/v1/privacy/delete",
+        Some("hikmah-pilot-erbil"),
+        Some("admin"),
+        json!({ "learnerId": target_learner }),
+    )
+    .await;
+    assert_eq!(deleted.status(), StatusCode::OK);
+    let deleted_body: Value = read_json(deleted).await;
+    assert!(
+        deleted_body["deletedRecords"]
+            .as_array()
+            .is_some_and(|records| records.iter().any(|r| r == &json!(target_run_id))),
+        "expected the target learner's agent run {target_run_id} in deletedRecords, got {:?}",
+        deleted_body["deletedRecords"]
+    );
+
+    let target_run_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM agent_runs WHERE id = $1")
+        .bind(&target_run_id)
+        .fetch_one(&state.pool)
+        .await
+        .unwrap();
+    assert_eq!(
+        target_run_count, 0,
+        "target learner's agent run should be deleted"
+    );
+
+    let other_run_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM agent_runs WHERE id = $1")
+        .bind(&other_run_id)
+        .fetch_one(&state.pool)
+        .await
+        .unwrap();
+    assert_eq!(
+        other_run_count, 1,
+        "privacy delete must preserve other learners' agent runs"
+    );
+}
+
 fn next_suffix() -> String {
     // Unique across processes AND runs (the DB persists between runs), so seeded ids never
     // collide. SystemTime is fine here (unlike workflow scripts, ordinary tests may use it).

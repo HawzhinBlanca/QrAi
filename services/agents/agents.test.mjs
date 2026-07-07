@@ -189,6 +189,14 @@ test("runPracticeRecommender gates a sourced recommendation to review", () => {
   assert.equal(run.status, "needs-human-review");
   assert.match(run.goal, /learner-1/);
   assert.ok(run.sources.length >= 1);
+  // Structured field, not just embedded in the free-text `goal` — this is what lets
+  // platform-api's privacy-delete cascade find and erase this learner's agent runs.
+  assert.equal(run.learnerId, "learner-1");
+});
+
+test("runPracticeRecommender leaves learnerId null when no learner is known", () => {
+  const run = runPracticeRecommender({ totalSessions: 3, mastery: 0.25 }, NOW);
+  assert.equal(run.learnerId, null);
 });
 
 test("runPracticeRecommenderBatch fans out over active learners (injected IO)", async () => {

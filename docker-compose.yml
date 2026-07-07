@@ -33,6 +33,7 @@ services:
       - ./infra/sql/0015_teacher_review_scholar_approval_indexes.sql:/docker-entrypoint-initdb.d/15_teacher_review_scholar_approval_indexes.sql:ro
       - ./infra/sql/0016_missing_tenant_indexes.sql:/docker-entrypoint-initdb.d/16_missing_tenant_indexes.sql:ro
       - ./infra/sql/0017_eval_runs_index.sql:/docker-entrypoint-initdb.d/17_eval_runs_index.sql:ro
+      - ./infra/sql/0018_agent_run_learner_id.sql:/docker-entrypoint-initdb.d/18_agent_run_learner_id.sql:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U hawzhin -d quran_ai"]
       interval: 5s

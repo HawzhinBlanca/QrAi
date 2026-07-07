@@ -146,8 +146,21 @@ async fn create_privacy_job(
         })
         .collect();
 
+    let agent_run_rows =
+        sqlx::query("SELECT id FROM agent_runs WHERE tenant_id = $1 AND learner_id = $2")
+            .bind(&actor.tenant_id)
+            .bind(&req.learner_id)
+            .fetch_all(&mut *tx)
+            .await?;
+
+    let agent_run_ids: Vec<String> = agent_run_rows
+        .into_iter()
+        .map(|r| r.try_get::<String, _>("id").unwrap_or_default())
+        .collect();
+
     let mut included_ids = session_ids.clone();
     included_ids.extend(progress_ids);
+    included_ids.extend(agent_run_ids);
 
     let deleted_ids = if kind == PrivacyJobKind::Delete {
         included_ids.clone()
@@ -284,6 +297,16 @@ async fn create_privacy_job(
             .await?;
 
         sqlx::query("DELETE FROM consent_records WHERE tenant_id = $1 AND user_id = $2")
+            .bind(&actor.tenant_id)
+            .bind(&req.learner_id)
+            .execute(&mut *tx)
+            .await?;
+
+        // agent_runs has no FK dependency on recitation_sessions, so this delete is independent
+        // of the ordering above. Only learner_id-attributed runs (Practice Plan Recommender)
+        // match; cohort-level runs (Mistake Pattern Summarizer, learner_id null) are untouched —
+        // they carry no single learner's identity to begin with.
+        sqlx::query("DELETE FROM agent_runs WHERE tenant_id = $1 AND learner_id = $2")
             .bind(&actor.tenant_id)
             .bind(&req.learner_id)
             .execute(&mut *tx)
