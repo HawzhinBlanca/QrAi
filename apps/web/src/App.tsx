@@ -307,11 +307,13 @@ function AuthenticatedApp({ bypassLogin = false }: { bypassLogin?: boolean }) {
   }
 
   function advancePractice() {
-    // Detect the transition into the final "complete" step so we can persist progress.
-    const fromIndex = practiceSteps.findIndex((step) => step.id === practiceMode);
-    const enteringComplete =
-      practiceMode !== "home" &&
-      practiceSteps[Math.min(fromIndex + 1, practiceSteps.length - 1)].id === "complete";
+    // Detect the transition into the final "complete" step INSIDE the functional updater, so
+    // detection is atomic with the actual state change React applies. Computing it from the
+    // `practiceMode` closure instead (its value at call time, not at commit time) let two
+    // advancePractice() calls dispatched before a re-render both see the pre-transition mode and
+    // both fire saveProgressFromPractice for the same completion — double-recording one SM-2
+    // review. Only the FIRST call to actually transition into "complete" should persist progress.
+    let enteringComplete = false;
 
     setPracticeMode((currentMode) => {
       if (currentMode === "home") {
@@ -320,6 +322,7 @@ function AuthenticatedApp({ bypassLogin = false }: { bypassLogin?: boolean }) {
 
       const currentIndex = practiceSteps.findIndex((step) => step.id === currentMode);
       const nextStep = practiceSteps[Math.min(currentIndex + 1, practiceSteps.length - 1)];
+      enteringComplete = currentMode !== "complete" && nextStep.id === "complete";
       return nextStep.id;
     });
     setIsRecording(false);
