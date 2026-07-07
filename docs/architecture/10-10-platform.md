@@ -21,9 +21,10 @@
   bcrypt, JWT), recitation sessions, learner progress (real SM-2 spaced repetition), privacy
   export/delete (with ML-service audio erasure), teacher reviews, scholar approvals, agent-run
   recording, eval-run lookup, audit events, and realtime ticket issuance. Tenant isolation
-  enforced by Postgres RLS on every tenant-owned table. Privacy-delete does not yet cascade to
-  `agent_runs` — see `docs/DATA_INVENTORY.md` §1 and PR #58 (open, blocked on a CI migration-list
-  edit only a human can make to a protected workflow file).
+  enforced by Postgres RLS on every tenant-owned table. Privacy-delete's cascade to `agent_runs`
+  (matching `tenant_id`/`learner_id`) is implemented and locally verified but not yet merged — see
+  `docs/DATA_INVENTORY.md` §1 and PR #123 (open, blocked on a CI migration-list edit only a human
+  can make to a protected workflow file).
 - `services/realtime-gateway`: Rust/Tokio/Axum realtime gateway — ticket-authenticated (HMAC,
   single-use, tenant-bound) WebSocket audio ingress, origin-checked (CSWSH-resistant), bounded
   per-session channel with backpressure, forwards chunks to ml-inference, metrics endpoint.
@@ -46,7 +47,7 @@
   place.
 - `infra/sql`: Postgres schema, full Quran seed, tenant RLS policies (every tenant-owned table),
   restricted app role, learner-progress RLS, eval-run tenant isolation, superuser-only RLS bypass
-  guard, per-tenant email uniqueness, and (pending PR #58) the `agent_runs.learner_id`
+  guard, per-tenant email uniqueness, and (pending PR #123) the `agent_runs.learner_id`
   erasure-support column.
 - `scripts/verify.sh`: canonical local/CI gate — Rust fmt/clippy, TS typecheck, TS/Rust/Node
   tests, live Postgres integration tests when reachable, production build, and web bundle secret
