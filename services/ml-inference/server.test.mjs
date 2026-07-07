@@ -132,3 +132,21 @@ test("safeStorageSegment rejects over-long ids with a 400, not a write-time 500"
   assert.throws(() => safeStorageSegment("../etc", "tenantId"), is400);
   assert.throws(() => safeStorageSegment("a/b", "tenantId"), is400);
 });
+
+// getCanonicalWords validated ayahStart against the surah's real ayah count but not ayahEnd — a
+// request for e.g. Surah 97 (Al-Qadr, 5 ayahs) with ayahEnd: 7 silently aligned against only the
+// 5 ayahs that exist instead of rejecting the out-of-range request, so a caller (the mobile app
+// hardcoded ayahEnd: 7 regardless of the selected surah's real length) got a shorter alignment than
+// it asked for with no error to signal the mismatch.
+test("predictAlignment rejects an ayahEnd beyond the surah's real ayah count (400, not a silent truncation)", async () => {
+  await assert.rejects(
+    () =>
+      predictAlignment({
+        tenantId: "test-ayah-end-bounds",
+        sessionId: "s-ayah-end-bounds",
+        quranRef: { surahNumber: 97, ayahStart: 1, ayahEnd: 7, display: "Al-Qadr 1-7" },
+      }),
+    (e) => e.status === 400,
+    "ayahEnd beyond Surah 97's 5 ayahs must be a 400, not a silently truncated result",
+  );
+});

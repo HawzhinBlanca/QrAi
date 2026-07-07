@@ -162,7 +162,8 @@ function getCanonicalWords(surahNumber, ayahStart, ayahEnd) {
     !Number.isInteger(ayahEnd) ||
     ayahStart < 1 ||
     ayahEnd < ayahStart ||
-    ayahStart > surah.ayahs.length
+    ayahStart > surah.ayahs.length ||
+    ayahEnd > surah.ayahs.length
   ) {
     throw httpError(
       400,
