@@ -18,16 +18,14 @@ human runs them)**, or **needs a human/external decision that no code can supply
 
 ---
 
-> **Important — read before trusting any ✅ below.** The items tagged **(PR #28)** — the
-> mushaddad-ghunnah rule (A2), `golden-regression.test.mjs` (C7), the CSP/`nginx-unprivileged`
-> work (D12), `scripts/load-test.js` (E14), and the docker-build non-root/trivy assertions (E15) —
-> are implemented and CI-green **on branch `verify/ship-hardening-batch` (PR #28)**, which has
-> been open, unmerged, and blocked purely on the owner's manual smoke test for the entirety of a
-> long prior work session. They are **NOT part of `main`** as of this writing. Verified directly:
-> `git diff main...origin/verify/ship-hardening-batch` shows `golden-regression.test.mjs` and the
-> mushaddad-ghunnah addition to `tajweed.js` exist only on that branch; `main`'s own
-> `services/ml-inference/tajweed.js` has no mushaddad-ghunnah rule at all. Anyone deploying
-> `main` right now does not get these — only merging PR #28 does. Update this note once #28 merges.
+> **Update.** PR #28 (`verify/ship-hardening-batch`) was closed unmerged — its base had diverged
+> too far from `main` to merge safely. Its content was triaged and re-implemented fresh against
+> current `main` instead: `golden-regression.test.mjs` (C7, PR #130), the CSP/`nginx-unprivileged`
+> work plus the resilience/relative-URL fixes it required (D12/F19, PR #129), and `scripts/
+> load-test.js` (E14, PR #131) are now **on `main`**. Two pieces are deliberately still not on
+> `main`: the mushaddad-ghunnah rule (A2 — the codebase's own test comment flags it "for scholar
+> review," respected rather than shipped unilaterally; see A1) and the web image's non-root CI
+> assertion + trivy scan (E15 — blocked on an edit to the CI-protected `docker-build.yml`).
 
 ---
 
@@ -38,7 +36,7 @@ human runs them)**, or **needs a human/external decision that no code can supply
 | madd-tabii (مد طبيعي) | `َا` / `ُو` / `ِي` present | 0.88 | Does **not** distinguish madd types — muttasil/munfasil/lazim (4–6 counts) are all reported as "tabii" (2 counts). |
 | madd-maleki (مد ملكي) | dagger alef `U+0670` | 0.85 | Fires on presence of the dagger alef only. |
 | ghunnah (غنة) | `نْ`, word-final `ن`, or tanween `ًٌٍ` | 0.90 | Word-final noon treated as sakin (waqf); does not model wasl vowelling. |
-| mushaddad-ghunnah (غنة) — **(PR #28, not yet on `main` — see the note above)** | noon/meem + shaddah `U+0651` (order-tolerant) | 0.92 | Proven 7215/7215 across all 114 surahs on PR #28's `golden-regression.test.mjs`; `main` does not have this rule at all. Non-controversial rule once merged. |
+| mushaddad-ghunnah (غنة) — **not yet implemented, flagged for scholar review** | noon/meem + shaddah `U+0651` (order-tolerant) | 0.92 | A working implementation exists (proven 7215/7215 across all 114 surahs via `golden-regression.test.mjs`) but is intentionally withheld pending A1's sign-off — `main`'s `tajweed.js` has no mushaddad-ghunnah rule at all yet. |
 | qalqalah (قلقلة) | ق ط ب ج د + explicit sukoon | 0.87 | Only explicit `U+0652`; word-final qalqalah at waqf not caught unless marked. |
 | tafkhim (تفخيم) | contains خ ص ض ط ظ ق | 0.84 | Fires on **presence**, not pronunciation context; ر/ل conditional tafkhim not modelled. |
 | shaddah (شدة) | `U+0651` present | 0.86 | Reports doubling; correct. |
@@ -62,15 +60,15 @@ sifat output on pilot data.
 
 ## B. Verify what's built
 
-- **B4 — Container build + smoke · ✅/🧰 on `main` for 4 of 5 images; the 5th lands with PR #28.**
-  `docker-build` CI (`main`'s current `.github/workflows/docker-build.yml`) builds all 5 images and
+- **B4 — Container build + smoke · ✅ builds non-root for all 5 images; CI assertion still only
+  covers 4 of 5.** `docker-build` CI (`.github/workflows/docker-build.yml`) builds all 5 images and
   asserts non-root (`appuser`, uid 10001) for `platform-api`, `realtime-gateway`, `ml-inference`, and
-  `asr-inference`. The web image still builds `FROM nginx:alpine` (root) on `main` with no non-root
-  assertion for it; PR #28 switches it to `nginxinc/nginx-unprivileged` and adds the matching CI
-  check (see the note at the top of this doc). **Remaining human step:** run the full stack once —
-  `ML_API_KEY=… ASR_API_KEY=… JWT_SECRET=… REALTIME_GATEWAY_TICKET_SECRET=… POSTGRES_PASSWORD=…
-  docker compose up --wait` — and click through one recitation in a browser to confirm the CSP +
-  relative-API path works end-to-end (no browser test exists in CI).
+  `asr-inference`. The web image now builds `FROM nginxinc/nginx-unprivileged:alpine` (uid 101, not
+  root) on `main`, but CI does not yet assert that uid for it — adding that check requires editing
+  the CI-protected `docker-build.yml`, tracked as an open follow-up. **Remaining human step:** run
+  the full stack once — `ML_API_KEY=… ASR_API_KEY=… JWT_SECRET=… REALTIME_GATEWAY_TICKET_SECRET=…
+  POSTGRES_PASSWORD=… docker compose up --wait` — and click through one recitation in a browser to
+  confirm the CSP + relative-API path works end-to-end (no browser test exists in CI).
 - **B5 — Mobile end-to-end · 🧰.** The app code is fixed (password auth, consent gate, proxy routing)
   and syntax-clean, but has **never run on a device**. Human step: `cd apps/mobile && npm i && npx
   expo start`, sign in, record, confirm the analysis round-trips.
@@ -78,9 +76,10 @@ sifat output on pilot data.
 ---
 
 ## C. Measured quality
-- **C7 — Golden-recitation regression · ✅ on PR #28, not yet on `main`** (`golden-regression.test.mjs`,
-  wired into `scripts/verify.sh` on that branch): computes F1/coverage **live** on the real canonical
-  data, not asserted constants. See the note at the top of this doc — `main` does not have this file.
+- **C7 — Golden-recitation regression · ✅ on `main`** (`golden-regression.test.mjs`): computes
+  F1/coverage **live** on the real canonical data, not asserted constants. Wired into `scripts/
+  proof.sh` (the local pre-flight helper); not yet into `scripts/verify.sh` (what CI actually
+  runs) since that file is CI-protected — an open follow-up.
 - **C6 — Labeled eval dataset → live F1 · 🚫 needs methodology.** Deciding *what counts as a gold
   label* (which teacher, which rubric, held-out vs. train) is a research decision. Once defined, the
   harness in C7 extends to it directly.
@@ -104,18 +103,23 @@ sifat output on pilot data.
   order (see `.github/workflows/ci.yml`).
 - **D11 — Turn real auth on · 🧰.** Set `VITE_REQUIRE_LOGIN=1` and leave `ALLOW_HEADER_AUTH` unset
   (Bearer-only). Verify the login flow against the restricted role.
-- **D12 — CSP + nginx-unprivileged · ✅ on PR #28, not yet on `main`**: full CSP + `nginx-unprivileged`;
-  the browser uses the same-origin `/v1/` proxy in prod so `connect-src 'self'` holds. See the note
-  at the top of this doc.
+- **D12 — CSP + nginx-unprivileged · ✅ on `main`**: full CSP + `nginx-unprivileged`; the browser
+  uses the same-origin `/v1/` proxy in prod so `connect-src 'self'` holds.
 
 ---
 
 ## E. Ops / resilience / CI
-- **E15 — CI builds images + non-root assert + trivy scan · ✅ on PR #28, not yet on `main`**
-  (`docker-build.yml`; see the note at the top of this doc).
-- **E14 — Load test · 🧰 (script lands with PR #28).** `scripts/load-test.js` (k6) exists on
-  PR #28, not yet on `main`. Human step once merged: run it against a staging deploy and tune
-  pool sizes / rate limits to hit the stated thresholds (p95 targets).
+- **E15 — CI builds images + non-root assert + trivy scan · 🧰 partial.** `docker-build.yml` builds
+  all 5 images and asserts non-root for the 4 backend services (uid 10001). Two additions are
+  still open, both requiring an edit to this CI-protected file: a matching non-root assertion for
+  the web image (now uid 101, not 10001, since it's a different base image), and a report-only
+  Trivy HIGH/CRITICAL CVE scan uploading results as CI artifacts.
+- **E14 — Load test · ✅/🧰.** `scripts/load-test.js` (k6) is on `main`, covering platform-api's
+  health/surah-list and ml-inference's health/alignment/tajweed endpoints — verified end-to-end
+  against a real local stack. Human step: run it against a staging deploy and tune pool sizes /
+  rate limits to hit the stated thresholds (p95 targets); note ml-inference's hardcoded 100 req/min
+  per-IP rate limit will need raising (or the test's own concurrency lowering) for a meaningful
+  sustained run — see the comment at the top of the script.
 - **E13 — Observability · 🧰.** Services emit structured JSON logs and the gateway exposes metrics.
   Human step: ship logs to an aggregator, scrape metrics into dashboards, and alert on error-rate +
   `/health`. No app code blocks this.
@@ -123,11 +127,10 @@ sifat output on pilot data.
 ---
 
 ## F. Product / compliance / UX
-- **F19 — Resilience / error states · partially on `main`, fully ✅ on PR #28.** Graceful
-  degradation when ML/ASR is down. `main` already uses `fetchWithTimeout` in some call sites
-  (`apps/web/src/lib/api.ts`); PR #28 completes the rollout to `data/platform.ts`, `data/quran.ts`,
-  `lib/auth.tsx`, `lib/liveRecitation.ts`, and `lib/serverAsr.ts`, which on `main` still use bare
-  `fetch` (no timeout) in places. See the note at the top of this doc.
+- **F19 — Resilience / error states · ✅ on `main`.** Graceful degradation when ML/ASR is down.
+  `fetchWithTimeout` (`apps/web/src/lib/http.ts`) is used by every fetch call across `lib/api.ts`,
+  `data/platform.ts`, `data/quran.ts`, `lib/auth.tsx`, and `lib/serverAsr.ts` (the last with a
+  longer 30s bound, since real transcription can legitimately take that long).
 - **F17 — Accessibility · 🧰 (automated layer done; manual pass remains).** `pnpm smoke:a11y`
   runs a real axe-core audit (headless Chrome, `scripts/smoke-a11y.mjs`) against Learner Home,
   the practice flow, and Internal Command — 0 violations on `main` (a real color-contrast
@@ -161,16 +164,19 @@ sifat output on pilot data.
 ---
 
 ## The irreducible human checklist (nothing here is a code problem)
-1. **Scholar signs off** on the tajweed engine (A1) and neural model (A3).
+1. **Scholar signs off** on the tajweed engine (A1, including the withheld mushaddad-ghunnah rule)
+   and the neural model (A3).
 2. **Provision** TLS certs (D8) and strong secrets (D9); enable real auth (D11).
 3. **Legal** publishes privacy/terms/COPPA/DPA (F16).
 4. **Run** the container + mobile end-to-end smoke once (B4/B5) and the load test (E14).
 5. **Wire** log aggregation + alerting (E13) and DB backups (D10).
-6. **Merge PR #28** (`verify/ship-hardening-batch`) — it has been open, CI-green, and blocked
-   purely on the manual container smoke test in item 4 above since before this checklist was
-   last true for `main`. Until it merges, A2/C7/D12/E14/E15 and the web half of B4/F19 above are
-   real and CI-verified *only on that branch*, not in what `main` would actually ship today.
+6. **Make four small edits across three CI-protected files** that an agent cannot self-edit:
+   `ci.yml`'s Postgres migration list (missing 0015-0018), `docker-build.yml`'s web non-root
+   assertion and its Trivy scan step (E15, two separate additions), and `verify.sh`'s node-services
+   test line to include `golden-regression.test.mjs` (C7). Each is a one-line-per-item addition;
+   the content to add is already written and tested, just not wired into the protected gate files.
+   See open PR #123 and the corresponding task chips for the exact diffs.
 
-Everything else is done in code and CI-verified — **on `main`, for the items not called out
-above as PR #28-only.** **QrAi is engineering-ship-ready; it is not launch-ready until the five
-items above (plus merging #28) are executed by a human.**
+Everything else is done in code and CI-verified on `main`. **QrAi is engineering-ship-ready; it
+is not launch-ready until the five items above (plus the four small protected-file edits in item 6)
+are executed by a human.**
