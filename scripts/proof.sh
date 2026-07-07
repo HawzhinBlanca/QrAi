@@ -19,6 +19,14 @@ pnpm --filter @quran-ai/web build
 # check, previously never exercised apps/mobile, so a developer running it before pushing
 # wouldn't catch a mobile regression until mobile.yml ran separately in CI.
 node --experimental-strip-types --test apps/mobile/lib/*.test.ts
+# Typecheck needs the real Expo/React/React Native type definitions (unlike the test above, which
+# only imports the dependency-free lib/session.ts and needs zero installed packages) — install
+# once if missing, then run. apps/mobile/tsconfig.json didn't exist until this line was added, so
+# App.tsx and lib/*.ts had literally never been typechecked by anything, ever.
+if [ ! -d apps/mobile/node_modules ]; then
+  npm --prefix apps/mobile install
+fi
+npm --prefix apps/mobile run typecheck
 # ml-inference/agents have no pnpm workspace membership either — same gap as apps/mobile above,
 # same fix. Explicit paths (not a dir glob) since server.mjs gates its side effects (listen/timers)
 # on `isMain`, matching verify.sh's identical "test: node services" step.
