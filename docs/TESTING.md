@@ -46,6 +46,19 @@ bash scripts/verify.sh                 # now runs `cargo test ... -- --include-i
 DATABASE_URL=postgresql://user@host:5432/db bash scripts/verify.sh
 ```
 
+> **`cargo-mutants` against DB-touching code can leave garbage rows in a real local Postgres.**
+> Mutation testing recompiles the source with one line mutated, then runs the *actual* integration
+> test suite against `$DATABASE_URL` for real (not a mocked/rolled-back transaction) — that's the
+> whole point, it needs to observe real behavior to know if a test catches the mutation. When a
+> mutant disables input validation (e.g. `create_agent_run`'s reviewStatus/status allowlist check),
+> a test asserting "invalid input is rejected with 400" still correctly marks that mutant CAUGHT
+> (the assertion on the HTTP response fails), but the invalid row the mutated code accepted along
+> the way is never rolled back or cleaned up — it's a real commit to a real table. Symptom: `pnpm
+> smoke:sql`'s live check fails with a check-constraint violation from a migration replay (e.g.
+> `agent_runs_review_status_check`) hitting a row like `review_status = 'not-a-real-review-status'`
+> that no normal code path could ever have written. Fix: find and delete the offending row(s)
+> (`SELECT id, review_status FROM agent_runs WHERE review_status NOT IN (...)`), not a code bug.
+
 ## Smoke tests (services)
 `pnpm smoke:all` exercises the running stack (SQL/browser/API/ML/privacy) and retains
 artifacts under `out/smoke/`. These need services up (`docker compose up`) and are
