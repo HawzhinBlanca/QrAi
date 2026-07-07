@@ -383,6 +383,48 @@ fn sm2_spaced_repetition_updates_correctly() {
 }
 
 #[test]
+fn sm2_quality_three_is_a_pass_not_a_reset() {
+    // The pass/fail boundary is `q < 3.0` — quality exactly 3 must count as a (weak) pass,
+    // not trigger the reset branch, even though it's the lowest passing grade.
+    use quran_ai_platform_api::handlers::progress::{Sm2State, sm2_update};
+
+    let state = Sm2State::default();
+    let updated = sm2_update(&state, 3);
+    assert_eq!(
+        updated.repetitions, 1,
+        "quality=3 must increment repetitions, not reset"
+    );
+    assert_eq!(updated.interval_days, 1);
+    // A weak pass shrinks EF (5-q=2 is the harshest non-failing penalty) but never below the
+    // algorithm's 1.3 floor.
+    assert!(updated.easiness_factor < state.easiness_factor);
+    assert!(updated.easiness_factor >= 1.3);
+}
+
+#[test]
+fn sm2_interval_never_exceeds_the_ten_year_cap() {
+    // MAX_INTERVAL_DAYS (3650) exists specifically so interval_days never grows large enough to
+    // overflow chrono when a caller later does `Utc::now() + Duration::days(interval_days)` —
+    // left unbounded it grows by ×EF on every perfect review and EF itself keeps climbing.
+    // Regression test for that cap actually holding under sustained perfect reviews.
+    use quran_ai_platform_api::handlers::progress::{Sm2State, sm2_update};
+
+    let mut state = Sm2State::default();
+    for _ in 0..200 {
+        state = sm2_update(&state, 5);
+        assert!(
+            state.interval_days <= 3650,
+            "interval_days {} exceeded the 10-year cap",
+            state.interval_days
+        );
+    }
+    // 200 consecutive perfect reviews must have driven it all the way to the cap, not just
+    // stayed under it by coincidence — otherwise this test would pass even if the cap were
+    // silently removed from a code path that never gets reached.
+    assert_eq!(state.interval_days, 3650);
+}
+
+#[test]
 fn review_status_serializes_teacher_review_required() {
     use quran_ai_platform_api::types::ReviewStatus;
 
