@@ -4,7 +4,10 @@ import { createRoot } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import App from "./App";
 
-class FakeMediaRecorder {
+// Extends EventTarget so both consumer styles this codebase uses are supported: property
+// assignment (`recorder.ondataavailable = ...`, used by the live WS recitation path) and
+// addEventListener (used by lib/serverAsr.ts's record-then-transcribe path).
+class FakeMediaRecorder extends EventTarget {
   static isTypeSupported() {
     return true;
   }
@@ -13,8 +16,10 @@ class FakeMediaRecorder {
   public onerror: (() => void) | null = null;
   public onstop: (() => void) | null = null;
   public state: RecordingState = "inactive";
+  public mimeType = "audio/webm";
 
   constructor() {
+    super();
     FakeMediaRecorder.instances.push(this);
   }
 
@@ -27,10 +32,13 @@ class FakeMediaRecorder {
   stop() {
     this.state = "inactive";
     this.onstop?.();
+    this.dispatchEvent(new Event("stop"));
   }
 
   emitChunk(blob: Blob) {
-    this.ondataavailable?.({ data: blob } as BlobEvent);
+    const event = { data: blob } as BlobEvent;
+    this.ondataavailable?.(event);
+    this.dispatchEvent(Object.assign(new Event("dataavailable"), { data: blob }));
   }
 }
 
@@ -157,6 +165,66 @@ describe("Quran AI app smoke", () => {
     });
 
     expect(document.body.textContent).toContain("Practice complete");
+  });
+
+  it("double-clicking Record before getUserMedia resolves opens only one microphone stream", async () => {
+    // Regression test: toggleAsrRecording's START path only flips isRecording to true after
+    // getUserMedia/startServerAsr resolves, so a double-click while the first call is still
+    // pending previously passed the isRecording guard twice, opened a second real MediaStream,
+    // and orphaned the first (only the second controller ends up referenced, so the first
+    // stream's tracks were never stopped). Use a deferred getUserMedia so both clicks land
+    // inside the pending window, then assert only one MediaRecorder (one real mic stream) and
+    // one getUserMedia call resulted.
+    let resolveGetUserMedia: (stream: { getTracks: () => Array<{ stop: () => void }> }) => void = () => {};
+    const getUserMedia = vi.fn(
+      () =>
+        new Promise((resolve) => {
+          resolveGetUserMedia = resolve;
+        }),
+    );
+    Object.defineProperty(window.navigator, "mediaDevices", {
+      configurable: true,
+      value: { getUserMedia },
+    });
+
+    const root = createRoot(container);
+    await act(async () => {
+      root.render(<App />);
+    });
+
+    // Recording is gated on affirmative consent; grant it on Learner Home, before starting
+    // practice (ConsentPanel lives there, not inside the practice flow itself).
+    const consentCheckbox = document.querySelector<HTMLInputElement>(
+      '[aria-label="Recording consent"] input[type="checkbox"]',
+    );
+    await act(async () => {
+      consentCheckbox?.click();
+    });
+
+    const startPracticeButton = Array.from(document.querySelectorAll<HTMLButtonElement>("button")).find((button) =>
+      button.textContent?.includes("Start Practice"),
+    );
+    await act(async () => {
+      startPracticeButton?.click();
+    });
+
+    const recordButton = () =>
+      document.querySelector<HTMLButtonElement>('button[aria-label="Record your recitation"]');
+    expect(recordButton()).toBeTruthy();
+
+    // Two rapid clicks, both before getUserMedia resolves.
+    await act(async () => {
+      recordButton()?.click();
+      recordButton()?.click();
+    });
+
+    expect(getUserMedia).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      resolveGetUserMedia({ getTracks: () => [{ stop: vi.fn() }] });
+    });
+
+    expect(FakeMediaRecorder.instances).toHaveLength(1);
   });
 
   it("keeps the internal command app available and advances the live recitation smoke path", async () => {

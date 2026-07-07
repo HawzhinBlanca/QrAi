@@ -137,6 +137,13 @@ function AuthenticatedApp({ bypassLogin = false }: { bypassLogin?: boolean }) {
   const asrRef = useRef<AsrController | null>(null);
   const serverAsrRef = useRef<ServerAsrController | null>(null);
   const visualizerStopRef = useRef<MicVisualizerStop | null>(null);
+  // Guards the START path of toggleAsrRecording against a double-tap/double-click race: the START
+  // branch is async and only flips `isRecording` to true after getUserMedia/startServerAsr resolves,
+  // so a second tap while the first is still starting would pass the `isRecording` check too, call
+  // getUserMedia a second time, and orphan the first MediaStream's mic tracks (only the second
+  // controller ends up in serverAsrRef, so the first is never `.stop()`-ed). Set synchronously
+  // (before any `await`) so two taps in the same tick can't both pass the check.
+  const startingAsrRef = useRef(false);
   const [liveBars, setLiveBars] = useState<number[]>([]);
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const [isPlaying, setIsPlaying] = useState(false);
@@ -452,7 +459,24 @@ function AuthenticatedApp({ bypassLogin = false }: { bypassLogin?: boolean }) {
       return;
     }
 
-    // START — gate on explicit consent to record & analyze. The primary (first-party Quran ASR) path
+    // START — a double-tap/double-click before the first tap's getUserMedia/startServerAsr call
+    // resolves would otherwise pass the `isRecording` check twice (it only flips true after this
+    // async work settles) and open a second real microphone stream, orphaning the first (see
+    // startingAsrRef's declaration comment). Set synchronously, before any await, so two taps in
+    // the same tick can't both pass.
+    if (startingAsrRef.current) {
+      return;
+    }
+    startingAsrRef.current = true;
+    try {
+      await startAsrRecording();
+    } finally {
+      startingAsrRef.current = false;
+    }
+  }
+
+  async function startAsrRecording() {
+    // Gate on explicit consent to record & analyze. The primary (first-party Quran ASR) path
     // still processes the audio and it may be stored per the retention consent, so recording must not
     // begin until the learner has affirmatively consented (previously this path recorded ungated).
     if (!canRecordRecitation(consent)) {
