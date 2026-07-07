@@ -156,7 +156,7 @@ services:
       VITE_PLATFORM_API_URL: "http://localhost:8080"
       VITE_REALTIME_GATEWAY_URL: "ws://localhost:8081"
     ports:
-      - "5173:80"
+      - "5173:8080"
     depends_on:
       platform-api:
         condition: service_healthy
@@ -165,7 +165,10 @@ services:
       ml-inference:
         condition: service_healthy
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:80/"]
+      # nginx-unprivileged:alpine does not include curl (only the four backend service images do)
+      # — wget is available in Alpine by default. See services/ml-inference/Dockerfile's identical
+      # curl-availability issue for the sibling bug this mirrors on the backend side.
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:8080/"]
       interval: 10s
       timeout: 5s
       retries: 3

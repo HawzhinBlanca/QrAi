@@ -12,8 +12,12 @@
  */
 
 import type { AsrStatus } from "./asr";
+import { fetchWithTimeout } from "./http";
 
-const PLATFORM_API_BASE = import.meta.env.VITE_PLATFORM_API_URL || "http://127.0.0.1:8080";
+// Dev needs an absolute URL (vite serves 5173, the API 8080); the Docker/prod build proxies /v1/
+// through nginx, so a relative path is required there instead — both to avoid bypassing that
+// proxy and to satisfy the CSP's `connect-src 'self'`.
+const PLATFORM_API_BASE = import.meta.env.VITE_PLATFORM_API_URL || (import.meta.env.DEV ? "http://127.0.0.1:8080" : "");
 
 /** Actor identity forwarded to the platform API so the ASR proxy can authenticate the caller. */
 export interface AsrAuth {
@@ -225,11 +229,17 @@ export async function blobToBase64(blob: Blob): Promise<string> {
 
 export async function transcribeWav(wav: Blob, language: string, auth?: AsrAuth): Promise<string> {
   const audioBase64 = await blobToBase64(wav);
-  const response = await fetch(`${PLATFORM_API_BASE}/v1/asr/transcribe`, {
-    method: "POST",
-    headers: { "content-type": "application/json", ...asrAuthHeaders(auth) },
-    body: JSON.stringify({ audioBase64, audioFormat: "wav", language, wordTimestamps: true }),
-  });
+  // Whisper transcription can legitimately take longer than the default 15s timeout, so use a
+  // longer bound here — still bounded, so a hung ASR service can't freeze the UI indefinitely.
+  const response = await fetchWithTimeout(
+    `${PLATFORM_API_BASE}/v1/asr/transcribe`,
+    {
+      method: "POST",
+      headers: { "content-type": "application/json", ...asrAuthHeaders(auth) },
+      body: JSON.stringify({ audioBase64, audioFormat: "wav", language, wordTimestamps: true }),
+    },
+    30000,
+  );
   if (!response.ok) {
     throw new Error(`ASR service ${response.status}`);
   }

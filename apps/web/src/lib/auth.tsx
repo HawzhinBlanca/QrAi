@@ -1,5 +1,12 @@
 import { createContext, useContext, useState, useEffect, type ReactNode } from "react";
 
+import { fetchWithTimeout } from "./http";
+
+// Dev needs an absolute URL (vite serves 5173, the API 8080); the Docker/prod build proxies /v1/
+// through nginx (nginx.conf), so a relative path is required there instead — both to avoid
+// bypassing that proxy and to satisfy the CSP's `connect-src 'self'`.
+const API_BASE = import.meta.env.VITE_PLATFORM_API_URL || (import.meta.env.DEV ? "http://127.0.0.1:8080" : "");
+
 interface AuthUser {
   userId: string;
   tenantId: string;
@@ -45,8 +52,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   async function login(userId: string, tenantId: string, password: string): Promise<boolean> {
     setLoading(true);
     try {
-      const apiBase = import.meta.env.VITE_PLATFORM_API_URL || "http://127.0.0.1:8080";
-      const response = await fetch(`${apiBase}/v1/auth/login`, {
+      const response = await fetchWithTimeout(`${API_BASE}/v1/auth/login`, {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ userId, tenantId, password }),
@@ -73,8 +79,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   async function register(tenantId: string, displayName: string, role: string, language: string, password: string, email?: string): Promise<boolean> {
     setLoading(true);
     try {
-      const apiBase = import.meta.env.VITE_PLATFORM_API_URL || "http://127.0.0.1:8080";
-      const response = await fetch(`${apiBase}/v1/auth/register`, {
+      const response = await fetchWithTimeout(`${API_BASE}/v1/auth/register`, {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ tenantId, displayName, role, language, password, email }),
