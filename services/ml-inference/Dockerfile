@@ -1,5 +1,10 @@
 FROM node:22-bookworm-slim
 WORKDIR /app
+# node:*-bookworm-slim's own upstream Dockerfile purges curl (along with wget/gnupg/dirmngr)
+# after installing Node, so docker-compose.yml's healthcheck ("curl -f http://localhost:8090/
+# health") would otherwise fail every 10s forever — Docker marks this container permanently
+# unhealthy, and anything depending on it (web, condition: service_healthy) never starts.
+RUN apt-get update && apt-get install -y curl && rm -rf /var/lib/apt/lists/*
 # No `pnpm install` — server.mjs/alignment.js/tajweed.js have zero external npm imports (only
 # node: builtins and relative local files); the sole reason packages/ is copied is that server.mjs
 # reads packages/quran-data/src/data/full-quran/*.json directly via fs.readFileSync, not as an
