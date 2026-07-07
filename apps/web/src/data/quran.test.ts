@@ -1,4 +1,4 @@
-import { describe, it, expect, vi } from "vitest";
+import { afterEach, describe, it, expect, vi } from "vitest";
 import type { AlignmentResult } from "../lib/api";
 import type { QuranVerse } from "./quran";
 
@@ -7,7 +7,7 @@ vi.mock("../lib/api", async (importOriginal) => {
   return { ...actual, fetchSurah: vi.fn().mockRejectedValue(new Error("network down")) };
 });
 
-const { updateVersesWithAlignment, loadSurahVerses, getQuranVerses } = await import("./quran");
+const { updateVersesWithAlignment, loadSurahVerses, getQuranVerses, loadWeeklyProgress } = await import("./quran");
 
 // The ML alignment service emits wordId in the form `${surah}:${ayah}:${wordIndex}` (1-indexed).
 // `loadSurahVerses` builds one QuranVerse word per real word with the SAME id scheme, so the reader
@@ -69,5 +69,34 @@ describe("getQuranVerses fallback when the backend is unreachable", () => {
     const fallback = getQuranVerses();
     expect(fallback.length).toBeGreaterThan(0);
     expect(fallback[0].words.length).toBeGreaterThan(0);
+  });
+});
+
+describe("loadWeeklyProgress caches per learner, not globally", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("does not leak one learner's weekly-accuracy bars to a different learner in the same session", async () => {
+    // Login/logout is an in-SPA state change (see lib/auth.tsx), not a page reload, so a bare
+    // module-level cache with no user key previously outlived the learner it was fetched for —
+    // the NEXT learner to log in during the same page session saw the FIRST learner's cached
+    // weekly accuracy, a real cross-user data leak on a shared/kiosk device.
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue({ ok: true, json: async () => ({ mastery: 0.9 }) }),
+    );
+    const learnerA = await loadWeeklyProgress("hikmah-pilot-erbil", "learner-a");
+
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue({ ok: true, json: async () => ({ mastery: 0.1 }) }),
+    );
+    const learnerB = await loadWeeklyProgress("hikmah-pilot-erbil", "learner-b");
+
+    expect(learnerA[0].accuracy).not.toEqual(learnerB[0].accuracy);
+    // And re-fetching learner A again still returns their own cached data, not learner B's.
+    const learnerAAgain = await loadWeeklyProgress("hikmah-pilot-erbil", "learner-a");
+    expect(learnerAAgain).toEqual(learnerA);
   });
 });

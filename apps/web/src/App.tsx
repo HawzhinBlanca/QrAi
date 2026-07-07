@@ -39,7 +39,7 @@ import {
   type MemorizationPlan,
   type LearnerProgress,
 } from "./data/platform";
-import { getQuranVerses, getQuranLoadError, loadSurahVerses, loadWeeklyProgress, getWeeklyProgress, updateVersesWithAlignment, buildRecitationEvents, type QuranVerse, type RecitationEvent, type ProgressBar } from "./data/quran";
+import { getQuranVerses, getQuranLoadError, loadSurahVerses, loadWeeklyProgress, updateVersesWithAlignment, buildRecitationEvents, type QuranVerse, type RecitationEvent, type ProgressBar } from "./data/quran";
 import type { AppSection, PracticeMode, MicState } from "./types/practice";
 import { practiceSteps } from "./types/practice";
 import type { SupportedLanguageCode } from "./types/platform";
