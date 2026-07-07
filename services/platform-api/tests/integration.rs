@@ -899,6 +899,104 @@ async fn privacy_delete_preserves_other_learners_teacher_reviews() {
     );
 }
 
+#[tokio::test]
+#[ignore = "requires live Postgres"]
+async fn privacy_delete_erases_the_learners_agent_runs_but_not_other_learners() {
+    // agent_runs has no structured learner column other than learner_id (added specifically for
+    // this) — before it existed, the ONLY place a Practice Plan Recommender run referenced the
+    // learner was free text embedded in `goal`, which privacy delete's erasure cascade had no way
+    // to search or scope a DELETE against. This is the regression test for that gap being closed.
+    let mock_ml = spawn_mock_ml_privacy_delete().await;
+    let state = test_state().with_ml_inference_url(mock_ml);
+    let router = platform_router_with_rate_limit(state.clone(), false);
+    let target_learner = format!("learner-agentrun-target-{}", next_suffix());
+    let other_learner = format!("learner-agentrun-other-{}", next_suffix());
+
+    sqlx::query(
+        "INSERT INTO users (id, tenant_id, display_name, role, language)
+         VALUES ($1, 'hikmah-pilot-erbil', 'AgentRun Target', 'learner', 'ckb'),
+                ($2, 'hikmah-pilot-erbil', 'AgentRun Other', 'learner', 'ckb')",
+    )
+    .bind(&target_learner)
+    .bind(&other_learner)
+    .execute(&state.pool)
+    .await
+    .unwrap();
+
+    let target_run = send_json(
+        &router,
+        Method::POST,
+        "/v1/agent-runs",
+        Some("hikmah-pilot-erbil"),
+        Some("ops"),
+        json!({
+            "name": "Practice Plan Recommender",
+            "goal": format!("Recommend the next practice step for {target_learner}."),
+            "status": "needs-human-review",
+            "confidence": 0.9,
+            "reviewStatus": "ai-suggested",
+            "sources": [{"id": "sm2-review-policy", "title": "Policy", "citation": "Internal"}],
+            "learnerId": target_learner,
+        }),
+    )
+    .await;
+    assert_eq!(target_run.status(), StatusCode::OK);
+    let target_run_body: Value = read_json(target_run).await;
+    let target_run_id = target_run_body["id"].as_str().unwrap().to_owned();
+
+    let other_run = send_json(
+        &router,
+        Method::POST,
+        "/v1/agent-runs",
+        Some("hikmah-pilot-erbil"),
+        Some("ops"),
+        json!({
+            "name": "Practice Plan Recommender",
+            "goal": format!("Recommend the next practice step for {other_learner}."),
+            "status": "needs-human-review",
+            "confidence": 0.9,
+            "reviewStatus": "ai-suggested",
+            "sources": [{"id": "sm2-review-policy", "title": "Policy", "citation": "Internal"}],
+            "learnerId": other_learner,
+        }),
+    )
+    .await;
+    assert_eq!(other_run.status(), StatusCode::OK);
+    let other_run_body: Value = read_json(other_run).await;
+    let other_run_id = other_run_body["id"].as_str().unwrap().to_owned();
+
+    let deleted = send_json(
+        &router,
+        Method::POST,
+        "/v1/privacy/delete",
+        Some("hikmah-pilot-erbil"),
+        Some("admin"),
+        json!({ "learnerId": target_learner }),
+    )
+    .await;
+    assert_eq!(deleted.status(), StatusCode::OK);
+
+    let target_run_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM agent_runs WHERE id = $1")
+        .bind(&target_run_id)
+        .fetch_one(&state.pool)
+        .await
+        .unwrap();
+    assert_eq!(
+        target_run_count, 0,
+        "target learner's agent run should be deleted"
+    );
+
+    let other_run_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM agent_runs WHERE id = $1")
+        .bind(&other_run_id)
+        .fetch_one(&state.pool)
+        .await
+        .unwrap();
+    assert_eq!(
+        other_run_count, 1,
+        "privacy delete must preserve other learners' agent runs"
+    );
+}
+
 async fn create_test_session_for_learner(router: &axum::Router, learner_id: &str) -> String {
     let created = send_json(
         router,
