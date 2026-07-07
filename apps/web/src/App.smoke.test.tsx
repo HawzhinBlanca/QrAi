@@ -227,6 +227,108 @@ describe("Quran AI app smoke", () => {
     expect(FakeMediaRecorder.instances).toHaveLength(1);
   });
 
+  it("tears down the mic visualizer if Stop is clicked before its own getUserMedia resolves", async () => {
+    // Regression test: startMicVisualizer opens its OWN separate getUserMedia stream (for the
+    // waveform), resolved asynchronously into visualizerStopRef.current via a `.then()` —
+    // independent of the ASR path's own getUserMedia call. If Stop is clicked before this
+    // particular promise resolves, the old code would store the visualizer's stop function into
+    // the ref AFTER cleanup already ran, orphaning that mic stream + AudioContext forever (nothing
+    // ever calls its stop function afterward). Make the visualizer's call (the first
+    // getUserMedia call in the START path) resolve LATE, after Stop, and assert its AudioContext
+    // gets closed anyway.
+    class FakeAudioContext {
+      static instances: FakeAudioContext[] = [];
+      public closed = false;
+      close = vi.fn(async () => {
+        this.closed = true;
+      });
+      constructor() {
+        FakeAudioContext.instances.push(this);
+      }
+      createMediaStreamSource() {
+        return { connect: vi.fn(), disconnect: vi.fn() };
+      }
+      createAnalyser() {
+        return {
+          fftSize: 0,
+          smoothingTimeConstant: 0,
+          frequencyBinCount: 32,
+          getByteFrequencyData: vi.fn(),
+        };
+      }
+    }
+    vi.stubGlobal("AudioContext", FakeAudioContext);
+    vi.stubGlobal("requestAnimationFrame", vi.fn(() => 1));
+    vi.stubGlobal("cancelAnimationFrame", vi.fn());
+
+    let resolveVisualizerGetUserMedia: (stream: unknown) => void = () => {};
+    let callCount = 0;
+    const getUserMedia = vi.fn(() => {
+      callCount += 1;
+      if (callCount === 1) {
+        // The visualizer's call — stays pending until we resolve it manually, below.
+        return new Promise((resolve) => {
+          resolveVisualizerGetUserMedia = resolve;
+        });
+      }
+      // The ASR path's own call — resolves immediately so isRecording flips true quickly,
+      // well before the visualizer's call above.
+      return Promise.resolve({ getTracks: () => [{ stop: vi.fn() }] });
+    });
+    Object.defineProperty(window.navigator, "mediaDevices", {
+      configurable: true,
+      value: { getUserMedia },
+    });
+
+    const root = createRoot(container);
+    await act(async () => {
+      root.render(<App />);
+    });
+
+    const consentCheckbox = document.querySelector<HTMLInputElement>(
+      '[aria-label="Recording consent"] input[type="checkbox"]',
+    );
+    await act(async () => {
+      consentCheckbox?.click();
+    });
+    const startPracticeButton = Array.from(document.querySelectorAll<HTMLButtonElement>("button")).find((button) =>
+      button.textContent?.includes("Start Practice"),
+    );
+    await act(async () => {
+      startPracticeButton?.click();
+    });
+
+    const recordButton = () =>
+      document.querySelector<HTMLButtonElement>('button[aria-label="Record your recitation"], button[aria-label="Stop recording"]');
+
+    await act(async () => {
+      recordButton()?.click();
+    });
+    // ASR's getUserMedia (2nd call) has resolved; isRecording is true. The visualizer's (1st)
+    // call is still pending.
+    expect(document.body.textContent).toContain("Stop");
+
+    await act(async () => {
+      recordButton()?.click(); // Stop, while the visualizer's getUserMedia is still pending.
+    });
+
+    // Stopping also runs stopAndTranscribe's own decodeToWav16kMono, which creates (and
+    // `finally`-closes) its own, unrelated AudioContext for audio decoding — snapshot the count
+    // here so the assertion below targets only the visualizer's instance, not this one.
+    const instancesBeforeVisualizerResolves = FakeAudioContext.instances.length;
+
+    // Now let the visualizer's getUserMedia resolve, arriving after Stop was already clicked.
+    await act(async () => {
+      resolveVisualizerGetUserMedia({ getTracks: () => [{ stop: vi.fn() }] });
+    });
+
+    expect(FakeAudioContext.instances).toHaveLength(instancesBeforeVisualizerResolves + 1);
+    const visualizerCtx = FakeAudioContext.instances[FakeAudioContext.instances.length - 1];
+    expect(visualizerCtx.close).toHaveBeenCalled();
+
+    vi.unstubAllGlobals();
+  });
+
   it("keeps the internal command app available and advances the live recitation smoke path", async () => {
     const root = createRoot(container);
 

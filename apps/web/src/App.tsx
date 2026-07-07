@@ -144,6 +144,16 @@ function AuthenticatedApp({ bypassLogin = false }: { bypassLogin?: boolean }) {
   // controller ends up in serverAsrRef, so the first is never `.stop()`-ed). Set synchronously
   // (before any `await`) so two taps in the same tick can't both pass the check.
   const startingAsrRef = useRef(false);
+  // startMicVisualizer opens its OWN separate getUserMedia stream (for the waveform), resolved
+  // asynchronously into visualizerStopRef.current via a `.then()` — independent of, and not
+  // necessarily faster than, the ASR path's own getUserMedia call. If the user hits Stop before
+  // this particular promise resolves, the STOP branch's `visualizerStopRef.current?.()` call hits
+  // `null` (nothing to stop yet), and the visualizer's `.then()` would go on to store its stop
+  // function into the ref *after* cleanup already ran — orphaning that mic stream + AudioContext
+  // indefinitely (never `.stop()`-ed by anything afterward). This ref lets the `.then()` check
+  // whether a stop was already requested and immediately tear down instead of storing a
+  // now-orphaned handle.
+  const stopRequestedRef = useRef(false);
   const [liveBars, setLiveBars] = useState<number[]>([]);
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const [isPlaying, setIsPlaying] = useState(false);
@@ -417,6 +427,9 @@ function AuthenticatedApp({ bypassLogin = false }: { bypassLogin?: boolean }) {
     // STOP
     if (isRecording) {
       setIsRecording(false);
+      // Tell a still-pending startMicVisualizer() to tear itself down on arrival instead of
+      // being stored into visualizerStopRef (see stopRequestedRef's declaration comment).
+      stopRequestedRef.current = true;
       // Stop the live mic waveform — must NEVER throw and abort saving the recording.
       try {
         visualizerStopRef.current?.();
@@ -489,10 +502,17 @@ function AuthenticatedApp({ bypassLogin = false }: { bypassLogin?: boolean }) {
     stopRecordingPlayback();
     setAsrTranscript("");
     setApiError(null);
+    stopRequestedRef.current = false;
 
-    // Live mic waveform (real signal) for the whole recording, regardless of ASR path.
+    // Live mic waveform (real signal) for the whole recording, regardless of ASR path. Guard
+    // against Stop landing before this resolves (see stopRequestedRef's declaration comment): if
+    // so, tear the visualizer down immediately instead of storing an orphaned stop handle.
     void startMicVisualizer(setLiveBars)
       .then((stop) => {
+        if (stopRequestedRef.current) {
+          stop?.();
+          return;
+        }
         visualizerStopRef.current = stop;
       })
       .catch(() => {
