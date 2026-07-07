@@ -80,6 +80,13 @@ export default function App() {
   // second Audio.Recording, and overwrite globalThis.__recording — orphaning the first recording
   // (never stopped) and requesting mic permission twice. Set synchronously, before any await.
   const startingRecordingRef = useRef(false);
+  // Same class of bug as startingRecordingRef, for the opposite action: the toggle button's
+  // onPress reads `recording` from the render it was attached to, and setRecording(false) (the
+  // first line of stopAndAnalyze) only takes effect after React re-renders — a rapid double-tap
+  // in that window calls stopAndAnalyze twice against the SAME globalThis.__recording, which is
+  // never cleared, so the second call's rec.stopAndUnloadAsync() throws on an already-unloaded
+  // recording (expo-av) instead of being a harmless no-op.
+  const isStoppingRef = useRef(false);
 
   // Actor auth headers for the platform API (Bearer once logged in). Pure logic in ./lib/session.
   const authHeaders = useCallback((): Record<string, string> => buildAuthHeaders(user), [user]);
@@ -149,8 +156,16 @@ export default function App() {
   }, [recordingConsent]);
 
   const stopAndAnalyze = useCallback(async () => {
+    if (isStoppingRef.current) {
+      return;
+    }
     const rec = (globalThis as any).__recording as Audio.Recording;
     if (!rec) return;
+    isStoppingRef.current = true;
+    // Clear immediately (not in `finally`) so a concurrent second invocation's own
+    // `(globalThis as any).__recording` read above sees null and takes the `if (!rec) return`
+    // path, instead of getting the same already-being-stopped Audio.Recording instance.
+    (globalThis as any).__recording = null;
     setRecording(false);
     setLoading(true);
     setError(null);
@@ -218,6 +233,7 @@ export default function App() {
       setError(e instanceof Error ? e.message : "Analysis failed");
     } finally {
       setLoading(false);
+      isStoppingRef.current = false;
     }
   }, [user, selectedSurah, surahs, recordingConsent, guardianApproved, authHeaders]);
 
