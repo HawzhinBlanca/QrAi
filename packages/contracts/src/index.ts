@@ -367,12 +367,17 @@ export function hasCanonicalTextChanged(before: CanonicalWordRecord, after: Cano
 }
 
 export function canShowLearnerFacingAiOutput(record: Pick<AgentRun | TajweedFinding, "confidence" | "reviewStatus" | "sources">): boolean {
-  if (
-    record.reviewStatus === "blocked" ||
-    record.reviewStatus === "draft" ||
-    record.reviewStatus === "ai-suggested" ||
-    record.reviewStatus === "teacher-review-required"
-  ) {
+  // Allowlist, not a denylist: only these two statuses ever clear the gate. reviewStatus is a
+  // closed TypeScript union at compile time, but its runtime value on both AgentRun and
+  // TajweedFinding is deserialized straight from an HTTP JSON response (services/ml-inference's
+  // Node code sets it via a literal string with no server-side schema enforcement, unlike
+  // platform-api's Rust enum) — TypeScript's type gives no runtime guarantee. A denylist of the
+  // four known-unapproved statuses would fail OPEN for any unexpected value (a typo, a future
+  // status added upstream without updating this gate), letting unreviewed content through to a
+  // learner. An allowlist fails CLOSED instead: anything that isn't explicitly one of the two
+  // genuinely-approved statuses is blocked, matching this gate's actual purpose.
+  const isApprovedStatus = record.reviewStatus === "teacher-reviewed" || record.reviewStatus === "scholar-approved";
+  if (!isApprovedStatus) {
     return false;
   }
 
