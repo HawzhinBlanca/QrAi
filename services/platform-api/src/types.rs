@@ -20,16 +20,6 @@ impl ActorRole {
             _ => None,
         }
     }
-
-    pub fn as_str(&self) -> &'static str {
-        match self {
-            Self::Learner => "learner",
-            Self::Teacher => "teacher",
-            Self::Scholar => "scholar",
-            Self::Admin => "admin",
-            Self::Ops => "ops",
-        }
-    }
 }
 
 #[derive(Debug, Clone)]
