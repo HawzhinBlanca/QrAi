@@ -16,6 +16,10 @@ pnpm --filter @quran-ai/web build
 # verify.sh, or CI, so a real regression here (e.g. hardcoded guardianApproved:true, the exact
 # class of bug lib/session.ts's own tests guard against) would have gone undetected.
 node --experimental-strip-types --test apps/mobile/lib/*.test.ts
+# ml-inference/agents have no pnpm workspace membership either — same gap as apps/mobile above,
+# same fix. Explicit paths (not a dir glob) since server.mjs gates its side effects (listen/timers)
+# on `isMain`, matching verify.sh's identical "test: node services" step.
+node --test services/ml-inference/alignment.test.mjs services/ml-inference/tajweed.test.mjs services/ml-inference/server.test.mjs services/agents/agents.test.mjs
 cargo fmt --manifest-path services/realtime-gateway/Cargo.toml --check
 cargo test --manifest-path services/realtime-gateway/Cargo.toml
 cargo clippy --manifest-path services/realtime-gateway/Cargo.toml -- -D warnings
