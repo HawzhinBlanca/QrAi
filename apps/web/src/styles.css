@@ -788,6 +788,12 @@ button:disabled {
 .reader-panel {
   display: grid;
   gap: 16px;
+  /* Direct grid children default to min-width:auto (their min-content size), not 0 — without
+     this, .learner-reader-column's grid track can't shrink below reader-panel's content width,
+     overflowing the viewport at laptop widths (~1280px) once practice-main-grid drops to a
+     single column at the 1320px breakpoint. Same trap the existing mobile media query works
+     around; this makes the base case correct too. */
+  min-width: 0;
 }
 
 .reader-frame {
@@ -1306,6 +1312,10 @@ button:disabled {
   display: flex;
   align-items: center;
   gap: 20px;
+  /* Same min-width:auto grid-item trap as .reader-panel above — without this, .coach-status's
+     min-width:210px plus .coach-actions's unshrinkable button content sets a floor on
+     .learner-reader-column's grid track that can exceed the viewport at laptop widths. */
+  min-width: 0;
   min-height: 92px;
   padding: 16px 20px;
   border: 1px solid var(--line);

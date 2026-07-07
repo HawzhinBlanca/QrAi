@@ -19,6 +19,12 @@ try {
   const cases = [
     { name: "mobile-home", width: 390, height: 844, path: "?smoke=layout" },
     { name: "mobile-practice", width: 390, height: 844, path: "?smoke=layout&smokeMode=practice" },
+    // 1280px falls in the gap between the mobile breakpoints and the 1440px desktop case above —
+    // practice-main-grid drops to a single column at <=1320px (a common laptop width), which
+    // previously overflowed because .reader-panel/.audio-coach lacked min-width:0 as direct
+    // grid children. Neither existing case caught it since 1440 stays two-column and 390 already
+    // had the mobile min-width:0 fix.
+    { name: "laptop-practice", width: 1280, height: 900, path: "?smoke=layout&smokeMode=practice" },
     { name: "desktop-home", width: 1440, height: 1100, path: "?smoke=layout" },
     { name: "desktop-practice", width: 1440, height: 1100, path: "?smoke=layout&smokeMode=practice" },
     {
