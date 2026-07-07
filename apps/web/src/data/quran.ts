@@ -1,5 +1,6 @@
 import { fetchSurah, type SurahDetail } from "../lib/api";
 import type { AlignmentResult } from "../lib/api";
+import { fetchWithTimeout } from "../lib/http";
 import { actorHeaders } from "./platform";
 
 export type WordStatus = "good" | "mistake" | "needs-work" | "missed";
@@ -159,8 +160,11 @@ export async function loadWeeklyProgress(tenantId: string, userId?: string, auth
   const cached = cachedProgress.get(key);
   if (cached) return cached;
   try {
-    const apiBase = import.meta.env.VITE_PLATFORM_API_URL || "http://127.0.0.1:8080";
-    const response = await fetch(`${apiBase}/v1/learner/progress`, {
+    // Dev needs an absolute URL (vite serves 5173, the API 8080); the Docker/prod build proxies
+    // /v1/ through nginx, so a relative path is required there instead — both to avoid bypassing
+    // that proxy and to satisfy the CSP's `connect-src 'self'`.
+    const apiBase = import.meta.env.VITE_PLATFORM_API_URL || (import.meta.env.DEV ? "http://127.0.0.1:8080" : "");
+    const response = await fetchWithTimeout(`${apiBase}/v1/learner/progress`, {
       headers: actorHeaders(tenantId, userId ?? "learner-1", "learner", authToken),
     });
     if (!response.ok) throw new Error(`Progress API ${response.status}`);

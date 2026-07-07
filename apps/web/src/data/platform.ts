@@ -14,6 +14,7 @@ import type {
   SourceReference,
   SupportedLanguageCode,
 } from "../types/platform";
+import { fetchWithTimeout } from "../lib/http";
 
 // Static UI configuration (not mock data — these are app config, not learner data)
 export const supportedLanguages: Array<{
@@ -77,7 +78,10 @@ export const governanceItems = [
 
 // === Real API-backed data ===
 
-const API_BASE = import.meta.env.VITE_PLATFORM_API_URL || "http://127.0.0.1:8080";
+// Dev needs an absolute URL (vite serves 5173, the API 8080); the Docker/prod build proxies /v1/
+// through nginx, so a relative path is required there instead — both to avoid bypassing that
+// proxy and to satisfy the CSP's `connect-src 'self'`.
+const API_BASE = import.meta.env.VITE_PLATFORM_API_URL || (import.meta.env.DEV ? "http://127.0.0.1:8080" : "");
 
 export function actorHeaders(tenantId: string, userId: string, role: string, authToken?: string): Record<string, string> {
   if (authToken) {
@@ -115,7 +119,7 @@ export async function fetchLearnerProgress(
   const existing = progressInFlight.get(key);
   if (existing) return existing;
   const promise = (async () => {
-    const response = await fetch(`${API_BASE}/v1/learner/progress`, {
+    const response = await fetchWithTimeout(`${API_BASE}/v1/learner/progress`, {
       headers: actorHeaders(tenantId, userId, "learner", authToken),
     });
     if (!response.ok) throw new Error(`Progress API ${response.status}`);
@@ -140,7 +144,7 @@ export async function updateLearnerProgress(
   quality: number,
   authToken?: string,
 ): Promise<void> {
-  const response = await fetch(`${API_BASE}/v1/learner/progress`, {
+  const response = await fetchWithTimeout(`${API_BASE}/v1/learner/progress`, {
     method: "POST",
     headers: {
       "content-type": "application/json",
@@ -205,7 +209,7 @@ export async function fetchEvalRun(
   authToken?: string,
 ): Promise<EvalRun | null> {
   try {
-    const response = await fetch(`${API_BASE}/v1/eval-runs/${modelVersion}`, {
+    const response = await fetchWithTimeout(`${API_BASE}/v1/eval-runs/${modelVersion}`, {
       headers: actorHeaders(tenantId, "admin-1", "admin", authToken),
     });
     if (!response.ok) return null;
@@ -243,7 +247,7 @@ const ADMIN_HEADERS = (tenantId: string, authToken?: string): Record<string, str
 
 async function fetchConsole<T>(path: string, tenantId: string, fallback: T, authToken?: string): Promise<T> {
   try {
-    const response = await fetch(`${API_BASE}${path}`, { headers: ADMIN_HEADERS(tenantId, authToken) });
+    const response = await fetchWithTimeout(`${API_BASE}${path}`, { headers: ADMIN_HEADERS(tenantId, authToken) });
     if (!response.ok) return fallback;
     return (await response.json()) as T;
   } catch {

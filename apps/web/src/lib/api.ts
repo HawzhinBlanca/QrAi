@@ -6,7 +6,11 @@ import type { ReviewStatus, SourceReference } from "@quran-ai/contracts";
 
 import { fetchWithTimeout } from "./http";
 
-const API_BASE = import.meta.env.VITE_PLATFORM_API_URL || "http://127.0.0.1:8080";
+// In dev (vite serves on 5173, the API on 8080) an absolute URL is required. In the Docker/prod
+// build, nginx proxies /v1/ to platform-api directly (nginx.conf), so a RELATIVE path is required
+// instead — an absolute http://127.0.0.1:8080 both bypasses that proxy (wrong origin in a
+// multi-host deployment) and trips the CSP's `connect-src 'self'` (a cross-origin fetch target).
+const API_BASE = import.meta.env.VITE_PLATFORM_API_URL || (import.meta.env.DEV ? "http://127.0.0.1:8080" : "");
 
 function actorHeaders(tenantId: string, userId: string, role: string, authToken?: string): Record<string, string> {
   if (authToken) {
