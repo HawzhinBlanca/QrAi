@@ -147,3 +147,30 @@ whoever operates that database, and coordinated with them before running it agai
 live pilot. No production code path currently depends on these checksums validating (the
 gap was latent), so there is no user-facing regression from delaying the re-seed — but it
 should happen before any integrity-sweep or write-path checksum validation is added.
+
+---
+
+## ADR-0006 — realtime-gateway now initializes a tracing subscriber
+**Date:** 2026-07-07 · **Status:** Accepted
+
+**Context.** `services/realtime-gateway/src/main.rs` never called
+`tracing_subscriber::fmt().init()` (or any subscriber init), and `tracing-subscriber` was not
+even a listed dependency — only the `tracing` facade crate was. Every `tracing::info!`/`warn!`
+call throughout `lib.rs` — including CSWSH origin-rejection warnings, ticket validation
+failures, and rate-limit events, all security-relevant — was silently dropped with nowhere to
+go. Found by manually running the gateway locally: a rejected WebSocket connection produced no
+log output at all, even at `RUST_LOG=debug`. `services/platform-api/src/main.rs` already
+initializes a subscriber correctly; the gateway had simply never had this wired up.
+
+**Decision.** New runtime dependency: `tracing-subscriber = { version = "0.3.20", features =
+["env-filter"] }` in `services/realtime-gateway/Cargo.toml` (same version/features
+`platform-api` already uses). `main.rs` now calls `tracing_subscriber::fmt().with_env_filter(...)
+.init()` before binding the listener, defaulting to
+`"quran_ai_realtime_gateway=info,tower_http=info"` when `RUST_LOG` is unset — mirrors
+`platform-api`'s exact pattern.
+
+**Consequences.** The gateway now actually emits its existing `tracing::warn!`/`info!` calls to
+stdout in production, matching `platform-api`'s observability. No behavior change to request
+handling — this only makes already-written log statements visible. Verified: the same connection
+that previously failed silently now logs `realtime ticket tenant 'X' does not match gateway
+tenant 'Y'` (or the relevant CSWSH/ticket-validation reason) immediately.
