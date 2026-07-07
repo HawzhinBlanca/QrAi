@@ -901,7 +901,6 @@ name = "quran-ai-realtime-gateway"
 version = "0.3.0"
 dependencies = [
  "axum",
- "hmac",
  "quran-ai-shared-ticket",
  "redis",
  "reqwest",
