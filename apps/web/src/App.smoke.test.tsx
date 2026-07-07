@@ -287,4 +287,59 @@ describe("Quran AI app smoke", () => {
     expect(document.body.textContent).toContain("KB streamed");
     expect(document.body.textContent).toContain("1 accepted acks");
   });
+
+  it("double-clicking Start live recitation opens only one WebSocket and one mic stream", async () => {
+    // Regression test: handleCaptureToggle's start path only assigns captureRef.current after
+    // `await startBrowserMicCapture(...)` resolves (a real getUserMedia permission prompt), with
+    // no synchronous guard before that await — a double-click in the pending window previously
+    // re-entered the start branch, opening a second WebSocket AND a second mic stream, each
+    // orphaning the first (refs get overwritten by whichever resolves last).
+    let resolveGetUserMedia: (stream: { getTracks: () => Array<{ stop: () => void }> }) => void = () => {};
+    const getUserMedia = vi.fn(
+      () =>
+        new Promise((resolve) => {
+          resolveGetUserMedia = resolve;
+        }),
+    );
+    Object.defineProperty(window.navigator, "mediaDevices", {
+      configurable: true,
+      value: { getUserMedia },
+    });
+
+    const root = createRoot(container);
+    await act(async () => {
+      root.render(<App />);
+    });
+
+    const internalCommandButton = Array.from(document.querySelectorAll<HTMLButtonElement>("button")).find((button) =>
+      button.textContent?.includes("Internal Command"),
+    );
+    await act(async () => {
+      internalCommandButton?.click();
+    });
+    for (let i = 0; i < 10; i++) {
+      await act(async () => {
+        await new Promise((r) => setTimeout(r, 10));
+      });
+      if (document.body.textContent?.includes("Quran AI intelligence platform")) break;
+    }
+
+    const startButton = () => document.querySelector<HTMLButtonElement>(".capture-button");
+    expect(startButton()).toBeTruthy();
+
+    // Two rapid clicks, both before getUserMedia resolves.
+    await act(async () => {
+      startButton()?.click();
+      startButton()?.click();
+    });
+
+    expect(getUserMedia).toHaveBeenCalledTimes(1);
+    expect(FakeWebSocket.instances).toHaveLength(1);
+
+    await act(async () => {
+      resolveGetUserMedia({ getTracks: () => [{ stop: vi.fn() }] });
+    });
+
+    expect(FakeMediaRecorder.instances).toHaveLength(1);
+  });
 });

@@ -279,6 +279,14 @@ function LiveAlignmentCard({
 }) {
   const captureRef = useRef<MicCaptureController | null>(null);
   const uploaderRef = useRef<GatewayUploader | null>(null);
+  // Guards handleCaptureToggle's start path against a double-tap: captureRef.current is only
+  // assigned after `await startBrowserMicCapture(...)` resolves (a real getUserMedia permission
+  // prompt, which can take real wall-clock time), so a second click during that window would
+  // otherwise re-enter the start branch too — opening a second real microphone stream AND a
+  // second gateway WebSocket, each orphaning the first (refs get overwritten by whichever
+  // resolves last; the first stream's tracks are never stopped, the first socket never closed).
+  // Same class of bug as the double-tap mic leak already fixed in App.tsx's toggleAsrRecording.
+  const isStartingCaptureRef = useRef(false);
   const [captureStatus, setCaptureStatus] = useState<MicCaptureStatus>("idle");
   const [captureError, setCaptureError] = useState("");
   const [gatewayStatus, setGatewayStatus] = useState<GatewayUploadStatus>("idle");
@@ -303,28 +311,38 @@ function LiveAlignmentCard({
       return;
     }
 
-    setCaptureError("");
-    setGatewayError("");
-    setGatewayAcks([]);
-    setAudioChunks([]);
-    uploaderRef.current = startGatewayAudioUpload({
-      url: getConfiguredRealtimeAudioUrl(sessionId),
-      onStatusChange: setGatewayStatus,
-      onAck: (ack) => setGatewayAcks((currentAcks) => [...currentAcks, ack]),
-      onError: setGatewayError,
-    });
+    // See isStartingCaptureRef's declaration comment: block re-entry synchronously, before the
+    // getUserMedia await, so a double-tap can't open a second stream/socket.
+    if (isStartingCaptureRef.current) {
+      return;
+    }
+    isStartingCaptureRef.current = true;
+    try {
+      setCaptureError("");
+      setGatewayError("");
+      setGatewayAcks([]);
+      setAudioChunks([]);
+      uploaderRef.current = startGatewayAudioUpload({
+        url: getConfiguredRealtimeAudioUrl(sessionId),
+        onStatusChange: setGatewayStatus,
+        onAck: (ack) => setGatewayAcks((currentAcks) => [...currentAcks, ack]),
+        onError: setGatewayError,
+      });
 
-    captureRef.current = await startBrowserMicCapture({
-      sessionId,
-      sampleRate: 16000,
-      chunkDurationMs: 480,
-      onStatusChange: setCaptureStatus,
-      onError: setCaptureError,
-      onChunk: (chunk) => {
-        uploaderRef.current?.sendChunk(chunk);
-        setAudioChunks((currentChunks) => [...currentChunks, chunk]);
-      },
-    });
+      captureRef.current = await startBrowserMicCapture({
+        sessionId,
+        sampleRate: 16000,
+        chunkDurationMs: 480,
+        onStatusChange: setCaptureStatus,
+        onError: setCaptureError,
+        onChunk: (chunk) => {
+          uploaderRef.current?.sendChunk(chunk);
+          setAudioChunks((currentChunks) => [...currentChunks, chunk]);
+        },
+      });
+    } finally {
+      isStartingCaptureRef.current = false;
+    }
   }
 
   const sessionTitle = activeSession ? activeSession.quranRef.display : "No recent session";
