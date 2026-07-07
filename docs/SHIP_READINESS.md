@@ -128,8 +128,16 @@ sifat output on pilot data.
   (`apps/web/src/lib/api.ts`); PR #28 completes the rollout to `data/platform.ts`, `data/quran.ts`,
   `lib/auth.tsx`, `lib/liveRecitation.ts`, and `lib/serverAsr.ts`, which on `main` still use bare
   `fetch` (no timeout) in places. See the note at the top of this doc.
-- **F17 — Accessibility · 🧰.** Run an axe/Lighthouse pass on the web app; fix keyboard nav / ARIA /
-  Arabic-RTL findings.
+- **F17 — Accessibility · 🧰 (automated layer done; manual pass remains).** `pnpm smoke:a11y`
+  runs a real axe-core audit (headless Chrome, `scripts/smoke-a11y.mjs`) against Learner Home,
+  the practice flow, and Internal Command — 0 violations on `main` (a real color-contrast
+  failure it found, `--muted` text at 4.42-4.44:1 against the app's lightest backgrounds, is
+  already fixed). axe-core only catches what's mechanically detectable (contrast, missing
+  labels/roles, landmark structure) — it cannot verify keyboard-only task completion, screen
+  reader announcement quality, or the Arabic-RTL reading-order findings this item originally
+  called for. **Remaining human step:** a manual keyboard-nav + screen-reader pass, and RTL
+  layout review once `docs/DECISIONS.md`-tracked RTL rendering work lands (the UI does not yet
+  flip to RTL for Arabic/Kurdish Sorani/Urdu at all — see the open RTL-readiness task).
 - **F18 — i18n completeness · 🧰.** Audit UI strings for full coverage across supported languages.
 - **F20 — Mobile tests · ✅.** `apps/mobile/lib/session.ts` extracts the auth-header / consent /
   ASR-parsing logic; `apps/mobile/lib/session.test.ts` (node:test) gates it via the new `mobile` CI

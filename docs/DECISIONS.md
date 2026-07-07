@@ -174,3 +174,32 @@ stdout in production, matching `platform-api`'s observability. No behavior chang
 handling — this only makes already-written log statements visible. Verified: the same connection
 that previously failed silently now logs `realtime ticket tenant 'X' does not match gateway
 tenant 'Y'` (or the relevant CSWSH/ticket-validation reason) immediately.
+
+---
+
+## ADR-0007 — Automated accessibility audit via axe-core (F17)
+**Date:** 2026-07-07 · **Status:** Accepted
+
+**Context.** `docs/SHIP_READINESS.md` F17 called for "an axe/Lighthouse pass on the web app" with
+no automation in place — the only prior attempt this session was a hand-rolled contrast/focus
+checker in ad-hoc browser JS, which produced three false positives (missed `linear-gradient`
+backgrounds, misused `getComputedStyle`'s pseudo-element parameter for a pseudo-class, and was
+fooled by a stale scroll position) before a single real finding. Manual DOM probing is not a
+reliable substitute for a real accessibility engine.
+
+**Decision.** New dev dependency: `axe-core` on `@quran-ai/web`. `scripts/smoke-a11y.mjs` (new,
+root-level, following `scripts/smoke-browser.mjs`'s existing headless-Chrome-via-DevTools-Protocol
+pattern) injects axe-core's bundled source into a real running instance of Learner Home, the
+practice flow, and Internal Command, and fails on any violation. Exposed as `pnpm smoke:a11y`,
+alongside the existing `smoke:*` commands — not part of `scripts/verify.sh`, matching every other
+smoke script's convention (they validate a deployed/running stack, not a code diff).
+
+**Consequences.** This audit caught one real, previously-unknown WCAG AA failure on first run:
+`--muted` (`#7b7466`) measured 4.42-4.44:1 against the app's lightest paper backgrounds, just under
+the 4.5:1 required for normal-size text (`.platform-app small`, `.capture-state`/`.gateway-state`
+status text). Darkened to `#777163` — a visually near-identical shade — which clears 4.5:1 with a
+comfortable margin everywhere `--muted` is used, not just the two flagged elements. `pnpm
+smoke:a11y` now passes with 0 violations across all three audited screens. axe-core only catches
+mechanically-detectable issues (contrast, missing labels/roles/landmarks) — it cannot verify
+keyboard-only task completion or screen-reader announcement quality, so F17's manual pass remains
+open (see `docs/SHIP_READINESS.md`).
