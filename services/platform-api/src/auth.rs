@@ -121,3 +121,50 @@ pub fn extract_trace_id(headers: &HeaderMap) -> Option<String> {
         .map(|v| v.trim().to_owned())
         .filter(|v| !v.is_empty())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn issue_token_sets_an_expiry_in_the_future_matching_the_configured_ttl() {
+        let jwt = JwtConfig::with_header_auth("test-secret", false);
+        let before = Utc::now();
+        let token = jwt.issue_token("user-1", "tenant-1", "learner").unwrap();
+        let claims = jwt.validate_token(&token).unwrap();
+
+        // A `+` -> `-` regression in issue_token would set exp to ~24h in the PAST, which
+        // validate_token (via jsonwebtoken's built-in exp check) would immediately reject —
+        // catch it directly on the claim value rather than relying on that indirect failure.
+        let expected_exp = (before + Duration::hours(jwt.token_ttl_hours)).timestamp() as usize;
+        assert!(
+            claims.exp.abs_diff(expected_exp) <= 5,
+            "expected exp near {expected_exp}, got {}",
+            claims.exp
+        );
+        assert!(
+            claims.exp > before.timestamp() as usize,
+            "exp must be in the future, not the past"
+        );
+    }
+
+    #[test]
+    fn extract_trace_id_returns_the_trimmed_header_when_present() {
+        let mut headers = HeaderMap::new();
+        headers.insert("x-trace-id", "  trace-abc-123  ".parse().unwrap());
+        assert_eq!(extract_trace_id(&headers), Some("trace-abc-123".to_owned()));
+    }
+
+    #[test]
+    fn extract_trace_id_is_none_when_the_header_is_absent() {
+        let headers = HeaderMap::new();
+        assert_eq!(extract_trace_id(&headers), None);
+    }
+
+    #[test]
+    fn extract_trace_id_is_none_when_the_header_is_blank() {
+        let mut headers = HeaderMap::new();
+        headers.insert("x-trace-id", "   ".parse().unwrap());
+        assert_eq!(extract_trace_id(&headers), None);
+    }
+}
