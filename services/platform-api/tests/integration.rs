@@ -1712,6 +1712,93 @@ async fn create_agent_run_rejects_approved_without_sources() {
 
 #[tokio::test]
 #[ignore = "requires live Postgres"]
+async fn create_agent_run_rejects_approved_with_low_confidence() {
+    // canShowLearnerFacingAiOutput (packages/contracts) requires confidence >= 0.82. This
+    // endpoint used to only check the source count, so a caller could claim "approved" at any
+    // confidence as long as it cited a source.
+    let router = platform_router_with_rate_limit(test_state(), false);
+    let response = send_json(
+        &router,
+        Method::POST,
+        "/v1/agent-runs",
+        Some("hikmah-pilot-erbil"),
+        Some("ops"),
+        json!({
+            "name": "run",
+            "goal": "goal",
+            "status": "approved",
+            "confidence": 0.5,
+            "reviewStatus": "scholar-approved",
+            "sources": [{"id": "s", "title": "t", "citation": "c", "url": null}]
+        }),
+    )
+    .await;
+    assert_eq!(
+        response.status(),
+        StatusCode::BAD_REQUEST,
+        "an approved agent run must meet the 0.82 confidence floor, mirroring the learner-facing gate"
+    );
+}
+
+#[tokio::test]
+#[ignore = "requires live Postgres"]
+async fn create_agent_run_rejects_approved_with_an_unreviewed_review_status() {
+    // canShowLearnerFacingAiOutput only allows reviewStatus "teacher-reviewed" or
+    // "scholar-approved" to clear the gate. "ai-suggested" is a valid AgentRunRequest.review_status
+    // value (agents write it on every fresh candidate) but must never itself justify "approved".
+    let router = platform_router_with_rate_limit(test_state(), false);
+    let response = send_json(
+        &router,
+        Method::POST,
+        "/v1/agent-runs",
+        Some("hikmah-pilot-erbil"),
+        Some("ops"),
+        json!({
+            "name": "run",
+            "goal": "goal",
+            "status": "approved",
+            "confidence": 0.99,
+            "reviewStatus": "ai-suggested",
+            "sources": [{"id": "s", "title": "t", "citation": "c", "url": null}]
+        }),
+    )
+    .await;
+    assert_eq!(
+        response.status(),
+        StatusCode::BAD_REQUEST,
+        "an approved agent run must have a reviewed reviewStatus, mirroring the learner-facing gate"
+    );
+}
+
+#[tokio::test]
+#[ignore = "requires live Postgres"]
+async fn create_agent_run_accepts_approved_when_every_gate_condition_is_met() {
+    let router = platform_router_with_rate_limit(test_state(), false);
+    let response = send_json(
+        &router,
+        Method::POST,
+        "/v1/agent-runs",
+        Some("hikmah-pilot-erbil"),
+        Some("ops"),
+        json!({
+            "name": "run",
+            "goal": "goal",
+            "status": "approved",
+            "confidence": 0.82,
+            "reviewStatus": "teacher-reviewed",
+            "sources": [{"id": "s", "title": "t", "citation": "c", "url": null}]
+        }),
+    )
+    .await;
+    assert_eq!(
+        response.status(),
+        StatusCode::OK,
+        "a run genuinely meeting every gate condition (confidence exactly at the 0.82 floor) must be accepted"
+    );
+}
+
+#[tokio::test]
+#[ignore = "requires live Postgres"]
 async fn create_agent_run_accepts_a_valid_run_and_it_is_listed() {
     let state = test_state();
     let router = platform_router_with_rate_limit(state.clone(), false);
