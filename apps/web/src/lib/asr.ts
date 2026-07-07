@@ -72,7 +72,11 @@ export function startAsr(options: StartAsrOptions): AsrController | null {
   };
 
   recognition.addEventListener("result", (event: Event) => {
-    const results = (event as unknown as { results: ArrayLike<ArrayLike<{ transcript: string; confidence: number }>> }).results;
+    const results = (
+      event as unknown as {
+        results: ArrayLike<ArrayLike<{ transcript: string; confidence: number }> & { isFinal?: boolean }>;
+      }
+    ).results;
     for (let i = 0; i < results.length; i++) {
       const result = results[i];
       const alternative = result[0];
@@ -80,7 +84,12 @@ export function startAsr(options: StartAsrOptions): AsrController | null {
         options.onResult({
           transcript: alternative.transcript,
           confidence: alternative.confidence ?? 0.5,
-          isFinal: !!(event as unknown as { resultIndex: number }).resultIndex || i === results.length - 1,
+          // Per the Web Speech API spec, each SpeechRecognitionResult carries its own real
+          // isFinal flag — read it directly. The previous check (`event.resultIndex` truthy)
+          // was wrong: resultIndex is the index of the first result that changed since the last
+          // event, not a finality signal, and is 0 (falsy) for the common case of the very first
+          // or only-one-result event, silently misreporting interim results as final at i===0.
+          isFinal: result.isFinal ?? i === results.length - 1,
         });
       }
     }
