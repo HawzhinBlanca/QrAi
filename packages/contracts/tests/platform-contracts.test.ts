@@ -153,6 +153,19 @@ describe("Quran AI platform contracts", () => {
     expect(canShowLearnerFacingAiOutput(weakRun)).toBe(false);
   });
 
+  it("pins the exact confidence boundary at 0.82 (>= passes, < fails)", () => {
+    // The prior test only exercises 0.78 (well below) and 0.91 (well above) — neither pins the
+    // exact threshold, so an off-by-one (e.g. `> 0.82` instead of `>= 0.82`) could slip through
+    // unnoticed. Pin both sides of the boundary directly.
+    const base: Pick<AgentRun, "confidence" | "reviewStatus" | "sources"> = {
+      confidence: 0.82,
+      reviewStatus: "teacher-reviewed",
+      sources: [{ id: "scholar-board", title: "Scholar Board", citation: "Approved tajweed note" }],
+    };
+    expect(canShowLearnerFacingAiOutput(base)).toBe(true);
+    expect(canShowLearnerFacingAiOutput({ ...base, confidence: 0.81 })).toBe(false);
+  });
+
   it("also allows scholar-approved output through the gate (not just teacher-reviewed)", () => {
     const scholarApprovedRun: Pick<AgentRun, "confidence" | "reviewStatus" | "sources"> = {
       confidence: 0.9,
@@ -195,6 +208,9 @@ describe("Quran AI platform contracts", () => {
     expect(canUseExternalAsr(consent)).toBe(true);
     expect(canUseExternalAsr({ ...consent, externalAsrProcessing: false })).toBe(false);
     expect(canUseExternalAsr({ ...consent, guardianApproved: false })).toBe(false);
+    // Both flags false: the prior two assertions each flip only one flag, so this AND gate's
+    // "neither condition met" case was never actually pinned.
+    expect(canUseExternalAsr({ ...consent, externalAsrProcessing: false, guardianApproved: false })).toBe(false);
   });
 
   it("requires realtime tickets to carry signed session, tenant, learner, expiry, and consent fields", () => {
