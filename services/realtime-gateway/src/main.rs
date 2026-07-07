@@ -37,6 +37,17 @@ fn ensure_secure_config() {
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     ensure_secure_config();
 
+    // Without this, every tracing::info!/warn! call in lib.rs (CSWSH rejections, ticket
+    // validation failures, rate-limit events — all security-relevant) is silently dropped: there
+    // was no subscriber registered to emit them anywhere, and tracing-subscriber wasn't even a
+    // dependency. Matches platform-api's main.rs, which already has this.
+    tracing_subscriber::fmt()
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| "quran_ai_realtime_gateway=info,tower_http=info".into()),
+        )
+        .init();
+
     let addr: SocketAddr = std::env::var("REALTIME_GATEWAY_BIND")
         .unwrap_or_else(|_| "127.0.0.1:8081".to_owned())
         .parse()?;
