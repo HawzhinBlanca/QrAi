@@ -31,6 +31,15 @@ try {
     // safe 2-column fallback one pixel too early to cover it. No prior case exercised Internal
     // Command's own layout at any width — this closes that gap too.
     { name: "laptop-admin", width: 1321, height: 900, path: "?smoke=layout&smokeMode=admin", expectAdmin: true },
+    // 997px: .command-grid's own responsive column split (minmax(0, 1fr) minmax(320px, 390px)
+    // below 1340px) can leave the first card's width anywhere in a continuous range depending on
+    // viewport — there is no single "safe" breakpoint for .live-capture-panel's OWN media query
+    // to track, since it reacts to viewport width while the actual constraint is the CARD's
+    // width (a fraction of it). At 997px the card narrowed to 289px, squeezing
+    // .capture-state/.gateway-state down to ~12px (one character per line) instead of wrapping.
+    // scrollWidth/clientWidth don't catch this — it doesn't overflow, it just becomes illegible —
+    // hence the dedicated minCaptureStateWidth check below.
+    { name: "laptop-admin-narrow", width: 997, height: 900, path: "?smoke=layout&smokeMode=admin", expectAdmin: true, minCaptureStateWidth: 80 },
     { name: "desktop-home", width: 1440, height: 1100, path: "?smoke=layout" },
     { name: "desktop-practice", width: 1440, height: 1100, path: "?smoke=layout&smokeMode=practice" },
     {
@@ -70,6 +79,12 @@ try {
     assert(report.scrollWidth <= report.clientWidth + 1, `${testCase.name}: horizontal overflow ${report.scrollWidth} > ${report.clientWidth}`);
     if (testCase.expectAdmin) {
       assert(report.hasCommandHero === true, `${testCase.name}: Internal Command console did not render`);
+      if (testCase.minCaptureStateWidth) {
+        assert(
+          report.captureStateWidth !== null && report.captureStateWidth >= testCase.minCaptureStateWidth,
+          `${testCase.name}: live-capture status text squeezed to ${report.captureStateWidth}px (min ${testCase.minCaptureStateWidth}px)`,
+        );
+      }
     } else {
       assert(report.hasCommandHero === false, `${testCase.name}: platform command leaked into learner screen`);
       if (testCase.name.endsWith("home") || testCase.expectedMicState) {
@@ -309,6 +324,7 @@ function parseSmokeReport(dom, name) {
     micState: attr(tag, "data-mic-state"),
     mode: attr(tag, "data-mode"),
     scrollWidth: Number(attr(tag, "data-scroll-width")),
+    captureStateWidth: attr(tag, "data-capture-state-width") === "" ? null : Number(attr(tag, "data-capture-state-width")),
   };
 }
 

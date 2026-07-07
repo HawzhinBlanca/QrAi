@@ -232,6 +232,7 @@ function AuthenticatedApp({ bypassLogin = false }: { bypassLogin?: boolean }) {
         hasMicDenied: bodyText.includes("Microphone denied. Practice still works in listen and teacher-review mode."),
         hasMicUnavailable: bodyText.includes("Microphone unavailable on this device."),
         micState,
+        captureStateWidth: document.querySelector(".capture-state")?.getBoundingClientRect().width ?? null,
       });
     };
 
@@ -782,6 +783,11 @@ interface LayoutSmokeReport {
   hasMicDenied: boolean;
   hasMicUnavailable: boolean;
   micState: MicState;
+  // The live-recitation gateway status text (.capture-state/.gateway-state) doesn't overflow
+  // the page when squeezed too narrow — it just wraps unreadably, one character per line — so
+  // scrollWidth/clientWidth can't catch that regression. captureStateWidth lets a smoke case
+  // assert a minimum legible width directly. null when the Internal Command console isn't open.
+  captureStateWidth: number | null;
 }
 
 function getInitialSection(): AppSection {
@@ -847,6 +853,7 @@ function LayoutSmokeProbe({ report }: { report: LayoutSmokeReport }) {
       data-mic-state={report.micState}
       data-mode={report.mode}
       data-scroll-width={report.scrollWidth}
+      data-capture-state-width={report.captureStateWidth ?? ""}
       hidden
       id="browser-smoke-report"
     >
