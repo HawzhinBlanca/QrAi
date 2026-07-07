@@ -69,6 +69,13 @@ impl AppState {
         self.ml_inference_url = url.into();
         self
     }
+
+    /// Point the ASR inference endpoint at a specific URL (tests use a mock server so the
+    /// transcribe proxy path runs without a live ASR service).
+    pub fn with_asr_inference_url(mut self, url: impl Into<String>) -> Self {
+        self.asr_inference_url = url.into();
+        self
+    }
 }
 
 pub fn platform_router(state: AppState) -> Router {

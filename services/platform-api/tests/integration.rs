@@ -1,5 +1,6 @@
 use axum::body::Body;
 use axum::http::{Method, Request, StatusCode};
+use axum::response::IntoResponse;
 use serde_json::{Value, json};
 use tower::ServiceExt;
 
@@ -1223,6 +1224,345 @@ async fn seed_reviewed_finding(
     .unwrap();
 
     (finding_id, review_id)
+}
+
+#[tokio::test]
+#[ignore = "requires live Postgres"]
+async fn create_scholar_approval_rejects_approval_without_sources() {
+    let router = platform_router_with_rate_limit(test_state(), false);
+    let response = send_json(
+        &router,
+        Method::POST,
+        "/v1/scholar-approvals",
+        Some("hikmah-pilot-erbil"),
+        Some("scholar"),
+        json!({
+            "topic": format!("topic-{}", next_suffix()),
+            "reviewerId": "ignored-should-use-actor",
+            "status": "scholar-approved",
+            "risk": "low",
+            "sources": []
+        }),
+    )
+    .await;
+    assert_eq!(
+        response.status(),
+        StatusCode::BAD_REQUEST,
+        "a scholar-approved decision with zero sources must be rejected"
+    );
+}
+
+#[tokio::test]
+#[ignore = "requires live Postgres"]
+async fn create_scholar_approval_rejects_high_risk_approval() {
+    let router = platform_router_with_rate_limit(test_state(), false);
+    let response = send_json(
+        &router,
+        Method::POST,
+        "/v1/scholar-approvals",
+        Some("hikmah-pilot-erbil"),
+        Some("scholar"),
+        json!({
+            "topic": format!("topic-{}", next_suffix()),
+            "reviewerId": "ignored-should-use-actor",
+            "status": "scholar-approved",
+            "risk": "high",
+            "sources": [{"id": "src-1", "title": "t", "citation": "c", "url": null}]
+        }),
+    )
+    .await;
+    assert_eq!(
+        response.status(),
+        StatusCode::BAD_REQUEST,
+        "a scholar-approved decision at high risk must be rejected regardless of sources"
+    );
+}
+
+#[tokio::test]
+#[ignore = "requires live Postgres"]
+async fn create_scholar_approval_and_list_round_trips_all_fields() {
+    let state = test_state();
+    let router = platform_router_with_rate_limit(state.clone(), false);
+    let topic = format!("topic-{}", next_suffix());
+
+    let created = send_json(
+        &router,
+        Method::POST,
+        "/v1/scholar-approvals",
+        Some("hikmah-pilot-erbil"),
+        Some("scholar"),
+        json!({
+            "topic": topic,
+            "reviewerId": "someone-else",
+            "status": "scholar-approved",
+            "risk": "low",
+            "sources": [{"id": "src-1", "title": "t", "citation": "c", "url": null}]
+        }),
+    )
+    .await;
+    assert_eq!(created.status(), StatusCode::OK);
+    let created_body: Value = read_json(created).await;
+    // The reviewer must be the authenticated actor, never the caller-supplied reviewerId.
+    assert_eq!(created_body["reviewerId"], "scholar-1");
+    assert_eq!(created_body["status"], "scholar-approved");
+    assert_eq!(created_body["risk"], "low");
+
+    let listed = send_json(
+        &router,
+        Method::GET,
+        "/v1/scholar-approvals",
+        Some("hikmah-pilot-erbil"),
+        Some("scholar"),
+        Value::Null,
+    )
+    .await;
+    assert_eq!(listed.status(), StatusCode::OK);
+    let approvals: Vec<Value> = read_json(listed).await;
+    let found = approvals
+        .iter()
+        .find(|a| a["topic"] == json!(topic))
+        .unwrap_or_else(|| panic!("expected to find topic {topic} in {approvals:?}"));
+    assert_eq!(found["status"], "scholar-approved");
+    assert_eq!(found["risk"], "low");
+    assert_eq!(found["sourceCount"], 1);
+}
+
+#[tokio::test]
+#[ignore = "requires live Postgres"]
+async fn list_teacher_review_queue_round_trips_all_three_decisions() {
+    let state = test_state();
+    let router = platform_router_with_rate_limit(state.clone(), false);
+    let learner_id = format!("learner-review-queue-{}", next_suffix());
+
+    sqlx::query(
+        "INSERT INTO users (id, tenant_id, display_name, role, language)
+         VALUES ($1, 'hikmah-pilot-erbil', 'Review Queue Learner', 'learner', 'ckb')",
+    )
+    .bind(&learner_id)
+    .execute(&state.pool)
+    .await
+    .unwrap();
+    let session_id = create_test_session_for_learner(&router, &learner_id).await;
+
+    let mut expected = std::collections::HashMap::new();
+    for decision in ["accepted", "rejected", "edited"] {
+        let (finding_id, _review_id) =
+            seed_reviewed_finding(&state.pool, &session_id, decision).await;
+        // seed_reviewed_finding always inserts an "accepted" review row; overwrite it here so
+        // each of the three TeacherDecision variants is actually exercised end to end through
+        // the real create_teacher_review handler and read back through the real list endpoint.
+        sqlx::query("DELETE FROM teacher_reviews WHERE finding_id = $1")
+            .bind(&finding_id)
+            .execute(&state.pool)
+            .await
+            .unwrap();
+
+        let created = send_json(
+            &router,
+            Method::POST,
+            "/v1/teacher-reviews",
+            Some("hikmah-pilot-erbil"),
+            Some("teacher"),
+            json!({
+                "findingId": finding_id,
+                "teacherId": "ignored-should-use-actor",
+                "decision": decision,
+                "note": format!("note-{decision}")
+            }),
+        )
+        .await;
+        assert_eq!(created.status(), StatusCode::OK);
+        expected.insert(finding_id, decision);
+    }
+
+    let listed = send_json(
+        &router,
+        Method::GET,
+        "/v1/teacher-review-queue",
+        Some("hikmah-pilot-erbil"),
+        Some("teacher"),
+        Value::Null,
+    )
+    .await;
+    assert_eq!(listed.status(), StatusCode::OK);
+    let reviews: Vec<Value> = read_json(listed).await;
+    for (finding_id, decision) in &expected {
+        let found = reviews
+            .iter()
+            .find(|r| r["findingId"] == json!(finding_id))
+            .unwrap_or_else(|| panic!("expected a queued review for finding {finding_id}"));
+        assert_eq!(
+            found["decision"],
+            json!(decision),
+            "decision must round-trip exactly, not collapse to a fallback"
+        );
+    }
+}
+
+#[tokio::test]
+#[ignore = "requires live Postgres"]
+async fn list_tajweed_findings_returns_the_seeded_finding_not_an_empty_list() {
+    let state = test_state();
+    let router = platform_router_with_rate_limit(state.clone(), false);
+    let learner_id = format!("learner-findings-list-{}", next_suffix());
+
+    sqlx::query(
+        "INSERT INTO users (id, tenant_id, display_name, role, language)
+         VALUES ($1, 'hikmah-pilot-erbil', 'Findings List Learner', 'learner', 'ckb')",
+    )
+    .bind(&learner_id)
+    .execute(&state.pool)
+    .await
+    .unwrap();
+    let session_id = create_test_session_for_learner(&router, &learner_id).await;
+    let (finding_id, _review_id) = seed_reviewed_finding(&state.pool, &session_id, "list").await;
+
+    let listed = send_json(
+        &router,
+        Method::GET,
+        "/v1/tajweed-findings",
+        Some("hikmah-pilot-erbil"),
+        Some("teacher"),
+        Value::Null,
+    )
+    .await;
+    assert_eq!(listed.status(), StatusCode::OK);
+    let findings: Vec<Value> = read_json(listed).await;
+    assert!(
+        findings.iter().any(|f| f["id"] == json!(finding_id)),
+        "expected to find seeded finding {finding_id} in {findings:?}"
+    );
+}
+
+/// Spawn a throwaway HTTP server that always answers 500, to exercise the ML/ASR proxy handlers'
+/// upstream-error path (their `if !status.is_success()` check).
+async fn spawn_mock_upstream_500(path: &'static str) -> String {
+    let app = axum::Router::new().route(
+        path,
+        axum::routing::post(|| async {
+            (StatusCode::INTERNAL_SERVER_ERROR, "boom").into_response()
+        }),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+    format!("http://{addr}")
+}
+
+/// Spawn a throwaway HTTP server that always answers 200 with a fixed JSON body, to exercise the
+/// ML/ASR proxy handlers' success path. This is what actually kills a `!status.is_success()` ->
+/// `status.is_success()` mutation: on a 500 with a non-JSON body, both the correct code and the
+/// mutant fall through to a JSON-parse failure and end up returning the same 502, so only a
+/// genuine 200-with-valid-JSON response can distinguish "passed through as success" from
+/// "wrongly treated as an upstream error".
+async fn spawn_mock_upstream_200(path: &'static str, body: serde_json::Value) -> String {
+    let app = axum::Router::new().route(
+        path,
+        axum::routing::post(move || {
+            let body = body.clone();
+            async move { axum::Json(body) }
+        }),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+    format!("http://{addr}")
+}
+
+#[tokio::test]
+#[ignore = "requires live Postgres"]
+async fn ml_proxy_passes_through_a_successful_upstream_response() {
+    let mock_ml = spawn_mock_upstream_200(
+        "/v1/alignments:predict",
+        json!({"alignments": [], "modelVersion": "model-v0.3"}),
+    )
+    .await;
+    let state = test_state().with_ml_inference_url(mock_ml);
+    let router = platform_router_with_rate_limit(state, false);
+
+    let response = send_json(
+        &router,
+        Method::POST,
+        "/v1/ml/alignments:predict",
+        Some("hikmah-pilot-erbil"),
+        Some("learner"),
+        json!({}),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let body: Value = read_json(response).await;
+    assert_eq!(body["modelVersion"], "model-v0.3");
+}
+
+#[tokio::test]
+#[ignore = "requires live Postgres"]
+async fn asr_transcribe_proxy_passes_through_a_successful_upstream_response() {
+    let mock_asr = spawn_mock_upstream_200("/v1/transcribe", json!({"text": "بِسْمِ اللَّهِ"})).await;
+    let state = test_state().with_asr_inference_url(mock_asr);
+    let router = platform_router_with_rate_limit(state, false);
+
+    let response = send_json(
+        &router,
+        Method::POST,
+        "/v1/asr/transcribe",
+        Some("hikmah-pilot-erbil"),
+        Some("learner"),
+        json!({}),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let body: Value = read_json(response).await;
+    assert_eq!(body["text"], "بِسْمِ اللَّهِ");
+}
+
+#[tokio::test]
+#[ignore = "requires live Postgres"]
+async fn ml_proxy_maps_upstream_error_status_to_bad_gateway() {
+    let mock_ml = spawn_mock_upstream_500("/v1/alignments:predict").await;
+    let state = test_state().with_ml_inference_url(mock_ml);
+    let router = platform_router_with_rate_limit(state, false);
+
+    let response = send_json(
+        &router,
+        Method::POST,
+        "/v1/ml/alignments:predict",
+        Some("hikmah-pilot-erbil"),
+        Some("learner"),
+        json!({}),
+    )
+    .await;
+    assert_eq!(
+        response.status(),
+        StatusCode::BAD_GATEWAY,
+        "a non-success upstream status must map to 502, not pass through as success"
+    );
+}
+
+#[tokio::test]
+#[ignore = "requires live Postgres"]
+async fn asr_transcribe_proxy_maps_upstream_error_status_to_bad_gateway() {
+    let mock_asr = spawn_mock_upstream_500("/v1/transcribe").await;
+    let state = test_state().with_asr_inference_url(mock_asr);
+    let router = platform_router_with_rate_limit(state, false);
+
+    let response = send_json(
+        &router,
+        Method::POST,
+        "/v1/asr/transcribe",
+        Some("hikmah-pilot-erbil"),
+        Some("learner"),
+        json!({}),
+    )
+    .await;
+    assert_eq!(
+        response.status(),
+        StatusCode::BAD_GATEWAY,
+        "a non-success upstream status must map to 502, not pass through as success"
+    );
 }
 
 fn next_suffix() -> String {
