@@ -705,7 +705,12 @@ function AuthenticatedApp({ bypassLogin = false }: { bypassLogin?: boolean }) {
       <OfflineBanner />
       <Sidebar activeSection={activeSection} onSectionChange={(section) => setActiveSection(section as AppSection)} />
       <main className="workspace" id="main-content">
-        <TopBar title={pageTitle} trustLabel={activeSection === "learner" ? "Teacher-reviewed" : "Scholar-gated"} />
+        <TopBar
+          title={pageTitle}
+          trustLabel={activeSection === "learner" ? "Teacher-reviewed" : "Scholar-gated"}
+          activeLanguage={activeLanguage}
+          onLanguageChange={setActiveLanguage}
+        />
         <motion.div
           animate={{ opacity: 1, y: 0 }}
           className={activeSection === "learner" ? "learner-stage" : "platform-stage"}

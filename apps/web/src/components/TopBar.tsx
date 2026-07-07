@@ -1,11 +1,31 @@
 import { ChevronDown, Globe2, ShieldCheck } from "lucide-react";
+import { supportedLanguages } from "../data/platform";
+import type { SupportedLanguageCode } from "../types/platform";
 
 interface TopBarProps {
   title: string;
   trustLabel?: string;
+  activeLanguage: SupportedLanguageCode;
+  onLanguageChange: (language: SupportedLanguageCode) => void;
+  displayName?: string;
+  roleLabel?: string;
 }
 
-export function TopBar({ title, trustLabel = "Scholar-gated" }: TopBarProps) {
+export function TopBar({
+  title,
+  trustLabel = "Scholar-gated",
+  activeLanguage,
+  onLanguageChange,
+  displayName = "Soran Othman",
+  roleLabel = "Student",
+}: TopBarProps) {
+  const initials = displayName
+    .split(/\s+/)
+    .map((part) => part[0])
+    .slice(0, 2)
+    .join("")
+    .toUpperCase();
+
   return (
     <header className="topbar">
       <div>
@@ -16,17 +36,29 @@ export function TopBar({ title, trustLabel = "Scholar-gated" }: TopBarProps) {
           <ShieldCheck size={16} />
           {trustLabel}
         </span>
-        <button className="language-button" type="button">
-          9 languages
+        {/* Was a plain <button> with no onClick at all — the ONLY working language switcher was
+            PlatformCommand's own <select>, reachable only via the internal admin console.
+            Learner-facing screens (rendered through this same TopBar) had no way to change
+            language at all. Reuses the identical pattern (native <select>, visible via the
+            browser's own rendering, driven by the same activeLanguage/onLanguageChange state
+            App.tsx already threads to PlatformCommand). */}
+        <label className="language-button" aria-label="Language">
           <Globe2 size={16} />
-        </button>
+          <select value={activeLanguage} onChange={(event) => onLanguageChange(event.target.value as SupportedLanguageCode)}>
+            {supportedLanguages.map((language) => (
+              <option key={language.code} value={language.code}>
+                {language.nativeName}
+              </option>
+            ))}
+          </select>
+        </label>
         <div className="profile-chip">
           <span>
-            Soran Othman
-            <small>Student</small>
+            {displayName}
+            <small>{roleLabel}</small>
           </span>
           <ChevronDown size={15} />
-          <b>SO</b>
+          <b>{initials}</b>
         </div>
       </div>
     </header>

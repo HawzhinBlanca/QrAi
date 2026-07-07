@@ -517,4 +517,28 @@ describe("Quran AI app smoke", () => {
     expect(document.body.textContent).toContain("Teacher Review");
     expect(document.body.textContent).not.toContain("Quran AI intelligence platform");
   });
+
+  it("TopBar's language selector actually changes the active language, on every screen", async () => {
+    // Regression test: TopBar rendered a plain <button> with no onClick and static "9 languages"
+    // text — the only working language switcher was PlatformCommand's own <select>, reachable
+    // only via Internal Command. A learner on the default Learner Home screen (rendered through
+    // this same TopBar) had no way to change language at all.
+    const root = createRoot(container);
+    await act(async () => {
+      root.render(<App />);
+    });
+
+    const select = document.querySelector<HTMLSelectElement>(".language-button select");
+    expect(select, "TopBar must render a real, functional language <select>").toBeTruthy();
+    expect(select!.value).toBe("ckb");
+
+    const nativeValueSetter = Object.getOwnPropertyDescriptor(window.HTMLSelectElement.prototype, "value")!.set!;
+    await act(async () => {
+      nativeValueSetter.call(select, "fr");
+      select!.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+
+    expect(select!.value).toBe("fr");
+    expect(document.body.textContent).toContain("Français");
+  });
 });
