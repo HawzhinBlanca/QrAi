@@ -2342,26 +2342,35 @@ button:disabled {
     display: none;
   }
 
+  /* Was a fixed 5-column grid with .nav-item:nth-child(n+6){display:none} hiding the rest — that
+     silently made Internal Command/Badges/Teachers/Settings completely unreachable on mobile
+     (Internal Command had an incidental workaround via the "Open related command tab" button on
+     other placeholders; Badges/Teachers/Settings had no path at all). A horizontally-scrolling
+     bar keeps every section reachable, matching the common mobile bottom-tab-bar-with-overflow
+     pattern, without inventing a new "more" menu's state/UI. */
   .nav-list {
-    display: grid;
+    display: flex;
     width: 100%;
-    grid-template-columns: repeat(5, minmax(0, 1fr));
     gap: 4px;
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+    scrollbar-width: none;
+  }
+
+  .nav-list::-webkit-scrollbar {
+    display: none;
   }
 
   .nav-item {
     display: grid;
+    flex: 0 0 auto;
     justify-items: center;
     gap: 4px;
-    width: 100%;
+    width: 72px;
     min-height: 52px;
     padding: 4px;
     text-align: center;
     font-size: 11px;
-  }
-
-  .nav-item:nth-child(n + 6) {
-    display: none;
   }
 
   .nav-item span {
