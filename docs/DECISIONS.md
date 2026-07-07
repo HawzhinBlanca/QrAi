@@ -240,3 +240,61 @@ step is worth the added CI time on every run — that tradeoff belongs in `ci.ym
 it. This ADR exists so the next session/human implementing the change doesn't have to re-derive the
 investigation. Until implemented, neither Rust service has automated dependency-vulnerability
 scanning in the gate.
+
+---
+
+## ADR-0009 — transformers CVE tracking (services/tajweed-neural) and a false "already tracked" claim
+
+**Date:** 2026-07-07 · **Status:** Accepted (tracking); upgrade deferred
+
+**Context.** `docker-compose.yml`'s `asr-inference` service comment claimed switching to the
+specialized Quran ASR model has "real costs (transformers as a new prod dependency — see the
+pinned CVEs already tracked for it in services/tajweed-neural's lockfile)". No such tracking
+existed anywhere in the repo — `grep -rn "CVE-" .` (excluding `node_modules`/venvs) returned zero
+matches before this ADR. The claim was false.
+
+Actually running `pip-audit` against `services/tajweed-neural/requirements.lock.txt` (via its own
+`.venv312`, since the pinned versions target Python 3.12) found the claim's *spirit* was right even
+though the tracking wasn't real: `transformers==4.57.6` has three real advisories, two of them
+critical RCE:
+
+- **PYSEC-2025-217 / CVE-2025-14929** — RCE via the X-CLIP checkpoint-conversion script's unsafe
+  deserialization. No fix version listed upstream.
+- **CVE-2026-1839 / GHSA-69w3-r845-3855** — RCE via `Trainer._load_rng_state()` calling
+  `torch.load()` without `weights_only=True`. Fixed in `transformers` 5.0.0rc3.
+- **CVE-2026-4372 / GHSA-29pf-2h5f-8g72** (critical) — RCE via a malicious `config.json`'s
+  `_attn_implementation_internal` field, causing `from_pretrained()` to download and execute
+  arbitrary code from an attacker-controlled Hub repo. Bypasses `trust_remote_code`. Fixed in
+  `transformers` 5.3.0.
+
+**Reachability in this codebase, verified by reading the actual code (not assumed):**
+`services/tajweed-neural` never imports or uses `Trainer` (`grep -rn "Trainer" *.py vendor/*.py`
+— zero matches), so CVE-2026-1839 is not reachable here. The X-CLIP conversion script
+(PYSEC-2025-217) is unrelated to this service's Wav2Vec2Bert model and is never invoked.
+CVE-2026-4372's exploitation path is the live one: every `from_pretrained()` call in
+`model_loader.py`/`vendor/multi_level_tokenizer.py` uses `model_id`, which resolves to
+`MODEL_ID = os.environ.get("TAJWEED_NEURAL_MODEL", "obadx/muaalem-model-v3")` — a
+server-configured deploy-time value, never attacker/request input. The realistic exposure is a
+supply-chain one (the specific pinned Hub repo, `obadx/muaalem-model-v3`, being compromised
+upstream), not a per-request vulnerability an external caller can trigger through this service's
+own API surface. Combined with `services/tajweed-neural` already being documented as
+**EXPERIMENTAL and off by default** (see its own `server.py` module docstring — the learner path
+uses the reviewed rule-based tajweed engine, not this model), the risk is real but currently
+narrow.
+
+**Decision.** Track this honestly instead of the prior false claim. Fixed the `docker-compose.yml`
+comment to point at this ADR. Do NOT bump `transformers` to `>=5.3.0` in this pass: it is a major
+version jump against a vendored, third-party custom model class
+(`Wav2Vec2BertForMultilevelCTC`/`MultiLevelTokenizer` under `vendor/`, from
+github.com/obadx/prepare-quran-dataset) that this session cannot safety-test without the real
+model weights and a from-scratch inference run — a blind major-version bump risks silently
+breaking model loading rather than fixing anything, for a service that is not currently reachable
+in production. Upgrading to `transformers>=5.3.0` (and re-vendoring/re-testing the custom model
+class against the new API) should be a required precondition before `tajweed-neural` is ever
+promoted out of "experimental, off by default."
+
+**Consequences.** `services/tajweed-neural/requirements.lock.txt` still pins the vulnerable
+version; this ADR is the source of truth for that decision until the service is promoted to
+production, at which point the upgrade above is mandatory, not optional. `services/asr-inference`
+does not import `transformers` at all in its current Dockerfile build (see the same
+`docker-compose.yml` comment thread) so is unaffected regardless.
