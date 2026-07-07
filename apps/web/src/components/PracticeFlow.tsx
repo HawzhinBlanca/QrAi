@@ -1,10 +1,10 @@
+import { lazy, Suspense } from "react";
 import { AlertTriangle, ArrowRight, CheckCircle2, RotateCcw, Sparkles } from "lucide-react";
 import { AudioCoach } from "./AudioCoach";
 import { CompletePanel } from "./CompletePanel";
 import { IssuePanel } from "./IssuePanel";
 import { ModeBanner } from "./ModeBanner";
 import { MutashabihatPanel } from "./MutashabihatPanel";
-import { ProgressPanel } from "./ProgressPanel";
 import { QuranReader } from "./QuranReader";
 import { TajweedPanel } from "./TajweedPanel";
 import type { MicState, PracticeMode } from "../types/practice";
@@ -13,6 +13,12 @@ import type { AlignmentResult, TajweedFinding } from "../lib/api";
 import type { MemorizationPlan, LearnerProgress } from "../data/platform";
 import type { QuranVerse, RecitationEvent, ProgressBar } from "../data/quran";
 import { similarVerses } from "../data/quran";
+
+// Lazy: ProgressPanel is the only consumer of `recharts` (a substantial charting library) in the
+// core learner practice flow, which is eagerly bundled (unlike LoginScreen/PlatformCommand, which
+// already lazy-load). Splitting it into its own chunk keeps recharts out of the initial payload
+// every learner pays for, even though ProgressPanel itself renders on most practice sessions.
+const ProgressPanel = lazy(() => import("./ProgressPanel").then((m) => ({ default: m.ProgressPanel })));
 
 export interface PracticeFlowProps {
   activeStepIndex: number;
@@ -159,15 +165,17 @@ export function PracticeFlow({
           ) : needsTeacherReview ? (
             <IssuePanel events={recitationEvents} onSelectWord={onSelectWord} selectedWordId={selectedWordId} />
           ) : (
-            <ProgressPanel
-              accuracy={accuracy}
-              correctWords={correctWords}
-              mistakes={mistakes}
-              recitations={progress?.totalSessions ?? 0}
-              streak={progress?.streak ?? 0}
-              mastery={progress?.mastery ?? 0}
-              weeklyProgress={weeklyProgress}
-            />
+            <Suspense fallback={<div className="panel progress-panel" aria-label="Progress" aria-busy="true" />}>
+              <ProgressPanel
+                accuracy={accuracy}
+                correctWords={correctWords}
+                mistakes={mistakes}
+                recitations={progress?.totalSessions ?? 0}
+                streak={progress?.streak ?? 0}
+                mastery={progress?.mastery ?? 0}
+                weeklyProgress={weeklyProgress}
+              />
+            </Suspense>
           )}
           {tajweedResults.length > 0 && <TajweedPanel findings={tajweedResults} />}
           <MutashabihatPanel verses={similarVerses.slice(0, 2)} />
