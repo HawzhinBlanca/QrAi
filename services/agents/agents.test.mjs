@@ -48,11 +48,26 @@ test("gate blocks low confidence and unsourced output", () => {
   assert.equal(canShowLearnerFacingAiOutput({ reviewStatus: "teacher-reviewed", confidence: 0.95, sources: [] }), false);
 });
 
+test("gate fails CLOSED on an unrecognized reviewStatus, not open", () => {
+  // Mirrors packages/contracts' equivalent regression test (PR #57): this must be an allowlist,
+  // not a denylist of known-bad statuses — otherwise a typo or a future reviewStatus value this
+  // module doesn't recognize would silently pass through as "approved for learner display."
+  assert.equal(
+    canShowLearnerFacingAiOutput({ reviewStatus: "under-review", confidence: 0.99, sources: [{ id: "s" }] }),
+    false,
+  );
+});
+
 test("statusForRun routes blocked and gated runs correctly", () => {
   assert.equal(statusForRun({ reviewStatus: "blocked", confidence: 0.99, sources: [{ id: "s" }] }), "blocked");
   assert.equal(statusForRun({ reviewStatus: "ai-suggested", confidence: 0.99, sources: [{ id: "s" }] }), "needs-human-review");
   assert.equal(statusForRun({ reviewStatus: "teacher-review-required", confidence: 0.99, sources: [{ id: "s" }] }), "needs-human-review");
   assert.equal(statusForRun({ reviewStatus: "scholar-approved", confidence: 0.9, sources: [{ id: "s" }] }), "approved");
+  assert.equal(
+    statusForRun({ reviewStatus: "under-review", confidence: 0.99, sources: [{ id: "s" }] }),
+    "needs-human-review",
+    "an unrecognized status must never resolve to approved",
+  );
 });
 
 test("explainRule returns real, rule-specific guidance", () => {
