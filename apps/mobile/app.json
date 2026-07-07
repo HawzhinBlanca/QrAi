@@ -16,9 +16,14 @@
       }
     },
     "android": {
-      "permissions": ["RECORD_AUDIO"],
+      "permissions": [
+        "RECORD_AUDIO"
+      ],
       "package": "com.quranai.app"
     },
-    "plugins": ["expo-av"]
+    "plugins": [
+      "expo-av",
+      "expo-secure-store"
+    ]
   }
 }
