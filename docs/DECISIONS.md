@@ -5,6 +5,40 @@ architectural change. Newest first.
 
 ---
 
+## ADR-0011 — apps/mobile's npm audit findings are build-tooling-only, not shipped
+**Date:** 2026-07-08 · **Status:** Accepted (tracked, not fixed)
+
+**Context.** `apps/mobile` had never had `npm install` run this session (per `docs/
+SHIP_READINESS.md` B5: the mobile app's UI/native path has never been run at all, even in the
+most basic sense). Ran it for the first time to check for install-time issues. It installed
+cleanly (656 packages) but `npm audit` reported 11 moderate-severity findings, all reducing to
+two root advisories: `postcss <8.5.10` (XSS via unescaped `</style>` in CSS stringify output,
+GHSA-qx2v-qp2m-jg93) and `uuid <11.1.1` (missing buffer bounds check, GHSA-w5hq-g745-h8pq).
+
+**Reachability analysis.** Neither `postcss` nor `uuid` is a direct dependency of `apps/mobile`
+(confirmed via `package.json`) or imported anywhere in the app's own source (`grep -rn "postcss\|
+uuid" App.tsx lib/*.ts index.ts` — zero matches). Both are transitive dependencies of Expo's own
+build/CLI tooling: `postcss` via `@expo/metro-config` (Metro bundler's CSS pipeline, a
+build-time-only concern — this app's UI is React Native, not CSS), and `uuid` via `xcode` (an
+`@expo/config-plugins` dependency that generates native Xcode project files during a native
+build, never invoked by the running app). Neither package ships in, or is reachable through, the
+compiled mobile app a learner would run.
+
+**Decision.** Do NOT run `npm audit fix --force` in this pass. It would install `expo@57.0.4` — a
+four-major-version jump from the currently pinned `~53.0.0` — for an app that has never been
+run on a device or even started once, with no real-device testing capability available to verify
+nothing broke. This is the same reasoning already applied in ADR-0009 to `services/tajweed-
+neural`'s `transformers` CVE: a blind major-version bump on unreachable/build-tooling-only code
+risks introducing real breakage to fix a vulnerability that was never exploitable in production.
+
+**Consequences.** Tracked here as the source of truth for this decision, per the same convention
+established in ADR-0009 and ADR-0008. Before `apps/mobile` is promoted out of "never run on a
+device" status (`docs/SHIP_READINESS.md` B5), re-run `npm audit` against whatever Expo SDK
+version is current at that time — Metro/CLI tooling versions move independently of the app's own
+code, so this may already be resolved by then without any deliberate action here.
+
+---
+
 ## ADR-0010 — Web image runs nginx-unprivileged with a full restrictive CSP
 **Date:** 2026-07-08 · **Status:** Accepted
 
