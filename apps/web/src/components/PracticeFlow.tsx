@@ -81,7 +81,6 @@ export function PracticeFlow({
   apiError,
   isLoading,
 }: PracticeFlowProps) {
-  const activeWordId = quranVerses.flatMap((verse) => verse.words)[Math.min(activeStepIndex + 3, 12)]?.id ?? selectedWordId;
   const selectedStep = practiceSteps.find((step) => step.id === mode) ?? practiceSteps[0];
   const isComplete = mode === "complete";
   const needsTeacherReview = mode === "correction" || mode === "drill";
@@ -145,7 +144,7 @@ export function PracticeFlow({
               {apiError}
             </div>
           )}
-          <QuranReader activeWordId={activeWordId} onSelectWord={onSelectWord} selectedWordId={selectedWordId} verses={quranVerses} />
+          <QuranReader activeWordId={selectedWordId} onSelectWord={onSelectWord} selectedWordId={selectedWordId} verses={quranVerses} />
           <AudioCoach
             activeIndex={isRecording ? liveBars.length - 1 : activeStepIndex * 12}
             bars={isRecording && liveBars.length > 0 ? liveBars : waveformBars}
