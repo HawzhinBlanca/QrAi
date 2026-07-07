@@ -19,11 +19,24 @@ test("normalizeArabic strips tashkeel and unifies alef/ya variants", () => {
   assert.equal(normalizeArabic("  الرَّحْمَٰنِ  "), "الرحمن");
 });
 
+test("normalizeArabic unifies taa marbuta (ة) with haa (ه) — the common ASR transcription variant", () => {
+  assert.equal(normalizeArabic("رحمة"), normalizeArabic("رحمه"));
+  assert.equal(normalizeArabic("الجنة"), normalizeArabic("الجنه"));
+});
+
 test("similarity is 1.0 for identical (post-normalization) words and lower for edits", () => {
   assert.equal(similarity("بِسْمِ", "بسم"), 1.0);
   assert.equal(similarity("", ""), 1.0);
   const s = similarity("الرحمن", "الرحمان");
   assert.ok(s > 0 && s < 1, `expected partial similarity, got ${s}`);
+});
+
+test("similarity treats a taa-marbuta/haa transcription variant as a perfect match, not a misread", () => {
+  // Regression: before normalizing this pair, similarity("رحمة", "رحمه") was 0.75 — squarely in
+  // the "misread" band (0.65-0.85) despite being a correct recitation, since ASR very commonly
+  // transcribes word-final taa marbuta as haa (the two are acoustically similar in pause form).
+  assert.equal(similarity("رحمة", "رحمه"), 1.0);
+  assert.equal(similarity("الجنة", "الجنه"), 1.0);
 });
 
 test("alignWords marks exact recitation as all matched", () => {
