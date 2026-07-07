@@ -77,6 +77,14 @@ test("explainRule returns real, rule-specific guidance", () => {
   assert.match(explainRule("Some Novel Rule"), /Some Novel Rule/);
 });
 
+test("explainRule does not mismatch on bare Arabic letters shared across rules (regression)", () => {
+  // ن and م appear in almost every tajweed rule string (and in most Arabic words generally);
+  // they must not act as a catch-all match for ghunnah. Bug: a madd/waqf finding whose text
+  // happened to contain م or ن was previously mislabeled as ghunnah guidance.
+  assert.match(explainRule("Madd rule involving the letter م in a lengthened context"), /madd|elongation/i);
+  assert.doesNotMatch(explainRule("Waqf (stopping) on the word الرحمن"), /ghunnah/i);
+});
+
 test("runTajweedExplainer always gates a fresh candidate to human review + anchors a source", () => {
   const run = runTajweedExplainer({
     id: "finding-1",
