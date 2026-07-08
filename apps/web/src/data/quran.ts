@@ -190,6 +190,3 @@ export const similarVerses: SimilarVerse[] = [
   { reference: "Al-Baqarah 2:6", arabic: "إِنَّ الَّذِينَ كَفَرُوا", reason: "Similar opening rhythm" },
   { reference: "An-Nisa 4:69", arabic: "صِرَاطَ الَّذِينَ أَنْعَمَ اللَّهُ عَلَيْهِم", reason: "Same phrase family" },
 ];
-
-// Assistant messages — empty until real chat API exists (AssistantPanel is not in learner path)
-export const assistantMessages: Array<{ id: string; from: string; body: string }> = [];

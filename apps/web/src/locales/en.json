@@ -348,10 +348,6 @@
       "humanReviewed": { "label": "Human reviewed", "status": "teacher + scholar gates" },
       "languages": { "label": "9 languages", "status": "UI ready, content gated" },
       "dataFlywheel": { "label": "Data flywheel", "status": "opt-in only" }
-    },
-    "compactHeader": {
-      "brand": "Quran AI",
-      "subtitle": "Canonical Quran text · human review · model telemetry"
     }
   },
   "app": {
