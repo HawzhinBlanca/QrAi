@@ -1,5 +1,18 @@
 use serde::{Deserialize, Serialize};
 
+// Mirrors packages/contracts/src/index.ts's SUPPORTED_LANGUAGE_CODES exactly. `language` fields
+// (users.language, recitation_sessions.language) were plain unvalidated Strings -- every other
+// enum-shaped column in this schema (role, review_status, status, severity, risk, audio_retention)
+// has a matching Rust-side check + a DB CHECK constraint; this one didn't, so an arbitrary string
+// could be persisted and later silently drive UI logic (e.g. text-direction selection) with no
+// validation error anywhere. See infra/sql for the matching DB-level CHECK constraint.
+pub const SUPPORTED_LANGUAGE_CODES: [&str; 9] =
+    ["ar", "ckb", "en", "tr", "ur", "id", "ms", "fr", "de"];
+
+pub fn is_supported_language(code: &str) -> bool {
+    SUPPORTED_LANGUAGE_CODES.contains(&code)
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ActorRole {
     Learner,

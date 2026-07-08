@@ -208,6 +208,42 @@ async fn quran_ref_word_start_and_word_end_round_trip_through_create_and_get() {
 
 #[tokio::test]
 #[ignore = "requires live Postgres"]
+async fn create_session_rejects_an_unsupported_language_code() {
+    let router = platform_router_with_rate_limit(test_state(), false);
+    let response = send_json(
+        &router,
+        Method::POST,
+        "/v1/recitation-sessions",
+        Some("hikmah-pilot-erbil"),
+        Some("learner"),
+        json!({
+            "learnerId": "learner-1",
+            "quranRef": {
+                "surahNumber": 1,
+                "ayahStart": 1,
+                "ayahEnd": 7,
+                "display": "Al-Fatihah 1:1-7"
+            },
+            "sourceChecksum": "fnv1a32:test",
+            "modelVersion": "model-v0.3",
+            "language": "xx-not-a-real-code",
+            "mode": "guided-recite",
+            "practicePlanId": "fatihah-mastery-v1",
+            "consent": {
+                "audioRetention": "discard",
+                "anonymizedLearning": true,
+                "externalAsrProcessing": false,
+                "guardianApproved": true,
+                "consentVersion": "pilot-v1"
+            }
+        }),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+#[ignore = "requires live Postgres"]
 async fn gets_quran_surah_list_from_postgres() {
     let router = platform_router_with_rate_limit(test_state(), false);
     let response = send_json(
@@ -1932,6 +1968,31 @@ async fn register_rejects_a_password_shorter_than_eight_characters() {
             "role": "learner",
             "language": "en",
             "password": "short1"
+        }),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+#[ignore = "requires live Postgres"]
+async fn register_rejects_an_unsupported_language_code() {
+    // language was plain unvalidated text -- unlike every other enum-shaped field (role,
+    // review_status, etc.) it had no server-side check, so an arbitrary string could be
+    // persisted and later silently drive UI logic (e.g. text-direction) with no error anywhere.
+    let router = platform_router_with_rate_limit(test_state(), false);
+    let response = send_json(
+        &router,
+        Method::POST,
+        "/v1/auth/register",
+        None,
+        None,
+        json!({
+            "tenantId": "hikmah-pilot-erbil",
+            "displayName": "Bad Language User",
+            "role": "learner",
+            "language": "xx-not-a-real-code",
+            "password": "validpass123"
         }),
     )
     .await;

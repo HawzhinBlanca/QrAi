@@ -48,6 +48,13 @@ pub async fn register(
         caller.require_any(&[ActorRole::Admin, ActorRole::Ops])?;
     }
 
+    if !is_supported_language(&req.language) {
+        return Err(ApiError::BadRequest(format!(
+            "unsupported language {:?}; allowed: {SUPPORTED_LANGUAGE_CODES:?}",
+            req.language
+        )));
+    }
+
     // Validate password strength
     if req.password.len() < 8 {
         return Err(ApiError::BadRequest(
