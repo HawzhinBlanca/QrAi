@@ -611,6 +611,52 @@ describe("Quran AI app smoke", () => {
     expect(FakeWebSocket.instances[0].readyState).toBe(3); // CLOSED
   });
 
+  it("the Settings section is the learner privacy self-service, and deletion is confirmation-gated", async () => {
+    // P2.8: a learner can export/delete their own data from the UI (not curl). The safety-critical
+    // property pinned here: the irreversible delete never fires on a single click — it requires an
+    // explicit confirmation step, and Cancel backs out without deleting.
+    const deleteCalls: string[] = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL) => {
+        if (String(input).includes("/v1/privacy/delete")) deleteCalls.push(String(input));
+        throw new TypeError("no backend in smoke test");
+      }),
+    );
+
+    const root = createRoot(container);
+    await act(async () => {
+      root.render(<App />);
+    });
+
+    const settingsNav = Array.from(document.querySelectorAll<HTMLButtonElement>(".nav-item")).find(
+      (b) => b.textContent?.trim() === "Settings",
+    );
+    await act(async () => {
+      settingsNav?.click();
+    });
+    expect(document.querySelector(".privacy-settings")).toBeTruthy();
+    expect(document.body.textContent).toContain("Your data & privacy");
+
+    // First click reveals a confirmation — it must NOT delete anything yet.
+    const deleteBtn = document.querySelector<HTMLButtonElement>(".danger-action");
+    await act(async () => {
+      deleteBtn?.click();
+    });
+    expect(document.querySelector(".privacy-confirm")).toBeTruthy();
+    expect(deleteCalls).toHaveLength(0);
+
+    // Cancel backs out with nothing deleted.
+    const cancel = Array.from(document.querySelectorAll<HTMLButtonElement>(".privacy-confirm button")).find((b) =>
+      b.textContent?.includes("Cancel"),
+    );
+    await act(async () => {
+      cancel?.click();
+    });
+    expect(document.querySelector(".privacy-confirm")).toBeNull();
+    expect(deleteCalls).toHaveLength(0);
+  });
+
   it("'Open related command tab' on a Teacher/Model Ops placeholder actually navigates to Internal Command", async () => {
     // Regression test: InternalSurface's placeholder button used to call onTabChange alone, which
     // only set activeTab — it never switched activeSection to "admin", so InternalSurface's own

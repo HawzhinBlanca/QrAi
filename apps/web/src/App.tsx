@@ -7,6 +7,7 @@ import { useTranslation } from "react-i18next";
 // init here, not just in main.tsx, is what makes useTranslation() work in both.
 import i18n from "./i18n";
 import { InternalSurface } from "./components/InternalSurface";
+import { PrivacySettings } from "./components/PrivacySettings";
 import { LearnerHome } from "./components/LearnerHome";
 import { PracticeFlow } from "./components/PracticeFlow";
 import { Sidebar } from "./components/Sidebar";
@@ -230,7 +231,13 @@ function AuthenticatedApp({ bypassLogin = false }: { bypassLogin?: boolean }) {
   const activeStepIndex = Math.max(0, practiceSteps.findIndex((step) => step.id === practiceMode));
   const isLearnerHome = activeSection === "learner" && practiceMode === "home";
   const pageTitle =
-    activeSection === "learner" ? (isLearnerHome ? t("app.titleLearnerHome") : t("app.titlePractice")) : t("app.titleInternal");
+    activeSection === "learner"
+      ? isLearnerHome
+        ? t("app.titleLearnerHome")
+        : t("app.titlePractice")
+      : activeSection === "settings"
+        ? t("app.titleSettings")
+        : t("app.titleInternal");
 
   // Load the full surah list once so the learner can pick any of the 114 surahs. On
   // failure the picker stays on the default surah (still fully usable).
@@ -889,6 +896,13 @@ function AuthenticatedApp({ bypassLogin = false }: { bypassLogin?: boolean }) {
                 isLoading={isLoading}
               />
             )
+          ) : activeSection === "settings" ? (
+            // Learner-facing privacy self-service (P2.8) — not an internal/staff surface.
+            <PrivacySettings
+              tenantId={effectiveUser?.tenantId ?? "hikmah-pilot-erbil"}
+              userId={effectiveUser?.userId ?? "learner-1"}
+              authToken={authToken}
+            />
           ) : (
             <InternalSurface
               tenantId={effectiveUser?.tenantId ?? "hikmah-pilot-erbil"}

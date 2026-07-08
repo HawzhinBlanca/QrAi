@@ -372,6 +372,7 @@
     "titleLearnerHome": "Learner Home",
     "titlePractice": "Practice",
     "titleInternal": "Internal Platform",
+    "titleSettings": "Settings",
     "errors": {
       "platformApiUnreachable": "Could not reach the platform API. Please try again.",
       "mlAnalysisUnavailable": "ML analysis unavailable. Make sure the platform API and ML service are running.",
@@ -384,5 +385,26 @@
       "audioPlaybackBlocked": "Audio was blocked — tap play again to allow playback.",
       "recordingPlaybackFailed": "Couldn't play that recording."
     }
+  },
+  "privacySettings": {
+    "ariaLabel": "Privacy and your data",
+    "title": "Your data & privacy",
+    "intro": "See what we hold about your recitation practice, or remove it. These actions apply only to your own account.",
+    "exportTitle": "See my data",
+    "exportBody": "Get a summary of the records we hold for you — recitation sessions, progress, and reviews. Nothing is changed or deleted.",
+    "exportAction": "See what data you hold about me",
+    "exportBusy": "Preparing…",
+    "exportResult": "We currently hold {{count}} record(s) for you.",
+    "exportError": "Couldn't load your data right now. Please try again.",
+    "deleteTitle": "Delete my data & recordings",
+    "deleteBody": "Permanently erase your recorded audio and all of your practice data. This cannot be undone.",
+    "deleteAction": "Delete my data",
+    "deleteBusy": "Deleting…",
+    "confirmAriaLabel": "Confirm data deletion",
+    "confirmQuestion": "Permanently delete your recordings and practice data? This cannot be undone.",
+    "confirmDelete": "Yes, delete everything",
+    "confirmCancel": "Cancel",
+    "deleteResult": "Deleted {{records}} record(s) and erased {{audio}} audio file(s).",
+    "deleteError": "Couldn't complete the deletion right now. Please try again."
   }
 }
