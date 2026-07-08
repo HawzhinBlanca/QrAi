@@ -140,6 +140,10 @@ pub fn platform_router_with_rate_limit(state: AppState, rate_limit: bool) -> Rou
                 .post(handlers::recitation::persist_session_alignments),
         )
         .route(
+            "/v1/recitation-sessions/{id}/request-teacher-review",
+            axum::routing::post(handlers::recitation::request_teacher_review),
+        )
+        .route(
             "/v1/tajweed-findings",
             axum::routing::get(handlers::review::list_tajweed_findings),
         )

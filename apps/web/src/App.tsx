@@ -24,6 +24,7 @@ import {
   predictTajweed,
   createRecitationSession,
   persistSessionAlignments,
+  requestTeacherReview,
   fetchSurahList,
   type AlignmentResult,
   type TajweedFinding,
@@ -129,6 +130,9 @@ function AuthenticatedApp({ bypassLogin = false }: { bypassLogin?: boolean }) {
   const [memorizationPlan, setMemorizationPlan] = useState<MemorizationPlan | null>(null);
   const [progress, setProgress] = useState<LearnerProgress | null>(null);
   const [sessionId, setSessionId] = useState<string>("");
+  // Truthful "send to teacher" state: idle until tried; the drill banner claims "sent" ONLY
+  // when the backend confirmed the session entered the teacher review pipeline.
+  const [teacherSendState, setTeacherSendState] = useState<"idle" | "sent" | "failed" | "nothing-to-send">("idle");
   const [surahList, setSurahList] = useState<SurahInfo[]>([]);
   const [selectedSurah, setSelectedSurah] = useState<SurahInfo>(DEFAULT_SURAH);
   // Privacy-preserving defaults; the learner opts in explicitly before practice.
@@ -386,6 +390,7 @@ function AuthenticatedApp({ bypassLogin = false }: { bypassLogin?: boolean }) {
     setAsrTranscript("");
     setRecitationEvents([]);
     setApiError(null);
+    setTeacherSendState("idle");
     stopPlayback();
     stopRecordingPlayback();
     setRecordedAudioUrl((prev) => {
@@ -393,6 +398,30 @@ function AuthenticatedApp({ bypassLogin = false }: { bypassLogin?: boolean }) {
       return "";
     });
     void refreshQuranVerses(selectedSurah.surahNumber);
+  }
+
+  // Real "send to teacher": the drill banner may only claim "sent" after the backend confirms
+  // the session's review_status flipped to teacher-review-required. A previous version of this
+  // action just switched the local UI step and displayed "Sent to teacher." — nothing was sent.
+  async function sendToTeacher() {
+    setPracticeMode("drill");
+    if (!sessionId || !effectiveUser) {
+      // No analyzed session exists (e.g. the learner never recorded, or analysis is offline) —
+      // there is nothing a teacher could receive. Say so instead of pretending.
+      setTeacherSendState("nothing-to-send");
+      return;
+    }
+    try {
+      await requestTeacherReview({
+        tenantId: effectiveUser.tenantId,
+        userId: effectiveUser.userId,
+        authToken,
+        sessionId,
+      });
+      setTeacherSendState("sent");
+    } catch {
+      setTeacherSendState("failed");
+    }
   }
 
   // loadSurahVerses never rejects on a fetch failure — it catches internally and resolves to []
@@ -757,7 +786,8 @@ function AuthenticatedApp({ bypassLogin = false }: { bypassLogin?: boolean }) {
                 onReset={resetPractice}
                 onSelectMode={setPracticeMode}
                 onSelectWord={setSelectedWordId}
-                onSendToTeacher={() => setPracticeMode("drill")}
+                onSendToTeacher={sendToTeacher}
+                teacherSendState={teacherSendState}
                 onToggleRecording={toggleAsrRecording}
                 isPlaying={isPlaying}
                 onTogglePlay={togglePlay}

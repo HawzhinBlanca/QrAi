@@ -1000,6 +1000,82 @@ async fn list_endpoints_decode_real_numeric_confidence_not_a_fallback_zero() {
     );
 }
 
+/// The learner-initiated "send to teacher" transition (SHIP_PLAN P1.2): owner flips their own
+/// draft session to teacher-review-required; a different learner is Forbidden; re-sending is an
+/// idempotent 200 (double-tap must not error); and the flip is visible on read-back.
+#[tokio::test]
+#[ignore = "requires live Postgres"]
+async fn request_teacher_review_flips_own_draft_session_and_is_owner_gated() {
+    let state = test_state();
+    let router = platform_router_with_rate_limit(state.clone(), false);
+    let learner_id = format!("learner-send-review-{}", next_suffix());
+
+    sqlx::query(
+        "INSERT INTO users (id, tenant_id, display_name, role, language)
+         VALUES ($1, 'hikmah-pilot-erbil', 'Send Review Probe', 'learner', 'ckb')",
+    )
+    .bind(&learner_id)
+    .execute(&state.pool)
+    .await
+    .unwrap();
+    let session_id = create_test_session_for_learner(&router, &learner_id).await;
+    let path = format!("/v1/recitation-sessions/{session_id}/request-teacher-review");
+
+    // A DIFFERENT learner (learner-1) may not send someone else's session.
+    let denied = send_json(
+        &router,
+        Method::POST,
+        &path,
+        Some("hikmah-pilot-erbil"),
+        Some("learner"),
+        json!({}),
+    )
+    .await;
+    assert_eq!(denied.status(), StatusCode::FORBIDDEN);
+
+    // The owner sends it. send_json's identities are fixed, so act as the owner directly.
+    let owner_send = |uri: String| {
+        let router = router.clone();
+        let learner_id = learner_id.clone();
+        async move {
+            let request = Request::builder()
+                .method(Method::POST)
+                .uri(uri)
+                .header("content-type", "application/json")
+                .header("x-tenant-id", "hikmah-pilot-erbil")
+                .header("x-user-id", &learner_id)
+                .header("x-user-role", "learner")
+                .body(Body::from("{}"))
+                .unwrap();
+            router.oneshot(request).await.unwrap()
+        }
+    };
+    let sent = owner_send(path.clone()).await;
+    assert_eq!(sent.status(), StatusCode::OK);
+    let body: Value = read_json(sent).await;
+    assert_eq!(body["reviewStatus"], "teacher-review-required");
+
+    // Idempotent: sending again is a 200 no-op, flagged as already requested.
+    let resent = owner_send(path.clone()).await;
+    assert_eq!(resent.status(), StatusCode::OK);
+    let resent_body: Value = read_json(resent).await;
+    assert_eq!(resent_body["alreadyRequested"], true);
+
+    // The flip is real: staff read-back sees teacher-review-required.
+    let read = send_json(
+        &router,
+        Method::GET,
+        &format!("/v1/recitation-sessions/{session_id}"),
+        Some("hikmah-pilot-erbil"),
+        Some("ops"),
+        json!({}),
+    )
+    .await;
+    assert_eq!(read.status(), StatusCode::OK);
+    let session: Value = read_json(read).await;
+    assert_eq!(session["reviewStatus"], "teacher-review-required");
+}
+
 /// Persist + read-back of a session's real alignment (the link that surfaces a learner's
 /// recitation in the console). Synthetic "extra" ids are skipped; a non-owner learner is denied.
 #[tokio::test]

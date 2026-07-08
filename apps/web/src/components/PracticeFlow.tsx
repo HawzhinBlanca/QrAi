@@ -4,7 +4,7 @@ import { useTranslation } from "react-i18next";
 import { AudioCoach } from "./AudioCoach";
 import { CompletePanel } from "./CompletePanel";
 import { IssuePanel } from "./IssuePanel";
-import { ModeBanner } from "./ModeBanner";
+import { ModeBanner, type TeacherSendState } from "./ModeBanner";
 import { MutashabihatPanel } from "./MutashabihatPanel";
 import { QuranReader } from "./QuranReader";
 import { TajweedPanel } from "./TajweedPanel";
@@ -32,6 +32,7 @@ export interface PracticeFlowProps {
   onSelectMode: (mode: PracticeMode) => void;
   onSelectWord: (wordId: string) => void;
   onSendToTeacher: () => void;
+  teacherSendState: TeacherSendState;
   onToggleRecording: () => void;
   isPlaying: boolean;
   onTogglePlay: () => void;
@@ -63,6 +64,7 @@ export function PracticeFlow({
   onSelectMode,
   onSelectWord,
   onSendToTeacher,
+  teacherSendState,
   onToggleRecording,
   isPlaying,
   onTogglePlay,
@@ -133,7 +135,7 @@ export function PracticeFlow({
 
       <div className="practice-main-grid">
         <div className="learner-reader-column">
-          <ModeBanner mode={mode} micState={micState} mistakes={mistakes} onCheckMic={onCheckMic} onSendToTeacher={onSendToTeacher} />
+          <ModeBanner mode={mode} micState={micState} mistakes={mistakes} teacherSendState={teacherSendState} onCheckMic={onCheckMic} onSendToTeacher={onSendToTeacher} />
           {isLoading && (
             <div className="state-banner calm" role="status">
               <Sparkles size={18} />

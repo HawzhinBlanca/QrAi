@@ -2,10 +2,13 @@ import { AlertTriangle, Headphones, ShieldCheck, Sparkles, Send } from "lucide-r
 import { useTranslation } from "react-i18next";
 import type { PracticeMode, MicState } from "../types/practice";
 
+export type TeacherSendState = "idle" | "sent" | "failed" | "nothing-to-send";
+
 export function ModeBanner({
   micState,
   mode,
   mistakes,
+  teacherSendState,
   onCheckMic,
   onSendToTeacher,
 }: {
@@ -13,6 +16,9 @@ export function ModeBanner({
   mode: Exclude<PracticeMode, "home">;
   /** Real count of words flagged in this session's alignment — never a hardcoded number. */
   mistakes: number;
+  /** Truthful result of the send-to-teacher request — the drill banner claims "sent" only when
+   *  the backend confirmed it (a previous version claimed it unconditionally). */
+  teacherSendState: TeacherSendState;
   onCheckMic: () => void;
   onSendToTeacher: () => void;
 }) {
@@ -54,10 +60,22 @@ export function ModeBanner({
   }
 
   if (mode === "drill") {
+    // Truthful per-outcome copy: "sent" only when the backend confirmed the review request.
+    const drillKey =
+      teacherSendState === "sent"
+        ? "modeBanner.drillTextSent"
+        : teacherSendState === "failed"
+          ? "modeBanner.drillTextSendFailed"
+          : teacherSendState === "nothing-to-send"
+            ? "modeBanner.drillTextNothingToSend"
+            : "modeBanner.drillTextLocal";
     return (
-      <div className="state-banner teacher" role="status">
+      <div
+        className={teacherSendState === "failed" ? "state-banner warning" : "state-banner teacher"}
+        role="status"
+      >
         <ShieldCheck size={18} />
-        {t("modeBanner.drillText")}
+        {t(drillKey)}
       </div>
     );
   }
