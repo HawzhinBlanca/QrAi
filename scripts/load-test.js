@@ -179,7 +179,18 @@ export function handleSummary(data) {
       http_req_duration_p95_ms: data.metrics.http_req_duration?.values?.["p(95)"] ?? null,
       total_requests: data.metrics.http_reqs?.values?.count ?? null,
     },
-    thresholds_passed: Object.values(data.root_group?.checks ?? {}).every((c) => c.passes > 0 && c.fails === 0),
+    // Every check() call in this script's default function runs inside a group(...) block, so
+    // k6 files them under data.root_group.groups[i].checks -- the top-level data.root_group.checks
+    // array only holds checks made OUTSIDE any group, which this script has none of. Reading
+    // root_group.checks here always sees an empty array, and Object.values([]).every(...) is
+    // vacuously true regardless of real pass/fail -- confirmed empirically: a forced-failing check
+    // inside a group still produced thresholds_passed: true. Also, this field is named
+    // *thresholds*_passed but the old code recomputed it from *checks* -- two different k6
+    // concepts. Read the actual configured thresholds (options.thresholds above) instead, via
+    // each metric's own `.thresholds` object (`{ "<expression>": { ok: boolean } }`).
+    thresholds_passed: Object.values(data.metrics)
+      .flatMap((metric) => Object.values(metric.thresholds ?? {}))
+      .every((threshold) => threshold.ok === true),
   };
   return {
     stdout: JSON.stringify(summary, null, 2) + "\n",
