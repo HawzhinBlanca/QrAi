@@ -189,8 +189,13 @@ pub async fn update_progress(
     headers: HeaderMap,
     Json(req): Json<ProgressUpdate>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
+    // ProgressUpdate has no learner_id field -- this always writes the caller's own row (unlike
+    // get_progress, which takes an optional learner_id and needs a real ownership/role check).
+    // A prior version of this line was `require_self_or_any(&actor.user_id, ...)`, comparing the
+    // actor's id to itself -- a tautology that always passed and read as an authz gate without
+    // being one. actor_from_headers() already requires a valid, tenant-scoped token, which is the
+    // only check this handler needs.
     let actor = actor_from_headers(&headers, &state.jwt_config)?;
-    actor.require_self_or_any(&actor.user_id, &[ActorRole::Admin, ActorRole::Ops])?;
 
     let mut tx = crate::begin_tenant_tx(&state.pool, &actor.tenant_id).await?;
 
