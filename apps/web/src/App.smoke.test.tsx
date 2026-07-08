@@ -173,6 +173,10 @@ describe("Quran AI app smoke", () => {
     });
 
     expect(document.body.textContent).toContain("Practice complete");
+    // No recitation happened in this smoke run (no backend, no alignment) -> the completion panel
+    // must NOT claim "Progress saved." A previous version asserted that unconditionally.
+    expect(document.body.textContent).toContain("Record a recitation next time to save progress");
+    expect(document.body.textContent).not.toContain("Progress saved");
   });
 
   it("the skip-to-content link's target is actually focusable, not just scrollable", async () => {

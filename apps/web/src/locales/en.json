@@ -158,7 +158,9 @@
   "completePanel": {
     "ariaLabel": "Complete state",
     "title": "Practice complete",
-    "body": "Progress saved. Your next review stays scheduled for {{nextReview}}.",
+    "bodySaved": "Progress saved. Your next review stays scheduled for {{nextReview}}.",
+    "bodyNothingRecited": "You reached the end of the loop. Record a recitation next time to save progress toward mastery.",
+    "bodySaveFailed": "Couldn't save your progress just now — check your connection and try another recitation. Your practice still counts once it saves.",
     "nextReviewDefault": "your next session",
     "returnHome": "Return home"
   },
@@ -215,7 +217,7 @@
   "mutashabihatPanel": {
     "ariaLabel": "Mutashabihat",
     "title": "Mutashabihat",
-    "empty": "No similar-verse confusions detected."
+    "empty": "Similar-verse guidance for this passage is coming soon."
   },
   "internalSurface": {
     "ariaLabel": "Internal surface",
