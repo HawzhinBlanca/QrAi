@@ -116,7 +116,13 @@ sifat output on pilot data.
   Trivy HIGH/CRITICAL CVE scan uploading results as CI artifacts.
 - **E14 — Load test · ✅/🧰.** `scripts/load-test.js` (k6) is on `main`, covering platform-api's
   health/surah-list and ml-inference's health/alignment/tajweed endpoints — verified end-to-end
-  against a real local stack. Human step: run it against a staging deploy and tune pool sizes /
+  against a real local stack. Note: the script's own `handleSummary` JSON output had a bug
+  (fixed in a later PR) where `thresholds_passed` always reported `true` regardless of real
+  pass/fail — every `check()` runs inside a `group()`, so it was reading an always-empty
+  top-level checks array. `k6 run`'s own exit code (what actually gates a CI/terminal run) was
+  never affected, only the JSON summary field; if a prior verification pass eyeballed that field
+  instead of the exit code or the raw latency/error numbers, re-run the script to confirm.
+  Human step: run it against a staging deploy and tune pool sizes /
   rate limits to hit the stated thresholds (p95 targets); note ml-inference's hardcoded 100 req/min
   per-IP rate limit will need raising (or the test's own concurrency lowering) for a meaningful
   sustained run — see the comment at the top of the script.
