@@ -18,4 +18,8 @@ export const practiceSteps: Array<{ id: Exclude<PracticeMode, "home">; labelKey:
   { id: "complete", labelKey: "practiceSteps.complete.label", helperKey: "practiceSteps.complete.helper" },
 ];
 
-export const waveformBars = Array.from({ length: 88 }, (_, index) => 28 + ((index * 17) % 54));
+// Idle-state waveform placeholder: a uniform low baseline that reads as "no audio yet".
+// A previous version generated pseudo-random heights (28 + (i*17) % 54), which looked like a
+// real recorded waveform when nothing had been recorded — fabricated-looking data in the UI.
+// During recording, PracticeFlow swaps this for the REAL live mic levels (liveBars).
+export const waveformBars = Array.from({ length: 88 }, () => 12);

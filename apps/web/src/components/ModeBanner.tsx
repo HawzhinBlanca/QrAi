@@ -5,11 +5,14 @@ import type { PracticeMode, MicState } from "../types/practice";
 export function ModeBanner({
   micState,
   mode,
+  mistakes,
   onCheckMic,
   onSendToTeacher,
 }: {
   micState: MicState;
   mode: Exclude<PracticeMode, "home">;
+  /** Real count of words flagged in this session's alignment — never a hardcoded number. */
+  mistakes: number;
   onCheckMic: () => void;
   onSendToTeacher: () => void;
 }) {
@@ -37,7 +40,11 @@ export function ModeBanner({
     return (
       <div className="state-banner low-confidence" role="status">
         <Sparkles size={18} />
-        {t("modeBanner.correctionText")}
+        {/* The count is the session's real flagged-word count (a previous version hardcoded
+            "three words" regardless of what actually happened). */}
+        {mistakes > 0
+          ? t("modeBanner.correctionText", { count: mistakes })
+          : t("modeBanner.correctionTextNoMistakes")}
         <button onClick={onSendToTeacher} type="button">
           <Send size={15} />
           {t("modeBanner.sendToTeacher")}

@@ -21,11 +21,7 @@
       "settings": "Settings"
     },
     "pilotRegion": "Pilot region",
-    "pilotRegionValue": "Kurdistan",
-    "reviewQueue": "Review queue",
-    "reviewQueueValue": "{{count}} items",
-    "trustState": "Trust state",
-    "trustStateValue": "Reviewed"
+    "pilotRegionValue": "Kurdistan"
   },
   "login": {
     "brand": "Quran AI",
@@ -102,7 +98,7 @@
     "practiceMode": "Practice mode",
     "practiceModeValue": "Listen first, then recite",
     "estimatedTime": "Estimated time",
-    "estimatedTimeValue": "8 minutes",
+    "estimatedTimeValue": "~{{minutes}} minutes",
     "trustState": "Trust state",
     "trustStateValue": "Teacher review available"
   },
@@ -149,7 +145,9 @@
     "deniedText": "Microphone access is denied. You can still listen and practice, then ask a teacher to review in class.",
     "tryAgain": "Try again",
     "unavailableText": "Microphone capture is unavailable on this device. Continue with listen mode or teacher review.",
-    "correctionText": "Low-confidence guidance: three words need a gentle review before feedback is shown as final.",
+    "correctionText_one": "Low-confidence guidance: {{count}} word needs a gentle review before feedback is shown as final.",
+    "correctionText_other": "Low-confidence guidance: {{count}} words need a gentle review before feedback is shown as final.",
+    "correctionTextNoMistakes": "No flagged words in this pass — review is optional before feedback is shown as final.",
     "sendToTeacher": "Send to teacher",
     "drillText": "Sent to teacher. For now, repeat the short phrase slowly three times.",
     "defaultText": "Learner view keeps model and gateway details hidden. Focus on the verse, pacing, and review."

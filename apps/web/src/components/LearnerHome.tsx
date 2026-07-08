@@ -6,7 +6,7 @@ import { SurahPicker } from "./SurahPicker";
 import type { MicState } from "../types/practice";
 import type { RecitationConsent, SurahInfo } from "../lib/api";
 import type { MemorizationPlan, LearnerProgress } from "../data/platform";
-import { surahLabel } from "../lib/surah";
+import { practiceRange, surahLabel } from "../lib/surah";
 
 export interface LearnerHomeProps {
   micState: MicState;
@@ -35,6 +35,11 @@ export function LearnerHome({
 }: LearnerHomeProps) {
   const { t } = useTranslation();
   const masteryPct = Math.round((progress?.mastery ?? 0) * 100);
+  // Labeled estimate derived from the REAL session the learner is about to start (the same
+  // practiceRange cap the practice flow uses): ~1 minute per ayah in the loop + 2 minutes for
+  // listen/review overhead. A previous version showed a frozen "8 minutes" for every surah.
+  const sessionAyahs = practiceRange(selectedSurah).ayahEnd;
+  const estimatedMinutes = sessionAyahs + 2;
   return (
     <section className="learner-home" aria-label={t("learnerHome.ariaLabel")}>
       <div className="mission-hero">
@@ -86,7 +91,7 @@ export function LearnerHome({
         <article className="summary-tile">
           <Clock3 size={20} />
           <span>{t("learnerHome.estimatedTime")}</span>
-          <strong>{t("learnerHome.estimatedTimeValue")}</strong>
+          <strong>{t("learnerHome.estimatedTimeValue", { minutes: estimatedMinutes })}</strong>
         </article>
         <article className="summary-tile">
           <ShieldCheck size={20} />

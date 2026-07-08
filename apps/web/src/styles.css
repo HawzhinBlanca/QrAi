@@ -1014,6 +1014,19 @@ button:disabled {
   font-size: 12px;
 }
 
+/* Static range label (replaces the dead "This week" button). Overrides .panel-title span's
+   round count-badge styling, which is meant for numeric badges, not text labels. */
+.panel-title .panel-range-label {
+  display: inline;
+  min-width: 0;
+  height: auto;
+  border-radius: 0;
+  color: var(--muted);
+  background: transparent;
+  font-size: 12px;
+  font-weight: 650;
+}
+
 .panel-title button {
   padding: 7px 10px;
 }

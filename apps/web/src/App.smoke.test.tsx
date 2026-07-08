@@ -146,7 +146,11 @@ describe("Quran AI app smoke", () => {
       nextButton?.click();
     });
 
-    expect(document.body.textContent).toContain("Low-confidence guidance");
+    // No backend in this smoke test -> zero real flagged words -> the banner must say so
+    // honestly. A previous version hardcoded "three words need a gentle review" regardless of
+    // what actually happened, and this assertion pinned that fabrication.
+    expect(document.body.textContent).toContain("No flagged words in this pass");
+    expect(document.body.textContent).not.toContain("three words");
     expect(document.body.textContent).toContain("Send to teacher");
 
     const sendToTeacherButton = Array.from(document.querySelectorAll<HTMLButtonElement>("button")).find((button) =>
