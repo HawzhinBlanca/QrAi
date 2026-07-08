@@ -3,6 +3,14 @@ use std::net::SocketAddr;
 use quran_ai_platform_api::{AppState, platform_router};
 use sqlx::postgres::PgPoolOptions;
 
+/// Parse DATABASE_MAX_CONNECTIONS, falling back to 10 for anything absent, unparseable, or zero
+/// (a zero-size pool would deadlock on the first query). Pure so it can be unit-tested.
+fn max_connections_from_env(raw: Option<String>) -> u32 {
+    raw.and_then(|v| v.trim().parse::<u32>().ok())
+        .filter(|&n| n > 0)
+        .unwrap_or(10)
+}
+
 /// Refuse to boot in production with missing or known-weak secrets (JWT signing key and
 /// the realtime ticket HMAC secret). Weak defaults let anyone forge auth tokens/tickets.
 /// Local dev opts out with ALLOW_INSECURE_DEFAULTS=1.
@@ -128,8 +136,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let database_url = std::env::var("DATABASE_URL")
         .unwrap_or_else(|_| "postgresql://hawzhin@localhost:5432/quran_ai".to_owned());
 
+    // Pool size is tunable per deployment: a single classroom of ~20-30 learners reciting near
+    // simultaneously can saturate a fixed small pool, after which requests queue on acquire and
+    // surface as errors indistinguishable from an outage. Raise DATABASE_MAX_CONNECTIONS for the
+    // real pilot host; default 10 for local/dev (P3.8).
+    let max_connections = max_connections_from_env(std::env::var("DATABASE_MAX_CONNECTIONS").ok());
+
     let pool = PgPoolOptions::new()
-        .max_connections(10)
+        .max_connections(max_connections)
         .connect(&database_url)
         .await
         .map_err(|e| {
@@ -210,7 +224,20 @@ async fn shutdown_signal() {
 
 #[cfg(test)]
 mod tests {
-    use super::redact_database_url;
+    use super::{max_connections_from_env, redact_database_url};
+
+    #[test]
+    fn max_connections_defaults_to_10_and_rejects_invalid_or_zero() {
+        assert_eq!(max_connections_from_env(None), 10);
+        assert_eq!(max_connections_from_env(Some("".to_owned())), 10);
+        assert_eq!(
+            max_connections_from_env(Some("not-a-number".to_owned())),
+            10
+        );
+        assert_eq!(max_connections_from_env(Some("0".to_owned())), 10); // zero would deadlock
+        assert_eq!(max_connections_from_env(Some("25".to_owned())), 25);
+        assert_eq!(max_connections_from_env(Some("  40  ".to_owned())), 40);
+    }
 
     #[test]
     fn redacts_password_in_database_url_authority() {
