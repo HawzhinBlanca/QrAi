@@ -41,12 +41,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // validation failures, rate-limit events — all security-relevant) is silently dropped: there
     // was no subscriber registered to emit them anywhere, and tracing-subscriber wasn't even a
     // dependency. Matches platform-api's main.rs, which already has this.
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "quran_ai_realtime_gateway=info,tower_http=info".into()),
-        )
-        .init();
+    // LOG_FORMAT=json emits structured JSON logs for a production aggregator (E13/P3.7); default
+    // stays human-readable for local dev.
+    let log_filter = tracing_subscriber::EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| "quran_ai_realtime_gateway=info,tower_http=info".into());
+    if std::env::var("LOG_FORMAT").as_deref() == Ok("json") {
+        tracing_subscriber::fmt()
+            .with_env_filter(log_filter)
+            .json()
+            .init();
+    } else {
+        tracing_subscriber::fmt().with_env_filter(log_filter).init();
+    }
 
     let addr: SocketAddr = std::env::var("REALTIME_GATEWAY_BIND")
         .unwrap_or_else(|_| "127.0.0.1:8081".to_owned())

@@ -126,12 +126,19 @@ fn redact_query_password(database_url: &str) -> String {
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     ensure_secure_config();
 
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "quran_ai_platform_api=info,tower_http=info".into()),
-        )
-        .init();
+    // LOG_FORMAT=json emits one structured JSON object per line — the shape a log aggregator
+    // (Loki/CloudWatch/ELK) ingests for querying and alerting (E13/P3.7). Default stays the
+    // human-readable formatter for local dev; only production sets LOG_FORMAT=json.
+    let log_filter = tracing_subscriber::EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| "quran_ai_platform_api=info,tower_http=info".into());
+    if std::env::var("LOG_FORMAT").as_deref() == Ok("json") {
+        tracing_subscriber::fmt()
+            .with_env_filter(log_filter)
+            .json()
+            .init();
+    } else {
+        tracing_subscriber::fmt().with_env_filter(log_filter).init();
+    }
 
     let database_url = std::env::var("DATABASE_URL")
         .unwrap_or_else(|_| "postgresql://hawzhin@localhost:5432/quran_ai".to_owned());
