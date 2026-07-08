@@ -148,6 +148,67 @@ mod tests {
         );
     }
 
+    fn header_identity() -> HeaderMap {
+        let mut headers = HeaderMap::new();
+        headers.insert("x-tenant-id", "tenant-1".parse().unwrap());
+        headers.insert("x-user-id", "user-1".parse().unwrap());
+        headers.insert("x-user-role", "learner".parse().unwrap());
+        headers
+    }
+
+    #[test]
+    fn header_identity_is_rejected_when_header_auth_is_disabled() {
+        // Security boundary: in production (ALLOW_HEADER_AUTH unset -> allow_header_auth=false),
+        // spoofable x-tenant-id/x-user-id/x-user-role headers must NEVER be honored as identity —
+        // a valid Bearer JWT is required. Pins `if !jwt.allow_header_auth { return Unauthorized }`
+        // directly and fast: deleting that `!` (or flipping the flag's meaning) would accept the
+        // spoofed identity in production, and only the slow full integration suite caught that
+        // before — a fast unit test makes the regression unmissable.
+        let jwt = JwtConfig::with_header_auth("test-secret", false);
+        let result = actor_from_headers(&header_identity(), &jwt);
+        assert!(matches!(result, Err(ApiError::Unauthorized)));
+    }
+
+    #[test]
+    fn header_identity_is_accepted_when_header_auth_is_enabled() {
+        // The other side of the same gate: in dev/CI (allow_header_auth=true) the header fallback
+        // IS honored, and yields exactly the identity the headers carry. Together with the test
+        // above this pins both directions of the flag so no single mutation can pass unnoticed.
+        let jwt = JwtConfig::with_header_auth("test-secret", true);
+        let actor = actor_from_headers(&header_identity(), &jwt).expect("header identity accepted");
+        assert_eq!(actor.tenant_id, "tenant-1");
+        assert_eq!(actor.user_id, "user-1");
+        assert_eq!(actor.role, ActorRole::Learner);
+    }
+
+    #[test]
+    fn a_valid_bearer_token_is_accepted_even_when_header_auth_is_disabled() {
+        // The Bearer path must work regardless of the header-auth flag — it's the production
+        // identity mechanism. A token issued for this config validates back to the same actor.
+        let jwt = JwtConfig::with_header_auth("test-secret", false);
+        let token = jwt.issue_token("user-7", "tenant-9", "teacher").unwrap();
+        let mut headers = HeaderMap::new();
+        headers.insert("authorization", format!("Bearer {token}").parse().unwrap());
+        let actor = actor_from_headers(&headers, &jwt).expect("valid bearer accepted");
+        assert_eq!(actor.tenant_id, "tenant-9");
+        assert_eq!(actor.user_id, "user-7");
+        assert_eq!(actor.role, ActorRole::Teacher);
+    }
+
+    #[test]
+    fn a_bearer_token_signed_with_a_different_secret_is_rejected() {
+        // A token from another signing key must not validate — pins the HS256 signature check.
+        let issuer = JwtConfig::with_header_auth("issuer-secret", false);
+        let verifier = JwtConfig::with_header_auth("different-secret", false);
+        let token = issuer.issue_token("user-1", "tenant-1", "learner").unwrap();
+        let mut headers = HeaderMap::new();
+        headers.insert("authorization", format!("Bearer {token}").parse().unwrap());
+        assert!(matches!(
+            actor_from_headers(&headers, &verifier),
+            Err(ApiError::Unauthorized)
+        ));
+    }
+
     #[test]
     fn extract_trace_id_returns_the_trimmed_header_when_present() {
         let mut headers = HeaderMap::new();
