@@ -167,6 +167,33 @@ describe("Quran AI app smoke", () => {
     expect(document.body.textContent).toContain("Practice complete");
   });
 
+  it("the skip-to-content link's target is actually focusable, not just scrollable", async () => {
+    // Regression test: <main id="main-content"> had no tabindex, so it was NOT a focusable
+    // element at all. Activating "Skip to content" would scroll the viewport there (the browser's
+    // default :target anchor-navigation behavior) but keyboard focus stayed wherever it was (or
+    // fell back to <body>) — a keyboard/screen-reader user got no actual navigational benefit,
+    // defeating the entire purpose of a skip link (WCAG 2.4.1 Bypass Blocks).
+    const root = createRoot(container);
+    await act(async () => {
+      root.render(<App />);
+    });
+
+    const skipLink = document.querySelector<HTMLAnchorElement>(".skip-link");
+    expect(skipLink?.getAttribute("href")).toBe("#main-content");
+
+    const main = document.getElementById("main-content");
+    expect(main?.tagName).toBe("MAIN");
+    // tabIndex -1 is what makes an otherwise-non-interactive element programmatically focusable
+    // (via .focus() or an anchor jump) without adding it to the normal Tab order.
+    expect(main?.tabIndex).toBe(-1);
+
+    // Directly exercise focusability, not just the attribute's presence.
+    await act(async () => {
+      main?.focus();
+    });
+    expect(document.activeElement).toBe(main);
+  });
+
   it("double-clicking Record before getUserMedia resolves opens only one microphone stream", async () => {
     // Regression test: toggleAsrRecording's START path only flips isRecording to true after
     // getUserMedia/startServerAsr resolves, so a double-click while the first call is still

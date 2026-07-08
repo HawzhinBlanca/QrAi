@@ -707,7 +707,12 @@ function AuthenticatedApp({ bypassLogin = false }: { bypassLogin?: boolean }) {
       <a href="#main-content" className="skip-link">Skip to content</a>
       <OfflineBanner />
       <Sidebar activeSection={activeSection} onSectionChange={(section) => setActiveSection(section as AppSection)} />
-      <main className="workspace" id="main-content">
+      {/* tabindex={-1} makes this programmatically focusable (without adding it to the normal
+          Tab order) so the "Skip to content" link above actually moves keyboard focus here —
+          a plain <main> with no tabindex is not focusable at all, so activating the skip link
+          would scroll the page but leave focus on the link itself (or fall back to <body>),
+          defeating the entire purpose of a skip link for keyboard/screen-reader users. */}
+      <main className="workspace" id="main-content" tabIndex={-1}>
         <TopBar
           title={pageTitle}
           trustLabel={activeSection === "learner" ? "Teacher-reviewed" : "Scholar-gated"}
