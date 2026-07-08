@@ -1,4 +1,5 @@
 import { Loader2, Mic, Pause, Play, Square, Volume2 } from "lucide-react";
+import { useTranslation } from "react-i18next";
 
 interface AudioCoachProps {
   bars: number[];
@@ -25,25 +26,26 @@ export function AudioCoach({
   onPlayRecording,
   onPlayReference,
 }: AudioCoachProps) {
+  const { t } = useTranslation();
   const status = isRecording
-    ? "Recording"
+    ? t("audioCoach.statusRecording")
     : isAnalyzing
-      ? "Analyzing your recitation…"
+      ? t("audioCoach.statusAnalyzing")
       : hasRecording
-        ? "Your recitation is ready"
-        : "Ready to recite";
+        ? t("audioCoach.statusReady")
+        : t("audioCoach.statusReadyToRecite");
   const hint = isRecording
-    ? "Recite clearly — tap stop when you're done."
+    ? t("audioCoach.hintRecording")
     : isAnalyzing
-      ? "Listening with the Quran model."
+      ? t("audioCoach.hintAnalyzing")
       : hasRecording
-        ? "Play it back, or record again."
-        : "Tap the mic to record — or hear the reference first.";
+        ? t("audioCoach.hintReady")
+        : t("audioCoach.hintReadyToRecite");
 
   const orbState = isRecording ? "recording" : hasRecording ? "done" : "";
 
   return (
-    <footer className="audio-coach" aria-label="Recording">
+    <footer className="audio-coach" aria-label={t("audioCoach.ariaLabel")}>
       <div className="coach-status">
         <span className={`mic-orb ${orbState}`}>
           {isAnalyzing ? <Loader2 className="spin" size={20} /> : <Mic size={20} />}
@@ -66,10 +68,10 @@ export function AudioCoach({
           type="button"
           onClick={onToggleRecording}
           disabled={isAnalyzing}
-          aria-label={isRecording ? "Stop recording" : "Record your recitation"}
+          aria-label={isRecording ? t("audioCoach.stopRecording") : t("audioCoach.recordYourRecitation")}
         >
           {isRecording ? <Square size={20} fill="currentColor" /> : <Mic size={22} />}
-          <span>{isRecording ? "Stop" : hasRecording ? "Record again" : "Record"}</span>
+          <span>{isRecording ? t("audioCoach.stop") : hasRecording ? t("audioCoach.recordAgain") : t("audioCoach.record")}</span>
         </button>
 
         {hasRecording && !isRecording && (
@@ -78,10 +80,10 @@ export function AudioCoach({
             type="button"
             onClick={onPlayRecording}
             disabled={isAnalyzing}
-            aria-label={isPlayingRecording ? "Pause my recitation" : "Play my recitation"}
+            aria-label={isPlayingRecording ? t("audioCoach.pauseMyRecitation") : t("audioCoach.playMyRecitation")}
           >
             {isPlayingRecording ? <Pause size={18} fill="currentColor" /> : <Play size={18} fill="currentColor" />}
-            <span>My recitation</span>
+            <span>{t("audioCoach.myRecitation")}</span>
           </button>
         )}
 
@@ -90,10 +92,10 @@ export function AudioCoach({
           type="button"
           onClick={onPlayReference}
           disabled={isRecording || isAnalyzing}
-          aria-label={isPlayingReference ? "Pause reference recitation" : "Play reference recitation"}
+          aria-label={isPlayingReference ? t("audioCoach.pauseReferenceRecitation") : t("audioCoach.playReferenceRecitation")}
         >
           {isPlayingReference ? <Pause size={18} fill="currentColor" /> : <Volume2 size={18} />}
-          <span>Reference</span>
+          <span>{t("audioCoach.reference")}</span>
         </button>
       </div>
     </footer>

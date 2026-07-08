@@ -1,11 +1,13 @@
 import { useEffect, useState } from "react";
 import { WifiOff } from "lucide-react";
+import { useTranslation } from "react-i18next";
 
 /**
  * Shows a non-intrusive banner when the browser goes offline.
  * Auto-hides when connectivity is restored.
  */
 export function OfflineBanner() {
+  const { t } = useTranslation();
   const [isOffline, setIsOffline] = useState(!navigator.onLine);
 
   useEffect(() => {
@@ -26,7 +28,7 @@ export function OfflineBanner() {
   return (
     <div className="offline-banner" role="status" aria-live="polite">
       <WifiOff size={16} />
-      <span>You're offline. Some features may be unavailable until connectivity is restored.</span>
+      <span>{t("offlineBanner.text")}</span>
     </div>
   );
 }

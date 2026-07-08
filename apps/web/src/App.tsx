@@ -1,6 +1,11 @@
 import { Suspense, lazy, useEffect, useMemo, useRef, useState } from "react";
 import { motion } from "motion/react";
 import { Send } from "lucide-react";
+import { useTranslation } from "react-i18next";
+// App.tsx is the common entry point for BOTH main.tsx (real app) and App.smoke.test.tsx (which
+// renders <App /> directly via createRoot, bypassing main.tsx entirely) -- importing i18n's
+// init here, not just in main.tsx, is what makes useTranslation() work in both.
+import i18n from "./i18n";
 import { InternalSurface } from "./components/InternalSurface";
 import { LearnerHome } from "./components/LearnerHome";
 import { PracticeFlow } from "./components/PracticeFlow";
@@ -91,6 +96,7 @@ function AppInner() {
 }
 
 function AuthenticatedApp({ bypassLogin = false }: { bypassLogin?: boolean }) {
+  const { t } = useTranslation();
   const { user, logout } = useAuth();
   // Login-disabled mode (default): use a default learner so the app runs without a
   // login step. Swapped for the real authenticated user once VITE_REQUIRE_LOGIN=1.
@@ -178,9 +184,20 @@ function AuthenticatedApp({ bypassLogin = false }: { bypassLogin?: boolean }) {
     };
   }, [recordedAudioUrl]);
 
+  // Drive i18next from the same activeLanguage state already threaded through TopBar/
+  // PlatformCommand's <select> — previously activeLanguage only picked which native name to
+  // display in the dropdown itself and tagged session metadata; it never actually changed any
+  // rendered UI text. Only "en" has real translated content today (see i18n/index.ts); switching
+  // to any other language falls back to the same English strings via i18next's fallbackLng, so
+  // this never breaks rendering, it just doesn't show translated content yet.
+  useEffect(() => {
+    void i18n.changeLanguage(activeLanguage);
+  }, [activeLanguage]);
+
   const activeStepIndex = Math.max(0, practiceSteps.findIndex((step) => step.id === practiceMode));
   const isLearnerHome = activeSection === "learner" && practiceMode === "home";
-  const pageTitle = activeSection === "learner" ? (isLearnerHome ? "Learner Home" : "Practice") : "Internal Platform";
+  const pageTitle =
+    activeSection === "learner" ? (isLearnerHome ? t("app.titleLearnerHome") : t("app.titlePractice")) : t("app.titleInternal");
 
   // Load the full surah list once so the learner can pick any of the 114 surahs. On
   // failure the picker stays on the default surah (still fully usable).
@@ -442,10 +459,10 @@ function AuthenticatedApp({ bypassLogin = false }: { bypassLogin?: boolean }) {
       const networkFailure = err instanceof TypeError; // e.g. "Failed to fetch"
       setApiError(
         networkFailure
-          ? "Could not reach the platform API. Please try again."
+          ? t("app.errors.platformApiUnreachable")
           : err instanceof Error
             ? err.message
-            : "ML analysis unavailable. Make sure the platform API and ML service are running.",
+            : t("app.errors.mlAnalysisUnavailable"),
       );
     } finally {
       setIsLoading(false);
@@ -478,16 +495,16 @@ function AuthenticatedApp({ bypassLogin = false }: { bypassLogin?: boolean }) {
           setRecordedAudio(result.audioBlob);
           setAsrTranscript(result.transcript);
           if (result.error === "external-asr-consent-required") {
-            setApiError("Recording saved in this browser. Enable ASR processing consent to run automatic analysis.");
+            setApiError(t("app.errors.asrConsentRequired"));
           } else if (result.error) {
-            setApiError("Saved your recitation — you can play it back. Analysis is offline right now.");
+            setApiError(t("app.errors.recitationSavedOffline"));
           } else if (result.transcript.trim()) {
             await runAlignmentAndTajweed(result.transcript);
           } else {
-            setApiError("We couldn't hear clear speech. Your recording is saved — try reciting a little louder.");
+            setApiError(t("app.errors.noClearSpeech"));
           }
         } catch {
-          setApiError("Could not process the recording. Please try again.");
+          setApiError(t("app.errors.processingFailed"));
         } finally {
           setIsLoading(false);
         }
@@ -522,9 +539,7 @@ function AuthenticatedApp({ bypassLogin = false }: { bypassLogin?: boolean }) {
     // still processes the audio and it may be stored per the retention consent, so recording must not
     // begin until the learner has affirmatively consented (previously this path recorded ungated).
     if (!canRecordRecitation(consent)) {
-      setApiError(
-        "Please consent to recording and analysis in the consent panel before recording your recitation.",
-      );
+      setApiError(t("app.errors.consentRequiredBeforeRecording"));
       return;
     }
     stopPlayback();
@@ -654,14 +669,14 @@ function AuthenticatedApp({ bypassLogin = false }: { bypassLogin?: boolean }) {
       audioRef.current = audio;
       audio.onended = () => playAyah(ayah + 1);
       audio.onerror = () => {
-        setApiError("Could not load recitation audio. Check your connection.");
+        setApiError(t("app.errors.recitationAudioLoadFailed"));
         stopPlayback();
       };
       void audio.play().catch((err: unknown) => {
         // AbortError = play() was interrupted by a stop/pause (e.g. rapid toggling
         // or starting a recording). Benign — don't surface it as an error.
         if (err instanceof DOMException && err.name === "AbortError") return;
-        setApiError("Audio was blocked — tap play again to allow playback.");
+        setApiError(t("app.errors.audioPlaybackBlocked"));
         stopPlayback();
       });
     };
@@ -693,7 +708,7 @@ function AuthenticatedApp({ bypassLogin = false }: { bypassLogin?: boolean }) {
     setIsPlayingRecording(true);
     audio.onended = () => stopRecordingPlayback();
     audio.onerror = () => {
-      setApiError("Couldn't play that recording.");
+      setApiError(t("app.errors.recordingPlaybackFailed"));
       stopRecordingPlayback();
     };
     void audio.play().catch((err: unknown) => {

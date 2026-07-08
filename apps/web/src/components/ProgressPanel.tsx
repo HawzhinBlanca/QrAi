@@ -1,5 +1,6 @@
 import { Award, Flame, Trophy } from "lucide-react";
 import { Bar, BarChart, ResponsiveContainer, Tooltip, XAxis } from "recharts";
+import { useTranslation } from "react-i18next";
 import type { ProgressBar } from "../data/quran";
 
 interface ProgressPanelProps {
@@ -21,35 +22,36 @@ export function ProgressPanel({
   mastery,
   weeklyProgress,
 }: ProgressPanelProps) {
+  const { t } = useTranslation();
   const level = Math.floor(mastery * 5) + 1;
-  const badge = mastery >= 0.8 ? "Gold" : mastery >= 0.5 ? "Silver" : "Bronze";
+  const badgeKey = mastery >= 0.8 ? "progress.badgeGold" : mastery >= 0.5 ? "progress.badgeSilver" : "progress.badgeBronze";
 
   return (
-    <section className="panel progress-panel" aria-label="Progress">
+    <section className="panel progress-panel" aria-label={t("progress.ariaLabel")}>
       <div className="panel-title">
-        <h2>Progress</h2>
-        <button type="button">This week</button>
+        <h2>{t("progress.title")}</h2>
+        <button type="button">{t("progress.thisWeek")}</button>
       </div>
       <div className="progress-grid">
         <div className="accuracy-ring" style={{ "--score": `${accuracy * 3.6}deg` } as React.CSSProperties}>
           <strong>{accuracy}%</strong>
-          <span>Accuracy</span>
+          <span>{t("progress.accuracy")}</span>
         </div>
         <dl className="metric-stack">
           <div>
-            <dt>Recitations</dt>
+            <dt>{t("progress.recitations")}</dt>
             <dd>{recitations}</dd>
           </div>
           <div>
-            <dt>Mastery</dt>
+            <dt>{t("progress.mastery")}</dt>
             <dd>{Math.round(mastery * 100)}%</dd>
           </div>
           <div>
-            <dt>Correct words</dt>
+            <dt>{t("progress.correctWords")}</dt>
             <dd>{correctWords}</dd>
           </div>
           <div>
-            <dt>Mistakes</dt>
+            <dt>{t("progress.mistakes")}</dt>
             <dd>{mistakes}</dd>
           </div>
         </dl>
@@ -58,13 +60,11 @@ export function ProgressPanel({
         {/* recharts renders a focusable role="application" SVG with no accessible name;
             the sr-only list below is the real text equivalent for keyboard/screen-reader users. */}
         <p className="sr-only" id="weekly-progress-chart-label">
-          Weekly accuracy by day
+          {t("progress.chartLabel")}
         </p>
         <ul className="sr-only" aria-labelledby="weekly-progress-chart-label">
           {weeklyProgress.map((entry) => (
-            <li key={entry.day}>
-              {entry.day}: {entry.accuracy}% accuracy
-            </li>
+            <li key={entry.day}>{t("progress.chartEntry", { day: entry.day, accuracy: entry.accuracy })}</li>
           ))}
         </ul>
         <ResponsiveContainer height={96} width="100%" aria-hidden="true">
@@ -77,13 +77,13 @@ export function ProgressPanel({
       </div>
       <div className="badge-row">
         <span>
-          <Flame size={15} /> {streak} days
+          <Flame size={15} /> {t("progress.streakDays", { count: streak })}
         </span>
         <span>
-          <Trophy size={15} /> {badge}
+          <Trophy size={15} /> {t(badgeKey)}
         </span>
         <span>
-          <Award size={15} /> Level {level}
+          <Award size={15} /> {t("progress.level", { level })}
         </span>
       </div>
     </section>

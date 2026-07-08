@@ -10,19 +10,20 @@ import {
   Trophy,
   Users,
 } from "lucide-react";
+import { useTranslation } from "react-i18next";
 import { BrandMark } from "./BrandMark";
 
 const navItems = [
-  { id: "learner", label: "Learner", icon: Mic },
-  { id: "teacher", label: "Teacher", icon: GraduationCap },
-  { id: "scholar", label: "Scholar", icon: BookOpenCheck },
-  { id: "model-ops", label: "Model Ops", icon: Microscope },
-  { id: "trust", label: "Trust Ledger", icon: ShieldCheck },
-  { id: "admin", label: "Internal Command", icon: Home },
-  { id: "badges", label: "Badges", icon: Trophy },
-  { id: "teachers", label: "Teachers", icon: Users },
-  { id: "settings", label: "Settings", icon: Settings },
-];
+  { id: "learner", labelKey: "sidebar.nav.learner", icon: Mic },
+  { id: "teacher", labelKey: "sidebar.nav.teacher", icon: GraduationCap },
+  { id: "scholar", labelKey: "sidebar.nav.scholar", icon: BookOpenCheck },
+  { id: "model-ops", labelKey: "sidebar.nav.modelOps", icon: Microscope },
+  { id: "trust", labelKey: "sidebar.nav.trustLedger", icon: ShieldCheck },
+  { id: "admin", labelKey: "sidebar.nav.internalCommand", icon: Home },
+  { id: "badges", labelKey: "sidebar.nav.badges", icon: Trophy },
+  { id: "teachers", labelKey: "sidebar.nav.teachers", icon: Users },
+  { id: "settings", labelKey: "sidebar.nav.settings", icon: Settings },
+] as const;
 
 interface SidebarProps {
   activeSection: string;
@@ -30,11 +31,12 @@ interface SidebarProps {
 }
 
 export function Sidebar({ activeSection, onSectionChange }: SidebarProps) {
+  const { t } = useTranslation();
   return (
     <aside className="sidebar" aria-label="Primary navigation">
       <div className="brand">
         <BrandMark />
-        <span>Quran AI</span>
+        <span>{t("sidebar.brand")}</span>
       </div>
 
       <nav className="nav-list">
@@ -49,7 +51,7 @@ export function Sidebar({ activeSection, onSectionChange }: SidebarProps) {
               aria-current={activeSection === item.id ? "page" : undefined}
             >
               <Icon size={19} strokeWidth={1.9} />
-              <span>{item.label}</span>
+              <span>{t(item.labelKey)}</span>
             </button>
           );
         })}
@@ -57,16 +59,16 @@ export function Sidebar({ activeSection, onSectionChange }: SidebarProps) {
 
       <div className="streak-panel">
         <div>
-          <span>Pilot region</span>
-          <strong>Kurdistan</strong>
+          <span>{t("sidebar.pilotRegion")}</span>
+          <strong>{t("sidebar.pilotRegionValue")}</strong>
         </div>
         <div>
-          <span>Review queue</span>
-          <strong>29 items</strong>
+          <span>{t("sidebar.reviewQueue")}</span>
+          <strong>{t("sidebar.reviewQueueValue", { count: 29 })}</strong>
         </div>
         <div>
-          <span>Trust state</span>
-          <strong><Award size={16} /> Reviewed</strong>
+          <span>{t("sidebar.trustState")}</span>
+          <strong><Award size={16} /> {t("sidebar.trustStateValue")}</strong>
         </div>
       </div>
     </aside>

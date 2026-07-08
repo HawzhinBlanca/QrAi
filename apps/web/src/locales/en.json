@@ -1,0 +1,374 @@
+{
+  "topBar": {
+    "language": "Language",
+    "trustLabelDefault": "Scholar-gated",
+    "displayNameDefault": "Soran Othman",
+    "roleLabelDefault": "Student"
+  },
+  "sidebar": {
+    "brand": "Quran AI",
+    "nav": {
+      "learner": "Learner",
+      "teacher": "Teacher",
+      "scholar": "Scholar",
+      "modelOps": "Model Ops",
+      "trustLedger": "Trust Ledger",
+      "internalCommand": "Internal Command",
+      "badges": "Badges",
+      "teachers": "Teachers",
+      "settings": "Settings"
+    },
+    "pilotRegion": "Pilot region",
+    "pilotRegionValue": "Kurdistan",
+    "reviewQueue": "Review queue",
+    "reviewQueueValue": "{{count}} items",
+    "trustState": "Trust state",
+    "trustStateValue": "Reviewed"
+  },
+  "login": {
+    "brand": "Quran AI",
+    "tagline": "Recitation intelligence for mastery",
+    "signIn": "Sign In",
+    "register": "Register",
+    "displayNamePlaceholder": "Display name",
+    "displayNameLabel": "Display name",
+    "userIdPlaceholder": "User ID (e.g. learner-1)",
+    "userIdLabel": "User ID",
+    "passwordPlaceholder": "Password (min 8 characters)",
+    "passwordLabel": "Password",
+    "emailPlaceholder": "Email (optional)",
+    "emailLabel": "Email",
+    "institutionIdPlaceholder": "Institution ID",
+    "institutionIdLabel": "Institution ID",
+    "roleLabel": "Role",
+    "roleLearner": "Learner",
+    "roleTeacher": "Teacher",
+    "roleScholar": "Scholar",
+    "roleAdmin": "Admin",
+    "languageLabel": "Language",
+    "submitLoading": "Please wait...",
+    "submitSignIn": "Sign In",
+    "submitCreateAccount": "Create Account",
+    "hintSignIn": "Sign in with your User ID and password.",
+    "hintRegister": "Create an account with a secure password (8+ characters).",
+    "errorPasswordLength": "Password must be at least 8 characters.",
+    "errorLoginFailed": "Login failed. Check credentials.",
+    "errorRegisterFailed": "Registration failed. Tenant may not exist or email already registered."
+  },
+  "consent": {
+    "ariaLabel": "Recording consent",
+    "title": "Recording consent",
+    "recordingConsent": "I consent to recording and analyzing my recitation. (Required to record.)",
+    "teacherReview": "Keep my recitation for teacher review (otherwise it is discarded after analysis).",
+    "anonymizedLearning": "Help improve the model with anonymized data.",
+    "externalAsrProcessing": "Allow browser or cloud speech processing if the local Quran ASR is unavailable.",
+    "guardianApproved": "A parent/guardian approves this (required for learners under 13)."
+  },
+  "progress": {
+    "ariaLabel": "Progress",
+    "title": "Progress",
+    "thisWeek": "This week",
+    "accuracy": "Accuracy",
+    "recitations": "Recitations",
+    "mastery": "Mastery",
+    "correctWords": "Correct words",
+    "mistakes": "Mistakes",
+    "chartLabel": "Weekly accuracy by day",
+    "chartEntry": "{{day}}: {{accuracy}}% accuracy",
+    "streakDays": "{{count}} days",
+    "badgeGold": "Gold",
+    "badgeSilver": "Silver",
+    "badgeBronze": "Bronze",
+    "level": "Level {{level}}"
+  },
+  "learnerHome": {
+    "ariaLabel": "Learner home",
+    "todaysMission": "Today's mission",
+    "missionHeading": "Strengthen {{surah}} with a calm mastery loop.",
+    "missionBody": "Listen once, recite with guidance, try from memory, then repeat only the words that need attention.",
+    "startPractice": "Start Practice",
+    "checkMicrophone": "Check microphone",
+    "masterySummaryAriaLabel": "Mastery summary",
+    "mastery": "Mastery",
+    "nextReview": "Next review",
+    "notScheduled": "Not scheduled",
+    "dueToday": "Due today",
+    "streak": "Streak",
+    "streakDays": "{{count}} days",
+    "practiceMode": "Practice mode",
+    "practiceModeValue": "Listen first, then recite",
+    "estimatedTime": "Estimated time",
+    "estimatedTimeValue": "8 minutes",
+    "trustState": "Trust state",
+    "trustStateValue": "Teacher review available"
+  },
+  "practiceSteps": {
+    "listen": { "label": "Listen", "helper": "Hear the teacher-paced model once." },
+    "guidedRecite": { "label": "Guided recite", "helper": "Recite with the mushaf visible." },
+    "memoryRecite": { "label": "Memory recite", "helper": "Try without looking first." },
+    "correction": { "label": "Correction", "helper": "Review only the words that need care." },
+    "drill": { "label": "Drill", "helper": "Repeat the short phrase three times." },
+    "complete": { "label": "Complete", "helper": "Save progress and next review." }
+  },
+  "practiceFlow": {
+    "ariaLabel": "Learner practice",
+    "backToHome": "Back to home",
+    "practiceComplete": "Practice complete",
+    "nextStep": "Next step",
+    "stepperAriaLabel": "Practice steps",
+    "analyzing": "Analyzing your recitation with Whisper ASR...",
+    "guidanceAriaLabel": "Practice guidance",
+    "progressAriaLabel": "Progress"
+  },
+  "quranReader": {
+    "ariaLabel": "Quran reader",
+    "legendAriaLabel": "Word status legend",
+    "wordAriaLabel": "{{text}} {{status}}",
+    "statusGood": "Good",
+    "statusMistake": "Mistake",
+    "statusNeedsWork": "Needs improvement",
+    "statusMissed": "Missed"
+  },
+  "surahPicker": {
+    "label": "Practice surah",
+    "optionWithTranslation": "{{number}}. {{name}} — {{translation}} ({{count}} ayahs)",
+    "optionWithoutTranslation": "{{number}}. {{name}} ({{count}} ayahs)"
+  },
+  "micNotice": {
+    "idle": "Microphone is optional until guided recite.",
+    "checking": "Checking microphone permission...",
+    "ready": "Microphone is ready for guided recite.",
+    "denied": "Microphone denied. Practice still works in listen and teacher-review mode.",
+    "unavailable": "Microphone unavailable on this device."
+  },
+  "modeBanner": {
+    "deniedText": "Microphone access is denied. You can still listen and practice, then ask a teacher to review in class.",
+    "tryAgain": "Try again",
+    "unavailableText": "Microphone capture is unavailable on this device. Continue with listen mode or teacher review.",
+    "correctionText": "Low-confidence guidance: three words need a gentle review before feedback is shown as final.",
+    "sendToTeacher": "Send to teacher",
+    "drillText": "Sent to teacher. For now, repeat the short phrase slowly three times.",
+    "defaultText": "Learner view keeps model and gateway details hidden. Focus on the verse, pacing, and review."
+  },
+  "completePanel": {
+    "ariaLabel": "Complete state",
+    "title": "Practice complete",
+    "body": "Progress saved. Your next review stays scheduled for {{nextReview}}.",
+    "nextReviewDefault": "your next session",
+    "returnHome": "Return home"
+  },
+  "issuePanel": {
+    "ariaLabel": "Detected recitation issues",
+    "title": "Mistakes",
+    "kindMistake": "Mistakes",
+    "kindMissed": "Missed words",
+    "kindNeedsWork": "Needs improvement",
+    "heard": "Heard",
+    "coach": "Coach"
+  },
+  "offlineBanner": {
+    "text": "You're offline. Some features may be unavailable until connectivity is restored."
+  },
+  "errorBoundary": {
+    "title": "Something went wrong",
+    "body": "An unexpected error occurred. Your progress is safe — try refreshing or click the button below to recover.",
+    "technicalDetails": "Technical details",
+    "tryAgain": "Try again",
+    "reloadPage": "Reload page"
+  },
+  "audioCoach": {
+    "ariaLabel": "Recording",
+    "statusRecording": "Recording",
+    "statusAnalyzing": "Analyzing your recitation…",
+    "statusReady": "Your recitation is ready",
+    "statusReadyToRecite": "Ready to recite",
+    "hintRecording": "Recite clearly — tap stop when you're done.",
+    "hintAnalyzing": "Listening with the Quran model.",
+    "hintReady": "Play it back, or record again.",
+    "hintReadyToRecite": "Tap the mic to record — or hear the reference first.",
+    "stopRecording": "Stop recording",
+    "recordYourRecitation": "Record your recitation",
+    "stop": "Stop",
+    "recordAgain": "Record again",
+    "record": "Record",
+    "pauseMyRecitation": "Pause my recitation",
+    "playMyRecitation": "Play my recitation",
+    "myRecitation": "My recitation",
+    "pauseReferenceRecitation": "Pause reference recitation",
+    "playReferenceRecitation": "Play reference recitation",
+    "reference": "Reference"
+  },
+  "tajweedPanel": {
+    "ariaLabel": "Tajweed feedback",
+    "title": "Tajweed",
+    "empty": "Recite to get tajweed feedback (makhraj, madd, ghunnah).",
+    "verified": "Verified",
+    "aiSuggestion": "AI suggestion · not yet reviewed",
+    "verifiedTitle": "Reviewed and verified for learners.",
+    "aiSuggestionTitle": "This is an AI suggestion and has not yet been reviewed by a teacher."
+  },
+  "mutashabihatPanel": {
+    "ariaLabel": "Mutashabihat",
+    "title": "Mutashabihat",
+    "empty": "No similar-verse confusions detected."
+  },
+  "internalSurface": {
+    "ariaLabel": "Internal surface",
+    "titleTeacher": "Teacher Review",
+    "titleScholar": "Scholar Review",
+    "titleModelOps": "Model Ops",
+    "titleTrust": "Trust Ledger",
+    "titleBadges": "Learner Badges",
+    "titleTeachers": "Teachers",
+    "titleSettings": "Settings",
+    "titleAdmin": "Internal Command",
+    "titleLearner": "Learner",
+    "placeholderBody": "Internal review tools stay out of the learner path. Use Internal Command for the full platform console.",
+    "openRelatedCommandTab": "Open related command tab",
+    "loadingConsole": "Loading platform console…"
+  },
+  "memorizationPlan": {
+    "currentFocusDefault": "Al-Fatihah stability before Al-Baqarah opener",
+    "intervalToday": "Today",
+    "interval3Days": "3 days",
+    "interval7Days": "7 days"
+  },
+  "platformCommand": {
+    "ariaLabel": "Quran AI Platform Command",
+    "title": "Platform Command",
+    "heading": "Quran AI intelligence platform",
+    "language": "Language",
+    "humanReviewed": "Human reviewed",
+    "appsAriaLabel": "Platform apps",
+    "apps": {
+      "learner": { "label": "Learner", "description": "Live alignment and memorization" },
+      "teacher": { "label": "Teacher", "description": "Classrooms and review loops" },
+      "scholar": { "label": "Scholar", "description": "Approved religious content" },
+      "modelOps": { "label": "Model Ops", "description": "Benchmarks and data flywheel" }
+    },
+    "tabsAriaLabel": "Command center views",
+    "tabs": {
+      "recitation": "Recitation",
+      "classroom": "Classroom",
+      "review": "Review",
+      "modelOps": "Model Ops"
+    },
+    "liveAlignment": {
+      "eyebrow": "Live alignment",
+      "noRecentSession": "No recent session",
+      "startLive": "Start live recitation",
+      "stopLive": "Stop live recitation",
+      "gatewayLabel": "Gateway {{status}}",
+      "chunksStreamed": "{{count}} chunks · {{kb}} KB streamed",
+      "acceptedAcks": "{{count}} accepted acks",
+      "learner": "Learner",
+      "language": "Language",
+      "mode": "Mode",
+      "findings": "Findings",
+      "findingsValue": "{{count}} review",
+      "wordAlignmentAriaLabel": "Word alignment",
+      "noStoredAlignments": "No stored word alignments for the latest session yet.",
+      "statusRequestingMic": "Requesting mic",
+      "statusStreaming": "Streaming",
+      "statusStopped": "Stopped",
+      "statusPermissionDenied": "Permission denied",
+      "statusUnsupported": "Unsupported",
+      "statusCaptureError": "Capture error",
+      "statusReady": "Ready",
+      "gatewayConnecting": "connecting",
+      "gatewayConnected": "connected",
+      "gatewayUnavailable": "unavailable",
+      "gatewayError": "error",
+      "gatewayClosed": "closed",
+      "gatewayIdle": "idle"
+    },
+    "pipeline": {
+      "eyebrow": "Quran-specific engine",
+      "title": "Streaming intelligence pipeline",
+      "audioChunk": "Audio chunk",
+      "canonicalAlign": "Canonical align",
+      "tajweedFeatures": "Tajweed features",
+      "teacherGate": "Teacher gate"
+    },
+    "agentRuns": {
+      "eyebrow": "Agent runs",
+      "title": "Supervised tools only",
+      "review": "Review",
+      "safe": "Safe",
+      "blocked": "Blocked",
+      "empty": "No agent runs recorded yet."
+    },
+    "tajweedFindings": {
+      "eyebrow": "Tajweed findings",
+      "title": "Confidence-scored feedback",
+      "empty": "No tajweed findings under review."
+    },
+    "teacherDashboard": {
+      "eyebrow": "Teacher dashboard",
+      "title": "Institution review loop",
+      "finding": "Finding",
+      "decision": "Decision",
+      "empty": "No teacher reviews recorded yet."
+    },
+    "scholarReview": {
+      "eyebrow": "Scholar review",
+      "title": "Trust ledger",
+      "queue": "Queue",
+      "approved": "Approved",
+      "blocked": "Blocked",
+      "empty": "No scholar approvals in the ledger yet."
+    },
+    "memorizationCoach": {
+      "eyebrow": "Memorization coach",
+      "title": "Adaptive review plan",
+      "dueCount": "{{count}} due",
+      "retention": "{{percent}} retention",
+      "empty": "No memorization plan available yet."
+    },
+    "dataFlywheel": {
+      "eyebrow": "Data flywheel",
+      "title": "Opt-in reviewed learning loop",
+      "learnerAudio": "Learner audio",
+      "teacherCorrection": "Teacher correction",
+      "scholarApprovedExamples": "Scholar-approved examples",
+      "evalSet": "Eval set",
+      "modelRelease": "Model release"
+    },
+    "benchmark": {
+      "eyebrow": "Model Ops",
+      "title": "Release benchmarks",
+      "target": "Target {{value}}",
+      "empty": "No eval run published for the current model."
+    },
+    "governance": {
+      "eyebrow": "Trust governance",
+      "title": "Religious safety controls",
+      "sourceLine": "Source coverage: {{coverage}} · canonical Quran text never machine-modified.",
+      "canonicalText": { "label": "Canonical Quran text", "status": "locked" },
+      "humanReviewed": { "label": "Human reviewed", "status": "teacher + scholar gates" },
+      "languages": { "label": "9 languages", "status": "UI ready, content gated" },
+      "dataFlywheel": { "label": "Data flywheel", "status": "opt-in only" }
+    },
+    "compactHeader": {
+      "brand": "Quran AI",
+      "subtitle": "Canonical Quran text · human review · model telemetry"
+    }
+  },
+  "app": {
+    "titleLearnerHome": "Learner Home",
+    "titlePractice": "Practice",
+    "titleInternal": "Internal Platform",
+    "errors": {
+      "platformApiUnreachable": "Could not reach the platform API. Please try again.",
+      "mlAnalysisUnavailable": "ML analysis unavailable. Make sure the platform API and ML service are running.",
+      "asrConsentRequired": "Recording saved in this browser. Enable ASR processing consent to run automatic analysis.",
+      "recitationSavedOffline": "Saved your recitation — you can play it back. Analysis is offline right now.",
+      "noClearSpeech": "We couldn't hear clear speech. Your recording is saved — try reciting a little louder.",
+      "processingFailed": "Could not process the recording. Please try again.",
+      "consentRequiredBeforeRecording": "Please consent to recording and analysis in the consent panel before recording your recitation.",
+      "recitationAudioLoadFailed": "Could not load recitation audio. Check your connection.",
+      "audioPlaybackBlocked": "Audio was blocked — tap play again to allow playback.",
+      "recordingPlaybackFailed": "Couldn't play that recording."
+    }
+  }
+}

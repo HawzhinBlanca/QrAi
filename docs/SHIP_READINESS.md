@@ -147,17 +147,21 @@ sifat output on pilot data.
   called for. **Remaining human step:** a manual keyboard-nav + screen-reader pass, and RTL
   layout review once `docs/DECISIONS.md`-tracked RTL rendering work lands (the UI does not yet
   flip to RTL for Arabic/Kurdish Sorani/Urdu at all — see the open RTL-readiness task).
-- **F18 — i18n completeness · 🚫 needs real translation work, not an audit.** Checked: there is
-  no i18n infrastructure at all (no `i18next`/`react-intl`, no string-extraction, no translation
-  files). `activeLanguage`/`supportedLanguages` (`apps/web/src/data/platform.ts`) only pick which
-  *native name* to display in the language dropdown itself (e.g. "کوردیی ناوەندی") and tag session
-  metadata sent to the backend — every actual UI label, button, and heading stays in English
-  regardless of the 9 listed languages. This item was previously scoped as "audit for coverage
-  gaps," implying partial support; the real starting point is 0% coverage and no framework. Real
-  translations for a religious-education product need native-speaker review (the same reasoning
-  `docs/SCHOLAR_REVIEW.md` already applies to tajweed content), so this isn't something to
-  attempt as a quick autonomous pass — it needs a human decision on which languages to prioritize
-  for the pilot and who reviews the translations, then real implementation work.
+- **F18 — i18n completeness · 🟡 infrastructure complete, English-only content.** `i18next` +
+  `react-i18next` are wired (`apps/web/src/i18n/index.ts`), every hardcoded UI string across the
+  app (~20 components plus `data/platform.ts`/`types/practice.ts`/`lib/tajweedReview.ts`) has been
+  extracted into `apps/web/src/locales/en.json` translation keys, and `App.tsx` drives
+  `i18n.changeLanguage()` from the existing `activeLanguage` state so switching the language
+  dropdown re-renders through i18next. The other 8 languages (`ckb`, `ar`, `tr`, `ur`, `id`, `ms`,
+  `fr`, `de`) are registered with empty resource bundles and fall back to English
+  (`fallbackLng: "en"`) — deliberately not fabricated, for the same reason
+  `docs/SCHOLAR_REVIEW.md` requires native-speaker/scholar review before tajweed content ships:
+  guessed translations for a religious-education product would be worse than honest English
+  fallback. Canonical Quran text, tajweed rule content, and real backend/dynamic data (agent runs,
+  teacher review notes, scholar approvals) are explicitly excluded from translation, each with an
+  inline comment. Remaining work is a human decision (language prioritization + native-speaker
+  review process) followed by populating the non-English resource files — the framework and
+  extraction are done; the content is not.
 - **F20 — Mobile tests · ✅.** `apps/mobile/lib/session.ts` extracts the auth-header / consent /
   ASR-parsing logic; `apps/mobile/lib/session.test.ts` (node:test) gates it via the new `mobile` CI
   workflow (8/8 green). Pure logic only — the RN UI / `expo-av` path still needs a device (see B5).

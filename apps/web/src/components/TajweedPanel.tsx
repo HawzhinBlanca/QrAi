@@ -1,4 +1,5 @@
 import { AlertTriangle, ShieldAlert, Sparkles } from "lucide-react";
+import { useTranslation } from "react-i18next";
 import type { TajweedFinding } from "../lib/api";
 import { tajweedReviewBadge } from "../lib/tajweedReview";
 
@@ -13,14 +14,15 @@ const ICONS = {
 } as const;
 
 export function TajweedPanel({ findings }: TajweedPanelProps) {
+  const { t } = useTranslation();
   return (
-    <section className="panel tajweed-panel" aria-label="Tajweed feedback">
+    <section className="panel tajweed-panel" aria-label={t("tajweedPanel.ariaLabel")}>
       <div className="panel-title">
-        <h2>Tajweed</h2>
+        <h2>{t("tajweedPanel.title")}</h2>
         <span>{findings.length}</span>
       </div>
       {findings.length === 0 ? (
-        <p className="panel-empty">Recite to get tajweed feedback (makhraj, madd, ghunnah).</p>
+        <p className="panel-empty">{t("tajweedPanel.empty")}</p>
       ) : (
         <div className="tajweed-list">
           {findings.map((finding) => {
@@ -28,6 +30,9 @@ export function TajweedPanel({ findings }: TajweedPanelProps) {
             const review = tajweedReviewBadge(finding);
             return (
               <div className={`tajweed-card ${finding.severity}`} key={`${finding.wordId}-${finding.rule}`}>
+                {/* finding.rule/arabicName/explanation are real tajweed content from the
+                    backend/model -- not translated here; that requires scholar review
+                    (docs/SCHOLAR_REVIEW.md), same as canonical Quran text. */}
                 <div className="tajweed-head">
                   <Icon size={16} />
                   <strong>{finding.rule}</strong>
@@ -42,13 +47,9 @@ export function TajweedPanel({ findings }: TajweedPanelProps) {
                 {/* Honest provenance: live AI output is provisional until a teacher reviews it. */}
                 <span
                   className={`tajweed-review ${review.verified ? "verified" : "provisional"}`}
-                  title={
-                    review.verified
-                      ? "Reviewed and verified for learners."
-                      : "This is an AI suggestion and has not yet been reviewed by a teacher."
-                  }
+                  title={review.verified ? t("tajweedPanel.verifiedTitle") : t("tajweedPanel.aiSuggestionTitle")}
                 >
-                  {review.label}
+                  {t(review.labelKey)}
                 </span>
               </div>
             );

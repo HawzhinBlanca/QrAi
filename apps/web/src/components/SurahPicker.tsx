@@ -1,3 +1,4 @@
+import { useTranslation } from "react-i18next";
 import type { SurahInfo } from "../lib/api";
 
 /**
@@ -16,11 +17,12 @@ export function SurahPicker({
   selected: SurahInfo;
   onSelect: (surah: SurahInfo) => void;
 }) {
+  const { t } = useTranslation();
   const options = surahs.length > 0 ? surahs : [selected];
   return (
     <div className="surah-picker">
       <label className="quiet-label" htmlFor="surah-picker-select">
-        Practice surah
+        {t("surahPicker.label")}
       </label>
       <select
         id="surah-picker-select"
@@ -35,8 +37,21 @@ export function SurahPicker({
       >
         {options.map((surah) => (
           <option key={surah.surahNumber} value={surah.surahNumber}>
-            {surah.surahNumber}. {surah.name}
-            {surah.translation ? ` — ${surah.translation}` : ""} ({surah.ayahCount} ayahs)
+            {/* surah.name/translation are real Quran reference metadata (canonical, never
+                translated by this app) -- only the surrounding structural text is a translation
+                key. */}
+            {surah.translation
+              ? t("surahPicker.optionWithTranslation", {
+                  number: surah.surahNumber,
+                  name: surah.name,
+                  translation: surah.translation,
+                  count: surah.ayahCount,
+                })
+              : t("surahPicker.optionWithoutTranslation", {
+                  number: surah.surahNumber,
+                  name: surah.name,
+                  count: surah.ayahCount,
+                })}
           </option>
         ))}
       </select>

@@ -13,13 +13,13 @@ describe("tajweed review badge", () => {
   it("labels live AI output (ai-suggested) as provisional, never verified", () => {
     const badge = tajweedReviewBadge(base);
     expect(badge.verified).toBe(false);
-    expect(badge.label).toMatch(/not yet reviewed/i);
+    expect(badge.labelKey).toBe("tajweedPanel.aiSuggestion");
   });
 
   it("labels teacher-reviewed, confident, sourced findings as verified", () => {
     const badge = tajweedReviewBadge({ ...base, reviewStatus: "teacher-reviewed" });
     expect(badge.verified).toBe(true);
-    expect(badge.label).toBe("Verified");
+    expect(badge.labelKey).toBe("tajweedPanel.verified");
   });
 
   it("stays provisional when a reviewed finding lacks sources or confidence (the platform gate)", () => {

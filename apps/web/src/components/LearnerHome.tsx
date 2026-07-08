@@ -1,4 +1,5 @@
 import { Clock3, Headphones, Mic, ShieldCheck } from "lucide-react";
+import { useTranslation } from "react-i18next";
 import { ConsentPanel } from "./ConsentPanel";
 import { MicNotice } from "./MicNotice";
 import { SurahPicker } from "./SurahPicker";
@@ -32,46 +33,45 @@ export function LearnerHome({
   selectedSurah,
   onSelectSurah,
 }: LearnerHomeProps) {
+  const { t } = useTranslation();
   const masteryPct = Math.round((progress?.mastery ?? 0) * 100);
   return (
-    <section className="learner-home" aria-label="Learner home">
+    <section className="learner-home" aria-label={t("learnerHome.ariaLabel")}>
       <div className="mission-hero">
         <div className="mission-copy">
-          <p className="quiet-label">Today's mission</p>
-          <h1>Strengthen {surahLabel(selectedSurah)} with a calm mastery loop.</h1>
-          <p>
-            Listen once, recite with guidance, try from memory, then repeat only the words that need attention.
-          </p>
+          <p className="quiet-label">{t("learnerHome.todaysMission")}</p>
+          <h1>{t("learnerHome.missionHeading", { surah: surahLabel(selectedSurah) })}</h1>
+          <p>{t("learnerHome.missionBody")}</p>
           <SurahPicker surahs={surahList} selected={selectedSurah} onSelect={onSelectSurah} />
           <ConsentPanel consent={consent} onConsentChange={onConsentChange} />
           <div className="mission-actions">
             <button className="primary-action start-practice-button" onClick={onStartPractice} type="button">
               <Mic size={18} />
-              Start Practice
+              {t("learnerHome.startPractice")}
             </button>
             <button className="secondary-action" onClick={onCheckMic} type="button">
-              Check microphone
+              {t("learnerHome.checkMicrophone")}
             </button>
           </div>
           <MicNotice micState={micState} />
         </div>
-        <div className="mission-card" aria-label="Mastery summary">
+        <div className="mission-card" aria-label={t("learnerHome.masterySummaryAriaLabel")}>
           <div className="mastery-ring" style={{ "--score": `${masteryPct * 3.6}deg` } as React.CSSProperties}>
             <strong>{masteryPct}%</strong>
-            <span>Mastery</span>
+            <span>{t("learnerHome.mastery")}</span>
           </div>
           <dl>
             <div>
-              <dt>Next review</dt>
-              <dd>{memorizationPlan?.nextReviewAt ?? "Not scheduled"}</dd>
+              <dt>{t("learnerHome.nextReview")}</dt>
+              <dd>{memorizationPlan?.nextReviewAt ?? t("learnerHome.notScheduled")}</dd>
             </div>
             <div>
-              <dt>Due today</dt>
+              <dt>{t("learnerHome.dueToday")}</dt>
               <dd>{memorizationPlan?.intervals?.[0]?.dueCount ?? 0}</dd>
             </div>
             <div>
-              <dt>Streak</dt>
-              <dd>{progress?.streak ?? 0} days</dd>
+              <dt>{t("learnerHome.streak")}</dt>
+              <dd>{t("learnerHome.streakDays", { count: progress?.streak ?? 0 })}</dd>
             </div>
           </dl>
         </div>
@@ -80,18 +80,18 @@ export function LearnerHome({
       <div className="learner-summary-grid">
         <article className="summary-tile">
           <Headphones size={20} />
-          <span>Practice mode</span>
-          <strong>Listen first, then recite</strong>
+          <span>{t("learnerHome.practiceMode")}</span>
+          <strong>{t("learnerHome.practiceModeValue")}</strong>
         </article>
         <article className="summary-tile">
           <Clock3 size={20} />
-          <span>Estimated time</span>
-          <strong>8 minutes</strong>
+          <span>{t("learnerHome.estimatedTime")}</span>
+          <strong>{t("learnerHome.estimatedTimeValue")}</strong>
         </article>
         <article className="summary-tile">
           <ShieldCheck size={20} />
-          <span>Trust state</span>
-          <strong>Teacher review available</strong>
+          <span>{t("learnerHome.trustState")}</span>
+          <strong>{t("learnerHome.trustStateValue")}</strong>
         </article>
       </div>
     </section>
