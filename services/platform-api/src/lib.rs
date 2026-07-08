@@ -202,6 +202,10 @@ pub fn platform_router_with_rate_limit(state: AppState, rate_limit: bool) -> Rou
             axum::routing::post(handlers::progress::update_progress),
         )
         .route(
+            "/v1/learner/progress/weekly",
+            axum::routing::get(handlers::progress::get_weekly_progress),
+        )
+        .route(
             "/v1/ml/alignments:predict",
             axum::routing::post(handlers::ml_proxy::proxy_predict_alignment),
         )

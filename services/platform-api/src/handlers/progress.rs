@@ -153,6 +153,95 @@ pub async fn get_progress(
     })))
 }
 
+/// Real per-day practice history for the last 7 days: session count and word-level accuracy
+/// (matched / total aligned words) per UTC day. This exists so the web's weekly chart can show
+/// MEASURED data — the previous client-side implementation fabricated a linear "week" from the
+/// single mastery scalar (see apps/web/src/data/quran.ts history), which violated the repo's
+/// no-fake-data rule. Days with sessions but no persisted alignments report accuracy: null
+/// (unknown), NOT 0 (which would falsely read as "got everything wrong").
+///
+/// There is deliberately NO minutes/duration field: recitation_sessions has no duration column
+/// (latency_ms is processing latency), so practice minutes cannot be honestly computed.
+pub async fn get_weekly_progress(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Query(query): Query<ProgressQuery>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let actor = actor_from_headers(&headers, &state.jwt_config)?;
+    actor.require_any(&[
+        ActorRole::Learner,
+        ActorRole::Teacher,
+        ActorRole::Admin,
+        ActorRole::Ops,
+    ])?;
+
+    // Same ownership rule as get_progress: reading another learner requires a staff role.
+    let learner_id = match query.learner_id {
+        Some(id) => {
+            actor.require_self_or_any(
+                &id,
+                &[ActorRole::Teacher, ActorRole::Admin, ActorRole::Ops],
+            )?;
+            id
+        }
+        None => actor.user_id.clone(),
+    };
+
+    let mut tx = crate::begin_tenant_tx(&state.pool, &actor.tenant_id).await?;
+
+    // word_alignments has no timestamp of its own; a word belongs to the day its session started.
+    // LEFT JOIN so a day with sessions but no alignments still appears (accuracy null).
+    let rows = sqlx::query(
+        "SELECT (rs.started_at AT TIME ZONE 'UTC')::date AS day,
+                COUNT(DISTINCT rs.id) AS sessions,
+                COUNT(wa.id) AS words_total,
+                COUNT(wa.id) FILTER (WHERE wa.status = 'matched') AS words_matched
+         FROM recitation_sessions rs
+         LEFT JOIN word_alignments wa
+           ON wa.session_id = rs.id AND wa.tenant_id = rs.tenant_id
+         WHERE rs.tenant_id = $1 AND rs.learner_id = $2
+           AND rs.started_at >= now() - interval '7 days'
+         GROUP BY day
+         ORDER BY day",
+    )
+    .bind(&actor.tenant_id)
+    .bind(&learner_id)
+    .fetch_all(&mut *tx)
+    .await?;
+
+    tx.commit().await?;
+
+    let days: Vec<serde_json::Value> = rows
+        .into_iter()
+        .map(|r| {
+            let day: chrono::NaiveDate = r.try_get("day").unwrap_or_default();
+            let sessions: i64 = r.try_get("sessions").unwrap_or(0);
+            let words_total: i64 = r.try_get("words_total").unwrap_or(0);
+            let words_matched: i64 = r.try_get("words_matched").unwrap_or(0);
+            let accuracy = if words_total > 0 {
+                serde_json::json!(
+                    ((words_matched as f64 / words_total as f64) * 1000.0).round() / 10.0
+                )
+            } else {
+                serde_json::Value::Null
+            };
+            serde_json::json!({
+                "date": day.to_string(),
+                "sessions": sessions,
+                "wordsTotal": words_total,
+                "wordsMatched": words_matched,
+                "accuracy": accuracy,
+            })
+        })
+        .collect();
+
+    Ok(Json(serde_json::json!({
+        "learnerId": learner_id,
+        "tenantId": actor.tenant_id,
+        "days": days,
+    })))
+}
+
 /// Consecutive days (ending today or yesterday) that have >= 1 session.
 fn compute_streak(days_desc: &[chrono::NaiveDate]) -> i32 {
     if days_desc.is_empty() {

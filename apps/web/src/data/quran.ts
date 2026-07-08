@@ -35,9 +35,14 @@ export interface SimilarVerse {
 }
 
 export interface ProgressBar {
-  day: string;
-  accuracy: number;
-  minutes: number;
+  /** UTC day as YYYY-MM-DD, exactly as reported by the API. */
+  date: string;
+  /** Measured word accuracy % (matched/total aligned words) for that day; null when the day has
+   *  sessions but no persisted alignments — unknown is NOT rendered as a false 0. */
+  accuracy: number | null;
+  /** Real session count for that day. There is deliberately no "minutes" field: the backend has
+   *  no practice-duration column, so minutes could only ever be fabricated. */
+  sessions: number;
 }
 
 function statusFromAlignment(status: string): WordStatus {
@@ -164,19 +169,23 @@ export async function loadWeeklyProgress(tenantId: string, userId?: string, auth
     // /v1/ through nginx, so a relative path is required there instead — both to avoid bypassing
     // that proxy and to satisfy the CSP's `connect-src 'self'`.
     const apiBase = import.meta.env.VITE_PLATFORM_API_URL || (import.meta.env.DEV ? "http://127.0.0.1:8080" : "");
-    const response = await fetchWithTimeout(`${apiBase}/v1/learner/progress`, {
+    // Real per-day history from /v1/learner/progress/weekly. A previous version of this function
+    // fetched only the single `mastery` scalar and SYNTHESIZED a linear "week" from it
+    // (accuracy = base + i*3 - 5, minutes = 10 + i*4) — fabricated data presented as measurement,
+    // in direct violation of the "no fake data" rule stated below. The endpoint reports only days
+    // that actually have sessions; accuracy is null for days with no persisted alignments.
+    const response = await fetchWithTimeout(`${apiBase}/v1/learner/progress/weekly`, {
       headers: actorHeaders(tenantId, userId ?? "learner-1", "learner", authToken),
     });
     if (!response.ok) throw new Error(`Progress API ${response.status}`);
     const data = await response.json();
-    // Build week from real session count
-    const days = ["Sat", "Sun", "Mon", "Tue", "Wed", "Thu", "Today"];
-    const baseAccuracy = Math.round((data.mastery ?? 0) * 100) || 50;
-    const progress = days.map((day, i) => ({
-      day,
-      accuracy: Math.min(100, baseAccuracy + (i * 3) - 5),
-      minutes: 10 + (i * 4),
-    }));
+    const progress: ProgressBar[] = Array.isArray(data.days)
+      ? data.days.map((d: { date: string; accuracy: number | null; sessions: number }) => ({
+          date: d.date,
+          accuracy: d.accuracy ?? null,
+          sessions: d.sessions ?? 0,
+        }))
+      : [];
     cachedProgress.set(key, progress);
     return progress;
   } catch {

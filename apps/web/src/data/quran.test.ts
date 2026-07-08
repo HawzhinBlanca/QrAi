@@ -84,13 +84,23 @@ describe("loadWeeklyProgress caches per learner, not globally", () => {
     // weekly accuracy, a real cross-user data leak on a shared/kiosk device.
     vi.stubGlobal(
       "fetch",
-      vi.fn().mockResolvedValue({ ok: true, json: async () => ({ mastery: 0.9 }) }),
+      vi.fn().mockResolvedValue({
+        ok: true,
+        json: async () => ({
+          days: [{ date: "2026-07-08", sessions: 2, wordsTotal: 10, wordsMatched: 9, accuracy: 90.0 }],
+        }),
+      }),
     );
     const learnerA = await loadWeeklyProgress("hikmah-pilot-erbil", "learner-a");
 
     vi.stubGlobal(
       "fetch",
-      vi.fn().mockResolvedValue({ ok: true, json: async () => ({ mastery: 0.1 }) }),
+      vi.fn().mockResolvedValue({
+        ok: true,
+        json: async () => ({
+          days: [{ date: "2026-07-08", sessions: 1, wordsTotal: 10, wordsMatched: 1, accuracy: 10.0 }],
+        }),
+      }),
     );
     const learnerB = await loadWeeklyProgress("hikmah-pilot-erbil", "learner-b");
 
@@ -98,5 +108,26 @@ describe("loadWeeklyProgress caches per learner, not globally", () => {
     // And re-fetching learner A again still returns their own cached data, not learner B's.
     const learnerAAgain = await loadWeeklyProgress("hikmah-pilot-erbil", "learner-a");
     expect(learnerAAgain).toEqual(learnerA);
+  });
+
+  it("maps a day with sessions but no alignments to accuracy null, never a fabricated number", async () => {
+    // Regression guard for the fabricated chart this replaces: loadWeeklyProgress used to
+    // synthesize a linear "week" (accuracy = mastery*100 + i*3 - 5, minutes = 10 + i*4) from the
+    // single mastery scalar. The real endpoint reports accuracy: null for a day whose sessions
+    // have no persisted word alignments — unknown must stay unknown, not become a plausible bar.
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue({
+        ok: true,
+        json: async () => ({
+          days: [{ date: "2026-07-07", sessions: 1, wordsTotal: 0, wordsMatched: 0, accuracy: null }],
+        }),
+      }),
+    );
+    const bars = await loadWeeklyProgress("hikmah-pilot-erbil", "learner-null-acc");
+    expect(bars).toHaveLength(1);
+    expect(bars[0].accuracy).toBeNull();
+    expect(bars[0].sessions).toBe(1);
+    expect(bars[0].date).toBe("2026-07-07");
   });
 });

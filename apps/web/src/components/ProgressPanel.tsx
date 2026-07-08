@@ -22,9 +22,16 @@ export function ProgressPanel({
   mastery,
   weeklyProgress,
 }: ProgressPanelProps) {
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
   const level = Math.floor(mastery * 5) + 1;
   const badgeKey = mastery >= 0.8 ? "progress.badgeGold" : mastery >= 0.5 ? "progress.badgeSilver" : "progress.badgeBronze";
+  // Localized short weekday labels from the API's real UTC dates. Parsed as UTC midnight so the
+  // label matches the day the backend aggregated, regardless of the viewer's timezone.
+  const dayLabel = new Intl.DateTimeFormat(i18n.language, { weekday: "short", timeZone: "UTC" });
+  const chartData = weeklyProgress.map((entry) => ({
+    ...entry,
+    label: dayLabel.format(new Date(`${entry.date}T00:00:00Z`)),
+  }));
 
   return (
     <section className="panel progress-panel" aria-label={t("progress.ariaLabel")}>
@@ -57,23 +64,34 @@ export function ProgressPanel({
         </dl>
       </div>
       <div className="chart-wrap">
-        {/* recharts renders a focusable role="application" SVG with no accessible name;
-            the sr-only list below is the real text equivalent for keyboard/screen-reader users. */}
-        <p className="sr-only" id="weekly-progress-chart-label">
-          {t("progress.chartLabel")}
-        </p>
-        <ul className="sr-only" aria-labelledby="weekly-progress-chart-label">
-          {weeklyProgress.map((entry) => (
-            <li key={entry.day}>{t("progress.chartEntry", { day: entry.day, accuracy: entry.accuracy })}</li>
-          ))}
-        </ul>
-        <ResponsiveContainer height={96} width="100%" aria-hidden="true">
-          <BarChart data={weeklyProgress} tabIndex={-1}>
-            <XAxis dataKey="day" axisLine={false} tickLine={false} tick={{ fill: "#7d7769", fontSize: 11 }} />
-            <Tooltip cursor={{ fill: "rgba(8, 128, 102, 0.08)" }} />
-            <Bar dataKey="accuracy" fill="#088066" radius={[8, 8, 0, 0]} barSize={9} />
-          </BarChart>
-        </ResponsiveContainer>
+        {chartData.length === 0 ? (
+          // Honest empty state: no measured practice days yet. Never render invented bars.
+          <p className="chart-empty">{t("progress.chartEmpty")}</p>
+        ) : (
+          <>
+            {/* recharts renders a focusable role="application" SVG with no accessible name;
+                the sr-only list below is the real text equivalent for keyboard/screen-reader users. */}
+            <p className="sr-only" id="weekly-progress-chart-label">
+              {t("progress.chartLabel")}
+            </p>
+            <ul className="sr-only" aria-labelledby="weekly-progress-chart-label">
+              {chartData.map((entry) => (
+                <li key={entry.date}>
+                  {entry.accuracy === null
+                    ? t("progress.chartEntryPending", { day: entry.label, count: entry.sessions })
+                    : t("progress.chartEntry", { day: entry.label, accuracy: entry.accuracy })}
+                </li>
+              ))}
+            </ul>
+            <ResponsiveContainer height={96} width="100%" aria-hidden="true">
+              <BarChart data={chartData} tabIndex={-1}>
+                <XAxis dataKey="label" axisLine={false} tickLine={false} tick={{ fill: "#7d7769", fontSize: 11 }} />
+                <Tooltip cursor={{ fill: "rgba(8, 128, 102, 0.08)" }} />
+                <Bar dataKey="accuracy" fill="#088066" radius={[8, 8, 0, 0]} barSize={9} />
+              </BarChart>
+            </ResponsiveContainer>
+          </>
+        )}
       </div>
       <div className="badge-row">
         <span>
