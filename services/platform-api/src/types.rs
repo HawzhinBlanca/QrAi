@@ -350,14 +350,24 @@ pub enum ApiError {
     /// return to clients — detailed errors are logged server-side, never surfaced (no topology leak).
     #[error("{0}")]
     Upstream(String),
+    /// The service is temporarily unable to serve — currently only DB connection-pool exhaustion
+    /// (acquire timeout). Distinct 503 (retryable) rather than a generic 500, so a classroom burst
+    /// that saturates the pool is a clear "busy, try again" signal, not indistinguishable from a bug.
+    #[error("{0}")]
+    Unavailable(String),
 }
 
 impl From<sqlx::Error> for ApiError {
     fn from(e: sqlx::Error) -> Self {
-        if let sqlx::Error::RowNotFound = e {
-            Self::NotFound
-        } else {
-            Self::Database(e.to_string())
+        match e {
+            sqlx::Error::RowNotFound => Self::NotFound,
+            // Pool acquire timed out — every connection is in use. This is load, not a fault: a 503
+            // tells the client (and any LB/retry policy) to back off and retry, not that the request
+            // was malformed or the server broke.
+            sqlx::Error::PoolTimedOut => {
+                Self::Unavailable("the service is busy; please try again in a moment".to_owned())
+            }
+            other => Self::Database(other.to_string()),
         }
     }
 }
@@ -373,6 +383,7 @@ impl IntoResponse for ApiError {
             }
             Self::Database(_) => StatusCode::INTERNAL_SERVER_ERROR,
             Self::Upstream(_) => StatusCode::BAD_GATEWAY,
+            Self::Unavailable(_) => StatusCode::SERVICE_UNAVAILABLE,
         };
         // Database errors get the SAME treatment as Upstream (see its doc comment): the raw sqlx/
         // Postgres error text can embed table/constraint names and, for constraint-violation DETAIL

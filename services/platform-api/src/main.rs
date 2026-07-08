@@ -11,6 +11,14 @@ fn max_connections_from_env(raw: Option<String>) -> u32 {
         .unwrap_or(10)
 }
 
+/// Parse DATABASE_ACQUIRE_TIMEOUT_SECS, defaulting to 10s for anything absent, unparseable, or
+/// zero (a zero timeout would fail acquires instantly). Pure so it can be unit-tested.
+fn acquire_timeout_secs_from_env(raw: Option<String>) -> u64 {
+    raw.and_then(|v| v.trim().parse::<u64>().ok())
+        .filter(|&n| n > 0)
+        .unwrap_or(10)
+}
+
 /// Refuse to boot in production with missing or known-weak secrets (JWT signing key and
 /// the realtime ticket HMAC secret). Weak defaults let anyone forge auth tokens/tickets.
 /// Local dev opts out with ALLOW_INSECURE_DEFAULTS=1.
@@ -149,8 +157,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // real pilot host; default 10 for local/dev (P3.8).
     let max_connections = max_connections_from_env(std::env::var("DATABASE_MAX_CONNECTIONS").ok());
 
+    // Fail fast when the pool is saturated instead of hanging on sqlx's 30s default acquire timeout:
+    // a shorter wait surfaces a retryable 503 (PoolTimedOut → ApiError::Unavailable) in bounded time,
+    // rather than the request appearing to hang then erroring. Tunable via DATABASE_ACQUIRE_TIMEOUT_SECS.
+    let acquire_timeout_secs =
+        acquire_timeout_secs_from_env(std::env::var("DATABASE_ACQUIRE_TIMEOUT_SECS").ok());
+
     let pool = PgPoolOptions::new()
         .max_connections(max_connections)
+        .acquire_timeout(std::time::Duration::from_secs(acquire_timeout_secs))
         .connect(&database_url)
         .await
         .map_err(|e| {
@@ -231,7 +246,7 @@ async fn shutdown_signal() {
 
 #[cfg(test)]
 mod tests {
-    use super::{max_connections_from_env, redact_database_url};
+    use super::{acquire_timeout_secs_from_env, max_connections_from_env, redact_database_url};
 
     #[test]
     fn max_connections_defaults_to_10_and_rejects_invalid_or_zero() {
@@ -244,6 +259,16 @@ mod tests {
         assert_eq!(max_connections_from_env(Some("0".to_owned())), 10); // zero would deadlock
         assert_eq!(max_connections_from_env(Some("25".to_owned())), 25);
         assert_eq!(max_connections_from_env(Some("  40  ".to_owned())), 40);
+    }
+
+    #[test]
+    fn acquire_timeout_defaults_to_10s_and_rejects_invalid_or_zero() {
+        assert_eq!(acquire_timeout_secs_from_env(None), 10);
+        assert_eq!(acquire_timeout_secs_from_env(Some("".to_owned())), 10);
+        assert_eq!(acquire_timeout_secs_from_env(Some("nope".to_owned())), 10);
+        assert_eq!(acquire_timeout_secs_from_env(Some("0".to_owned())), 10); // instant-fail guard
+        assert_eq!(acquire_timeout_secs_from_env(Some("5".to_owned())), 5);
+        assert_eq!(acquire_timeout_secs_from_env(Some("30".to_owned())), 30);
     }
 
     #[test]
