@@ -105,7 +105,32 @@ describe("Quran AI app smoke", () => {
   afterEach(() => {
     vi.unstubAllGlobals();
     localStorage.removeItem("quran-ai-auth");
+    localStorage.removeItem("quran-ai-onboarding-dismissed");
     document.body.innerHTML = "";
+  });
+
+  it("greets a brand-new learner with onboarding + an invitation, not a wall of zeros", async () => {
+    // Regression test for P2.2: with no sessions yet (no backend in this smoke run), Learner Home
+    // must NOT show a demotivating 0% mastery ring — it shows a first-run explainer of the loop and
+    // a "recite once to see your progress" invitation instead. Dismissing the card persists.
+    const root = createRoot(container);
+    await act(async () => {
+      root.render(<App />);
+    });
+
+    expect(document.body.textContent).toContain("How a practice session works");
+    expect(document.body.textContent).toContain("Recite once to see your accuracy");
+    // The zero-metrics mastery ring is replaced by the invitation for a new learner.
+    expect(document.querySelector(".mastery-ring")).toBeNull();
+    expect(document.querySelector(".mastery-empty")).toBeTruthy();
+
+    const dismiss = document.querySelector<HTMLButtonElement>(".onboarding-dismiss");
+    expect(dismiss).toBeTruthy();
+    await act(async () => {
+      dismiss?.click();
+    });
+    expect(document.querySelector(".onboarding-card")).toBeNull();
+    expect(localStorage.getItem("quran-ai-onboarding-dismissed")).toBe("1");
   });
 
   it("renders learner home first and advances through the calm practice flow", async () => {

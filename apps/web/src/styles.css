@@ -591,6 +591,74 @@ button:disabled {
   padding: clamp(22px, 3vw, 34px);
 }
 
+/* First-run onboarding card: dismissible, walks the practice loop for a brand-new learner (P2.2). */
+.onboarding-card {
+  position: relative;
+  display: grid;
+  gap: 10px;
+  margin-bottom: 22px;
+  padding: 20px 22px;
+  border: 1px solid #cfe6dc;
+  border-radius: 14px;
+  background: linear-gradient(180deg, #f0f9f5, #fbfdfb);
+}
+
+.onboarding-card h2 {
+  margin: 0;
+  color: #171913;
+  font-family: Georgia, "Times New Roman", serif;
+  font-size: 20px;
+}
+
+.onboarding-steps {
+  margin: 4px 0 0;
+  padding-inline-start: 20px;
+  display: grid;
+  gap: 6px;
+  color: #4b463d;
+  font-size: 14px;
+}
+
+.onboarding-dismiss {
+  position: absolute;
+  top: 12px;
+  inset-inline-end: 12px;
+  display: grid;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  border: 0;
+  border-radius: 8px;
+  color: var(--muted);
+  background: transparent;
+}
+
+.onboarding-dismiss:hover {
+  background: rgba(0, 0, 0, 0.05);
+}
+
+/* Empty-state invitation shown in the mission card before the learner's first session (P2.2). */
+.mastery-empty {
+  display: grid;
+  justify-items: center;
+  gap: 10px;
+  max-width: 320px;
+  color: var(--emerald-strong);
+  text-align: center;
+}
+
+.mastery-empty strong {
+  color: #171913;
+  font-family: Georgia, "Times New Roman", serif;
+  font-size: 22px;
+}
+
+.mastery-empty p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 14px;
+}
+
 .mastery-ring {
   display: grid;
   width: min(220px, 58vw);
