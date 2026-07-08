@@ -9,6 +9,7 @@ import {
   type QuranReference,
 } from "@quran-ai/contracts";
 import { FATIHAH_SEED, type SeedAyah } from "./fatihah";
+import { CANONICAL_AYAH_COUNTS } from "./canonical-ayah-counts";
 
 export { FATIHAH_SEED, type SeedAyah } from "./fatihah";
 
@@ -106,12 +107,14 @@ export function validateCanonicalImportBundle(bundle: CanonicalImportBundle): Ca
   const errors: string[] = [];
   
   let expectedWordCount = 0;
-  let expectedAyahCount = 0;
+  const ayahCountsBySurah = new Map<number, number>();
 
   for (const ayah of bundle.ayahs) {
     const parts = ayah.id.split(":");
     const surahNum = parseInt(parts[0], 10);
     const ayahNum = parseInt(parts[1], 10);
+
+    ayahCountsBySurah.set(surahNum, (ayahCountsBySurah.get(surahNum) ?? 0) + 1);
 
     const seedAyah = FATIHAH_SEED.find(
       (s) => s.surahNumber === surahNum && s.ayahNumber === ayahNum
@@ -119,15 +122,23 @@ export function validateCanonicalImportBundle(bundle: CanonicalImportBundle): Ca
 
     if (seedAyah) {
       expectedWordCount += seedAyah.words.length;
-      expectedAyahCount += 1;
     } else {
       expectedWordCount += ayah.wordCount;
-      expectedAyahCount += 1;
     }
   }
 
-  if (bundle.ayahs.length !== expectedAyahCount) {
-    errors.push(`Expected ${expectedAyahCount} ayahs, found ${bundle.ayahs.length}.`);
+  // CANONICAL_AYAH_COUNTS is INDEPENDENT ground truth (the established recitation tradition, not
+  // derived from this bundle) -- this is what actually catches a bundle missing or duplicating
+  // ayahs within a surah. The check this replaced incremented its "expected" count once per ayah
+  // PRESENT in the bundle regardless of which branch ran, so it was always trivially equal to
+  // bundle.ayahs.length by construction -- dead code that could never fail for any bundle.
+  for (const [surahNum, count] of ayahCountsBySurah) {
+    const canonicalCount = CANONICAL_AYAH_COUNTS[surahNum];
+    if (canonicalCount === undefined) {
+      errors.push(`Surah ${surahNum} is not a valid surah number (1-114).`);
+    } else if (count !== canonicalCount) {
+      errors.push(`Surah ${surahNum}: expected ${canonicalCount} ayahs (canonical), found ${count}.`);
+    }
   }
 
   if (bundle.words.length !== expectedWordCount) {
