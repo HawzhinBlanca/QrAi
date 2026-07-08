@@ -1,3 +1,4 @@
+import { useEffect, useRef } from "react";
 import { useTranslation } from "react-i18next";
 import type { QuranVerse } from "../data/quran";
 
@@ -6,6 +7,8 @@ interface QuranReaderProps {
   selectedWordId: string;
   verses: QuranVerse[];
   onSelectWord: (wordId: string) => void;
+  /** Local ayah (verseNumber) currently playing in the Listen step, or null. */
+  playingVerseNumber?: number | null;
 }
 
 const statusLabelKeys = {
@@ -15,13 +18,27 @@ const statusLabelKeys = {
   missed: "quranReader.statusMissed",
 };
 
-export function QuranReader({ activeWordId, onSelectWord, selectedWordId, verses }: QuranReaderProps) {
+export function QuranReader({ activeWordId, onSelectWord, selectedWordId, verses, playingVerseNumber = null }: QuranReaderProps) {
   const { t } = useTranslation();
+  const frameRef = useRef<HTMLDivElement | null>(null);
+
+  // Keep the verse the learner is hearing in view during the Listen step (audio-text sync).
+  useEffect(() => {
+    if (playingVerseNumber == null) return;
+    const el = frameRef.current?.querySelector<HTMLElement>(`[data-verse="${playingVerseNumber}"]`);
+    el?.scrollIntoView({ block: "nearest", behavior: "smooth" });
+  }, [playingVerseNumber]);
+
   return (
     <section className="reader-panel" aria-label={t("quranReader.ariaLabel")}>
-      <div className="reader-frame">
+      <div className="reader-frame" ref={frameRef}>
         {verses.map((verse) => (
-          <div className="verse-line" key={verse.id}>
+          <div
+            className={verse.verseNumber === playingVerseNumber ? "verse-line is-playing" : "verse-line"}
+            key={verse.id}
+            data-verse={verse.verseNumber}
+            aria-current={verse.verseNumber === playingVerseNumber ? "true" : undefined}
+          >
             <span className="verse-number">{verse.verseNumber}</span>
             {/* word.text is canonical Quran text (Uthmani script) -- never translated, per
                 AGENTS.md's canonical-text invariant. Only the status label is translated. */}

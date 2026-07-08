@@ -179,6 +179,9 @@ function AuthenticatedApp({ bypassLogin = false }: { bypassLogin?: boolean }) {
   const [liveBars, setLiveBars] = useState<number[]>([]);
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const [isPlaying, setIsPlaying] = useState(false);
+  // Local ayah number of the reference recitation currently playing (or paused), so the reader can
+  // highlight and scroll to the verse the learner is hearing — audio-text sync for the Listen step.
+  const [playingAyah, setPlayingAyah] = useState<number | null>(null);
   // The learner's own recorded recitation, kept for playback.
   const [recordedAudioUrl, setRecordedAudioUrl] = useState<string>("");
   const recordingAudioRef = useRef<HTMLAudioElement | null>(null);
@@ -722,16 +725,29 @@ function AuthenticatedApp({ bypassLogin = false }: { bypassLogin?: boolean }) {
       audioRef.current = null;
     }
     setIsPlaying(false);
+    setPlayingAyah(null);
   }
 
   // "Listen": play the selected surah's practice passage sequentially from the Al Quran
   // Cloud CDN (Mishary Al-Afasy reference recitation). The CDN uses the standard 6236
-  // numbering, so we map the surah's local ayahs to global ayah numbers.
+  // numbering, so we map the surah's local ayahs to global ayah numbers. The reader highlights
+  // the ayah currently playing (playingAyah = the LOCAL ayah number) for audio-text sync.
   function togglePlay() {
-    // audioRef is always current (unlike the isPlaying state), so rapid double
-    // clicks can't start overlapping playback.
-    if (audioRef.current) {
-      stopPlayback();
+    const current = audioRef.current;
+    // Already loaded: pause/resume in place (keeps the highlight and position) rather than tearing
+    // down and restarting from the first ayah.
+    if (current) {
+      if (current.paused) {
+        setIsPlaying(true);
+        void current.play().catch((err: unknown) => {
+          if (err instanceof DOMException && err.name === "AbortError") return;
+          setApiError(t("app.errors.audioPlaybackBlocked"));
+          stopPlayback();
+        });
+      } else {
+        current.pause();
+        setIsPlaying(false); // keep audioRef + playingAyah so Resume continues where it paused
+      }
       return;
     }
     setApiError(null);
@@ -745,6 +761,7 @@ function AuthenticatedApp({ bypassLogin = false }: { bypassLogin?: boolean }) {
         stopPlayback();
         return;
       }
+      setPlayingAyah(ayah - offset); // local ayah number for the reader highlight
       const audio = new Audio(`https://cdn.islamic.network/quran/audio/128/ar.alafasy/${ayah}.mp3`);
       audioRef.current = audio;
       audio.onended = () => playAyah(ayah + 1);
@@ -853,6 +870,7 @@ function AuthenticatedApp({ bypassLogin = false }: { bypassLogin?: boolean }) {
                 selectedWordId={selectedWordId}
                 surahTitle={surahLabel(selectedSurah)}
                 quranVerses={quranVerses}
+                playingAyah={playingAyah}
                 recitationEvents={recitationEvents}
                 alignmentResults={alignmentResults}
                 tajweedResults={tajweedResults}

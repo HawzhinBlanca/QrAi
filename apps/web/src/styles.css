@@ -951,6 +951,22 @@ button:disabled {
   grid-template-columns: 42px minmax(0, 1fr);
   align-items: center;
   gap: 18px;
+  padding: 6px 10px;
+  margin: 0 -10px;
+  border-radius: 10px;
+  transition: background 0.2s ease;
+}
+
+/* The ayah currently playing in the Listen step — audio-text sync highlight (P2.3). */
+.verse-line.is-playing {
+  background: rgba(8, 128, 102, 0.09);
+  box-shadow: inset 3px 0 0 var(--emerald);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .verse-line {
+    transition: none;
+  }
 }
 
 .verse-number {
