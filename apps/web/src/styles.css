@@ -1185,6 +1185,16 @@ button:disabled {
   padding: 0 8px;
 }
 
+/* Honest empty state for the weekly chart: shown until there is at least one measured day. */
+.chart-empty {
+  display: grid;
+  place-items: center;
+  min-height: 96px;
+  color: var(--muted);
+  font-size: 13px;
+  text-align: center;
+}
+
 .badge-row {
   display: flex;
   flex-wrap: wrap;

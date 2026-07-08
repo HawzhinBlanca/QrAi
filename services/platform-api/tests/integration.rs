@@ -662,6 +662,135 @@ async fn get_progress_mastery_is_the_exact_mean_of_capped_per_card_repetitions()
     );
 }
 
+/// /v1/learner/progress/weekly reports MEASURED per-day data — regression guard for the
+/// fabricated weekly chart this endpoint replaces (the web client used to synthesize a linear
+/// "week" from the single mastery scalar). Pins three properties:
+///  1. accuracy is computed from real word_alignments (matched/total) for the session's day;
+///  2. a day with sessions but NO alignments reports accuracy null — unknown, not a false 0;
+///  3. a plain learner cannot read another learner's weekly history (staff can).
+#[tokio::test]
+#[ignore = "requires live Postgres"]
+async fn weekly_progress_reports_real_per_day_sessions_and_word_accuracy() {
+    let state = test_state();
+    let router = platform_router_with_rate_limit(state.clone(), false);
+    let suffix = next_suffix();
+    let learner_id = format!("learner-weekly-{suffix}");
+
+    // Dedicated learner so concurrent tests (which all write as learner-1) can't skew counts.
+    sqlx::query(
+        "INSERT INTO users (id, tenant_id, display_name, role, language)
+         VALUES ($1, 'hikmah-pilot-erbil', 'Weekly Probe', 'learner', 'ckb')",
+    )
+    .bind(&learner_id)
+    .execute(&state.pool)
+    .await
+    .unwrap();
+
+    let session_id = create_test_session_for_learner(&router, &learner_id).await;
+
+    // Seed 3 alignments for that session: 2 matched + 1 misread -> accuracy 2/3 = 66.7%.
+    let alignment_audit = format!("audit-wa-weekly-{suffix}");
+    sqlx::query(
+        "INSERT INTO audit_events (id, tenant_id, actor_id, action, subject_type, subject_id)
+         VALUES ($1, 'hikmah-pilot-erbil', 'ops-1', 'test.seed', 'word_alignment', $2)",
+    )
+    .bind(&alignment_audit)
+    .bind(&session_id)
+    .execute(&state.pool)
+    .await
+    .unwrap();
+    for (i, (word_id, status)) in [
+        ("1:1:1", "matched"),
+        ("1:1:2", "matched"),
+        ("1:1:3", "misread"),
+    ]
+    .iter()
+    .enumerate()
+    {
+        sqlx::query(
+            "INSERT INTO word_alignments
+               (id, tenant_id, session_id, word_id, heard_text, start_ms, end_ms, confidence, status, model_version_id, audit_event_id)
+             VALUES ($1, 'hikmah-pilot-erbil', $2, $3, 'x', 0, 100, 0.9, $4, 'model-v0.3', $5)",
+        )
+        .bind(format!("wa-weekly-{suffix}-{i}"))
+        .bind(&session_id)
+        .bind(word_id)
+        .bind(status)
+        .bind(&alignment_audit)
+        .execute(&state.pool)
+        .await
+        .unwrap();
+    }
+
+    // A plain learner may NOT read another learner's weekly history.
+    let denied = send_json(
+        &router,
+        Method::GET,
+        &format!("/v1/learner/progress/weekly?learnerId={learner_id}"),
+        Some("hikmah-pilot-erbil"),
+        Some("learner"), // learner-1, not the owner
+        json!({}),
+    )
+    .await;
+    assert_eq!(denied.status(), StatusCode::FORBIDDEN);
+
+    // Staff reads the real numbers.
+    let ok = send_json(
+        &router,
+        Method::GET,
+        &format!("/v1/learner/progress/weekly?learnerId={learner_id}"),
+        Some("hikmah-pilot-erbil"),
+        Some("admin"),
+        json!({}),
+    )
+    .await;
+    assert_eq!(ok.status(), StatusCode::OK);
+    let body: Value = read_json(ok).await;
+    let days = body["days"].as_array().expect("days array");
+    assert_eq!(days.len(), 1, "one practiced day: {days:?}");
+    assert_eq!(days[0]["sessions"], 1);
+    assert_eq!(days[0]["wordsTotal"], 3);
+    assert_eq!(days[0]["wordsMatched"], 2);
+    assert_eq!(days[0]["accuracy"], 66.7); // 2/3, one decimal — measured, not synthesized
+    assert!(
+        days[0]["date"].as_str().is_some_and(|d| d.len() == 10),
+        "date is a YYYY-MM-DD string: {:?}",
+        days[0]["date"]
+    );
+
+    // A session with no alignments yet -> accuracy null (unknown), never a false 0.
+    let bare_learner = format!("learner-weekly-bare-{suffix}");
+    sqlx::query(
+        "INSERT INTO users (id, tenant_id, display_name, role, language)
+         VALUES ($1, 'hikmah-pilot-erbil', 'Weekly Bare Probe', 'learner', 'ckb')",
+    )
+    .bind(&bare_learner)
+    .execute(&state.pool)
+    .await
+    .unwrap();
+    create_test_session_for_learner(&router, &bare_learner).await;
+    let bare = send_json(
+        &router,
+        Method::GET,
+        &format!("/v1/learner/progress/weekly?learnerId={bare_learner}"),
+        Some("hikmah-pilot-erbil"),
+        Some("admin"),
+        json!({}),
+    )
+    .await;
+    assert_eq!(bare.status(), StatusCode::OK);
+    let bare_body: Value = read_json(bare).await;
+    let bare_days = bare_body["days"].as_array().expect("days array");
+    assert_eq!(bare_days.len(), 1);
+    assert_eq!(bare_days[0]["sessions"], 1);
+    assert_eq!(bare_days[0]["wordsTotal"], 0);
+    assert!(
+        bare_days[0]["accuracy"].is_null(),
+        "no alignments -> accuracy must be null, got {:?}",
+        bare_days[0]["accuracy"]
+    );
+}
+
 /// SM-2 quality is clamped to its 0..=5 domain: an out-of-range quality must NOT violate the
 /// learner_progress.last_quality CHECK (0..5) and fail the write with a 500 — it is clamped and the
 /// review still persists.

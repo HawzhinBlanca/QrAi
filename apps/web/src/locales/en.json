@@ -77,6 +77,8 @@
     "mistakes": "Mistakes",
     "chartLabel": "Weekly accuracy by day",
     "chartEntry": "{{day}}: {{accuracy}}% accuracy",
+    "chartEntryPending": "{{day}}: practiced, accuracy pending",
+    "chartEmpty": "Recite once to see your accuracy here.",
     "streakDays": "{{count}} days",
     "badgeGold": "Gold",
     "badgeSilver": "Silver",
