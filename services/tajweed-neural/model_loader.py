@@ -31,6 +31,16 @@ from vendor.multi_level_tokenizer import MultiLevelTokenizer  # noqa: E402
 
 MODEL_ID = os.environ.get("TAJWEED_NEURAL_MODEL", "obadx/muaalem-model-v3")
 
+# Cap how much audio librosa.load actually decodes into memory and feeds through the model. The
+# only existing bound on this input is the caller's base64-payload byte-size cap (server.py's
+# MAX_AUDIO_B64_CHARS) -- that limits decoded bytes, not decoded SECONDS, so a long, low-bitrate
+# recording can still fit under the byte cap while producing a very long waveform fed whole into
+# a 605M-parameter transformer forward pass. 120s is generous headroom over any real recitation
+# practice clip in this app (a single practice step, not a full session) while bounding the worst
+# case. Matches the "cap the input, don't trust the caller" pattern already used for
+# MAX_AUDIO_B64_CHARS (asr-inference/server.py) and MAX_TAJWEED_WORDS (analyze-tajweed).
+MAX_AUDIO_DURATION_SECONDS = 120
+
 # Register the custom architecture so from_pretrained can resolve model_type "multi_level_ctc".
 try:
     AutoConfig.register("multi_level_ctc", Wav2Vec2BertForMultilevelCTCConfig)
@@ -60,7 +70,7 @@ class NeuralTajweedModel:
     @torch.inference_mode()
     def analyze(self, wav_path: str) -> dict:
         start = time.time()
-        wave, _ = librosa.load(wav_path, sr=16000, mono=True)
+        wave, _ = librosa.load(wav_path, sr=16000, mono=True, duration=MAX_AUDIO_DURATION_SECONDS)
         features = self.processor(wave, sampling_rate=16000, return_tensors="pt")
         features = {k: v.to(self.device, dtype=self.dtype) for k, v in features.items()}
         outs = self.model(**features, return_dict=False)[0]
