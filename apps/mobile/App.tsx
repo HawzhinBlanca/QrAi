@@ -132,6 +132,12 @@ export default function App() {
       return;
     }
     startingRecordingRef.current = true;
+    // Declared outside the try so the catch block can release it: if prepareToRecordAsync
+    // succeeds but a later step (startAsync, setRecording) throws, `rec` already holds a
+    // native mic/recording session that would otherwise never be stopped or stored in
+    // globalThis.__recording — an orphaned recording leaking the mic lock until the process
+    // is killed (expo-av does not reliably release this on GC).
+    let rec: Audio.Recording | null = null;
     try {
       const { status } = await Audio.requestPermissionsAsync();
       if (status !== "granted") {
@@ -142,7 +148,7 @@ export default function App() {
         allowsRecordingIOS: true,
         playsInSilentModeIOS: true,
       });
-      const rec = new Audio.Recording();
+      rec = new Audio.Recording();
       await rec.prepareToRecordAsync(Audio.RecordingOptionsPresets.HIGH_QUALITY);
       await rec.startAsync();
       setRecording(true);
@@ -150,6 +156,13 @@ export default function App() {
       (globalThis as any).__recording = rec;
     } catch (e) {
       setError("Recording failed to start");
+      if (rec) {
+        try {
+          await rec.stopAndUnloadAsync();
+        } catch {
+          // Already unloaded or never fully started -- nothing left to release.
+        }
+      }
     } finally {
       startingRecordingRef.current = false;
     }
@@ -179,10 +192,23 @@ export default function App() {
       const response = await fetch(uri);
       const blob = await response.blob();
       const reader = new FileReader();
-      const base64 = await new Promise<string>((resolve) => {
+      const base64 = await new Promise<string>((resolve, reject) => {
+        // onloadend fires on BOTH success and failure (unlike onload), so without an explicit
+        // onerror + a result-shape check, a failed read left `reader.result` null and the old
+        // `result.split(",")[1]` threw synchronously inside this event-handler callback -- a
+        // throw there is NOT caught by stopAndAnalyze's surrounding try/catch (it happens outside
+        // that try's synchronous frame), so it became an unhandled exception: the promise never
+        // resolved or rejected, and the outer `finally` that clears `loading` never ran, leaving
+        // the UI stuck on "Analyzing..." forever.
+        reader.onerror = () => reject(new Error("Failed to read recorded audio"));
         reader.onloadend = () => {
-          const result = reader.result as string;
-          resolve(result.split(",")[1]);
+          const result = reader.result;
+          const parts = typeof result === "string" ? result.split(",") : [];
+          if (parts.length < 2) {
+            reject(new Error("Failed to read recorded audio"));
+            return;
+          }
+          resolve(parts[1]);
         };
         reader.readAsDataURL(blob);
       });
