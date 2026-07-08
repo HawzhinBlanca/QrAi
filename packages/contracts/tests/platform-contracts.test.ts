@@ -198,6 +198,7 @@ describe("Quran AI platform contracts", () => {
 
   it("requires explicit guardian-approved consent before external ASR", () => {
     const consent: ConsentSnapshot = {
+      recordingConsent: true,
       audioRetention: "discard",
       anonymizedLearning: true,
       externalAsrProcessing: true,
@@ -222,6 +223,7 @@ describe("Quran AI platform contracts", () => {
       allowedSampleRates: [16000, 48000],
       externalAsrProcessing: true,
       token: "rt_v1.session-1.tenant-1.learner-1.true.1782426600.nonce.signature",
+      auditEventId: "audit-1",
     };
 
     expect(ticket.token.startsWith("rt_v1.")).toBe(true);
