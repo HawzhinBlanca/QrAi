@@ -1,5 +1,4 @@
 import {
-  Award,
   BookOpenCheck,
   GraduationCap,
   Home,
@@ -57,18 +56,14 @@ export function Sidebar({ activeSection, onSectionChange }: SidebarProps) {
         })}
       </nav>
 
+      {/* Only real facts here. Two rows were removed as fabrications: "Review queue: 29 items"
+          (a hardcoded count no backend ever produced — a real queue count belongs to the
+          role-gated teacher surface, SHIP_PLAN P4.10) and "Trust state: Reviewed" (a static
+          claim; the TopBar already shows the real per-section trust label). */}
       <div className="streak-panel">
         <div>
           <span>{t("sidebar.pilotRegion")}</span>
           <strong>{t("sidebar.pilotRegionValue")}</strong>
-        </div>
-        <div>
-          <span>{t("sidebar.reviewQueue")}</span>
-          <strong>{t("sidebar.reviewQueueValue", { count: 29 })}</strong>
-        </div>
-        <div>
-          <span>{t("sidebar.trustState")}</span>
-          <strong><Award size={16} /> {t("sidebar.trustStateValue")}</strong>
         </div>
       </div>
     </aside>

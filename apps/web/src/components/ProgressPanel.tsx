@@ -37,7 +37,10 @@ export function ProgressPanel({
     <section className="panel progress-panel" aria-label={t("progress.ariaLabel")}>
       <div className="panel-title">
         <h2>{t("progress.title")}</h2>
-        <button type="button">{t("progress.thisWeek")}</button>
+        {/* Plain label, not a button: a previous version rendered this as a <button> with no
+            onClick — a dead affordance inviting clicks that did nothing. It becomes a real range
+            switcher only when a second range exists to switch to. */}
+        <span className="panel-range-label">{t("progress.thisWeek")}</span>
       </div>
       <div className="progress-grid">
         <div className="accuracy-ring" style={{ "--score": `${accuracy * 3.6}deg` } as React.CSSProperties}>

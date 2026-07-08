@@ -133,7 +133,7 @@ export function PracticeFlow({
 
       <div className="practice-main-grid">
         <div className="learner-reader-column">
-          <ModeBanner mode={mode} micState={micState} onCheckMic={onCheckMic} onSendToTeacher={onSendToTeacher} />
+          <ModeBanner mode={mode} micState={micState} mistakes={mistakes} onCheckMic={onCheckMic} onSendToTeacher={onSendToTeacher} />
           {isLoading && (
             <div className="state-banner calm" role="status">
               <Sparkles size={18} />
