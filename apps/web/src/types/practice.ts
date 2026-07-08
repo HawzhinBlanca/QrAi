@@ -6,13 +6,16 @@ export type MicState = "idle" | "checking" | "ready" | "denied" | "unavailable";
 
 export type AppSection = "learner" | "teacher" | "scholar" | "model-ops" | "trust" | "admin" | "badges" | "teachers" | "settings";
 
-export const practiceSteps: Array<{ id: Exclude<PracticeMode, "home">; label: string; helper: string }> = [
-  { id: "listen", label: "Listen", helper: "Hear the teacher-paced model once." },
-  { id: "guided-recite", label: "Guided recite", helper: "Recite with the mushaf visible." },
-  { id: "memory-recite", label: "Memory recite", helper: "Try without looking first." },
-  { id: "correction", label: "Correction", helper: "Review only the words that need care." },
-  { id: "drill", label: "Drill", helper: "Repeat the short phrase three times." },
-  { id: "complete", label: "Complete", helper: "Save progress and next review." },
+// labelKey/helperKey (not literal text) so PracticeFlow.tsx can pass them through i18next's t() --
+// this file is plain data (no React context to call useTranslation() from), so it can only ever
+// carry translation KEYS, not translated strings themselves.
+export const practiceSteps: Array<{ id: Exclude<PracticeMode, "home">; labelKey: string; helperKey: string }> = [
+  { id: "listen", labelKey: "practiceSteps.listen.label", helperKey: "practiceSteps.listen.helper" },
+  { id: "guided-recite", labelKey: "practiceSteps.guidedRecite.label", helperKey: "practiceSteps.guidedRecite.helper" },
+  { id: "memory-recite", labelKey: "practiceSteps.memoryRecite.label", helperKey: "practiceSteps.memoryRecite.helper" },
+  { id: "correction", labelKey: "practiceSteps.correction.label", helperKey: "practiceSteps.correction.helper" },
+  { id: "drill", labelKey: "practiceSteps.drill.label", helperKey: "practiceSteps.drill.helper" },
+  { id: "complete", labelKey: "practiceSteps.complete.label", helperKey: "practiceSteps.complete.helper" },
 ];
 
 export const waveformBars = Array.from({ length: 88 }, (_, index) => 28 + ((index * 17) % 54));

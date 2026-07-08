@@ -35,18 +35,20 @@ export const supportedLanguages: Array<{
   { code: "de", label: "German", nativeName: "Deutsch", direction: "ltr", readiness: "reviewing" },
 ];
 
+// labelKey/descriptionKey (not literal text) so PlatformCommand.tsx can pass them through
+// i18next's t() -- this file is plain data (no React context to call useTranslation() from).
 export const platformApps = [
-  { id: "learner", label: "Learner", icon: AudioWaveform, description: "Live alignment and memorization" },
-  { id: "teacher", label: "Teacher", icon: GraduationCap, description: "Classrooms and review loops" },
-  { id: "scholar", label: "Scholar", icon: BookCheck, description: "Approved religious content" },
-  { id: "model-ops", label: "Model Ops", icon: Microscope, description: "Benchmarks and data flywheel" },
+  { id: "learner", labelKey: "platformCommand.apps.learner.label", icon: AudioWaveform, descriptionKey: "platformCommand.apps.learner.description" },
+  { id: "teacher", labelKey: "platformCommand.apps.teacher.label", icon: GraduationCap, descriptionKey: "platformCommand.apps.teacher.description" },
+  { id: "scholar", labelKey: "platformCommand.apps.scholar.label", icon: BookCheck, descriptionKey: "platformCommand.apps.scholar.description" },
+  { id: "model-ops", labelKey: "platformCommand.apps.modelOps.label", icon: Microscope, descriptionKey: "platformCommand.apps.modelOps.description" },
 ] as const;
 
 export const platformTabs = [
-  { id: "recitation", label: "Recitation", icon: AudioWaveform },
-  { id: "classroom", label: "Classroom", icon: UsersRound },
-  { id: "review", label: "Review", icon: ShieldCheck },
-  { id: "model-ops", label: "Model Ops", icon: LineChart },
+  { id: "recitation", labelKey: "platformCommand.tabs.recitation", icon: AudioWaveform },
+  { id: "classroom", labelKey: "platformCommand.tabs.classroom", icon: UsersRound },
+  { id: "review", labelKey: "platformCommand.tabs.review", icon: ShieldCheck },
+  { id: "model-ops", labelKey: "platformCommand.tabs.modelOps", icon: LineChart },
 ] as const;
 
 export const canonicalSources = [
@@ -70,10 +72,10 @@ export const canonicalSources = [
 ];
 
 export const governanceItems = [
-  { label: "Canonical Quran text", status: "locked", icon: BookCheck },
-  { label: "Human reviewed", status: "teacher + scholar gates", icon: ShieldCheck },
-  { label: "9 languages", status: "UI ready, content gated", icon: Languages },
-  { label: "Data flywheel", status: "opt-in only", icon: Bot },
+  { labelKey: "platformCommand.governance.canonicalText.label", statusKey: "platformCommand.governance.canonicalText.status", icon: BookCheck },
+  { labelKey: "platformCommand.governance.humanReviewed.label", statusKey: "platformCommand.governance.humanReviewed.status", icon: ShieldCheck },
+  { labelKey: "platformCommand.governance.languages.label", statusKey: "platformCommand.governance.languages.status", icon: Languages },
+  { labelKey: "platformCommand.governance.dataFlywheel.label", statusKey: "platformCommand.governance.dataFlywheel.status", icon: Bot },
 ];
 
 // === Real API-backed data ===
@@ -157,9 +159,15 @@ export async function updateLearnerProgress(
 
 export interface MemorizationPlan {
   learnerId: string;
-  nextReviewAt: string;
-  currentFocus: string;
-  intervals: Array<{ label: string; dueCount: number; retention: number }>;
+  // null (not the literal string "Not scheduled") when there's no real next-review date -- lets
+  // each consumer (LearnerHome.tsx, CompletePanel.tsx) supply its own translated, contextual
+  // fallback via `?? t(...)` instead of this data layer baking in one hardcoded English string
+  // that could never actually be translated (a real bug this i18n pass surfaced: nextReviewAt was
+  // previously typed as non-nullable string, so those `?? t(...)` fallbacks were dead code --
+  // .nextReviewAt was never actually null/undefined for them to catch).
+  nextReviewAt: string | null;
+  currentFocusKey: string;
+  intervals: Array<{ labelKey: string; dueCount: number; retention: number }>;
 }
 
 // The backend returns nextReviewAt as a raw ISO 8601 timestamp (e.g.
@@ -180,12 +188,12 @@ export async function fetchMemorizationPlan(
     const progress = await fetchLearnerProgress(tenantId, userId, authToken);
     return {
       learnerId: progress.learnerId,
-      nextReviewAt: progress.nextReviewAt ? formatReviewDate(progress.nextReviewAt) : "Not scheduled",
-      currentFocus: "Al-Fatihah stability before Al-Baqarah opener",
+      nextReviewAt: progress.nextReviewAt ? formatReviewDate(progress.nextReviewAt) : null,
+      currentFocusKey: "memorizationPlan.currentFocusDefault",
       intervals: [
-        { label: "Today", dueCount: Math.min(progress.totalSessions, 4), retention: progress.mastery || 0.5 },
-        { label: "3 days", dueCount: 0, retention: 0 },
-        { label: "7 days", dueCount: 0, retention: 0 },
+        { labelKey: "memorizationPlan.intervalToday", dueCount: Math.min(progress.totalSessions, 4), retention: progress.mastery || 0.5 },
+        { labelKey: "memorizationPlan.interval3Days", dueCount: 0, retention: 0 },
+        { labelKey: "memorizationPlan.interval7Days", dueCount: 0, retention: 0 },
       ],
     };
   } catch {
@@ -220,8 +228,10 @@ export async function fetchEvalRun(
 }
 
 export interface BenchmarkMetric {
-  label: string;
+  labelKey: string;
   value: string;
+  // Numeric/symbolic threshold notation (e.g. "≥0.90"), not linguistic prose -- left as a plain
+  // string rather than a translation key, unlike labelKey.
   target: string;
   status: "passing" | "watch" | "blocked";
 }
@@ -230,11 +240,11 @@ export async function fetchBenchmarkMetrics(tenantId: string, authToken?: string
   const evalRun = await fetchEvalRun(tenantId, "model-v0.3", authToken);
   if (!evalRun) return [];
   return [
-    { label: "Word alignment F1", value: evalRun.wordAlignmentF1.toFixed(2), target: "≥0.90", status: evalRun.wordAlignmentF1 >= 0.9 ? "passing" : "watch" },
-    { label: "Tajweed F1", value: evalRun.tajweedF1.toFixed(2), target: "≥0.82", status: evalRun.tajweedF1 >= 0.82 ? "passing" : "watch" },
-    { label: "False-positive rate", value: `${(evalRun.falsePositiveRate * 100).toFixed(1)}%`, target: "≤8%", status: evalRun.falsePositiveRate <= 0.08 ? "passing" : "watch" },
-    { label: "Teacher agreement", value: `${(evalRun.teacherAgreementRate * 100).toFixed(0)}%`, target: "≥90%", status: evalRun.teacherAgreementRate >= 0.9 ? "passing" : "watch" },
-    { label: "Unsourced outputs", value: String(evalRun.unsourcedLearnerOutputs), target: "0", status: evalRun.unsourcedLearnerOutputs === 0 ? "passing" : "blocked" },
+    { labelKey: "benchmark.wordAlignmentF1", value: evalRun.wordAlignmentF1.toFixed(2), target: "≥0.90", status: evalRun.wordAlignmentF1 >= 0.9 ? "passing" : "watch" },
+    { labelKey: "benchmark.tajweedF1", value: evalRun.tajweedF1.toFixed(2), target: "≥0.82", status: evalRun.tajweedF1 >= 0.82 ? "passing" : "watch" },
+    { labelKey: "benchmark.falsePositiveRate", value: `${(evalRun.falsePositiveRate * 100).toFixed(1)}%`, target: "≤8%", status: evalRun.falsePositiveRate <= 0.08 ? "passing" : "watch" },
+    { labelKey: "benchmark.teacherAgreement", value: `${(evalRun.teacherAgreementRate * 100).toFixed(0)}%`, target: "≥90%", status: evalRun.teacherAgreementRate >= 0.9 ? "passing" : "watch" },
+    { labelKey: "benchmark.unsourcedOutputs", value: String(evalRun.unsourcedLearnerOutputs), target: "0", status: evalRun.unsourcedLearnerOutputs === 0 ? "passing" : "blocked" },
   ];
 }
 

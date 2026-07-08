@@ -1,4 +1,5 @@
 import { ChevronDown, Globe2, ShieldCheck } from "lucide-react";
+import { useTranslation } from "react-i18next";
 import { supportedLanguages } from "../data/platform";
 import type { SupportedLanguageCode } from "../types/platform";
 
@@ -13,13 +14,15 @@ interface TopBarProps {
 
 export function TopBar({
   title,
-  trustLabel = "Scholar-gated",
+  trustLabel,
   activeLanguage,
   onLanguageChange,
-  displayName = "Soran Othman",
-  roleLabel = "Student",
+  displayName,
+  roleLabel,
 }: TopBarProps) {
-  const initials = displayName
+  const { t } = useTranslation();
+  const resolvedDisplayName = displayName ?? t("topBar.displayNameDefault");
+  const initials = resolvedDisplayName
     .split(/\s+/)
     .map((part) => part[0])
     .slice(0, 2)
@@ -34,7 +37,7 @@ export function TopBar({
       <div className="topbar-actions">
         <span className="topbar-trust">
           <ShieldCheck size={16} />
-          {trustLabel}
+          {trustLabel ?? t("topBar.trustLabelDefault")}
         </span>
         {/* Was a plain <button> with no onClick at all — the ONLY working language switcher was
             PlatformCommand's own <select>, reachable only via the internal admin console.
@@ -42,7 +45,7 @@ export function TopBar({
             language at all. Reuses the identical pattern (native <select>, visible via the
             browser's own rendering, driven by the same activeLanguage/onLanguageChange state
             App.tsx already threads to PlatformCommand). */}
-        <label className="language-button" aria-label="Language">
+        <label className="language-button" aria-label={t("topBar.language")}>
           <Globe2 size={16} />
           <select value={activeLanguage} onChange={(event) => onLanguageChange(event.target.value as SupportedLanguageCode)}>
             {supportedLanguages.map((language) => (
@@ -54,8 +57,8 @@ export function TopBar({
         </label>
         <div className="profile-chip">
           <span>
-            {displayName}
-            <small>{roleLabel}</small>
+            {resolvedDisplayName}
+            <small>{roleLabel ?? t("topBar.roleLabelDefault")}</small>
           </span>
           <ChevronDown size={15} />
           <b>{initials}</b>

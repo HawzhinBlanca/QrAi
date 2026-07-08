@@ -16,10 +16,12 @@
     "@quran-ai/contracts": "workspace:*",
     "@quran-ai/quran-data": "workspace:*",
     "@vitejs/plugin-react": "^6.0.3",
+    "i18next": "^26.3.4",
     "lucide-react": "^1.23.0",
     "motion": "^12.42.2",
     "react": "^19.2.7",
     "react-dom": "^19.2.7",
+    "react-i18next": "^17.0.8",
     "recharts": "^3.9.2"
   },
   "devDependencies": {

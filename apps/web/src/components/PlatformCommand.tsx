@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { useTranslation } from "react-i18next";
 import {
   AlertTriangle,
   ArrowRight,
@@ -180,22 +181,23 @@ export function PlatformCommand({
     };
   }, [data.activeSession?.id, tenantId, authToken]);
 
+  const { t } = useTranslation();
   const scholarSummary = summarizeScholarQueue(data.scholarApprovals);
 
   return (
-    <section className="platform-command" aria-label="Quran AI Platform Command">
+    <section className="platform-command" aria-label={t("platformCommand.ariaLabel")}>
       <header className="command-hero">
         <div className="command-title">
           <span className="status-dot" />
           <div>
-            <p>Platform Command</p>
-            <h1>Quran AI intelligence platform</h1>
+            <p>{t("platformCommand.title")}</p>
+            <h1>{t("platformCommand.heading")}</h1>
           </div>
         </div>
         <div className="command-controls">
           <label className="language-select">
             <Languages size={16} />
-            <span className="sr-only">Language</span>
+            <span className="sr-only">{t("platformCommand.language")}</span>
             <select value={activeLanguage} onChange={(event) => onLanguageChange(event.target.value as SupportedLanguageCode)}>
               {supportedLanguages.map((language) => (
                 <option key={language.code} value={language.code}>
@@ -206,7 +208,7 @@ export function PlatformCommand({
           </label>
           <div className="trust-chip">
             <ShieldCheck size={16} />
-            Human reviewed
+            {t("platformCommand.humanReviewed")}
           </div>
           <div className="trust-chip model">
             <Gauge size={16} />
@@ -215,7 +217,7 @@ export function PlatformCommand({
         </div>
       </header>
 
-      <nav className="platform-apps" aria-label="Platform apps">
+      <nav className="platform-apps" aria-label={t("platformCommand.appsAriaLabel")}>
         {platformApps.map((app) => {
           const Icon = app.icon;
           return (
@@ -227,8 +229,8 @@ export function PlatformCommand({
               type="button"
             >
               <Icon size={18} />
-              <span>{app.label}</span>
-              <small>{app.description}</small>
+              <span>{t(app.labelKey)}</span>
+              <small>{t(app.descriptionKey)}</small>
             </button>
           );
         })}
@@ -243,7 +245,7 @@ export function PlatformCommand({
           behavior (a toggle-button group) without deciding whether the tabs *should* filter
           content — that's a real product/design question, tracked separately, not something to
           decide as an accessibility fix. */}
-      <div className="platform-tabs" role="group" aria-label="Command center views">
+      <div className="platform-tabs" role="group" aria-label={t("platformCommand.tabsAriaLabel")}>
         {platformTabs.map((tab) => {
           const Icon = tab.icon;
           return (
@@ -255,7 +257,7 @@ export function PlatformCommand({
               type="button"
             >
               <Icon size={16} />
-              {tab.label}
+              {t(tab.labelKey)}
             </button>
           );
         })}
@@ -295,6 +297,7 @@ function LiveAlignmentCard({
   activeSession: RecitationSessionSummary | null;
   sessionAlignments: SessionAlignment[];
 }) {
+  const { t } = useTranslation();
   const captureRef = useRef<MicCaptureController | null>(null);
   const uploaderRef = useRef<GatewayUploader | null>(null);
   // Guards handleCaptureToggle's start path against a double-tap: captureRef.current is only
@@ -377,14 +380,14 @@ function LiveAlignmentCard({
     }
   }
 
-  const sessionTitle = activeSession ? activeSession.quranRef.display : "No recent session";
+  const sessionTitle = activeSession ? activeSession.quranRef.display : t("platformCommand.liveAlignment.noRecentSession");
   const kbStreamed = (liveSummary.totalBytes / 1024).toFixed(1);
 
   return (
     <article className="command-card live-card">
       <div className="command-card-header">
         <div>
-          <p>Live alignment</p>
+          <p>{t("platformCommand.liveAlignment.eyebrow")}</p>
           <h2>{sessionTitle}</h2>
         </div>
         <span className="live-pill"><Radio size={14} /> {latencyMs}ms</span>
@@ -393,26 +396,26 @@ function LiveAlignmentCard({
       <div className="live-capture-panel">
         <button className={isRecording ? "capture-button active" : "capture-button"} onClick={handleCaptureToggle} type="button">
           {isRecording ? <MicOff size={16} /> : <Mic size={16} />}
-          {isRecording ? "Stop live recitation" : "Start live recitation"}
+          {isRecording ? t("platformCommand.liveAlignment.stopLive") : t("platformCommand.liveAlignment.startLive")}
         </button>
         <div className="capture-state">
-          <strong>{formatCaptureStatus(captureStatus)}</strong>
+          <strong>{t(formatCaptureStatusKey(captureStatus))}</strong>
           <span>
             {captureError ||
-              `${liveSummary.chunkCount} chunks · ${kbStreamed} KB streamed`}
+              t("platformCommand.liveAlignment.chunksStreamed", { count: liveSummary.chunkCount, kb: kbStreamed })}
           </span>
         </div>
         <div className="gateway-state">
-          <strong>Gateway {formatGatewayStatus(gatewayStatus)}</strong>
-          <span>{gatewayError || `${acceptedAcks} accepted acks`}</span>
+          <strong>{t("platformCommand.liveAlignment.gatewayLabel", { status: t(formatGatewayStatusKey(gatewayStatus)) })}</strong>
+          <span>{gatewayError || t("platformCommand.liveAlignment.acceptedAcks", { count: acceptedAcks })}</span>
         </div>
       </div>
 
       <div className="session-meta-grid">
-        <Metric label="Learner" value={activeSession?.learnerId ?? "—"} />
-        <Metric label="Language" value={selectedLanguage} />
-        <Metric label="Mode" value={(activeSession?.mode ?? "—").replace("-", " ")} />
-        <Metric label="Findings" value={`${flaggedCount} review`} />
+        <Metric label={t("platformCommand.liveAlignment.learner")} value={activeSession?.learnerId ?? "—"} />
+        <Metric label={t("platformCommand.liveAlignment.language")} value={selectedLanguage} />
+        <Metric label={t("platformCommand.liveAlignment.mode")} value={(activeSession?.mode ?? "—").replace("-", " ")} />
+        <Metric label={t("platformCommand.liveAlignment.findings")} value={t("platformCommand.liveAlignment.findingsValue", { count: flaggedCount })} />
       </div>
 
       <div className="mini-mushaf" dir="rtl" lang="ar">
@@ -430,7 +433,7 @@ function LiveAlignmentCard({
         ))}
       </div>
 
-      <div className="alignment-table" aria-label="Word alignment">
+      <div className="alignment-table" aria-label={t("platformCommand.liveAlignment.wordAlignmentAriaLabel")}>
         {sessionAlignments.map((alignment) => (
           <div className={`alignment-row ${alignment.status}`} key={alignment.wordId}>
             <span dir="rtl" lang="ar">{alignment.canonicalText}</span>
@@ -439,46 +442,47 @@ function LiveAlignmentCard({
           </div>
         ))}
         {sessionAlignments.length === 0 && (
-          <p className="panel-empty">No stored word alignments for the latest session yet.</p>
+          <p className="panel-empty">{t("platformCommand.liveAlignment.noStoredAlignments")}</p>
         )}
       </div>
     </article>
   );
 }
 
-function formatCaptureStatus(status: MicCaptureStatus): string {
+// Plain functions, no React context to call useTranslation() from -- return translation KEYs.
+function formatCaptureStatusKey(status: MicCaptureStatus): string {
   switch (status) {
     case "requesting-permission":
-      return "Requesting mic";
+      return "platformCommand.liveAlignment.statusRequestingMic";
     case "recording":
-      return "Streaming";
+      return "platformCommand.liveAlignment.statusStreaming";
     case "stopped":
-      return "Stopped";
+      return "platformCommand.liveAlignment.statusStopped";
     case "denied":
-      return "Permission denied";
+      return "platformCommand.liveAlignment.statusPermissionDenied";
     case "unsupported":
-      return "Unsupported";
+      return "platformCommand.liveAlignment.statusUnsupported";
     case "error":
-      return "Capture error";
+      return "platformCommand.liveAlignment.statusCaptureError";
     case "idle":
-      return "Ready";
+      return "platformCommand.liveAlignment.statusReady";
   }
 }
 
-function formatGatewayStatus(status: GatewayUploadStatus): string {
+function formatGatewayStatusKey(status: GatewayUploadStatus): string {
   switch (status) {
     case "connecting":
-      return "connecting";
+      return "platformCommand.liveAlignment.gatewayConnecting";
     case "connected":
-      return "connected";
+      return "platformCommand.liveAlignment.gatewayConnected";
     case "unavailable":
-      return "unavailable";
+      return "platformCommand.liveAlignment.gatewayUnavailable";
     case "error":
-      return "error";
+      return "platformCommand.liveAlignment.gatewayError";
     case "closed":
-      return "closed";
+      return "platformCommand.liveAlignment.gatewayClosed";
     case "idle":
-      return "idle";
+      return "platformCommand.liveAlignment.gatewayIdle";
   }
 }
 
@@ -491,18 +495,25 @@ function IntelligenceColumn({
   tajweedFindings: TajweedFindingSummary[];
   loaded: boolean;
 }) {
+  const { t } = useTranslation();
+  const pipelineSteps = [
+    t("platformCommand.pipeline.audioChunk"),
+    t("platformCommand.pipeline.canonicalAlign"),
+    t("platformCommand.pipeline.tajweedFeatures"),
+    t("platformCommand.pipeline.teacherGate"),
+  ];
   return (
     <div className="command-column">
       <article className="command-card pipeline-card">
         <div className="command-card-header compact">
           <div>
-            <p>Quran-specific engine</p>
-            <h2>Streaming intelligence pipeline</h2>
+            <p>{t("platformCommand.pipeline.eyebrow")}</p>
+            <h2>{t("platformCommand.pipeline.title")}</h2>
           </div>
           <DatabaseZap size={20} />
         </div>
         <div className="pipeline">
-          {["Audio chunk", "Canonical align", "Tajweed features", "Teacher gate"].map((step, index) => (
+          {pipelineSteps.map((step, index) => (
             <div className="pipeline-step" key={step}>
               <span>{index + 1}</span>
               <p>{step}</p>
@@ -515,11 +526,12 @@ function IntelligenceColumn({
       <article className="command-card">
         <div className="command-card-header compact">
           <div>
-            <p>Agent runs</p>
-            <h2>Supervised tools only</h2>
+            <p>{t("platformCommand.agentRuns.eyebrow")}</p>
+            <h2>{t("platformCommand.agentRuns.title")}</h2>
           </div>
           <Bot size={20} />
         </div>
+        {/* run.name/goal/lastEvent are real agent-run data from the backend -- not translated. */}
         <div className="agent-list">
           {agentRuns.map((run) => (
             <div className={`agent-row ${run.status}`} key={run.id}>
@@ -528,21 +540,29 @@ function IntelligenceColumn({
                 <p>{run.goal}</p>
                 {run.lastEvent ? <small>{run.lastEvent}</small> : null}
               </div>
-              <span>{requiresHumanReview(run) ? "Review" : canShowLearnerFacingAnswer(run) ? "Safe" : "Blocked"}</span>
+              <span>
+                {requiresHumanReview(run)
+                  ? t("platformCommand.agentRuns.review")
+                  : canShowLearnerFacingAnswer(run)
+                    ? t("platformCommand.agentRuns.safe")
+                    : t("platformCommand.agentRuns.blocked")}
+              </span>
             </div>
           ))}
-          {loaded && agentRuns.length === 0 && <p className="panel-empty">No agent runs recorded yet.</p>}
+          {loaded && agentRuns.length === 0 && <p className="panel-empty">{t("platformCommand.agentRuns.empty")}</p>}
         </div>
       </article>
 
       <article className="command-card">
         <div className="command-card-header compact">
           <div>
-            <p>Tajweed findings</p>
-            <h2>Confidence-scored feedback</h2>
+            <p>{t("platformCommand.tajweedFindings.eyebrow")}</p>
+            <h2>{t("platformCommand.tajweedFindings.title")}</h2>
           </div>
           <Sparkles size={20} />
         </div>
+        {/* finding.rule/explanation/reviewStatus are real tajweed content -- not translated here,
+            same as TajweedPanel.tsx (requires scholar review, not UI i18n). */}
         <div className="finding-list">
           {tajweedFindings.map((finding) => (
             <div className={`finding-row ${finding.severity}`} key={finding.id}>
@@ -552,7 +572,7 @@ function IntelligenceColumn({
             </div>
           ))}
           {loaded && tajweedFindings.length === 0 && (
-            <p className="panel-empty">No tajweed findings under review.</p>
+            <p className="panel-empty">{t("platformCommand.tajweedFindings.empty")}</p>
           )}
         </div>
       </article>
@@ -573,16 +593,18 @@ function OperationsColumn({
   memorizationPlan: MemorizationPlan | null;
   loaded: boolean;
 }) {
+  const { t } = useTranslation();
   return (
     <div className="command-column">
       <article className="command-card">
         <div className="command-card-header compact">
           <div>
-            <p>Teacher dashboard</p>
-            <h2>Institution review loop</h2>
+            <p>{t("platformCommand.teacherDashboard.eyebrow")}</p>
+            <h2>{t("platformCommand.teacherDashboard.title")}</h2>
           </div>
           <UsersRound size={20} />
         </div>
+        {/* review.teacherId/note/findingId/decision are real teacher-review data -- not translated. */}
         <div className="teacher-list">
           {teacherReviews.map((review) => (
             <div className="teacher-row" key={review.id}>
@@ -592,18 +614,18 @@ function OperationsColumn({
               </div>
               <dl>
                 <div>
-                  <dt>Finding</dt>
+                  <dt>{t("platformCommand.teacherDashboard.finding")}</dt>
                   <dd>{review.findingId}</dd>
                 </div>
                 <div>
-                  <dt>Decision</dt>
+                  <dt>{t("platformCommand.teacherDashboard.decision")}</dt>
                   <dd>{review.decision}</dd>
                 </div>
               </dl>
             </div>
           ))}
           {loaded && teacherReviews.length === 0 && (
-            <p className="panel-empty">No teacher reviews recorded yet.</p>
+            <p className="panel-empty">{t("platformCommand.teacherDashboard.empty")}</p>
           )}
         </div>
       </article>
@@ -611,16 +633,17 @@ function OperationsColumn({
       <article className="command-card">
         <div className="command-card-header compact">
           <div>
-            <p>Scholar review</p>
-            <h2>Trust ledger</h2>
+            <p>{t("platformCommand.scholarReview.eyebrow")}</p>
+            <h2>{t("platformCommand.scholarReview.title")}</h2>
           </div>
           <ShieldCheck size={20} />
         </div>
         <div className="review-summary">
-          <Metric label="Queue" value={`${scholarSummary.total}`} />
-          <Metric label="Approved" value={`${scholarSummary["scholar-approved"]}`} />
-          <Metric label="Blocked" value={`${scholarSummary.blocked}`} />
+          <Metric label={t("platformCommand.scholarReview.queue")} value={`${scholarSummary.total}`} />
+          <Metric label={t("platformCommand.scholarReview.approved")} value={`${scholarSummary["scholar-approved"]}`} />
+          <Metric label={t("platformCommand.scholarReview.blocked")} value={`${scholarSummary.blocked}`} />
         </div>
+        {/* approval.topic/reviewer/sourceCount/risk are real scholar-approval data -- not translated. */}
         <div className="scholar-list">
           {scholarApprovals.map((approval) => (
             <div className={`scholar-row ${approval.status}`} key={approval.id}>
@@ -632,7 +655,7 @@ function OperationsColumn({
             </div>
           ))}
           {loaded && scholarApprovals.length === 0 && (
-            <p className="panel-empty">No scholar approvals in the ledger yet.</p>
+            <p className="panel-empty">{t("platformCommand.scholarReview.empty")}</p>
           )}
         </div>
       </article>
@@ -640,26 +663,26 @@ function OperationsColumn({
       <article className="command-card">
         <div className="command-card-header compact">
           <div>
-            <p>Memorization coach</p>
-            <h2>Adaptive review plan</h2>
+            <p>{t("platformCommand.memorizationCoach.eyebrow")}</p>
+            <h2>{t("platformCommand.memorizationCoach.title")}</h2>
           </div>
           <Timer size={20} />
         </div>
         {memorizationPlan ? (
           <>
-            <p className="coach-note">{memorizationPlan.currentFocus}</p>
+            <p className="coach-note">{t(memorizationPlan.currentFocusKey)}</p>
             <div className="interval-list">
               {memorizationPlan.intervals.map((interval) => (
-                <div key={interval.label}>
-                  <span>{interval.label}</span>
-                  <strong>{interval.dueCount} due</strong>
-                  <small>{formatPercent(interval.retention)} retention</small>
+                <div key={interval.labelKey}>
+                  <span>{t(interval.labelKey)}</span>
+                  <strong>{t("platformCommand.memorizationCoach.dueCount", { count: interval.dueCount })}</strong>
+                  <small>{t("platformCommand.memorizationCoach.retention", { percent: formatPercent(interval.retention) })}</small>
                 </div>
               ))}
             </div>
           </>
         ) : (
-          <p className="panel-empty">No memorization plan available yet.</p>
+          <p className="panel-empty">{t("platformCommand.memorizationCoach.empty")}</p>
         )}
       </article>
     </div>
@@ -667,17 +690,25 @@ function OperationsColumn({
 }
 
 function DataFlywheelCard() {
+  const { t } = useTranslation();
+  const flywheelSteps = [
+    t("platformCommand.dataFlywheel.learnerAudio"),
+    t("platformCommand.dataFlywheel.teacherCorrection"),
+    t("platformCommand.dataFlywheel.scholarApprovedExamples"),
+    t("platformCommand.dataFlywheel.evalSet"),
+    t("platformCommand.dataFlywheel.modelRelease"),
+  ];
   return (
     <article className="command-card bottom-card">
       <div className="command-card-header compact">
         <div>
-          <p>Data flywheel</p>
-          <h2>Opt-in reviewed learning loop</h2>
+          <p>{t("platformCommand.dataFlywheel.eyebrow")}</p>
+          <h2>{t("platformCommand.dataFlywheel.title")}</h2>
         </div>
         <DatabaseZap size={20} />
       </div>
       <div className="flywheel">
-        {["Learner audio", "Teacher correction", "Scholar-approved examples", "Eval set", "Model release"].map((step) => (
+        {flywheelSteps.map((step) => (
           <span key={step}>{step}</span>
         ))}
       </div>
@@ -686,25 +717,26 @@ function DataFlywheelCard() {
 }
 
 function BenchmarkCard({ metrics, loaded }: { metrics: BenchmarkMetric[]; loaded: boolean }) {
+  const { t } = useTranslation();
   return (
     <article className="command-card bottom-card">
       <div className="command-card-header compact">
         <div>
-          <p>Model Ops</p>
-          <h2>Release benchmarks</h2>
+          <p>{t("platformCommand.benchmark.eyebrow")}</p>
+          <h2>{t("platformCommand.benchmark.title")}</h2>
         </div>
         <Gauge size={20} />
       </div>
       <div className="benchmark-grid">
         {metrics.map((metric) => (
-          <div className={`benchmark ${metric.status}`} key={metric.label}>
-            <span>{metric.label}</span>
+          <div className={`benchmark ${metric.status}`} key={metric.labelKey}>
+            <span>{t(metric.labelKey)}</span>
             <strong>{metric.value}</strong>
-            <small>Target {metric.target}</small>
+            <small>{t("platformCommand.benchmark.target", { value: metric.target })}</small>
           </div>
         ))}
         {loaded && metrics.length === 0 && (
-          <p className="panel-empty">No eval run published for the current model.</p>
+          <p className="panel-empty">{t("platformCommand.benchmark.empty")}</p>
         )}
       </div>
     </article>
@@ -712,13 +744,14 @@ function BenchmarkCard({ metrics, loaded }: { metrics: BenchmarkMetric[]; loaded
 }
 
 function GovernanceCard({ agentRuns }: { agentRuns: AgentRunSummary[] }) {
+  const { t } = useTranslation();
   const coverage = agentRuns.length > 0 ? getSourceCoverage(agentRuns[0].sources) : "missing";
   return (
     <article className="command-card bottom-card">
       <div className="command-card-header compact">
         <div>
-          <p>Trust governance</p>
-          <h2>Religious safety controls</h2>
+          <p>{t("platformCommand.governance.eyebrow")}</p>
+          <h2>{t("platformCommand.governance.title")}</h2>
         </div>
         <LockKeyhole size={20} />
       </div>
@@ -726,16 +759,16 @@ function GovernanceCard({ agentRuns }: { agentRuns: AgentRunSummary[] }) {
         {governanceItems.map((item) => {
           const Icon = item.icon;
           return (
-            <div key={item.label}>
+            <div key={item.labelKey}>
               <Icon size={17} />
-              <strong>{item.label}</strong>
-              <span>{item.status}</span>
+              <strong>{t(item.labelKey)}</strong>
+              <span>{t(item.statusKey)}</span>
             </div>
           );
         })}
       </div>
       <p className="source-line">
-        Source coverage: {coverage} · canonical Quran text never machine-modified.
+        {t("platformCommand.governance.sourceLine", { coverage })}
       </p>
     </article>
   );
@@ -750,13 +783,17 @@ function Metric({ label, value }: { label: string; value: string }) {
   );
 }
 
+// Not currently rendered anywhere in the app -- see the spawn_task chip flagging AssistantPanel
+// (the same "dead component" pattern); kept here since it was cheap to i18n-extract alongside the
+// rest of this file rather than a separate cleanup pass.
 export function PlatformCompactHeader() {
+  const { t } = useTranslation();
   return (
     <div className="platform-compact-header">
       <BrandMark />
       <div>
-        <strong>Quran AI</strong>
-        <span>Canonical Quran text · human review · model telemetry</span>
+        <strong>{t("platformCommand.compactHeader.brand")}</strong>
+        <span>{t("platformCommand.compactHeader.subtitle")}</span>
       </div>
       <BadgeCheck size={18} />
       <AlertTriangle className="risk-icon" size={18} />

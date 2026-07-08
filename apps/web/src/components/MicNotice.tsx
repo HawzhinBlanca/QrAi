@@ -1,13 +1,15 @@
+import { useTranslation } from "react-i18next";
 import type { MicState } from "../types/practice";
 
 export function MicNotice({ micState }: { micState: MicState }) {
-  const copyByState: Record<MicState, string> = {
-    idle: "Microphone is optional until guided recite.",
-    checking: "Checking microphone permission...",
-    ready: "Microphone is ready for guided recite.",
-    denied: "Microphone denied. Practice still works in listen and teacher-review mode.",
-    unavailable: "Microphone unavailable on this device.",
+  const { t } = useTranslation();
+  const keyByState: Record<MicState, string> = {
+    idle: "micNotice.idle",
+    checking: "micNotice.checking",
+    ready: "micNotice.ready",
+    denied: "micNotice.denied",
+    unavailable: "micNotice.unavailable",
   };
 
-  return <p className={`mic-notice ${micState}`}>{copyByState[micState]}</p>;
+  return <p className={`mic-notice ${micState}`}>{t(keyByState[micState])}</p>;
 }

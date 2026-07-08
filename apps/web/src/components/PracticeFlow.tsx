@@ -1,5 +1,6 @@
 import { lazy, Suspense } from "react";
 import { AlertTriangle, ArrowRight, CheckCircle2, RotateCcw, Sparkles } from "lucide-react";
+import { useTranslation } from "react-i18next";
 import { AudioCoach } from "./AudioCoach";
 import { CompletePanel } from "./CompletePanel";
 import { IssuePanel } from "./IssuePanel";
@@ -81,6 +82,7 @@ export function PracticeFlow({
   apiError,
   isLoading,
 }: PracticeFlowProps) {
+  const { t } = useTranslation();
   const selectedStep = practiceSteps.find((step) => step.id === mode) ?? practiceSteps[0];
   const isComplete = mode === "complete";
   const needsTeacherReview = mode === "correction" || mode === "drill";
@@ -98,23 +100,23 @@ export function PracticeFlow({
   const accuracy = scoredWords > 0 ? Math.round((correctWords / scoredWords) * 100) : 0;
 
   return (
-    <section className="practice-flow" aria-label="Learner practice">
+    <section className="practice-flow" aria-label={t("practiceFlow.ariaLabel")}>
       <header className="learner-practice-header">
         <div>
           <button className="text-link" onClick={onReset} type="button">
             <RotateCcw size={15} />
-            Back to home
+            {t("practiceFlow.backToHome")}
           </button>
           <h1>{surahTitle}</h1>
-          <p>{selectedStep.helper}</p>
+          <p>{t(selectedStep.helperKey)}</p>
         </div>
         <button className="primary-action" disabled={isComplete} onClick={onAdvance} type="button">
           {isComplete ? <CheckCircle2 size={18} /> : <ArrowRight size={18} />}
-          {isComplete ? "Practice complete" : "Next step"}
+          {isComplete ? t("practiceFlow.practiceComplete") : t("practiceFlow.nextStep")}
         </button>
       </header>
 
-      <nav className="practice-stepper" aria-label="Practice steps">
+      <nav className="practice-stepper" aria-label={t("practiceFlow.stepperAriaLabel")}>
         {practiceSteps.map((step, index) => (
           <button
             aria-current={mode === step.id ? "step" : undefined}
@@ -124,7 +126,7 @@ export function PracticeFlow({
             type="button"
           >
             <span>{index + 1}</span>
-            {step.label}
+            {t(step.labelKey)}
           </button>
         ))}
       </nav>
@@ -135,7 +137,7 @@ export function PracticeFlow({
           {isLoading && (
             <div className="state-banner calm" role="status">
               <Sparkles size={18} />
-              Analyzing your recitation with Whisper ASR...
+              {t("practiceFlow.analyzing")}
             </div>
           )}
           {apiError && (
@@ -158,13 +160,13 @@ export function PracticeFlow({
             onPlayReference={onTogglePlay}
           />
         </div>
-        <aside className="learner-insight-column" aria-label="Practice guidance">
+        <aside className="learner-insight-column" aria-label={t("practiceFlow.guidanceAriaLabel")}>
           {isComplete ? (
             <CompletePanel onReset={onReset} memorizationPlan={memorizationPlan} />
           ) : needsTeacherReview ? (
             <IssuePanel events={recitationEvents} onSelectWord={onSelectWord} selectedWordId={selectedWordId} />
           ) : (
-            <Suspense fallback={<div className="panel progress-panel" aria-label="Progress" aria-busy="true" />}>
+            <Suspense fallback={<div className="panel progress-panel" aria-label={t("practiceFlow.progressAriaLabel")} aria-busy="true" />}>
               <ProgressPanel
                 accuracy={accuracy}
                 correctWords={correctWords}

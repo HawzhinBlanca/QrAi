@@ -10,10 +10,12 @@ import type { TajweedFinding } from "./api";
  */
 export function tajweedReviewBadge(
   finding: Pick<TajweedFinding, "confidence" | "reviewStatus" | "sources">,
-): { verified: boolean; label: string } {
+): { verified: boolean; labelKey: string } {
   const verified = canShowLearnerFacingAiOutput(finding);
   return {
     verified,
-    label: verified ? "Verified" : "AI suggestion · not yet reviewed",
+    // Plain function, no React context to call useTranslation() from -- returns a translation KEY
+    // (not the literal label) for TajweedPanel.tsx to pass through t().
+    labelKey: verified ? "tajweedPanel.verified" : "tajweedPanel.aiSuggestion",
   };
 }

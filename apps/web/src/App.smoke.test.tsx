@@ -625,4 +625,39 @@ describe("Quran AI app smoke", () => {
     expect(select!.value).toBe("fr");
     expect(document.body.textContent).toContain("Français");
   });
+
+  it("switching the language selector actually drives i18next, not just the dropdown's own display value", async () => {
+    // Regression test for the gap this fixes: activeLanguage previously only picked which native
+    // name to display in the dropdown and tagged session metadata sent to the backend -- it never
+    // changed any rendered UI text. Import the real i18n singleton (not a mock) and confirm
+    // i18next's own `language` actually updates when the selector changes.
+    const { default: i18n } = await import("./i18n");
+
+    const root = createRoot(container);
+    await act(async () => {
+      root.render(<App />);
+    });
+
+    const select = document.querySelector<HTMLSelectElement>(".language-button select");
+    expect(select).toBeTruthy();
+
+    const nativeValueSetter = Object.getOwnPropertyDescriptor(window.HTMLSelectElement.prototype, "value")!.set!;
+    await act(async () => {
+      nativeValueSetter.call(select, "de");
+      select!.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+
+    expect(i18n.language).toBe("de");
+
+    // "de" has no real translated content yet (see i18n/index.ts) -- fallbackLng must still
+    // resolve every key to its real English string rather than the raw key or empty text.
+    expect(document.body.textContent).toContain("Learner");
+    expect(document.body.textContent).not.toContain("sidebar.nav.learner");
+
+    await act(async () => {
+      nativeValueSetter.call(select, "ckb");
+      select!.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+    expect(i18n.language).toBe("ckb");
+  });
 });

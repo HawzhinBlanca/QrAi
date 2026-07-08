@@ -33,7 +33,10 @@ describe("fetchMemorizationPlan date formatting", () => {
     expect(plan?.nextReviewAt).toMatch(/2036/);
   });
 
-  it("falls back to 'Not scheduled' when the backend has no next review", async () => {
+  it("leaves nextReviewAt null when the backend has no next review, so callers can supply their own translated fallback", async () => {
+    // Regression test: this used to bake the literal English string "Not scheduled" directly into
+    // the data, which meant LearnerHome.tsx/CompletePanel.tsx's own `?? t(...)` i18n fallbacks for
+    // this exact field could never actually fire (nextReviewAt was never null for them to catch).
     vi.stubGlobal(
       "fetch",
       vi.fn().mockResolvedValue({
@@ -50,6 +53,6 @@ describe("fetchMemorizationPlan date formatting", () => {
     );
 
     const plan = await fetchMemorizationPlan("hikmah-pilot-erbil", "learner-2");
-    expect(plan?.nextReviewAt).toBe("Not scheduled");
+    expect(plan?.nextReviewAt).toBeNull();
   });
 });
