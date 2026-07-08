@@ -5,12 +5,13 @@ import { AudioCoach } from "./AudioCoach";
 import { CompletePanel, type SaveState } from "./CompletePanel";
 import { IssuePanel } from "./IssuePanel";
 import { ModeBanner, type TeacherSendState } from "./ModeBanner";
+import { ConsentPanel } from "./ConsentPanel";
 import { MutashabihatPanel } from "./MutashabihatPanel";
 import { QuranReader } from "./QuranReader";
 import { TajweedPanel } from "./TajweedPanel";
 import type { MicState, PracticeMode } from "../types/practice";
 import { practiceSteps, waveformBars } from "../types/practice";
-import type { AlignmentResult, TajweedFinding } from "../lib/api";
+import type { AlignmentResult, RecitationConsent, TajweedFinding } from "../lib/api";
 import type { MemorizationPlan, LearnerProgress } from "../data/platform";
 import type { QuranVerse, RecitationEvent, ProgressBar } from "../data/quran";
 
@@ -33,6 +34,9 @@ export interface PracticeFlowProps {
   onSendToTeacher: () => void;
   teacherSendState: TeacherSendState;
   saveState: SaveState;
+  needsConsent: boolean;
+  consent: RecitationConsent;
+  onConsentChange: (consent: RecitationConsent) => void;
   onToggleRecording: () => void;
   isPlaying: boolean;
   onTogglePlay: () => void;
@@ -66,6 +70,9 @@ export function PracticeFlow({
   onSendToTeacher,
   teacherSendState,
   saveState,
+  needsConsent,
+  consent,
+  onConsentChange,
   onToggleRecording,
   isPlaying,
   onTogglePlay,
@@ -150,6 +157,15 @@ export function PracticeFlow({
             </div>
           )}
           <QuranReader activeWordId={selectedWordId} onSelectWord={onSelectWord} selectedWordId={selectedWordId} verses={quranVerses} />
+          {needsConsent && (
+            // Inline consent at the point of failure: the learner tapped Record without consenting.
+            // Ticking the required box auto-dismisses this (App clears needsConsent) so they can
+            // record immediately — no trip back to Learner Home.
+            <div className="inline-consent" role="alert">
+              <p className="inline-consent-title">{t("practiceFlow.consentPromptTitle")}</p>
+              <ConsentPanel consent={consent} onConsentChange={onConsentChange} />
+            </div>
+          )}
           <AudioCoach
             activeIndex={isRecording ? liveBars.length - 1 : activeStepIndex * 12}
             bars={isRecording && liveBars.length > 0 ? liveBars : waveformBars}

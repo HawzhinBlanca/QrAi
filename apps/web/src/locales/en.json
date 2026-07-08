@@ -118,7 +118,8 @@
     "stepperAriaLabel": "Practice steps",
     "analyzing": "Analyzing your recitation with Whisper ASR...",
     "guidanceAriaLabel": "Practice guidance",
-    "progressAriaLabel": "Progress"
+    "progressAriaLabel": "Progress",
+    "consentPromptTitle": "One quick step before recording — please confirm consent:"
   },
   "quranReader": {
     "ariaLabel": "Quran reader",

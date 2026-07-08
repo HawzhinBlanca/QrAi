@@ -134,6 +134,9 @@ function AuthenticatedApp({ bypassLogin = false }: { bypassLogin?: boolean }) {
   // was persisted. A learner can reach "complete" via the stepper chip without ever reciting, and
   // the save can fail — the panel must reflect what actually happened, not assert success blindly.
   const [saveState, setSaveState] = useState<"idle" | "saved" | "nothing-recited" | "failed">("idle");
+  // Show inline consent controls in the practice view when the learner tries to record without
+  // having consented — auto-dismissed the moment consent becomes sufficient (see the effect below).
+  const [needsConsent, setNeedsConsent] = useState(false);
   // Ensures the completion save fires at most once per practice session, whether "complete" is
   // reached by advancing through the steps or by tapping the stepper chip directly.
   const completedSaveRef = useRef(false);
@@ -194,6 +197,14 @@ function AuthenticatedApp({ bypassLogin = false }: { bypassLogin?: boolean }) {
       if (recordedAudioUrl) URL.revokeObjectURL(recordedAudioUrl);
     };
   }, [recordedAudioUrl]);
+
+  // Auto-dismiss the inline consent prompt the instant consent becomes sufficient, so the learner
+  // can tap Record and go — no separate "done" step, no navigating back to Learner Home.
+  useEffect(() => {
+    if (needsConsent && canRecordRecitation(consent)) {
+      setNeedsConsent(false);
+    }
+  }, [needsConsent, consent]);
 
   // Drive i18next from the same activeLanguage state already threaded through TopBar/
   // PlatformCommand's <select> — previously activeLanguage only picked which native name to
@@ -315,6 +326,7 @@ function AuthenticatedApp({ bypassLogin = false }: { bypassLogin?: boolean }) {
   function startPractice() {
     setPracticeMode("listen");
     setSaveState("idle");
+    setNeedsConsent(false);
     completedSaveRef.current = false;
     setSelectedWordId(recitationEvents[0]?.wordId ?? quranVerses[0]?.words[0]?.id ?? selectedWordId);
     // Create a real, consent-bound recitation session; alignment/tajweed reference its id.
@@ -425,6 +437,7 @@ function AuthenticatedApp({ bypassLogin = false }: { bypassLogin?: boolean }) {
     setApiError(null);
     setTeacherSendState("idle");
     setSaveState("idle");
+    setNeedsConsent(false);
     completedSaveRef.current = false;
     stopPlayback();
     stopRecordingPlayback();
@@ -603,7 +616,10 @@ function AuthenticatedApp({ bypassLogin = false }: { bypassLogin?: boolean }) {
     // still processes the audio and it may be stored per the retention consent, so recording must not
     // begin until the learner has affirmatively consented (previously this path recorded ungated).
     if (!canRecordRecitation(consent)) {
-      setApiError(t("app.errors.consentRequiredBeforeRecording"));
+      // Show the consent controls INLINE at the point of failure instead of only a dead-end error
+      // banner — the top first-session failure was a learner tapping Record without consent, then
+      // having to navigate all the way back to Learner Home to find the consent panel (P2.1).
+      setNeedsConsent(true);
       return;
     }
     stopPlayback();
@@ -824,6 +840,9 @@ function AuthenticatedApp({ bypassLogin = false }: { bypassLogin?: boolean }) {
                 onSendToTeacher={sendToTeacher}
                 teacherSendState={teacherSendState}
                 saveState={saveState}
+                needsConsent={needsConsent}
+                consent={consent}
+                onConsentChange={setConsent}
                 onToggleRecording={toggleAsrRecording}
                 isPlaying={isPlaying}
                 onTogglePlay={togglePlay}
