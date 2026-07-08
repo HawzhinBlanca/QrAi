@@ -5,6 +5,42 @@ architectural change. Newest first.
 
 ---
 
+## ADR-0012 — i18next/react-i18next for web i18n; content ships English-only
+**Date:** 2026-07-08 · **Status:** Accepted
+
+**Context.** `apps/web`'s language dropdown has listed 9 languages (Arabic, Kurdish Sorani —
+the pilot's actual default, English, Turkish, Urdu, Indonesian, Malay, French, German) since
+early in the project, but there was zero i18n infrastructure: no library, no string extraction,
+no translation files. `activeLanguage` only picked which native name to display in the dropdown
+and tagged session metadata sent to the backend — every actual UI string stayed hardcoded
+English regardless of the selection (`docs/SHIP_READINESS.md` F18).
+
+**Decision.** Added `i18next` + `react-i18next` (new runtime dependencies,
+`apps/web/src/i18n/index.ts`) and extracted every hardcoded UI string across the app into
+`apps/web/src/locales/en.json`. The other 8 languages are registered with empty resource
+bundles and fall back to English (`fallbackLng: "en"`) rather than shipping AI-fabricated
+translations. Real translations for a religious-education product need native-speaker/scholar
+review before they ship — the same reasoning `docs/SCHOLAR_REVIEW.md` already applies to
+tajweed content — so guessing at 8 languages' worth of UI copy would trade an honest, visible
+gap for a dishonest, invisible one. This mirrors the "no fake data" principle already
+established elsewhere in this codebase (e.g. `data/quran.ts`'s real vs. synthetic progress
+data). Canonical Quran text, tajweed rule content, and real backend/dynamic data (agent run
+names, teacher review notes, scholar approval topics) are explicitly excluded from translation
+throughout, each with an inline comment.
+
+**Consequences.** Switching the language dropdown today re-renders through real i18next
+machinery and correctly falls back to English for the 8 untranslated languages — verified live
+in the browser and via a regression test asserting `i18next.language` actually changes and
+untranslated languages still render real English text, not raw translation keys. Before any of
+the 8 languages can ship real content: (1) prioritize which languages the pilot actually needs
+first (Kurdish Sorani is the immediate candidate, being the pilot's default), (2) establish a
+native-speaker/scholar review process for the translated strings, (3) populate the
+corresponding `apps/web/src/locales/<code>.json` files. None of that is a technical blocker —
+the infrastructure and extraction are done — it's a product/review-process decision, tracked as
+an open item until an owner scopes it.
+
+---
+
 ## ADR-0011 — apps/mobile's npm audit findings are build-tooling-only, not shipped
 **Date:** 2026-07-08 · **Status:** Accepted (tracked, not fixed)
 
