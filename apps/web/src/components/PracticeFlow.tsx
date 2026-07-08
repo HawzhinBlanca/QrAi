@@ -48,6 +48,7 @@ export interface PracticeFlowProps {
   surahTitle: string;
   quranVerses: QuranVerse[];
   playingAyah: number | null;
+  isLoadingVerses: boolean;
   recitationEvents: RecitationEvent[];
   alignmentResults: AlignmentResult[];
   tajweedResults: TajweedFinding[];
@@ -85,6 +86,7 @@ export function PracticeFlow({
   surahTitle,
   quranVerses,
   playingAyah,
+  isLoadingVerses,
   recitationEvents,
   alignmentResults,
   tajweedResults,
@@ -158,7 +160,7 @@ export function PracticeFlow({
               {apiError}
             </div>
           )}
-          <QuranReader activeWordId={selectedWordId} onSelectWord={onSelectWord} selectedWordId={selectedWordId} verses={quranVerses} playingVerseNumber={playingAyah} />
+          <QuranReader activeWordId={selectedWordId} onSelectWord={onSelectWord} selectedWordId={selectedWordId} verses={quranVerses} playingVerseNumber={playingAyah} isLoading={isLoadingVerses} />
           {needsConsent && (
             // Inline consent at the point of failure: the learner tapped Record without consenting.
             // Ticking the required box auto-dismisses this (App clears needsConsent) so they can

@@ -157,6 +157,9 @@ function AuthenticatedApp({ bypassLogin = false }: { bypassLogin?: boolean }) {
     consentVersion: "pilot-consent-v1",
   });
   const [apiError, setApiError] = useState<string | null>(null);
+  // True while the reader verses for a surah are being (re)fetched, so the reader can show an
+  // aria-busy loading affordance instead of looking frozen on a slow/switched surah (P2.9).
+  const [isLoadingVerses, setIsLoadingVerses] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
   const asrRef = useRef<AsrController | null>(null);
   const serverAsrRef = useRef<ServerAsrController | null>(null);
@@ -495,12 +498,17 @@ function AuthenticatedApp({ bypassLogin = false }: { bypassLogin?: boolean }) {
   // a blank one the moment the backend is slow/unreachable, with no error shown either. Fall back
   // to getQuranVerses() (cached data, or the static Al-Fatihah bundle) and surface why.
   async function refreshQuranVerses(surahNumber: number) {
-    const verses = await loadSurahVerses(surahNumber).catch(() => []);
-    if (verses.length > 0) {
-      setQuranVerses(verses);
-    } else {
-      setQuranVerses(getQuranVerses());
-      setApiError(getQuranLoadError() ?? "Couldn't load Quran verses from the server; showing offline data.");
+    setIsLoadingVerses(true);
+    try {
+      const verses = await loadSurahVerses(surahNumber).catch(() => []);
+      if (verses.length > 0) {
+        setQuranVerses(verses);
+      } else {
+        setQuranVerses(getQuranVerses());
+        setApiError(getQuranLoadError() ?? "Couldn't load Quran verses from the server; showing offline data.");
+      }
+    } finally {
+      setIsLoadingVerses(false);
     }
   }
 
@@ -857,7 +865,7 @@ function AuthenticatedApp({ bypassLogin = false }: { bypassLogin?: boolean }) {
         >
           {activeSection === "learner" ? (
             practiceMode === "home" ? (
-              <LearnerHome onStartPractice={startPractice} onCheckMic={checkMicPermission} micState={micState} memorizationPlan={memorizationPlan} progress={progress} consent={consent} onConsentChange={setConsent} surahList={surahList} selectedSurah={selectedSurah} onSelectSurah={setSelectedSurah} />
+              <LearnerHome onStartPractice={startPractice} onCheckMic={checkMicPermission} micState={micState} memorizationPlan={memorizationPlan} progress={progress} consent={consent} onConsentChange={setConsent} surahList={surahList} selectedSurah={selectedSurah} onSelectSurah={setSelectedSurah} apiError={apiError} />
             ) : (
               <PracticeFlow
                 activeStepIndex={activeStepIndex}
@@ -886,6 +894,7 @@ function AuthenticatedApp({ bypassLogin = false }: { bypassLogin?: boolean }) {
                 surahTitle={surahLabel(selectedSurah)}
                 quranVerses={quranVerses}
                 playingAyah={playingAyah}
+                isLoadingVerses={isLoadingVerses}
                 recitationEvents={recitationEvents}
                 alignmentResults={alignmentResults}
                 tajweedResults={tajweedResults}

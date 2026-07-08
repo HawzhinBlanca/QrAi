@@ -1028,6 +1028,25 @@ button:disabled {
   box-shadow: var(--shadow);
 }
 
+/* Verses are (re)loading for a slow/switched surah — dim + a subtle pulse so the reader reads as
+   busy, not frozen (P2.9). Respects reduced-motion. */
+.reader-frame.is-loading {
+  opacity: 0.55;
+  animation: reader-loading-pulse 1.2s ease-in-out infinite;
+}
+
+@keyframes reader-loading-pulse {
+  50% {
+    opacity: 0.75;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .reader-frame.is-loading {
+    animation: none;
+  }
+}
+
 .reader-frame::before,
 .reader-frame::after {
   position: absolute;

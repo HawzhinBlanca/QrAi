@@ -9,6 +9,9 @@ interface QuranReaderProps {
   onSelectWord: (wordId: string) => void;
   /** Local ayah (verseNumber) currently playing in the Listen step, or null. */
   playingVerseNumber?: number | null;
+  /** True while the surah's verses are being (re)fetched — marks the reader aria-busy and dims it
+   *  so a slow/switched surah reads as loading, not frozen (P2.9). */
+  isLoading?: boolean;
 }
 
 const statusLabelKeys = {
@@ -18,7 +21,7 @@ const statusLabelKeys = {
   missed: "quranReader.statusMissed",
 };
 
-export function QuranReader({ activeWordId, onSelectWord, selectedWordId, verses, playingVerseNumber = null }: QuranReaderProps) {
+export function QuranReader({ activeWordId, onSelectWord, selectedWordId, verses, playingVerseNumber = null, isLoading = false }: QuranReaderProps) {
   const { t } = useTranslation();
   const frameRef = useRef<HTMLDivElement | null>(null);
 
@@ -30,8 +33,8 @@ export function QuranReader({ activeWordId, onSelectWord, selectedWordId, verses
   }, [playingVerseNumber]);
 
   return (
-    <section className="reader-panel" aria-label={t("quranReader.ariaLabel")}>
-      <div className="reader-frame" ref={frameRef}>
+    <section className="reader-panel" aria-label={t("quranReader.ariaLabel")} aria-busy={isLoading}>
+      <div className={isLoading ? "reader-frame is-loading" : "reader-frame"} ref={frameRef}>
         {verses.map((verse) => (
           <div
             className={verse.verseNumber === playingVerseNumber ? "verse-line is-playing" : "verse-line"}
