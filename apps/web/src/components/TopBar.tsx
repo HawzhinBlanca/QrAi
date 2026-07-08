@@ -10,6 +10,7 @@ interface TopBarProps {
   onLanguageChange: (language: SupportedLanguageCode) => void;
   displayName?: string;
   roleLabel?: string;
+  onLogout?: () => void;
 }
 
 export function TopBar({
@@ -19,6 +20,7 @@ export function TopBar({
   onLanguageChange,
   displayName,
   roleLabel,
+  onLogout,
 }: TopBarProps) {
   const { t } = useTranslation();
   const resolvedDisplayName = displayName ?? t("topBar.displayNameDefault");
@@ -55,14 +57,25 @@ export function TopBar({
             ))}
           </select>
         </label>
-        <div className="profile-chip">
+        {/* Was a plain <div> with a ChevronDown icon implying a dropdown that didn't exist --
+            no onClick, no menu, no logout. onLogout is only set by the caller once real
+            authentication is active (VITE_REQUIRE_LOGIN=1); in the default bypass-login mode
+            there is no real session to log out of, so the chip stays a non-interactive
+            <button disabled>, matching its visual affordance to its actual behavior. */}
+        <button
+          className="profile-chip"
+          type="button"
+          onClick={onLogout}
+          disabled={!onLogout}
+          aria-label={onLogout ? t("topBar.logout") : undefined}
+        >
           <span>
             {resolvedDisplayName}
             <small>{roleLabel ?? t("topBar.roleLabelDefault")}</small>
           </span>
           <ChevronDown size={15} />
           <b>{initials}</b>
-        </div>
+        </button>
       </div>
     </header>
   );

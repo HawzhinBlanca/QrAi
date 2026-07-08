@@ -730,9 +730,12 @@ function AuthenticatedApp({ bypassLogin = false }: { bypassLogin?: boolean }) {
       <main className="workspace" id="main-content" tabIndex={-1}>
         <TopBar
           title={pageTitle}
-          trustLabel={activeSection === "learner" ? "Teacher-reviewed" : "Scholar-gated"}
+          trustLabel={activeSection === "learner" ? t("topBar.trustLabelTeacherReviewed") : t("topBar.trustLabelDefault")}
           activeLanguage={activeLanguage}
           onLanguageChange={setActiveLanguage}
+          displayName={effectiveUser?.displayName}
+          roleLabel={effectiveUser?.role}
+          onLogout={bypassLogin ? undefined : logout}
         />
         <motion.div
           animate={{ opacity: 1, y: 0 }}
