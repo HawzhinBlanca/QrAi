@@ -130,6 +130,13 @@ function AuthenticatedApp({ bypassLogin = false }: { bypassLogin?: boolean }) {
   const [memorizationPlan, setMemorizationPlan] = useState<MemorizationPlan | null>(null);
   const [progress, setProgress] = useState<LearnerProgress | null>(null);
   const [sessionId, setSessionId] = useState<string>("");
+  // Truthful completion state: CompletePanel claims "Progress saved" ONLY when a real SM-2 review
+  // was persisted. A learner can reach "complete" via the stepper chip without ever reciting, and
+  // the save can fail — the panel must reflect what actually happened, not assert success blindly.
+  const [saveState, setSaveState] = useState<"idle" | "saved" | "nothing-recited" | "failed">("idle");
+  // Ensures the completion save fires at most once per practice session, whether "complete" is
+  // reached by advancing through the steps or by tapping the stepper chip directly.
+  const completedSaveRef = useRef(false);
   // Truthful "send to teacher" state: idle until tried; the drill banner claims "sent" ONLY
   // when the backend confirmed the session entered the teacher review pipeline.
   const [teacherSendState, setTeacherSendState] = useState<"idle" | "sent" | "failed" | "nothing-to-send">("idle");
@@ -307,6 +314,8 @@ function AuthenticatedApp({ bypassLogin = false }: { bypassLogin?: boolean }) {
 
   function startPractice() {
     setPracticeMode("listen");
+    setSaveState("idle");
+    completedSaveRef.current = false;
     setSelectedWordId(recitationEvents[0]?.wordId ?? quranVerses[0]?.words[0]?.id ?? selectedWordId);
     // Create a real, consent-bound recitation session; alignment/tajweed reference its id.
     if (effectiveUser) {
@@ -349,17 +358,39 @@ function AuthenticatedApp({ bypassLogin = false }: { bypassLogin?: boolean }) {
     setIsRecording(false);
 
     if (enteringComplete) {
-      void saveProgressFromPractice();
+      triggerCompletionSave();
+    }
+  }
+
+  // Fire the completion save at most once per practice session. Both advancePractice (stepping to
+  // the last step) and selectMode (tapping the "complete" stepper chip directly) route through
+  // here, so completing either way persists progress — previously only advancePractice did, so a
+  // learner who tapped the chip got "Progress saved" with nothing actually saved.
+  function triggerCompletionSave() {
+    if (completedSaveRef.current) return;
+    completedSaveRef.current = true;
+    void saveProgressFromPractice();
+  }
+
+  // Stepper-chip handler: jumping straight to "complete" must still persist progress.
+  function selectMode(target: PracticeMode) {
+    setPracticeMode(target);
+    if (target === "complete") {
+      triggerCompletionSave();
     }
   }
 
   /**
    * On practice completion, persist a real SM-2 review (mastery/streak accumulate) from
-   * the actual alignment accuracy. Skipped when the learner didn't recite, so we never
-   * record a fabricated (quality-0) review.
+   * the actual alignment accuracy. Records the honest saveState: "nothing-recited" when there is
+   * no recitation to score (never a fabricated quality-0 review), "saved" on success, "failed" if
+   * the backend write fails.
    */
   async function saveProgressFromPractice() {
-    if (!effectiveUser || alignmentResults.length === 0) return;
+    if (!effectiveUser || alignmentResults.length === 0) {
+      setSaveState("nothing-recited");
+      return;
+    }
     const correct = alignmentResults.filter((a) => a.status === "matched").length;
     const scored = alignmentResults.filter(
       (a) =>
@@ -376,8 +407,10 @@ function AuthenticatedApp({ bypassLogin = false }: { bypassLogin?: boolean }) {
       await updateLearnerProgress(effectiveUser.tenantId, effectiveUser.userId, ayahRef, quality, authToken);
       const fresh = await fetchLearnerProgress(effectiveUser.tenantId, effectiveUser.userId, authToken);
       setProgress(fresh);
+      setSaveState("saved");
     } catch {
-      // Keep the prior progress if the update fails; don't block the completion UI.
+      // Keep the prior progress if the update fails; don't block the completion UI — but say so.
+      setSaveState("failed");
     }
   }
 
@@ -391,6 +424,8 @@ function AuthenticatedApp({ bypassLogin = false }: { bypassLogin?: boolean }) {
     setRecitationEvents([]);
     setApiError(null);
     setTeacherSendState("idle");
+    setSaveState("idle");
+    completedSaveRef.current = false;
     stopPlayback();
     stopRecordingPlayback();
     setRecordedAudioUrl((prev) => {
@@ -784,10 +819,11 @@ function AuthenticatedApp({ bypassLogin = false }: { bypassLogin?: boolean }) {
                 onAdvance={advancePractice}
                 onCheckMic={checkMicPermission}
                 onReset={resetPractice}
-                onSelectMode={setPracticeMode}
+                onSelectMode={selectMode}
                 onSelectWord={setSelectedWordId}
                 onSendToTeacher={sendToTeacher}
                 teacherSendState={teacherSendState}
+                saveState={saveState}
                 onToggleRecording={toggleAsrRecording}
                 isPlaying={isPlaying}
                 onTogglePlay={togglePlay}
