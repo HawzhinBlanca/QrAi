@@ -124,6 +124,15 @@ def safe_audio_suffix(audio_format: str) -> str:
 # traffic, so this is defence-in-depth for any direct (server-side) caller.
 MAX_AUDIO_B64_CHARS = 20_000_000
 
+# Cap the number of word-timestamp entries a single /v1/analyze-tajweed request can carry. Each
+# entry drives real signal processing (pitch detection, an STFT, energy computations) on this,
+# "the compute-heaviest service in the fleet" per the rate-limiter comment below — the per-IP
+# rate limit counts requests, not work-per-request, so an unbounded `words` array lets one request
+# pin the process for as long as the caller likes. 2000 is generous headroom over any real
+# recitation session (the longest surah, Al-Baqarah, is ~6000 words split across many sessions;
+# a single practice request realistically carries well under a few hundred).
+MAX_TAJWEED_WORDS = 2000
+
 
 def decode_audio_b64(b64: str) -> bytes:
     """Validate and decode a base64 audio payload. Every failure is a client error (4xx) — an empty,
@@ -485,6 +494,8 @@ async def analyze_tajweed(req: TajweedAnalysisRequest):
         raise HTTPException(status_code=400, detail="audioBase64 is required")
     if not req.words:
         raise HTTPException(status_code=400, detail="words (with timestamps) are required")
+    if len(req.words) > MAX_TAJWEED_WORDS:
+        raise HTTPException(status_code=413, detail=f"words exceeds the {MAX_TAJWEED_WORDS}-entry limit")
 
     audio_bytes = decode_audio_b64(req.audioBase64)
     suffix = safe_audio_suffix(req.audioFormat)
