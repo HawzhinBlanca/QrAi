@@ -47,10 +47,48 @@ echo "Seed institution, model versions, and users created."
 echo ""
 
 # Generate SQL from the full Quran data (via @quran-ai/quran-data's checksum-correct builder) and
-# pipe to psql.
-(cd "$PACKAGE_DIR" && pnpm exec jiti scripts/write-full-quran-sql-seed.mjs) \
-  | $PSQL -h "$DB_HOST" -U "$DB_USER" -d "$DB_NAME" -q 2>&1 | grep -v "^INSERT" || true
+# pipe to psql. The trailing `|| true` this used to end with swallowed EVERY failure in the whole
+# pipeline, not just grep's benign "no non-INSERT lines to show" exit (1) -- verified empirically:
+# `set -euo pipefail; (exit N) | cat | grep -v nomatch || true` always continues with exit 0, no
+# matter what N is. That meant a crash in write-full-quran-sql-seed.mjs OR a rejected/malformed
+# INSERT from psql would leave this script silently continuing to "Verifying counts" as if nothing
+# had gone wrong, instead of halting with a clear error -- exactly the "swallowed failure that
+# should propagate" class of bug already fixed once this session in scripts/load-test.js. Wrapping
+# in `if ... ; then :; fi` avoids `set -e` aborting on the pipeline's exit status (needed because
+# `pipefail` makes grep's benign exit 1 propagate) while still capturing each stage's REAL exit
+# code via PIPESTATUS, read immediately afterward before any other command can overwrite it.
+# Copy the WHOLE array in one atomic assignment before reading individual indices -- verified
+# empirically that under `set -u`, reading PIPESTATUS[0] then PIPESTATUS[1] as separate statements
+# throws "unbound variable" on the second read (a real bash quirk, not a typo): the act of reading
+# one index appears to disturb the array's state before the next read.
+if (cd "$PACKAGE_DIR" && pnpm exec jiti scripts/write-full-quran-sql-seed.mjs) \
+  | $PSQL -h "$DB_HOST" -U "$DB_USER" -d "$DB_NAME" -q 2>&1 | grep -v "^INSERT"; then
+  :
+fi
+PIPE_STATUS=("${PIPESTATUS[@]}")
+SEED_EXIT="${PIPE_STATUS[0]}"
+PSQL_EXIT="${PIPE_STATUS[1]}"
+if [ "$SEED_EXIT" -ne 0 ] || [ "$PSQL_EXIT" -ne 0 ]; then
+  echo "ERROR: full-Quran seed failed (write-full-quran-sql-seed.mjs exit=$SEED_EXIT, psql exit=$PSQL_EXIT)" >&2
+  exit 1
+fi
 
 echo ""
 echo "=== Verifying counts ==="
-$PSQL -h "$DB_HOST" -U "$DB_USER" -d "$DB_NAME" -c "SELECT count(*) as ayah_count FROM canonical_ayahs;" -c "SELECT count(*) as word_count FROM canonical_words;" -c "SELECT count(*) as surah_count FROM (SELECT DISTINCT surah_number FROM canonical_ayahs) s;"
+# CANONICAL_AYAH_COUNTS (packages/quran-data/src/canonical-ayah-counts.ts) sums to exactly 6236 --
+# independent ground truth from the established recitation tradition. Previously this step only
+# printed the counts for a human to eyeball; now it actually fails the script if seeding produced
+# the wrong number of ayahs or surahs, the same "don't trust the caller" pattern already applied to
+# validateCanonicalImportBundle in packages/quran-data/src/index.ts.
+COUNTS="$($PSQL -h "$DB_HOST" -U "$DB_USER" -d "$DB_NAME" -t -A -F' ' -c "SELECT (SELECT count(*) FROM canonical_ayahs), (SELECT count(DISTINCT surah_number) FROM canonical_ayahs), (SELECT count(*) FROM canonical_words);")"
+AYAH_COUNT="$(echo "$COUNTS" | cut -d' ' -f1)"
+SURAH_COUNT="$(echo "$COUNTS" | cut -d' ' -f2)"
+WORD_COUNT="$(echo "$COUNTS" | cut -d' ' -f3)"
+echo "ayah_count: $AYAH_COUNT"
+echo "surah_count: $SURAH_COUNT"
+echo "word_count: $WORD_COUNT"
+if [ "$AYAH_COUNT" -ne 6236 ] || [ "$SURAH_COUNT" -ne 114 ] || [ "$WORD_COUNT" -eq 0 ]; then
+  echo "ERROR: seeded counts do not match the canonical Quran (expected 6236 ayahs across 114 surahs, got $AYAH_COUNT ayahs across $SURAH_COUNT surahs, $WORD_COUNT words)." >&2
+  exit 1
+fi
+echo "Counts verified against the canonical 6236-ayah, 114-surah reference."
