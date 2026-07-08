@@ -55,8 +55,20 @@ export function ProgressPanel({
         </dl>
       </div>
       <div className="chart-wrap">
-        <ResponsiveContainer height={96} width="100%">
-          <BarChart data={weeklyProgress}>
+        {/* recharts renders a focusable role="application" SVG with no accessible name;
+            the sr-only list below is the real text equivalent for keyboard/screen-reader users. */}
+        <p className="sr-only" id="weekly-progress-chart-label">
+          Weekly accuracy by day
+        </p>
+        <ul className="sr-only" aria-labelledby="weekly-progress-chart-label">
+          {weeklyProgress.map((entry) => (
+            <li key={entry.day}>
+              {entry.day}: {entry.accuracy}% accuracy
+            </li>
+          ))}
+        </ul>
+        <ResponsiveContainer height={96} width="100%" aria-hidden="true">
+          <BarChart data={weeklyProgress} tabIndex={-1}>
             <XAxis dataKey="day" axisLine={false} tickLine={false} tick={{ fill: "#7d7769", fontSize: 11 }} />
             <Tooltip cursor={{ fill: "rgba(8, 128, 102, 0.08)" }} />
             <Bar dataKey="accuracy" fill="#088066" radius={[8, 8, 0, 0]} barSize={9} />
