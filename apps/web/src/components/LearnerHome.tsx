@@ -30,6 +30,9 @@ export interface LearnerHomeProps {
   surahList: SurahInfo[];
   selectedSurah: SurahInfo;
   onSelectSurah: (surah: SurahInfo) => void;
+  /** A data-load error (e.g. verses/progress fetch failed) — surfaced here so a home-screen
+   *  failure isn't silent; previously apiError only showed inside the practice flow. */
+  apiError: string | null;
 }
 
 export function LearnerHome({
@@ -43,6 +46,7 @@ export function LearnerHome({
   surahList,
   selectedSurah,
   onSelectSurah,
+  apiError,
 }: LearnerHomeProps) {
   const { t } = useTranslation();
   const masteryPct = Math.round((progress?.mastery ?? 0) * 100);
@@ -92,6 +96,11 @@ export function LearnerHome({
           <h1>{t("learnerHome.missionHeading", { surah: surahLabel(selectedSurah) })}</h1>
           <p>{t("learnerHome.missionBody")}</p>
           <SurahPicker surahs={surahList} selected={selectedSurah} onSelect={onSelectSurah} />
+          {apiError && (
+            <div className="state-banner warning" role="alert">
+              {apiError}
+            </div>
+          )}
           <ConsentPanel consent={consent} onConsentChange={onConsentChange} />
           <div className="mission-actions">
             <button className="primary-action start-practice-button" onClick={onStartPractice} type="button">
