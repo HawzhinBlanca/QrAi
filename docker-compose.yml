@@ -58,6 +58,12 @@ services:
       ALLOW_INSECURE_DEFAULTS: "${ALLOW_INSECURE_DEFAULTS:-0}"
       ML_INFERENCE_URL: "http://ml-inference:8090"
       ASR_INFERENCE_URL: "http://asr-inference:8091"
+      # Operational knobs (safe defaults; override per deployment via .env.production):
+      # DB pool ceiling for a classroom burst, acquire timeout before a retryable 503, and
+      # LOG_FORMAT=json for a log aggregator. Empty LOG_FORMAT keeps the human-readable formatter.
+      DATABASE_MAX_CONNECTIONS: "${DATABASE_MAX_CONNECTIONS:-10}"
+      DATABASE_ACQUIRE_TIMEOUT_SECS: "${DATABASE_ACQUIRE_TIMEOUT_SECS:-10}"
+      LOG_FORMAT: "${LOG_FORMAT:-}"
     ports:
       - "8080:8080"
     depends_on:
