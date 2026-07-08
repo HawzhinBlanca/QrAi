@@ -145,8 +145,9 @@ sifat output on pilot data.
   labels/roles, landmark structure) — it cannot verify keyboard-only task completion, screen
   reader announcement quality, or the Arabic-RTL reading-order findings this item originally
   called for. **Remaining human step:** a manual keyboard-nav + screen-reader pass, and RTL
-  layout review once `docs/DECISIONS.md`-tracked RTL rendering work lands (the UI does not yet
-  flip to RTL for Arabic/Kurdish Sorani/Urdu at all — see the open RTL-readiness task).
+  layout review once the RTL rendering work lands — tracked as `docs/SHIP_PLAN.md` P2.4 (the UI
+  does not yet flip to RTL for Arabic/Kurdish Sorani/Urdu at all; a previous version of this
+  sentence pointed at a DECISIONS.md ADR that never existed).
 - **F18 — i18n completeness · 🟡 infrastructure complete, English-only content.** `i18next` +
   `react-i18next` are wired (`apps/web/src/i18n/index.ts`), every hardcoded UI string across the
   app (~20 components plus `data/platform.ts`/`types/practice.ts`/`lib/tajweedReview.ts`) has been
@@ -181,11 +182,26 @@ sifat output on pilot data.
 4. **Run** the container + mobile end-to-end smoke once (B4/B5) and the load test (E14).
 5. **Wire** log aggregation + alerting (E13) and DB backups (D10).
 6. **Make four small edits across three CI-protected files** that an agent cannot self-edit:
-   `ci.yml`'s Postgres migration list (missing 0015-0018), `docker-build.yml`'s web non-root
+   `ci.yml`'s Postgres migration list — missing **0015, 0016, 0017, 0019, 0020** (a previous
+   version of this line said "0015-0018"; 0014 does not exist and 0018 exists only on PR #123's
+   branch, so add 0018 to this list when that PR merges) — `docker-build.yml`'s web non-root
    assertion and its Trivy scan step (E15, two separate additions), and `verify.sh`'s node-services
    test line to include `golden-regression.test.mjs` (C7). Each is a one-line-per-item addition;
    the content to add is already written and tested, just not wired into the protected gate files.
-   See open PR #123 and the corresponding task chips for the exact diffs.
+   See open PR #123, `docs/SHIP_PLAN.md` Phase 0 (Owner Keys), and the task chips for exact diffs.
+
+### ADR-sourced open items (previously scattered across DECISIONS.md consequence sections)
+- **ADR-0005**: any database seeded before the SHA-256 checksum upgrade needs a one-time re-seed
+  (`node scripts/write-full-quran-sql-seed.mjs` output re-applied) — fresh deployments unaffected.
+- **ADR-0008**: the best-effort `cargo audit` step for `verify.sh` is written and verified but
+  blocked on the same protected-file sentinel as item 6 (RUSTSEC-2023-0071 is the documented
+  false positive to `--ignore`).
+- **ADR-0009**: `services/tajweed-neural` must upgrade `transformers` to >=5.3.0 and re-vendor/
+  re-test the custom model class **before** any promotion toward the learner path (A3).
+- **ADR-0011**: re-run `npm audit` in `apps/mobile` when it is promoted out of "never run on a
+  device" (B5) — findings were build-tooling-only at time of writing.
+- **Housekeeping**: close PR #58 as superseded by PR #123; enable branch protection on `main`
+  (required checks: `verify`, `build`) so the gates are mandatory, not conventional.
 
 Everything else is done in code and CI-verified on `main`. **QrAi is engineering-ship-ready; it
 is not launch-ready until the five items above (plus the four small protected-file edits in item 6)
