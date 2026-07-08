@@ -108,6 +108,14 @@ pub struct RealtimeGateway {
     counters: Arc<GatewayCounters>,
     chunk_capacity: usize,
     redis_url: Option<String>,
+    // Lazily-initialized, shared, auto-reconnecting async connection — NOT a fresh sync
+    // `redis::Client::open(..).get_connection()` per call. That prior pattern opened a brand-new
+    // blocking TCP connection (handshake included) on every session start/end, every ticket
+    // check, and every metrics poll, executed directly inside async handlers with no
+    // `spawn_blocking` — real risk of stalling a Tokio worker thread under Redis latency, on top
+    // of the connection-churn overhead. `ConnectionManager` is `Clone` (multiplexes over one
+    // connection) and reconnects on its own, so one instance is created once and reused.
+    redis_conn: Arc<tokio::sync::OnceCell<redis::aio::ConnectionManager>>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -144,25 +152,51 @@ impl RealtimeGateway {
             counters: Arc::new(GatewayCounters::default()),
             chunk_capacity: chunk_capacity.max(1),
             redis_url,
+            redis_conn: Arc::new(tokio::sync::OnceCell::new()),
+        }
+    }
+
+    /// Returns the shared `ConnectionManager`, initializing it on first use. Cheap to call
+    /// repeatedly: after the first successful connect, this is just an `Arc`/`Clone` load, no I/O.
+    ///
+    /// Configured with a SHORT connection timeout and NO retries — the crate's own defaults are 6
+    /// retries with exponential backoff, which would turn "Redis is unreachable" into a multi-second
+    /// stall on every call site here, including the ticket_fail_closed path, whose entire point is to
+    /// reject a connection quickly rather than let a client hang waiting for a security check to time
+    /// out. The old per-call sync `get_connection()` made exactly one attempt and failed immediately;
+    /// this preserves that fail-fast behavior while still getting a shared, reusable connection.
+    async fn redis_connection(&self) -> Option<redis::aio::ConnectionManager> {
+        let url = self.redis_url.as_ref()?;
+        let result = self
+            .redis_conn
+            .get_or_try_init(|| async {
+                let config = redis::aio::ConnectionManagerConfig::new()
+                    .set_number_of_retries(0)
+                    .set_connection_timeout(std::time::Duration::from_secs(2))
+                    .set_response_timeout(std::time::Duration::from_secs(2));
+                redis::Client::open(url.as_str())?
+                    .get_connection_manager_with_config(config)
+                    .await
+            })
+            .await;
+        match result {
+            Ok(conn) => Some(conn.clone()),
+            Err(e) => {
+                tracing::warn!("Redis connect failed: {e}");
+                None
+            }
         }
     }
 
     async fn redis_track_session(&self, session_id: &str, action: &str) {
-        if let Some(ref _url) = self.redis_url
-            && let Ok(mut conn) = redis::Client::open(_url.as_str())
-                .and_then(|c| c.get_connection())
-                .map_err(|e| {
-                    tracing::warn!("Redis connect failed: {e}");
-                    e
-                })
-        {
+        if let Some(mut conn) = self.redis_connection().await {
             // Active sessions live in a SORTED SET scored by expiry (unix seconds). This SELF-HEALS: a
             // session whose "end" is never recorded (dropped socket, panicking task, gateway crash or
             // restart) simply expires by score and is evicted on the next count. The previous bare
             // INCR/DECR counter had no TTL and no reconciliation, so any unclean termination or restart
             // drifted `active-session-count` upward forever with no recovery short of a manual reset.
             let zkey = "quran-ai:gateway:active-sessions";
-            let _: Result<(), _> = match action {
+            let result: redis::RedisResult<()> = match action {
                 "start" => {
                     // Bound a session's tracked lifetime to the ticket TTL window.
                     let expiry = unix_now_seconds().saturating_add(ACTIVE_SESSION_TTL_SECONDS);
@@ -170,14 +204,21 @@ impl RealtimeGateway {
                         .arg(zkey)
                         .arg(expiry)
                         .arg(session_id)
-                        .query(&mut conn)
+                        .query_async(&mut conn)
+                        .await
                 }
-                "end" => redis::cmd("ZREM")
-                    .arg(zkey)
-                    .arg(session_id)
-                    .query(&mut conn),
+                "end" => {
+                    redis::cmd("ZREM")
+                        .arg(zkey)
+                        .arg(session_id)
+                        .query_async(&mut conn)
+                        .await
+                }
                 _ => Ok(()),
             };
+            if let Err(e) = result {
+                tracing::warn!("Redis session tracking ({action}) failed: {e}");
+            }
         }
     }
 
@@ -198,18 +239,11 @@ impl RealtimeGateway {
     }
 
     async fn redis_mark_ticket(&self, ticket_hash: &str, ttl_seconds: u64) -> TicketDedup {
-        let Some(ref url) = self.redis_url else {
+        let Some(mut conn) = self.redis_connection().await else {
             return TicketDedup::Unavailable;
         };
         let ttl = ttl_seconds.max(1);
         let key = format!("quran-ai:gateway:ticket:{ticket_hash}");
-        let mut conn = match redis::Client::open(url.as_str()).and_then(|c| c.get_connection()) {
-            Ok(conn) => conn,
-            Err(e) => {
-                tracing::warn!("Redis connect failed (ticket dedup degraded to in-memory): {e}");
-                return TicketDedup::Unavailable;
-            }
-        };
         // `SET .. NX` returns the value ("OK") when the key was newly set, and Nil
         // (deserialized to None) when the key already existed — i.e. a replay.
         let set: redis::RedisResult<Option<String>> = redis::cmd("SET")
@@ -218,7 +252,8 @@ impl RealtimeGateway {
             .arg("NX")
             .arg("EX")
             .arg(ttl)
-            .query(&mut conn);
+            .query_async(&mut conn)
+            .await;
         match set {
             Ok(Some(_)) => TicketDedup::Fresh,
             Ok(None) => TicketDedup::Replay,
@@ -297,25 +332,22 @@ impl RealtimeGateway {
     }
 
     pub async fn active_session_count(&self) -> usize {
-        if let Some(ref _url) = self.redis_url
-            && let Ok(mut conn) = redis::Client::open(_url.as_str())
-                .and_then(|c| c.get_connection())
-                .map_err(|e| {
-                    tracing::warn!("Redis connect failed: {e}");
-                    e
-                })
-        {
+        if let Some(mut conn) = self.redis_connection().await {
             let zkey = "quran-ai:gateway:active-sessions";
             let now = unix_now_seconds();
             // Evict entries whose expiry has passed (stale sessions left by crashes/restarts), then
             // count the live ones. `(now` makes the bound exclusive so a session expiring exactly now
             // is still counted until the next tick.
-            let _: Result<(), _> = redis::cmd("ZREMRANGEBYSCORE")
+            let evict: redis::RedisResult<()> = redis::cmd("ZREMRANGEBYSCORE")
                 .arg(zkey)
                 .arg("-inf")
                 .arg(format!("({now}"))
-                .query(&mut conn);
-            let count: Result<i64, _> = redis::cmd("ZCARD").arg(zkey).query(&mut conn);
+                .query_async(&mut conn)
+                .await;
+            if let Err(e) = evict {
+                tracing::warn!("Redis ZREMRANGEBYSCORE active-sessions failed: {e}");
+            }
+            let count: Result<i64, _> = redis::cmd("ZCARD").arg(zkey).query_async(&mut conn).await;
             match count {
                 Ok(c) => return c.max(0) as usize,
                 Err(e) => {
