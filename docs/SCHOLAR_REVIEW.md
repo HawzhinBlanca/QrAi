@@ -25,7 +25,7 @@ Each rule emits `{ rule, arabicName, category, severity: "practice", explanation
 | **madd (dagger alif)** (مد) | dagger alif `ٰ` (U+0670) | Flags the dagger-alif elongation (e.g. in `هَٰذَا`, `ٱللَّٰه`). Labelled `madd-maleki` in code — **please confirm the correct term**; the engine only flags presence + "hold two counts". |
 | **ghunnah** (غنة) | nūn+sukūn `نْ`, word-final bare nūn `…ن`, or tanwīn `ـً ـٍ ـٌ` | Coarse: flags the nasalisation site without stating duration or the following-letter context that actually governs it (that is handled separately by the inter-word rules below). |
 | **qalqalah** (قلقلة) | one of ق ط ب ج د carrying sukūn `ْ` | The five qalqalah letters (quṭb jad). Does not grade minor/major qalqalah. |
-| **tafkhīm** (تفخيم) | presence of one of خ ص ض ط ظ ق | Fires on the seven ḥurūf al-istiʿlāʾ **by presence**, not context. Does **not** handle the context-dependent tafkhīm/tarqīq of **rāʾ (ر)** or the **lām of the name Allah**. |
+| **tafkhīm** (تفخيم) | presence of one of خ ص ض ط ظ ق | Fires on **six of the seven ḥurūf al-istiʿlāʾ by presence**, not context — **غ (ghayn) is currently missing** from the engine's letter set (see Question A1-2). Does **not** handle the context-dependent tafkhīm/tarqīq of **rāʾ (ر)** or the **lām of the name Allah**. *(An earlier version of this row said "seven" while both the row and the code list six — corrected so the packet is honest before review.)* |
 | **shaddah** (شدة) | shadda `ّ` (U+0651) | Flags consonant doubling. See the open gap below re: nūn/mīm mushaddad. |
 
 ### Open gap (currently withheld, not wrongly shown)
@@ -58,12 +58,15 @@ sākin (the mushaf writes particles مِن/عَن/أَن etc. with a bare nūn),
    presence, with rāʾ and the lām of Allah **not** handled; (c) idghām not split into with/without
    ghunnah; (d) mushaddad ghunnah currently withheld?
 3. **A1-1 — mushaddad ghunnah.** Add it (نّ/مّ, two counts) or keep withheld?
-4. **A3 — labelling.** Is **"AI suggestion · not yet reviewed"** + human-review-before-authoritative +
+4. **A1-2 — ghayn (غ) in tafkhīm.** The engine detects tafkhīm on six of the seven ḥurūf
+   al-istiʿlāʾ — غ is currently missing. Should غ be added to the detection set (making it the
+   classical seven: خ ص ض غ ط ق ظ), or is its omission acceptable for a practice-assist tool?
+5. **A3 — labelling.** Is **"AI suggestion · not yet reviewed"** + human-review-before-authoritative +
    `severity: "practice"` a sufficient and honest frame for a learner? If not, what wording/gating is
    required?
-5. **Withhold list.** Are there any rules above that must **not** be shown to a learner at all (even
+6. **Withhold list.** Are there any rules above that must **not** be shown to a learner at all (even
    provisionally) until corrected?
 
 **Sign-off.** When satisfied, the reviewing scholar records name + ijāzah/qualification + date, and the
-answers to 1–5, in `docs/DECISIONS.md` (an ADR). That ADR — not this file — is the record that clears
+answers to 1–6, in `docs/DECISIONS.md` (an ADR). That ADR — not this file — is the record that clears
 A1/A3. Any rule the scholar rejects is removed or corrected and its test updated before release.
