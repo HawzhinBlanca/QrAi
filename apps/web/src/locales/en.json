@@ -2,8 +2,10 @@
   "topBar": {
     "language": "Language",
     "trustLabelDefault": "Scholar-gated",
+    "trustLabelTeacherReviewed": "Teacher-reviewed",
     "displayNameDefault": "Soran Othman",
-    "roleLabelDefault": "Student"
+    "roleLabelDefault": "Student",
+    "logout": "Log out"
   },
   "sidebar": {
     "brand": "Quran AI",

@@ -626,6 +626,35 @@ describe("Quran AI app smoke", () => {
     expect(document.body.textContent).toContain("Français");
   });
 
+  it("TopBar's profile chip shows the real active user, not a hardcoded placeholder identity", async () => {
+    // Regression test: TopBar was never passed displayName/roleLabel at all, so the chip always
+    // rendered the translated placeholder default ("Soran Othman" / "Student") regardless of who
+    // was actually using the app. In the default no-login-required mode the real identity is the
+    // bypass-mode default learner ("Learner" / "learner"), not the placeholder.
+    const root = createRoot(container);
+    await act(async () => {
+      root.render(<App />);
+    });
+
+    expect(document.body.textContent).toContain("Learner");
+    expect(document.body.textContent).not.toContain("Soran Othman");
+  });
+
+  it("TopBar's profile chip has no working logout in no-login-required mode, so it is disabled rather than a dead dropdown affordance", async () => {
+    // Regression test: the chip rendered a ChevronDown icon implying a dropdown/menu, but was a
+    // plain <div> with no onClick and no logout at all. There is no real session to log out of
+    // in the default bypass-login mode (VITE_REQUIRE_LOGIN unset), so the fix disables the
+    // button rather than wiring a no-op click handler that would silently do nothing.
+    const root = createRoot(container);
+    await act(async () => {
+      root.render(<App />);
+    });
+
+    const profileChip = document.querySelector<HTMLButtonElement>(".profile-chip");
+    expect(profileChip, "TopBar must render the profile chip as a real <button>").toBeTruthy();
+    expect(profileChip!.disabled).toBe(true);
+  });
+
   it("switching the language selector actually drives i18next, not just the dropdown's own display value", async () => {
     // Regression test for the gap this fixes: activeLanguage previously only picked which native
     // name to display in the dropdown and tagged session metadata sent to the backend -- it never

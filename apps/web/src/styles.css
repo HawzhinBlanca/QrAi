@@ -257,6 +257,15 @@ button:disabled {
 
 .profile-chip {
   gap: 10px;
+  border: 0;
+  background: transparent;
+  font: inherit;
+  color: inherit;
+  cursor: pointer;
+}
+
+.profile-chip:disabled {
+  cursor: default;
 }
 
 .profile-chip span {
