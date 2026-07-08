@@ -42,6 +42,7 @@ import {
   fetchMemorizationPlan,
   fetchLearnerProgress,
   updateLearnerProgress,
+  supportedLanguages,
   type MemorizationPlan,
   type LearnerProgress,
 } from "./data/platform";
@@ -217,6 +218,13 @@ function AuthenticatedApp({ bypassLogin = false }: { bypassLogin?: boolean }) {
   // this never breaks rendering, it just doesn't show translated content yet.
   useEffect(() => {
     void i18n.changeLanguage(activeLanguage);
+    // Flip the whole document to the active language's writing direction. The pilot's default
+    // (Kurdish Sorani) and Arabic/Urdu are RTL — the chrome must mirror, not just the Arabic text
+    // blocks that already carry their own dir="rtl". styles.css uses CSS logical properties so this
+    // single dir flip mirrors padding/margins/positioning correctly (P2.4).
+    const language = supportedLanguages.find((l) => l.code === activeLanguage);
+    document.documentElement.dir = language?.direction ?? "ltr";
+    document.documentElement.lang = activeLanguage;
   }, [activeLanguage]);
 
   const activeStepIndex = Math.max(0, practiceSteps.findIndex((step) => step.id === practiceMode));

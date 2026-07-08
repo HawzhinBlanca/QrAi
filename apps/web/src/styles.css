@@ -62,7 +62,7 @@ button:disabled {
 .skip-link {
   position: absolute;
   top: -100%;
-  left: 16px;
+  inset-inline-start: 16px;
   z-index: 9999;
   padding: 8px 16px;
   background: #c77d20;
@@ -106,7 +106,7 @@ button:disabled {
   flex-direction: column;
   gap: 28px;
   padding: 26px 16px;
-  border-right: 1px solid var(--line);
+  border-inline-end: 1px solid var(--line);
   background: rgba(255, 252, 245, 0.88);
   backdrop-filter: blur(18px);
 }
@@ -151,7 +151,7 @@ button:disabled {
   border-radius: 8px;
   color: #5f5a51;
   background: transparent;
-  text-align: left;
+  text-align: start;
 }
 
 .nav-item.active {
@@ -270,7 +270,7 @@ button:disabled {
 
 .profile-chip span {
   display: grid;
-  text-align: right;
+  text-align: end;
   font-size: 13px;
   font-weight: 650;
 }
@@ -708,7 +708,7 @@ button:disabled {
   color: var(--ink);
   font-size: 14px;
   font-weight: 850;
-  text-align: right;
+  text-align: end;
 }
 
 .learner-summary-grid {
@@ -837,7 +837,7 @@ button:disabled {
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  margin-left: auto;
+  margin-inline-start: auto;
   border: 1px solid currentColor;
   border-radius: 7px;
   color: inherit;
@@ -934,16 +934,16 @@ button:disabled {
 
 .reader-frame::before {
   top: 13px;
-  left: 13px;
-  border-right: 0;
+  inset-inline-start: 13px;
+  border-inline-end: 0;
   border-bottom: 0;
 }
 
 .reader-frame::after {
-  right: 13px;
+  inset-inline-end: 13px;
   bottom: 13px;
   border-top: 0;
-  border-left: 0;
+  border-inline-start: 0;
 }
 
 .verse-line {
@@ -1153,7 +1153,7 @@ button:disabled {
   border-bottom: 1px solid var(--line);
   color: inherit;
   background: transparent;
-  text-align: left;
+  text-align: start;
 }
 
 .issue-card.selected,
@@ -1171,7 +1171,7 @@ button:disabled {
 }
 
 .issue-kind time {
-  margin-left: auto;
+  margin-inline-start: auto;
   font-weight: 560;
 }
 
@@ -1355,7 +1355,7 @@ button:disabled {
   display: grid;
   width: 34px;
   height: 34px;
-  margin-left: auto;
+  margin-inline-start: auto;
   place-items: center;
   border: 0;
   border-radius: 8px;
@@ -1541,7 +1541,7 @@ button:disabled {
   display: flex;
   align-items: center;
   gap: 10px;
-  margin-left: auto;
+  margin-inline-start: auto;
   flex: 0 0 auto;
 }
 
@@ -1614,7 +1614,7 @@ button:disabled {
   }
   .coach-actions {
     width: 100%;
-    margin-left: 0;
+    margin-inline-start: 0;
   }
 }
 
@@ -1781,7 +1781,7 @@ button:disabled {
   border: 0;
   color: #544d42;
   background: rgba(255, 253, 248, 0.92);
-  text-align: left;
+  text-align: start;
   /* Same min-width:auto grid-item trap as .reader-panel/.audio-coach: .platform-apps' own
      minmax(0, 1fr) columns can't actually shrink below this item's min-content (driven by its
      nowrap label/description) without this — overflowing the viewport around the 1320-1330px
@@ -2079,7 +2079,7 @@ button:disabled {
 }
 
 .alignment-row strong {
-  text-align: right;
+  text-align: end;
   color: var(--emerald-strong);
 }
 
@@ -2473,7 +2473,7 @@ button:disabled {
     gap: 0;
     padding: 8px 10px max(8px, env(safe-area-inset-bottom));
     border-top: 1px solid var(--line);
-    border-right: 0;
+    border-inline-end: 0;
   }
 
   .brand {
@@ -2654,7 +2654,7 @@ button:disabled {
 
   .state-banner button {
     width: 100%;
-    margin-left: 0;
+    margin-inline-start: 0;
     justify-content: center;
   }
 
@@ -2692,7 +2692,7 @@ button:disabled {
 
   .alignment-row strong {
     grid-column: 1 / -1;
-    text-align: left;
+    text-align: start;
   }
 
   .practice-header {
@@ -2871,7 +2871,7 @@ button:disabled {
   font-size: 18px;
 }
 .tajweed-conf {
-  margin-left: auto;
+  margin-inline-start: auto;
   font-size: 12px;
   color: #8a7e66;
   font-weight: 600;
@@ -2939,7 +2939,7 @@ button:disabled {
   margin: 0 0 20px;
 }
 .error-boundary-details {
-  text-align: left;
+  text-align: start;
   margin-bottom: 20px;
   font-size: 12px;
   color: #8a7e66;
