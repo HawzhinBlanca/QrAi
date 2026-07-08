@@ -135,6 +135,7 @@ export interface TraceableRecord {
 }
 
 export interface ConsentSnapshot {
+  recordingConsent: boolean;
   audioRetention: AudioRetentionMode;
   anonymizedLearning: boolean;
   externalAsrProcessing: boolean;
@@ -200,6 +201,7 @@ export interface RealtimeSessionTicket {
   allowedSampleRates: Array<16000 | 24000 | 48000>;
   externalAsrProcessing: boolean;
   token: string;
+  auditEventId: string;
 }
 
 export interface AudioChunk extends TraceableRecord {
