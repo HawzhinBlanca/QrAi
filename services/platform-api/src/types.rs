@@ -57,6 +57,12 @@ pub struct QuranReference {
     pub surah_number: u16,
     pub ayah_start: u16,
     pub ayah_end: u16,
+    // packages/contracts/src/index.ts's QuranReference has always declared these two as optional
+    // (word-level scoping within an ayah range), but this struct never had matching fields --
+    // serde silently drops any unknown JSON field on deserialize, so a caller sending wordStart/
+    // wordEnd lost that data the instant the request was parsed, before it ever reached the DB.
+    pub word_start: Option<u16>,
+    pub word_end: Option<u16>,
     pub display: String,
 }
 

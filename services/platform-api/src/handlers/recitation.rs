@@ -171,6 +171,8 @@ pub async fn get_session(
             surah_number: 1,
             ayah_start: 1,
             ayah_end: 7,
+            word_start: None,
+            word_end: None,
             display: "Unknown".to_owned(),
         });
 

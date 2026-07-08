@@ -134,6 +134,80 @@ async fn creates_recitation_session_in_postgres() {
 
 #[tokio::test]
 #[ignore = "requires live Postgres"]
+async fn quran_ref_word_start_and_word_end_round_trip_through_create_and_get() {
+    // Regression test: QuranReference in Rust used to have no word_start/word_end fields even
+    // though packages/contracts/src/index.ts has always declared them (optional word-level
+    // scoping within an ayah range) -- serde silently drops unknown JSON fields on deserialize,
+    // so a caller sending wordStart/wordEnd lost that data the instant the request was parsed,
+    // before it ever reached the DB, and it was of course also absent from every subsequent read.
+    let state = test_state();
+    let router = platform_router_with_rate_limit(state.clone(), false);
+    let learner_id = format!("learner-word-scope-{}", next_suffix());
+    sqlx::query(
+        "INSERT INTO users (id, tenant_id, display_name, role, language)
+         VALUES ($1, 'hikmah-pilot-erbil', 'Word Scope Learner', 'learner', 'ckb')",
+    )
+    .bind(&learner_id)
+    .execute(&state.pool)
+    .await
+    .unwrap();
+
+    let created = send_json(
+        &router,
+        Method::POST,
+        "/v1/recitation-sessions",
+        Some("hikmah-pilot-erbil"),
+        Some("admin"),
+        json!({
+            "learnerId": learner_id,
+            "quranRef": {
+                "surahNumber": 1,
+                "ayahStart": 1,
+                "ayahEnd": 1,
+                "wordStart": 2,
+                "wordEnd": 4,
+                "display": "Al-Fatihah 1:1, words 2-4"
+            },
+            "sourceChecksum": "fnv1a32:word-scope",
+            "modelVersion": "model-v0.3",
+            "language": "ckb",
+            "mode": "listen",
+            "practicePlanId": "fatihah-mastery-v1",
+            "consent": {"audioRetention": "discard", "anonymizedLearning": true, "externalAsrProcessing": false, "guardianApproved": true, "consentVersion": "pilot-v1"}
+        }),
+    )
+    .await;
+    assert_eq!(created.status(), StatusCode::OK);
+    let created_body: Value = read_json(created).await;
+    assert_eq!(created_body["quranRef"]["wordStart"], json!(2));
+    assert_eq!(created_body["quranRef"]["wordEnd"], json!(4));
+    let session_id = created_body["id"].as_str().unwrap().to_string();
+
+    let fetched = send_json(
+        &router,
+        Method::GET,
+        &format!("/v1/recitation-sessions/{session_id}"),
+        Some("hikmah-pilot-erbil"),
+        Some("admin"),
+        Value::Null,
+    )
+    .await;
+    assert_eq!(fetched.status(), StatusCode::OK);
+    let fetched_body: Value = read_json(fetched).await;
+    assert_eq!(
+        fetched_body["quranRef"]["wordStart"],
+        json!(2),
+        "wordStart must survive a round trip through the DB, not be silently dropped"
+    );
+    assert_eq!(
+        fetched_body["quranRef"]["wordEnd"],
+        json!(4),
+        "wordEnd must survive a round trip through the DB, not be silently dropped"
+    );
+}
+
+#[tokio::test]
+#[ignore = "requires live Postgres"]
 async fn gets_quran_surah_list_from_postgres() {
     let router = platform_router_with_rate_limit(test_state(), false);
     let response = send_json(
