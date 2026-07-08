@@ -12,7 +12,25 @@ import {
   createEvalRun,
   getAuditEvents,
   safeStorageSegment,
+  route,
 } from "./server.mjs";
+
+// Minimal mock of the http.IncomingMessage/ServerResponse pair route() needs. GET requests never
+// read a body here, so the mock request only needs `.url`/`.method`; the mock response just
+// captures what jsonResponse()/httpError() would have written to a real socket.
+function mockRequest(url, method = "GET") {
+  return { url, method, headers: {} };
+}
+function mockResponse() {
+  const res = { status: null, body: null };
+  res.writeHead = (status) => {
+    res.status = status;
+  };
+  res.end = (body) => {
+    res.body = body ? JSON.parse(body) : null;
+  };
+  return res;
+}
 
 // These tests run in the DEFAULT (production) configuration: ML_USE_GOLDEN_FIXTURES is unset, so
 // every request computes REAL alignment/tajweed even for the golden ref Al-Fatihah 1:1-7. The bug
@@ -148,5 +166,40 @@ test("predictAlignment rejects an ayahEnd beyond the surah's real ayah count (40
       }),
     (e) => e.status === 400,
     "ayahEnd beyond Surah 97's 5 ayahs must be a 400, not a silently truncated result",
+  );
+});
+
+// GET /v1/audit-events used to fall back to returning EVERY tenant's events when the tenantId
+// query param was omitted, gated only by the single shared ML_API_KEY (not tenant-specific) --
+// any caller holding that one key could read every other tenant's audit trail. Exercises the real
+// HTTP route() dispatcher, not just the getAuditEvents() test-only accessor, since the bug lived
+// in the route handler's own fallback, not in that accessor.
+test("GET /v1/audit-events requires tenantId and never leaks another tenant's events", async () => {
+  await predictAlignment({
+    tenantId: "audit-leak-tenant-a",
+    sessionId: "s-audit-leak-a",
+    quranRef: { surahNumber: 1, ayahStart: 1, ayahEnd: 1, display: "Al-Fatihah 1:1" },
+  });
+  await predictAlignment({
+    tenantId: "audit-leak-tenant-b",
+    sessionId: "s-audit-leak-b",
+    quranRef: { surahNumber: 1, ayahStart: 1, ayahEnd: 1, display: "Al-Fatihah 1:1" },
+  });
+
+  // No tenantId -> 400, not "every tenant's events".
+  await assert.rejects(
+    () => route(mockRequest("/v1/audit-events"), mockResponse()),
+    (e) => e.status === 400,
+    "omitting tenantId must be a 400, not a fallback to every tenant's events",
+  );
+
+  // With tenantId -> 200, scoped to exactly that tenant, tenant B's events absent.
+  const res = mockResponse();
+  await route(mockRequest("/v1/audit-events?tenantId=audit-leak-tenant-a"), res);
+  assert.equal(res.status, 200);
+  assert.ok(res.body.length > 0, "tenant A's own events must be present");
+  assert.ok(
+    res.body.every((event) => event.tenantId === "audit-leak-tenant-a"),
+    "response must contain ONLY tenant A's events, never tenant B's",
   );
 });

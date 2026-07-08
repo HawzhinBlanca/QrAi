@@ -763,7 +763,7 @@ async function storeAudioChunk(requestBody) {
 export function getAuditEvents(tenantId) {
   return tenantId ? auditEvents.filter((event) => event.tenantId === tenantId) : auditEvents;
 }
-export { predictAlignment, predictTajweed, createEvalRun, safeStorageSegment };
+export { predictAlignment, predictTajweed, createEvalRun, safeStorageSegment, route };
 
 // === Router ===
 async function route(request, response) {
@@ -784,11 +784,23 @@ async function route(request, response) {
   }
 
   if (request.method === "GET" && url.pathname === "/v1/audit-events") {
+    // tenantId is REQUIRED on this HTTP surface, unlike the getAuditEvents() test-only accessor
+    // above (which intentionally supports an unscoped "every tenant" mode for the hermetic
+    // node:test suite, never network-reachable). This route used to fall back to "every tenant"
+    // the same way when the query param was omitted -- gated only by the single shared
+    // ML_API_KEY, which is not tenant-specific, so any caller holding that one key could read
+    // every other tenant's alignment/tajweed predictions, session/trace ids, confidence scores,
+    // and privacy consent events by simply omitting ?tenantId=. README.md has always documented
+    // this route as `GET /v1/audit-events?tenantId=...` -- tenantId was never meant to be
+    // optional here.
     const tenantId = url.searchParams.get("tenantId");
+    if (!tenantId) {
+      throw httpError(400, "tenantId query parameter is required");
+    }
     jsonResponse(
       response,
       200,
-      tenantId ? auditEvents.filter((event) => event.tenantId === tenantId) : auditEvents,
+      auditEvents.filter((event) => event.tenantId === tenantId),
     );
     return;
   }
