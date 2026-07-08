@@ -8,6 +8,8 @@
 // Run: `node server.mjs`  (GET /health, POST /run)
 
 import http from "node:http";
+import { realpathSync } from "node:fs";
+import { pathToFileURL } from "node:url";
 import { runTajweedExplainer } from "./lib/tajweedExplainer.mjs";
 import { runMistakePatternSummarizer } from "./lib/mistakePatterns.mjs";
 import { runPracticeRecommender } from "./lib/practiceRecommender.mjs";
@@ -171,8 +173,17 @@ const server = http.createServer(async (req, res) => {
   }
 });
 
-// Only start listening when run directly (not when imported by tests).
-if (import.meta.url === `file://${process.argv[1]}`) {
+// Only start listening when run directly (not when imported by tests). Compares canonicalized
+// URLs (realpathSync + pathToFileURL), not a naive `file://${argv[1]}` string concat — the naive
+// form breaks when the process is launched through a symlink (argv[1] is the symlink path while
+// import.meta.url resolves to the real file) or when the path needs URL-encoding, silently
+// leaving isMain false and the server never binding its port. Mirrors the identical fix already
+// applied in services/ml-inference/server.mjs (see that file's isMain comment).
+const isMain = process.argv[1]
+  ? import.meta.url === pathToFileURL(realpathSync(process.argv[1])).href
+  : false;
+
+if (isMain) {
   server.listen(PORT, "127.0.0.1", () => {
     console.log(`quran-ai agents service listening on http://127.0.0.1:${PORT}`);
     console.log(`  platform-api: ${PLATFORM_API_URL}  tenant: ${TENANT_ID}`);
