@@ -53,4 +53,69 @@ describe("fetchWithTimeout", () => {
     // 5ms fetch under a 200ms timeout resolves cleanly; the timer is cleared in the finally block.
     await expect(fetchWithTimeout("https://api.test/quick", {}, 200)).resolves.toBe(response);
   });
+
+  it("still enforces its own timeout when the caller also passes a signal", async () => {
+    // Regression test: `init.signal ?? controller.signal` used to DISCARD the timeout's own
+    // signal whenever a caller passed one, silently defeating this function's whole stated
+    // purpose for any caller-provided signal. A fetch that only settles on abort must still be
+    // aborted by the timeout even when the caller's own (never-firing) signal is also present.
+    const callerController = new AbortController();
+    const fetchMock = vi.fn(
+      (_input: RequestInfo | URL, init: RequestInit = {}) =>
+        new Promise<Response>((_resolve, reject) => {
+          init.signal?.addEventListener("abort", () =>
+            reject(new DOMException("The operation was aborted.", "AbortError")),
+          );
+        }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(
+      fetchWithTimeout("https://api.test/slow", { signal: callerController.signal }, 10),
+    ).rejects.toMatchObject({ name: "AbortError" });
+  });
+
+  it("aborts immediately if the caller's signal is already aborted before the call", async () => {
+    const callerController = new AbortController();
+    callerController.abort();
+    const fetchMock = vi.fn(
+      (_input: RequestInfo | URL, init: RequestInit = {}) =>
+        new Promise<Response>((_resolve, reject) => {
+          if (init.signal?.aborted) {
+            reject(new DOMException("The operation was aborted.", "AbortError"));
+            return;
+          }
+          init.signal?.addEventListener("abort", () =>
+            reject(new DOMException("The operation was aborted.", "AbortError")),
+          );
+        }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(
+      fetchWithTimeout("https://api.test/already-aborted", { signal: callerController.signal }, 5000),
+    ).rejects.toMatchObject({ name: "AbortError" });
+  });
+
+  it("also aborts on the caller's own signal, independent of the timeout", async () => {
+    const callerController = new AbortController();
+    const fetchMock = vi.fn(
+      (_input: RequestInfo | URL, init: RequestInit = {}) =>
+        new Promise<Response>((_resolve, reject) => {
+          init.signal?.addEventListener("abort", () =>
+            reject(new DOMException("The operation was aborted.", "AbortError")),
+          );
+        }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const promise = fetchWithTimeout(
+      "https://api.test/caller-cancels",
+      { signal: callerController.signal },
+      60000,
+    );
+    callerController.abort();
+
+    await expect(promise).rejects.toMatchObject({ name: "AbortError" });
+  });
 });
