@@ -622,6 +622,84 @@ pub async fn persist_session_alignments(
     })))
 }
 
+/// Learner-initiated "send to teacher": flips the caller's OWN session from draft to
+/// teacher-review-required, so it actually appears in the teacher's review pipeline.
+///
+/// This endpoint exists because the web's "Send to teacher" button previously only switched a
+/// local UI step and then displayed "Sent to teacher." — a functional lie; nothing was ever sent
+/// (SHIP_PLAN P1.2). Rules:
+///  - owner-only: the session must belong to the authenticated actor (any role may send its own);
+///  - idempotent: re-sending an already-sent session is a 200 no-op, so a double-tap never errors;
+///  - draft-only otherwise: a session a teacher/scholar has already progressed past
+///    teacher-review-required is not silently reset by a learner action.
+pub async fn request_teacher_review(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let actor = actor_from_headers(&headers, &state.jwt_config)?;
+
+    let mut tx = crate::begin_tenant_tx(&state.pool, &actor.tenant_id).await?;
+
+    let row: Option<(String, String)> = sqlx::query_as(
+        "SELECT learner_id, review_status FROM recitation_sessions
+         WHERE tenant_id = $1 AND id = $2",
+    )
+    .bind(&actor.tenant_id)
+    .bind(&id)
+    .fetch_optional(&mut *tx)
+    .await?;
+    let Some((learner_id, review_status)) = row else {
+        return Err(ApiError::NotFound);
+    };
+    if learner_id != actor.user_id {
+        return Err(ApiError::Forbidden);
+    }
+    if review_status == "teacher-review-required" {
+        tx.commit().await?;
+        return Ok(Json(serde_json::json!({
+            "sessionId": id,
+            "reviewStatus": "teacher-review-required",
+            "alreadyRequested": true,
+        })));
+    }
+    if review_status != "draft" {
+        return Err(ApiError::BadRequest(format!(
+            "session review_status is '{review_status}'; only a draft session can be sent for \
+             teacher review"
+        )));
+    }
+
+    let audit_id = next_id("audit");
+    sqlx::query(
+        "INSERT INTO audit_events (id, tenant_id, actor_id, action, subject_type, subject_id)
+         VALUES ($1, $2, $3, 'session.teacher_review.requested', 'recitation_session', $4)",
+    )
+    .bind(&audit_id)
+    .bind(&actor.tenant_id)
+    .bind(&actor.user_id)
+    .bind(&id)
+    .execute(&mut *tx)
+    .await?;
+
+    sqlx::query(
+        "UPDATE recitation_sessions SET review_status = 'teacher-review-required'
+         WHERE tenant_id = $1 AND id = $2",
+    )
+    .bind(&actor.tenant_id)
+    .bind(&id)
+    .execute(&mut *tx)
+    .await?;
+
+    tx.commit().await?;
+
+    Ok(Json(serde_json::json!({
+        "sessionId": id,
+        "reviewStatus": "teacher-review-required",
+        "auditEventId": audit_id,
+    })))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -143,6 +143,33 @@ export async function createRecitationSession(params: {
 }
 
 /**
+ * Learner-initiated "send to teacher": asks the backend to flip the learner's OWN session to
+ * teacher-review-required so it genuinely enters the teacher's review pipeline. The UI must only
+ * claim "sent" after this resolves — the previous implementation flipped a local UI step and
+ * displayed "Sent to teacher." without any request at all (SHIP_PLAN P1.2).
+ */
+export async function requestTeacherReview(params: {
+  tenantId: string;
+  userId: string;
+  authToken?: string;
+  sessionId: string;
+}): Promise<void> {
+  const response = await fetchWithTimeout(
+    `${API_BASE}/v1/recitation-sessions/${encodeURIComponent(params.sessionId)}/request-teacher-review`,
+    {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        ...actorHeaders(params.tenantId, params.userId, "learner", params.authToken),
+      },
+    },
+  );
+  if (!response.ok) {
+    throw new Error(`Request teacher review ${response.status}`);
+  }
+}
+
+/**
  * Persist a session's computed alignment so it reaches `word_alignments` and becomes visible
  * in the Command console (which reads real alignment, not just seeded demo rows). Synthetic
  * "extra" words are dropped server-side. Best-effort: callers fire-and-forget.

@@ -161,7 +161,11 @@ describe("Quran AI app smoke", () => {
       sendToTeacherButton?.click();
     });
 
-    expect(document.body.textContent).toContain("Sent to teacher");
+    // No backend and no analyzed session in this smoke test -> nothing was actually sent, and
+    // the banner must say so. A previous version unconditionally displayed "Sent to teacher."
+    // after a button that made no request at all — this assertion pinned that lie.
+    expect(document.body.textContent).toContain("No analyzed recitation to send yet");
+    expect(document.body.textContent).not.toContain("Sent to your teacher");
 
     await act(async () => {
       nextButton?.click();

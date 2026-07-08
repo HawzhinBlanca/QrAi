@@ -149,7 +149,10 @@
     "correctionText_other": "Low-confidence guidance: {{count}} words need a gentle review before feedback is shown as final.",
     "correctionTextNoMistakes": "No flagged words in this pass — review is optional before feedback is shown as final.",
     "sendToTeacher": "Send to teacher",
-    "drillText": "Sent to teacher. For now, repeat the short phrase slowly three times.",
+    "drillTextSent": "Sent to your teacher for review. For now, repeat the short phrase slowly three times.",
+    "drillTextSendFailed": "Couldn't reach the server to send this to your teacher — try again from the previous step. Meanwhile, repeat the short phrase slowly three times.",
+    "drillTextNothingToSend": "No analyzed recitation to send yet — record one first. Meanwhile, repeat the short phrase slowly three times.",
+    "drillTextLocal": "Drill practice. Repeat the short phrase slowly three times.",
     "defaultText": "Learner view keeps model and gateway details hidden. Focus on the verse, pacing, and review."
   },
   "completePanel": {
