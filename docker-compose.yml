@@ -3,6 +3,9 @@ version: "3.9"
 services:
   # === Database ===
   postgres:
+    # unless-stopped: any crash (OOM, panic) self-heals instead of leaving the service down until
+    # someone notices; survives host reboots but respects an explicit `docker compose stop` (P3.1).
+    restart: unless-stopped
     image: postgres:16-alpine
     environment:
       POSTGRES_USER: hawzhin
@@ -41,6 +44,7 @@ services:
 
   # === Rust Platform API ===
   platform-api:
+    restart: unless-stopped
     build:
       context: .
       dockerfile: services/platform-api/Dockerfile
@@ -69,6 +73,7 @@ services:
 
   # === Rust Realtime Gateway ===
   realtime-gateway:
+    restart: unless-stopped
     build:
       context: .
       dockerfile: services/realtime-gateway/Dockerfile
@@ -92,6 +97,7 @@ services:
 
   # === ML Inference (Node.js) ===
   ml-inference:
+    restart: unless-stopped
     build:
       context: .
       dockerfile: services/ml-inference/Dockerfile
@@ -118,6 +124,7 @@ services:
 
   # === ASR Inference (Python/Whisper) ===
   asr-inference:
+    restart: unless-stopped
     build:
       context: .
       dockerfile: services/asr-inference/Dockerfile
@@ -151,6 +158,7 @@ services:
 
   # === Web Frontend ===
   web:
+    restart: unless-stopped
     build:
       context: .
       dockerfile: apps/web/Dockerfile
