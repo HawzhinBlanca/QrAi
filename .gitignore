@@ -40,3 +40,7 @@ mutants.out.old/
 
 # Unrelated stray project (kept on disk, not part of the platform)
 UnpredectableGAME/
+
+# Database backups (learner data — never commit)
+/backups/
+*.dump
