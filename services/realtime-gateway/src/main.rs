@@ -64,7 +64,32 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         gateway_router(GatewayServerConfig::default())
             .into_make_service_with_connect_info::<SocketAddr>(),
     )
+    .with_graceful_shutdown(shutdown_signal())
     .await?;
 
+    println!("quran-ai realtime gateway shut down cleanly");
     Ok(())
+}
+
+/// Resolves on SIGTERM (container stop / redeploy) or Ctrl-C so axum can drain in-flight requests
+/// and stop accepting new connections rather than dropping them mid-deploy (P3.10).
+async fn shutdown_signal() {
+    let ctrl_c = async {
+        let _ = tokio::signal::ctrl_c().await;
+    };
+    #[cfg(unix)]
+    let terminate = async {
+        match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()) {
+            Ok(mut sig) => {
+                sig.recv().await;
+            }
+            Err(_) => std::future::pending::<()>().await,
+        }
+    };
+    #[cfg(not(unix))]
+    let terminate = std::future::pending::<()>();
+    tokio::select! {
+        _ = ctrl_c => {},
+        _ = terminate => {},
+    }
 }

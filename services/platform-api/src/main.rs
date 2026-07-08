@@ -177,9 +177,35 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         listener,
         platform_router(state).into_make_service_with_connect_info::<SocketAddr>(),
     )
+    .with_graceful_shutdown(shutdown_signal())
     .await?;
 
+    tracing::info!("quran-ai platform api shut down cleanly");
     Ok(())
+}
+
+/// Resolves on SIGTERM (container stop / redeploy) or Ctrl-C. axum's graceful shutdown then stops
+/// accepting new connections and lets in-flight requests drain, so a routine deploy no longer
+/// aborts requests mid-flight (P3.10).
+async fn shutdown_signal() {
+    let ctrl_c = async {
+        let _ = tokio::signal::ctrl_c().await;
+    };
+    #[cfg(unix)]
+    let terminate = async {
+        match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()) {
+            Ok(mut sig) => {
+                sig.recv().await;
+            }
+            Err(_) => std::future::pending::<()>().await,
+        }
+    };
+    #[cfg(not(unix))]
+    let terminate = std::future::pending::<()>();
+    tokio::select! {
+        _ = ctrl_c => {},
+        _ = terminate => {},
+    }
 }
 
 #[cfg(test)]
