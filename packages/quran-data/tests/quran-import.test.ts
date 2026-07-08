@@ -57,6 +57,26 @@ describe("canonical Quran import", () => {
     expect(validation.errors).toContain("Invalid word checksum: 1:1:1.");
   });
 
+  it("detects a whole ayah dropped from the bundle, even though word/ayah counts stay self-consistent", () => {
+    // Dropping ayah 1:7 (and its 9 words) keeps the bundle internally self-consistent -- the word
+    // checksum check passes (no word was altered) and the OLD ayah-count check would also have
+    // passed: it incremented its "expected" count once per ayah PRESENT in the bundle, so it was
+    // always trivially equal to bundle.ayahs.length by construction, for any bundle. Only a check
+    // against ayah-count ground truth INDEPENDENT of the bundle (CANONICAL_AYAH_COUNTS: Surah 1
+    // has exactly 7 ayahs) can catch this.
+    const bundle = buildFatihahImportBundle("tanzil");
+    const droppedAyahBundle = {
+      ...bundle,
+      ayahs: bundle.ayahs.filter((ayah) => ayah.id !== "1:7"),
+      words: bundle.words.filter((word) => word.ayahId !== "1:7"),
+    };
+
+    const validation = validateCanonicalImportBundle(droppedAyahBundle);
+
+    expect(validation.isValid).toBe(false);
+    expect(validation.errors).toContain("Surah 1: expected 7 ayahs (canonical), found 6.");
+  });
+
   it("supports Tanzil and Quran Foundation source manifests without changing Arabic text", () => {
     const tanzilBundle = buildFatihahImportBundle("tanzil");
     const quranFoundationBundle = buildFatihahImportBundle("quran-foundation");
