@@ -15,6 +15,7 @@ Endpoints:
   POST /v1/force-align        — force align audio + canonical text → word timestamps
 """
 
+import asyncio
 import io
 import os
 import re
@@ -344,7 +345,10 @@ async def transcribe(req: TranscribeRequest):
             # HF Quran ASR — this checkpoint is fine-tuned for Arabic Quran, so a plain
             # call returns diacritized Quran text. (Word-level timing comes from the
             # separate /v1/force-align pass; this 2022 fine-tune lacks timestamp config.)
-            hf = asr_pipe(tmp_path)
+            # Run off the event loop: this is real, potentially multi-second CPU-bound
+            # inference, and running it inline would block every other concurrent request to
+            # this process, including /health, for the full duration.
+            hf = await asyncio.to_thread(asr_pipe, tmp_path)
             return TranscribeResponse(
                 text=(hf.get("text") or "").strip(),
                 language=req.language,
@@ -354,8 +358,9 @@ async def transcribe(req: TranscribeRequest):
                 latencyMs=max(1, int((time.time() - start) * 1000)),
             )
 
-        # Run Whisper transcription with word-level timestamps
-        result = whisper.transcribe(
+        # Run Whisper transcription with word-level timestamps, off the event loop (see comment above).
+        result = await asyncio.to_thread(
+            whisper.transcribe,
             model,
             tmp_path,
             language=req.language,
@@ -430,9 +435,13 @@ async def force_align(req: ForceAlignRequest):
         tmp_path = tmp.name
 
     try:
-        # Use Whisper transcription with word timestamps as force alignment
-        # Whisper's cross-attention provides word-level alignment against the audio
-        result = whisper.transcribe(
+        # Use Whisper transcription with word timestamps as force alignment.
+        # Whisper's cross-attention provides word-level alignment against the audio.
+        # Run off the event loop: real, potentially multi-second CPU-bound inference --
+        # running it inline would block every other concurrent request to this process,
+        # including /health, for the full duration.
+        result = await asyncio.to_thread(
+            whisper.transcribe,
             model,
             tmp_path,
             language=req.language,
@@ -477,6 +486,174 @@ async def force_align(req: ForceAlignRequest):
         os.unlink(tmp_path)
 
 
+def _analyze_tajweed_words_sync(tmp_path: str, words: list[dict]) -> list["TajweedWordFinding"]:
+    """The actual CPU-bound signal processing for /v1/analyze-tajweed (audio load, then per-word
+    pitch detection / STFT / RMS energy). Run via asyncio.to_thread from the async handler below --
+    this is real, potentially multi-second CPU work (autocorrelation + FFT per word), and running it
+    directly on the asyncio event loop would block every other concurrent request to this process,
+    including /health, for the full duration."""
+    # Load audio with soundfile (real waveform processing)
+    audio_data, sample_rate = sf.read(tmp_path, dtype="float32")
+    # Convert to mono if stereo
+    if len(audio_data.shape) > 1:
+        audio_data = audio_data.mean(axis=1)
+    waveform = torch.from_numpy(audio_data).unsqueeze(0)  # [1, samples]
+
+    findings = []
+
+    for word_info in words:
+        word_text = word_info.get("word", "")
+        word_start = float(word_info.get("start", 0.0))
+        word_end = float(word_info.get("end", 0.0))
+
+        if word_end <= word_start:
+            continue
+
+        # Extract word segment from audio
+        start_sample = int(word_start * sample_rate)
+        end_sample = int(word_end * sample_rate)
+        word_segment = waveform[0, start_sample:end_sample]
+
+        if word_segment.shape[0] < 100:
+            continue  # too short to analyze
+
+        # === Real audio feature extraction ===
+
+        # 1. Duration check (madd should be ~2 vowel lengths)
+        word_duration = word_end - word_start
+
+        # 2. Pitch (F0) using autocorrelation
+        if word_segment.shape[0] > 512:
+            # Compute F0 using torchaudio's functional
+            try:
+                f0 = F.detect_pitch_frequency(
+                    word_segment.unsqueeze(0),
+                    sample_rate=sample_rate,
+                    frame_time=0.01,
+                    freq_low=80,
+                    freq_high=400,
+                )
+                f0_mean = float(f0[f0 > 0].mean()) if (f0 > 0).any() else 0.0
+                f0_std = float(f0[f0 > 0].std()) if (f0 > 0).any() else 0.0
+            except Exception:
+                f0_mean = 0.0
+                f0_std = 0.0
+        else:
+            f0_mean = 0.0
+            f0_std = 0.0
+
+        # 3. Energy (RMS)
+        try:
+            energy = float(torch.sqrt(torch.mean(word_segment ** 2)))
+        except Exception:
+            energy = 0.0
+
+        # 4. Spectral centroid (brightness indicator)
+        if word_segment.shape[0] > 256:
+            try:
+                window = torch.hann_window(512)
+                spec = torch.stft(word_segment, n_fft=512, hop_length=256, window=window, return_complex=True)
+                magnitudes = spec.abs()
+                freqs = torch.fft.fftfreq(512, 1.0 / sample_rate)[:256]
+                if magnitudes.shape[1] > 0:
+                    centroid = float((freqs.unsqueeze(1) * magnitudes[:256]).sum() / max(magnitudes[:256].sum(), 1e-8))
+                else:
+                    centroid = 0.0
+            except Exception:
+                centroid = 0.0
+        else:
+            centroid = 0.0
+
+        # === Tajweed rule detection from audio features ===
+
+        # Check for madd letters (ا و ي) — duration should be elongated
+        madd_letters = ["ا", "و", "ي", "ى"]
+        has_madd = any(letter in word_text for letter in madd_letters)
+
+        if has_madd and word_duration > 0.4:
+            # Madd detected: word is elongated
+            severity = "practice"
+            confidence = min(0.95, 0.6 + word_duration * 0.5)
+            findings.append(TajweedWordFinding(
+                word=word_text,
+                start=word_start,
+                end=word_end,
+                rule="madd-tabii",
+                severity=severity,
+                explanation=f"Natural elongation detected. Duration: {word_duration:.2f}s, F0: {f0_mean:.0f}Hz. Hold for two counts.",
+                confidence=round(confidence, 3),
+            ))
+
+        # Check for ghunnah (nasalization) — high F0 variance + energy on a SILENT noon/meem.
+        # Ghunnah applies to noon/meem-sakin, tanween, or a mushaddad (doubled) noon/meem — NOT a
+        # voweled (moving) noon/meem. Gating on a bare "ن"/"م" in any context flagged words like
+        # نُور (noon + damma), telling the learner to nasalize a moving noon that carries no
+        # ghunnah — a false tajweed instruction. Mirror the reference text rules in
+        # ml-inference/tajweed.js (noon-sakin / word-final noon / tanween) and extend to
+        # meem-sakin and shadda'd noon/meem. The patterns assume the canonical
+        # consonant+shadda+vowel diacritic ordering used by packages/quran-data.
+        has_ghunnah = (
+            re.search("[نم][ّْ]", word_text) is not None  # noon/meem + sukoon or shadda
+            or re.search("[ًٌٍ]", word_text) is not None       # tanween
+            or re.search("ن$", word_text) is not None                    # word-final noon (sakin at waqf)
+        )
+
+        if has_ghunnah and f0_std > 10:
+            severity = "practice"
+            confidence = min(0.92, 0.55 + f0_std * 0.01)
+            findings.append(TajweedWordFinding(
+                word=word_text,
+                start=word_start,
+                end=word_end,
+                rule="ghunnah",
+                severity=severity,
+                explanation=f"Nasalization detected. F0 variance: {f0_std:.1f}Hz, Energy: {energy:.4f}. Hold nasal sound for two counts.",
+                confidence=round(confidence, 3),
+            ))
+
+        # Check for qalqalah (echo) — sharp energy burst on ق ط ب ج د
+        qalqalah_letters = ["ق", "ط", "ب", "ج", "د"]
+        has_qalqalah = any(letter in word_text for letter in qalqalah_letters)
+
+        if has_qalqalah and energy > 0.05:
+            # Check for sharp energy change (bounce)
+            if word_segment.shape[0] > 100:
+                mid = word_segment.shape[0] // 2
+                first_half_energy = float(torch.sqrt(torch.mean(word_segment[:mid] ** 2)))
+                second_half_energy = float(torch.sqrt(torch.mean(word_segment[mid:] ** 2)))
+                if abs(second_half_energy - first_half_energy) > 0.02:
+                    severity = "practice"
+                    confidence = min(0.90, 0.5 + energy * 2)
+                    findings.append(TajweedWordFinding(
+                        word=word_text,
+                        start=word_start,
+                        end=word_end,
+                        rule="qalqalah",
+                        severity=severity,
+                        explanation=f"Echo bounce detected. Energy: {energy:.4f}, Centroid: {centroid:.0f}Hz. Pronounce with slight bounce.",
+                        confidence=round(confidence, 3),
+                    ))
+
+        # Check for tafkhim (heavy) — low spectral centroid on خ ص ض ط ظ ق
+        tafkhim_letters = ["خ", "ص", "ض", "ط", "ظ", "ق"]
+        has_tafkhim = any(letter in word_text for letter in tafkhim_letters)
+
+        if has_tafkhim and centroid > 0 and centroid < 2000:
+            severity = "practice"
+            confidence = min(0.88, 0.5 + (2000 - centroid) * 0.0002)
+            findings.append(TajweedWordFinding(
+                word=word_text,
+                start=word_start,
+                end=word_end,
+                rule="tafkhim",
+                severity=severity,
+                explanation=f"Heavy pronunciation. Spectral centroid: {centroid:.0f}Hz (low = heavy). Raise back of tongue.",
+                confidence=round(confidence, 3),
+            ))
+
+    return findings
+
+
 @app.post(
     "/v1/analyze-tajweed",
     response_model=TajweedAnalysisResponse,
@@ -505,173 +682,15 @@ async def analyze_tajweed(req: TajweedAnalysisRequest):
         tmp_path = tmp.name
 
     try:
-        # Load audio with soundfile (real waveform processing)
-        audio_data, sample_rate = sf.read(tmp_path, dtype="float32")
-        # Convert to mono if stereo
-        if len(audio_data.shape) > 1:
-            audio_data = audio_data.mean(axis=1)
-        waveform = torch.from_numpy(audio_data).unsqueeze(0)  # [1, samples]
-
-        findings = []
-
-        for word_info in req.words:
-            word_text = word_info.get("word", "")
-            word_start = float(word_info.get("start", 0.0))
-            word_end = float(word_info.get("end", 0.0))
-
-            if word_end <= word_start:
-                continue
-
-            # Extract word segment from audio
-            start_sample = int(word_start * sample_rate)
-            end_sample = int(word_end * sample_rate)
-            word_segment = waveform[0, start_sample:end_sample]
-
-            if word_segment.shape[0] < 100:
-                continue  # too short to analyze
-
-            # === Real audio feature extraction ===
-
-            # 1. Duration check (madd should be ~2 vowel lengths)
-            word_duration = word_end - word_start
-
-            # 2. Pitch (F0) using autocorrelation
-            if word_segment.shape[0] > 512:
-                # Compute F0 using torchaudio's functional
-                try:
-                    f0 = F.detect_pitch_frequency(
-                        word_segment.unsqueeze(0),
-                        sample_rate=sample_rate,
-                        frame_time=0.01,
-                        freq_low=80,
-                        freq_high=400,
-                    )
-                    f0_mean = float(f0[f0 > 0].mean()) if (f0 > 0).any() else 0.0
-                    f0_std = float(f0[f0 > 0].std()) if (f0 > 0).any() else 0.0
-                except Exception:
-                    f0_mean = 0.0
-                    f0_std = 0.0
-            else:
-                f0_mean = 0.0
-                f0_std = 0.0
-
-            # 3. Energy (RMS)
-            try:
-                energy = float(torch.sqrt(torch.mean(word_segment ** 2)))
-            except Exception:
-                energy = 0.0
-
-            # 4. Spectral centroid (brightness indicator)
-            if word_segment.shape[0] > 256:
-                try:
-                    window = torch.hann_window(512)
-                    spec = torch.stft(word_segment, n_fft=512, hop_length=256, window=window, return_complex=True)
-                    magnitudes = spec.abs()
-                    freqs = torch.fft.fftfreq(512, 1.0 / sample_rate)[:256]
-                    if magnitudes.shape[1] > 0:
-                        centroid = float((freqs.unsqueeze(1) * magnitudes[:256]).sum() / max(magnitudes[:256].sum(), 1e-8))
-                    else:
-                        centroid = 0.0
-                except Exception:
-                    centroid = 0.0
-            else:
-                centroid = 0.0
-
-            # === Tajweed rule detection from audio features ===
-
-            # Check for madd letters (ا و ي) — duration should be elongated
-            madd_letters = ["ا", "و", "ي", "ى"]
-            has_madd = any(letter in word_text for letter in madd_letters)
-
-            if has_madd and word_duration > 0.4:
-                # Madd detected: word is elongated
-                severity = "practice"
-                confidence = min(0.95, 0.6 + word_duration * 0.5)
-                findings.append(TajweedWordFinding(
-                    word=word_text,
-                    start=word_start,
-                    end=word_end,
-                    rule="madd-tabii",
-                    severity=severity,
-                    explanation=f"Natural elongation detected. Duration: {word_duration:.2f}s, F0: {f0_mean:.0f}Hz. Hold for two counts.",
-                    confidence=round(confidence, 3),
-                ))
-
-            # Check for ghunnah (nasalization) — high F0 variance + energy on a SILENT noon/meem.
-            # Ghunnah applies to noon/meem-sakin, tanween, or a mushaddad (doubled) noon/meem — NOT a
-            # voweled (moving) noon/meem. Gating on a bare "ن"/"م" in any context flagged words like
-            # نُور (noon + damma), telling the learner to nasalize a moving noon that carries no
-            # ghunnah — a false tajweed instruction. Mirror the reference text rules in
-            # ml-inference/tajweed.js (noon-sakin / word-final noon / tanween) and extend to
-            # meem-sakin and shadda'd noon/meem. The patterns assume the canonical
-            # consonant+shadda+vowel diacritic ordering used by packages/quran-data.
-            has_ghunnah = (
-                re.search("[نم][ّْ]", word_text) is not None  # noon/meem + sukoon or shadda
-                or re.search("[ًٌٍ]", word_text) is not None       # tanween
-                or re.search("ن$", word_text) is not None                    # word-final noon (sakin at waqf)
-            )
-
-            if has_ghunnah and f0_std > 10:
-                severity = "practice"
-                confidence = min(0.92, 0.55 + f0_std * 0.01)
-                findings.append(TajweedWordFinding(
-                    word=word_text,
-                    start=word_start,
-                    end=word_end,
-                    rule="ghunnah",
-                    severity=severity,
-                    explanation=f"Nasalization detected. F0 variance: {f0_std:.1f}Hz, Energy: {energy:.4f}. Hold nasal sound for two counts.",
-                    confidence=round(confidence, 3),
-                ))
-
-            # Check for qalqalah (echo) — sharp energy burst on ق ط ب ج د
-            qalqalah_letters = ["ق", "ط", "ب", "ج", "د"]
-            has_qalqalah = any(letter in word_text for letter in qalqalah_letters)
-
-            if has_qalqalah and energy > 0.05:
-                # Check for sharp energy change (bounce)
-                if word_segment.shape[0] > 100:
-                    mid = word_segment.shape[0] // 2
-                    first_half_energy = float(torch.sqrt(torch.mean(word_segment[:mid] ** 2)))
-                    second_half_energy = float(torch.sqrt(torch.mean(word_segment[mid:] ** 2)))
-                    if abs(second_half_energy - first_half_energy) > 0.02:
-                        severity = "practice"
-                        confidence = min(0.90, 0.5 + energy * 2)
-                        findings.append(TajweedWordFinding(
-                            word=word_text,
-                            start=word_start,
-                            end=word_end,
-                            rule="qalqalah",
-                            severity=severity,
-                            explanation=f"Echo bounce detected. Energy: {energy:.4f}, Centroid: {centroid:.0f}Hz. Pronounce with slight bounce.",
-                            confidence=round(confidence, 3),
-                        ))
-
-            # Check for tafkhim (heavy) — low spectral centroid on خ ص ض ط ظ ق
-            tafkhim_letters = ["خ", "ص", "ض", "ط", "ظ", "ق"]
-            has_tafkhim = any(letter in word_text for letter in tafkhim_letters)
-
-            if has_tafkhim and centroid > 0 and centroid < 2000:
-                severity = "practice"
-                confidence = min(0.88, 0.5 + (2000 - centroid) * 0.0002)
-                findings.append(TajweedWordFinding(
-                    word=word_text,
-                    start=word_start,
-                    end=word_end,
-                    rule="tafkhim",
-                    severity=severity,
-                    explanation=f"Heavy pronunciation. Spectral centroid: {centroid:.0f}Hz (low = heavy). Raise back of tongue.",
-                    confidence=round(confidence, 3),
-                ))
-
+        findings = await asyncio.to_thread(_analyze_tajweed_words_sync, tmp_path, req.words)
         latency_ms = max(1, int((time.time() - start) * 1000))
-
         return TajweedAnalysisResponse(
             findings=findings,
             modelVersion=f"audio-tajweed-v0.1",
             latencyMs=latency_ms,
         )
-
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Tajweed analysis failed: {str(e)}")
     finally:
