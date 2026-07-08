@@ -1,4 +1,5 @@
-import { Clock3, Headphones, Mic, ShieldCheck } from "lucide-react";
+import { useState } from "react";
+import { Clock3, Headphones, Mic, Sparkles, ShieldCheck, X } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { ConsentPanel } from "./ConsentPanel";
 import { MicNotice } from "./MicNotice";
@@ -7,6 +8,16 @@ import type { MicState } from "../types/practice";
 import type { RecitationConsent, SurahInfo } from "../lib/api";
 import type { MemorizationPlan, LearnerProgress } from "../data/platform";
 import { practiceRange, surahLabel } from "../lib/surah";
+
+const ONBOARDING_DISMISSED_KEY = "quran-ai-onboarding-dismissed";
+
+function readOnboardingDismissed(): boolean {
+  try {
+    return localStorage.getItem(ONBOARDING_DISMISSED_KEY) === "1";
+  } catch {
+    return false;
+  }
+}
 
 export interface LearnerHomeProps {
   micState: MicState;
@@ -40,8 +51,41 @@ export function LearnerHome({
   // listen/review overhead. A previous version showed a frozen "8 minutes" for every surah.
   const sessionAyahs = practiceRange(selectedSurah).ayahEnd;
   const estimatedMinutes = sessionAyahs + 2;
+  // A brand-new learner has no sessions yet. Show an inviting first-run experience instead of a
+  // wall of 0%/0/0 metrics that reads as "you are failing" before they have even started (P2.2).
+  const isNewLearner = (progress?.totalSessions ?? 0) === 0;
+  const [onboardingDismissed, setOnboardingDismissed] = useState(readOnboardingDismissed);
+  function dismissOnboarding() {
+    setOnboardingDismissed(true);
+    try {
+      localStorage.setItem(ONBOARDING_DISMISSED_KEY, "1");
+    } catch {
+      // Non-persistent (private mode / storage disabled) — the card just reappears next load.
+    }
+  }
+  const showOnboarding = isNewLearner && !onboardingDismissed;
   return (
     <section className="learner-home" aria-label={t("learnerHome.ariaLabel")}>
+      {showOnboarding && (
+        <aside className="onboarding-card" aria-label={t("learnerHome.onboardingAriaLabel")}>
+          <button
+            className="onboarding-dismiss"
+            type="button"
+            onClick={dismissOnboarding}
+            aria-label={t("learnerHome.onboardingDismiss")}
+          >
+            <X size={16} />
+          </button>
+          <p className="quiet-label">{t("learnerHome.onboardingEyebrow")}</p>
+          <h2>{t("learnerHome.onboardingTitle")}</h2>
+          <ol className="onboarding-steps">
+            <li>{t("learnerHome.onboardingStepListen")}</li>
+            <li>{t("learnerHome.onboardingStepRecite")}</li>
+            <li>{t("learnerHome.onboardingStepMemory")}</li>
+            <li>{t("learnerHome.onboardingStepCorrect")}</li>
+          </ol>
+        </aside>
+      )}
       <div className="mission-hero">
         <div className="mission-copy">
           <p className="quiet-label">{t("learnerHome.todaysMission")}</p>
@@ -61,24 +105,36 @@ export function LearnerHome({
           <MicNotice micState={micState} />
         </div>
         <div className="mission-card" aria-label={t("learnerHome.masterySummaryAriaLabel")}>
-          <div className="mastery-ring" style={{ "--score": `${masteryPct * 3.6}deg` } as React.CSSProperties}>
-            <strong>{masteryPct}%</strong>
-            <span>{t("learnerHome.mastery")}</span>
-          </div>
-          <dl>
-            <div>
-              <dt>{t("learnerHome.nextReview")}</dt>
-              <dd>{memorizationPlan?.nextReviewAt ?? t("learnerHome.notScheduled")}</dd>
+          {isNewLearner ? (
+            // No sessions yet: invite the first recitation rather than showing 0%/0/0, which reads
+            // as failure before the learner has begun.
+            <div className="mastery-empty">
+              <Sparkles size={26} />
+              <strong>{t("learnerHome.masteryEmptyTitle")}</strong>
+              <p>{t("learnerHome.masteryEmptyBody")}</p>
             </div>
-            <div>
-              <dt>{t("learnerHome.dueToday")}</dt>
-              <dd>{memorizationPlan?.intervals?.[0]?.dueCount ?? 0}</dd>
-            </div>
-            <div>
-              <dt>{t("learnerHome.streak")}</dt>
-              <dd>{t("learnerHome.streakDays", { count: progress?.streak ?? 0 })}</dd>
-            </div>
-          </dl>
+          ) : (
+            <>
+              <div className="mastery-ring" style={{ "--score": `${masteryPct * 3.6}deg` } as React.CSSProperties}>
+                <strong>{masteryPct}%</strong>
+                <span>{t("learnerHome.mastery")}</span>
+              </div>
+              <dl>
+                <div>
+                  <dt>{t("learnerHome.nextReview")}</dt>
+                  <dd>{memorizationPlan?.nextReviewAt ?? t("learnerHome.notScheduled")}</dd>
+                </div>
+                <div>
+                  <dt>{t("learnerHome.dueToday")}</dt>
+                  <dd>{memorizationPlan?.intervals?.[0]?.dueCount ?? 0}</dd>
+                </div>
+                <div>
+                  <dt>{t("learnerHome.streak")}</dt>
+                  <dd>{t("learnerHome.streakDays", { count: progress?.streak ?? 0 })}</dd>
+                </div>
+              </dl>
+            </>
+          )}
         </div>
       </div>
 
