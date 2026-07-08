@@ -111,10 +111,19 @@ export default function App() {
   // === Load Surahs ===
   useEffect(() => {
     if (!user) return;
-    fetch(`${API_BASE}/v1/quran/surahs`)
+    // Without this guard, a rapid re-login/tenant-switch (user changes twice before the first
+    // fetch resolves) could let an earlier, now-stale response win the race and overwrite the
+    // surah list with data fetched under a previous user/tenant. The AbortController also cancels
+    // the in-flight request outright when a newer effect run (or unmount) supersedes it.
+    const controller = new AbortController();
+    fetch(`${API_BASE}/v1/quran/surahs`, { signal: controller.signal })
       .then((r) => r.json())
       .then(setSurahs)
-      .catch(() => setError("Failed to load surahs"));
+      .catch((e) => {
+        if (e instanceof Error && e.name === "AbortError") return;
+        setError("Failed to load surahs");
+      });
+    return () => controller.abort();
   }, [user]);
 
   // === Audio Recording ===
