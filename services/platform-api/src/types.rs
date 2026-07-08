@@ -420,4 +420,37 @@ mod tests {
         );
         assert!(text.contains("a database error occurred"), "got: {text}");
     }
+
+    #[test]
+    fn consent_deserializes_the_documented_default_version_when_omitted() {
+        // The consent_version is part of the compliance/audit trail — a consent record is only
+        // meaningful against the policy version it was captured under. If the client omits it, the
+        // server must stamp the documented default ("pilot-v1"), never an empty or arbitrary
+        // string. Pins default_consent_version() AND its #[serde(default = ...)] wiring: a mutant
+        // returning "" or some other value would silently mislabel every default-version consent.
+        let consent: Consent = serde_json::from_value(serde_json::json!({
+            "audioRetention": "discard",
+            "anonymizedLearning": false,
+        }))
+        .expect("consent with only required fields deserializes");
+        assert_eq!(consent.consent_version, "pilot-v1");
+    }
+
+    #[test]
+    fn recitation_session_request_deserializes_the_documented_default_practice_plan_when_omitted() {
+        // When a session request omits practicePlanId, the server must fall back to the documented
+        // default plan ("fatihah-mastery-v1"), not an empty/arbitrary id — an empty plan id would
+        // detach the session from any real practice plan. Pins default_practice_plan_id() and its
+        // serde-default wiring.
+        let req: RecitationSessionRequest = serde_json::from_value(serde_json::json!({
+            "learnerId": "learner-1",
+            "quranRef": { "surahNumber": 1, "ayahStart": 1, "ayahEnd": 7, "display": "Al-Fatihah 1-7" },
+            "sourceChecksum": "sha256:abc",
+            "modelVersion": "ml-aligner-v0.2",
+            "language": "ar",
+            "consent": { "audioRetention": "discard", "anonymizedLearning": false },
+        }))
+        .expect("session request without an explicit practice plan id deserializes");
+        assert_eq!(req.practice_plan_id, "fatihah-mastery-v1");
+    }
 }
