@@ -35,6 +35,7 @@ import numpy as np
 import whisper
 import uvicorn
 from fastapi import Depends, FastAPI, Header, HTTPException, Request
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
 # API-key gate. The browser must NOT reach this service directly — it is fronted by the platform-api
@@ -226,6 +227,27 @@ def _load_model() -> None:
 _load_model()
 
 app = FastAPI(title="Quran AI ASR Inference", version="0.1.0")
+
+# MAX_AUDIO_B64_CHARS only rejects an oversized audioBase64 field AFTER FastAPI/Starlette has
+# already read the full request body off the socket and parsed it into a JSON object in memory --
+# so an oversized request still pays the full read+parse cost (and holds that memory) before the
+# existing check ever runs. This middleware rejects early using the Content-Length header, before
+# Starlette reads the body at all. ~26M bytes gives headroom over MAX_AUDIO_B64_CHARS (20M chars,
+# which is already almost entirely the request body for this endpoint) plus JSON/field overhead.
+MAX_REQUEST_BODY_BYTES = 26_000_000
+
+
+@app.middleware("http")
+async def limit_request_body_size(request: Request, call_next):
+    content_length = request.headers.get("content-length")
+    if content_length is not None:
+        try:
+            too_large = int(content_length) > MAX_REQUEST_BODY_BYTES
+        except ValueError:
+            too_large = False
+        if too_large:
+            return JSONResponse(status_code=413, content={"detail": "request body too large"})
+    return await call_next(request)
 
 
 def require_loaded_model() -> None:

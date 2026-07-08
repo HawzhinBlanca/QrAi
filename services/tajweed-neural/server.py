@@ -25,11 +25,32 @@ import time
 from typing import Optional
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Request
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
 from model_loader import NeuralTajweedModel, MODEL_ID
 
 app = FastAPI(title="Quran AI Neural Tajweed (experimental)")
+
+# MAX_AUDIO_B64_CHARS (below) only rejects an oversized audioBase64 field AFTER FastAPI/Starlette
+# has already read the full request body off the socket and parsed it into a JSON object in
+# memory. This middleware rejects early using the Content-Length header, before Starlette reads
+# the body at all -- mirrors the identical fix in the sibling asr-inference service.
+MAX_REQUEST_BODY_BYTES = 26_000_000
+
+
+@app.middleware("http")
+async def limit_request_body_size(request: Request, call_next):
+    content_length = request.headers.get("content-length")
+    if content_length is not None:
+        try:
+            too_large = int(content_length) > MAX_REQUEST_BODY_BYTES
+        except ValueError:
+            too_large = False
+        if too_large:
+            return JSONResponse(status_code=413, content={"detail": "request body too large"})
+    return await call_next(request)
+
 
 # API-key gate (mirrors asr-inference / ml-inference). This experimental service must never be
 # reachable directly by the browser; a caller fronts it with the key server-side. Health stays open.
