@@ -1,9 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import {
-  AlertTriangle,
   ArrowRight,
-  BadgeCheck,
   Bot,
   CheckCircle2,
   DatabaseZap,
@@ -64,7 +62,6 @@ import {
   summarizeScholarQueue,
 } from "../lib/platform";
 import type { SupportedLanguageCode } from "../types/platform";
-import { BrandMark } from "./BrandMark";
 
 interface PlatformCommandProps {
   tenantId: string;
@@ -779,24 +776,6 @@ function Metric({ label, value }: { label: string; value: string }) {
     <div className="metric">
       <span>{label}</span>
       <strong>{value}</strong>
-    </div>
-  );
-}
-
-// Not currently rendered anywhere in the app -- see the spawn_task chip flagging AssistantPanel
-// (the same "dead component" pattern); kept here since it was cheap to i18n-extract alongside the
-// rest of this file rather than a separate cleanup pass.
-export function PlatformCompactHeader() {
-  const { t } = useTranslation();
-  return (
-    <div className="platform-compact-header">
-      <BrandMark />
-      <div>
-        <strong>{t("platformCommand.compactHeader.brand")}</strong>
-        <span>{t("platformCommand.compactHeader.subtitle")}</span>
-      </div>
-      <BadgeCheck size={18} />
-      <AlertTriangle className="risk-icon" size={18} />
     </div>
   );
 }
