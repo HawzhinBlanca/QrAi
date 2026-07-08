@@ -25,6 +25,58 @@ function actorHeaders(tenantId: string, userId: string, role: string, authToken?
   };
 }
 
+/** Result of a privacy export/delete job (subset of the backend PrivacyJob). */
+export interface PrivacyJobResult {
+  kind: "export" | "delete";
+  includedRecords: string[];
+  deletedRecords: string[];
+  audioObjectKeysDeleted: string[];
+}
+
+/**
+ * Export the learner's OWN data (right-of-access). The backend reports which records are held
+ * (includedRecords) and deletes nothing. Authz: require_self_or_any, so a learner may export only
+ * their own learnerId.
+ */
+export async function exportMyData(params: {
+  tenantId: string;
+  userId: string;
+  authToken?: string;
+}): Promise<PrivacyJobResult> {
+  const response = await fetchWithTimeout(`${API_BASE}/v1/privacy/export`, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      ...actorHeaders(params.tenantId, params.userId, "learner", params.authToken),
+    },
+    body: JSON.stringify({ learnerId: params.userId }),
+  });
+  if (!response.ok) throw new Error(`Export ${response.status}`);
+  return response.json() as Promise<PrivacyJobResult>;
+}
+
+/**
+ * Delete the learner's OWN data and recordings (right-to-erasure). Erases the raw audio from the
+ * ML service AND cascades the derived DB records. Irreducibly destructive — callers must confirm
+ * first. Authz: require_self_or_any (own learnerId only).
+ */
+export async function deleteMyData(params: {
+  tenantId: string;
+  userId: string;
+  authToken?: string;
+}): Promise<PrivacyJobResult> {
+  const response = await fetchWithTimeout(`${API_BASE}/v1/privacy/delete`, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      ...actorHeaders(params.tenantId, params.userId, "learner", params.authToken),
+    },
+    body: JSON.stringify({ learnerId: params.userId }),
+  });
+  if (!response.ok) throw new Error(`Delete ${response.status}`);
+  return response.json() as Promise<PrivacyJobResult>;
+}
+
 export interface SurahInfo {
   surahNumber: number;
   ayahCount: number;
