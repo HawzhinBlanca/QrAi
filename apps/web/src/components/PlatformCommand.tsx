@@ -305,6 +305,20 @@ function LiveAlignmentCard({
   // resolves last; the first stream's tracks are never stopped, the first socket never closed).
   // Same class of bug as the double-tap mic leak already fixed in App.tsx's toggleAsrRecording.
   const isStartingCaptureRef = useRef(false);
+
+  // Without this, navigating away from the console (e.g. closing Internal Command) while capture
+  // is running unmounts this component but never tells the underlying MediaRecorder, microphone
+  // MediaStreamTracks, or gateway WebSocket to stop -- only handleCaptureToggle's manual-stop
+  // branch did that. The mic keeps recording and streaming audio indefinitely with no UI
+  // indication and no way to stop it short of a full reload, a real privacy issue given this
+  // app's explicit audio-consent requirements.
+  useEffect(() => {
+    return () => {
+      captureRef.current?.stop();
+      uploaderRef.current?.close();
+    };
+  }, []);
+
   const [captureStatus, setCaptureStatus] = useState<MicCaptureStatus>("idle");
   const [captureError, setCaptureError] = useState("");
   const [gatewayStatus, setGatewayStatus] = useState<GatewayUploadStatus>("idle");

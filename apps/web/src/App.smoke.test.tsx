@@ -472,6 +472,63 @@ describe("Quran AI app smoke", () => {
     expect(FakeMediaRecorder.instances).toHaveLength(1);
   });
 
+  it("stops the mic stream and closes the gateway socket when LiveAlignmentCard unmounts mid-capture", async () => {
+    // Regression test: the only code that stopped the mic stream (captureRef.current.stop()) and
+    // closed the gateway WebSocket (uploaderRef.current?.close()) was handleCaptureToggle's
+    // manual-stop branch. There was no unmount cleanup, so navigating away from Internal Command
+    // (e.g. back to Learner) while capture was running left the real microphone recording and
+    // streaming audio to the gateway indefinitely -- a genuine privacy issue given this app's
+    // explicit audio-consent requirements, not just a resource leak.
+    const track = { stop: vi.fn() };
+    Object.defineProperty(window.navigator, "mediaDevices", {
+      configurable: true,
+      value: { getUserMedia: vi.fn().mockResolvedValue({ getTracks: () => [track] }) },
+    });
+
+    const root = createRoot(container);
+    await act(async () => {
+      root.render(<App />);
+    });
+
+    const internalCommandButton = Array.from(document.querySelectorAll<HTMLButtonElement>("button")).find((button) =>
+      button.textContent?.includes("Internal Command"),
+    );
+    await act(async () => {
+      internalCommandButton?.click();
+    });
+    for (let i = 0; i < 10; i++) {
+      await act(async () => {
+        await new Promise((r) => setTimeout(r, 10));
+      });
+      if (document.body.textContent?.includes("Quran AI intelligence platform")) break;
+    }
+
+    await act(async () => {
+      document.querySelector<HTMLButtonElement>(".capture-button")?.click();
+    });
+    await act(async () => {});
+    await act(async () => {
+      FakeWebSocket.instances[0].onopen?.();
+    });
+
+    expect(FakeMediaRecorder.instances).toHaveLength(1);
+    expect(FakeMediaRecorder.instances[0].state).toBe("recording");
+    expect(FakeWebSocket.instances[0].readyState).toBe(FakeWebSocket.OPEN);
+
+    // Navigate away -- back to Learner -- without clicking Stop first.
+    const learnerButton = Array.from(document.querySelectorAll<HTMLButtonElement>("button")).find(
+      (button) => button.textContent?.trim() === "Learner",
+    );
+    await act(async () => {
+      learnerButton?.click();
+    });
+
+    expect(document.body.textContent).not.toContain("Quran AI intelligence platform");
+    expect(FakeMediaRecorder.instances[0].state).toBe("inactive");
+    expect(track.stop).toHaveBeenCalled();
+    expect(FakeWebSocket.instances[0].readyState).toBe(3); // CLOSED
+  });
+
   it("'Open related command tab' on a Teacher/Model Ops placeholder actually navigates to Internal Command", async () => {
     // Regression test: InternalSurface's placeholder button used to call onTabChange alone, which
     // only set activeTab — it never switched activeSection to "admin", so InternalSurface's own
