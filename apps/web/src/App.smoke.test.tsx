@@ -266,6 +266,51 @@ describe("Quran AI app smoke", () => {
     expect(FakeMediaRecorder.instances).toHaveLength(1);
   });
 
+  it("tapping Record without consent shows inline consent at the point of failure, not a dead end", async () => {
+    // Regression test for the top first-session failure (SHIP_PLAN P2.1): a learner who starts
+    // practice WITHOUT ticking consent, then taps Record, previously got only a warning banner and
+    // had to navigate all the way back to Learner Home to find the consent panel. Now the consent
+    // controls appear inline; ticking the required box lets them record without leaving the flow.
+    Object.defineProperty(window.navigator, "mediaDevices", {
+      configurable: true,
+      value: { getUserMedia: vi.fn().mockResolvedValue({ getTracks: () => [{ stop: vi.fn() }] }) },
+    });
+
+    const root = createRoot(container);
+    await act(async () => {
+      root.render(<App />);
+    });
+
+    // Start practice WITHOUT granting consent on Learner Home.
+    const startPracticeButton = Array.from(document.querySelectorAll<HTMLButtonElement>("button")).find((button) =>
+      button.textContent?.includes("Start Practice"),
+    );
+    await act(async () => {
+      startPracticeButton?.click();
+    });
+
+    // No inline consent prompt until the learner actually tries to record.
+    expect(document.querySelector(".inline-consent")).toBeNull();
+
+    const recordButton = document.querySelector<HTMLButtonElement>('button[aria-label="Record your recitation"]');
+    expect(recordButton).toBeTruthy();
+    await act(async () => {
+      recordButton?.click();
+    });
+
+    // The consent controls appear INLINE in the practice view — not a dead-end error.
+    const inlineConsent = document.querySelector(".inline-consent");
+    expect(inlineConsent, "inline consent prompt must appear at the record-time point of failure").toBeTruthy();
+    expect(FakeMediaRecorder.instances).toHaveLength(0); // recording did not start
+
+    // Ticking the required recording-consent box auto-dismisses the prompt (no return to home).
+    const recordingConsentCheckbox = inlineConsent!.querySelector<HTMLInputElement>('input[type="checkbox"]');
+    await act(async () => {
+      recordingConsentCheckbox?.click();
+    });
+    expect(document.querySelector(".inline-consent")).toBeNull();
+  });
+
   it("tears down the mic visualizer if Stop is clicked before its own getUserMedia resolves", async () => {
     // Regression test: startMicVisualizer opens its OWN separate getUserMedia stream (for the
     // waveform), resolved asynchronously into visualizerStopRef.current via a `.then()` —

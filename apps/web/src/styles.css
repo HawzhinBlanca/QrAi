@@ -514,6 +514,30 @@ button:disabled {
   background: #fbf9f4;
 }
 
+/* Inline consent prompt shown at the record-time point of failure (P2.1). Amber-accented so it
+   reads as an actionable prompt, not an error. */
+.inline-consent {
+  display: grid;
+  gap: 8px;
+  padding: 14px 16px;
+  border: 1px solid #e7cf9a;
+  border-radius: 12px;
+  background: #fdf6e6;
+}
+
+.inline-consent-title {
+  margin: 0;
+  color: #7b4c10;
+  font-size: 14px;
+  font-weight: 700;
+}
+
+.inline-consent .consent-panel {
+  padding: 0;
+  border: 0;
+  background: transparent;
+}
+
 .consent-panel .quiet-label {
   margin-bottom: 2px;
 }
