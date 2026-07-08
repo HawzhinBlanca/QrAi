@@ -242,6 +242,16 @@ async fn create_session_rejects_an_unsupported_language_code() {
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
 }
 
+/// /ready reports true readiness by actually querying the DB pool (SELECT 1), unlike /health
+/// which is pure liveness. With a live pool it must return 200 (P3.6).
+#[tokio::test]
+#[ignore = "requires live Postgres"]
+async fn ready_endpoint_returns_200_when_the_db_pool_answers() {
+    let router = platform_router_with_rate_limit(test_state(), false);
+    let response = send_json(&router, Method::GET, "/ready", None, None, json!({})).await;
+    assert_eq!(response.status(), StatusCode::OK);
+}
+
 #[tokio::test]
 #[ignore = "requires live Postgres"]
 async fn gets_quran_surah_list_from_postgres() {

@@ -112,6 +112,7 @@ pub fn platform_router_with_rate_limit(state: AppState, rate_limit: bool) -> Rou
 
     let base_router = Router::new()
         .route("/health", axum::routing::get(health))
+        .route("/ready", axum::routing::get(ready))
         .route(
             "/v1/auth/token",
             axum::routing::post(handlers::auth::issue_token),
@@ -280,6 +281,17 @@ pub fn platform_router_with_rate_limit(state: AppState, rate_limit: bool) -> Rou
 
 async fn health() -> impl IntoResponse {
     (axum::http::StatusCode::OK, "ok")
+}
+
+/// Readiness (distinct from `/health` liveness): the process can actually SERVE, i.e. its DB pool
+/// answers. Returns 503 when Postgres is unreachable so orchestrators / compose healthchecks can
+/// tell "process up" from "up but every request will fail" — during a DB outage `/health` stays
+/// 200 while `/ready` correctly goes 503 (P3.6).
+async fn ready(axum::extract::State(state): axum::extract::State<AppState>) -> impl IntoResponse {
+    match sqlx::query("SELECT 1").execute(&state.pool).await {
+        Ok(_) => (axum::http::StatusCode::OK, "ready"),
+        Err(_) => (axum::http::StatusCode::SERVICE_UNAVAILABLE, "not ready"),
+    }
 }
 
 /// Begin a transaction scoped to a tenant so Postgres Row-Level-Security enforces tenant

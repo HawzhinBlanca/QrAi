@@ -60,7 +60,9 @@ services:
       postgres:
         condition: service_healthy
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      # /ready (not /health) so the container is marked unhealthy when Postgres is unreachable —
+      # readiness = "can actually serve", liveness /health only means "process up" (P3.6).
+      test: ["CMD", "curl", "-f", "http://localhost:8080/ready"]
       interval: 10s
       timeout: 5s
       retries: 3
