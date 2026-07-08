@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   buildRealtimeAudioUrl,
   createBrowserAudioChunk,
@@ -189,5 +189,114 @@ describe("live recitation audio helpers", () => {
     expect(socket.sent).toEqual([chunk.blob]);
     expect(statuses).toEqual(["connecting", "connected"]);
     expect(acks).toHaveLength(1);
+  });
+
+  describe("reconnect", () => {
+    beforeEach(() => {
+      vi.useFakeTimers();
+      FakeWebSocket.instances = [];
+    });
+
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    it("reopens a new socket with backoff after a mid-session drop, then resumes sending", () => {
+      const statuses: string[] = [];
+      const uploader = startGatewayAudioUpload(
+        {
+          url: "ws://gateway/audio",
+          onStatusChange: (status) => statuses.push(status),
+          onAck: () => undefined,
+          onError: () => undefined,
+        },
+        { WebSocket: FakeWebSocket as unknown as typeof WebSocket },
+      );
+
+      const firstSocket = FakeWebSocket.instances[0];
+      firstSocket.onopen?.();
+      expect(statuses).toEqual(["connecting", "connected"]);
+
+      firstSocket.readyState = 3;
+      firstSocket.onclose?.();
+      expect(statuses).toEqual(["connecting", "connected", "reconnecting"]);
+      expect(FakeWebSocket.instances).toHaveLength(1);
+
+      vi.advanceTimersByTime(500);
+      expect(FakeWebSocket.instances).toHaveLength(2);
+      const secondSocket = FakeWebSocket.instances[1];
+      expect(secondSocket.url).toBe("ws://gateway/audio");
+
+      secondSocket.onopen?.();
+      expect(statuses).toEqual(["connecting", "connected", "reconnecting", "connected"]);
+
+      const chunk = createBrowserAudioChunk({
+        sessionId: SESSION_ID,
+        sequence: 0,
+        blob: new Blob(["audio"], { type: "audio/webm" }),
+        startedAtMs: 0,
+        emittedAtMs: 480,
+        chunkDurationMs: 480,
+        sampleRate: 16000,
+      });
+      expect(uploader?.sendChunk(chunk)).toBe(true);
+      expect(secondSocket.sent).toEqual([chunk.blob]);
+    });
+
+    it("settles on error and stops retrying once attempts are exhausted", () => {
+      const statuses: string[] = [];
+      const errors: string[] = [];
+      startGatewayAudioUpload(
+        {
+          url: "ws://gateway/audio",
+          onStatusChange: (status) => statuses.push(status),
+          onAck: () => undefined,
+          onError: (message) => errors.push(message),
+          maxReconnectAttempts: 2,
+          baseReconnectDelayMs: 100,
+        },
+        { WebSocket: FakeWebSocket as unknown as typeof WebSocket },
+      );
+
+      // maxReconnectAttempts=2 allows 2 reconnect sockets beyond the initial one (indices 1, 2)
+      // before the 3rd failure (on index 2) exhausts the budget.
+      for (let attempt = 0; attempt < 2; attempt += 1) {
+        const socket = FakeWebSocket.instances[attempt];
+        socket.readyState = 3;
+        socket.onclose?.();
+        vi.advanceTimersByTime(10_000);
+      }
+
+      expect(FakeWebSocket.instances).toHaveLength(3);
+      FakeWebSocket.instances[2].readyState = 3;
+      FakeWebSocket.instances[2].onclose?.();
+
+      expect(statuses.at(-1)).toBe("error");
+      expect(errors.at(-1)).toContain("not reaching the server");
+
+      vi.advanceTimersByTime(10_000);
+      expect(FakeWebSocket.instances).toHaveLength(3);
+    });
+
+    it("cancels a pending reconnect timer when the uploader is closed deliberately", () => {
+      const uploader = startGatewayAudioUpload(
+        {
+          url: "ws://gateway/audio",
+          onStatusChange: () => undefined,
+          onAck: () => undefined,
+          onError: () => undefined,
+        },
+        { WebSocket: FakeWebSocket as unknown as typeof WebSocket },
+      );
+
+      const firstSocket = FakeWebSocket.instances[0];
+      firstSocket.readyState = 3;
+      firstSocket.onclose?.();
+      expect(FakeWebSocket.instances).toHaveLength(1);
+
+      uploader?.close();
+      vi.advanceTimersByTime(10_000);
+      expect(FakeWebSocket.instances).toHaveLength(1);
+    });
   });
 });

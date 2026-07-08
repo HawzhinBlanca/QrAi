@@ -301,6 +301,17 @@ function LiveAlignmentCard({
   const isRecording = captureStatus === "recording" || captureStatus === "requesting-permission";
   const sessionId = activeSession?.id ?? "platform-console-preview";
   const latencyMs = activeSession?.latencyMs ?? 0;
+  const isGatewayDropping =
+    isRecording && (gatewayStatus === "reconnecting" || gatewayStatus === "error" || gatewayStatus === "closed");
+
+  useEffect(() => {
+    return () => {
+      captureRef.current?.stop();
+      captureRef.current = null;
+      uploaderRef.current?.close();
+      uploaderRef.current = null;
+    };
+  }, []);
 
   async function handleCaptureToggle() {
     if (captureRef.current) {
@@ -374,6 +385,14 @@ function LiveAlignmentCard({
           <strong>Gateway {formatGatewayStatus(gatewayStatus)}</strong>
           <span>{gatewayError || `${acceptedAcks} accepted acks`}</span>
         </div>
+        {isGatewayDropping && (
+          <p className="gateway-warning" role="alert">
+            <AlertTriangle size={14} />
+            {gatewayStatus === "reconnecting"
+              ? "Reconnecting to the realtime gateway — recitation audio is not reaching the server."
+              : "Lost connection to the realtime gateway — recitation audio is not reaching the server."}
+          </p>
+        )}
       </div>
 
       <div className="session-meta-grid">
@@ -445,6 +464,8 @@ function formatGatewayStatus(status: GatewayUploadStatus): string {
       return "error";
     case "closed":
       return "closed";
+    case "reconnecting":
+      return "reconnecting";
     case "idle":
       return "idle";
   }

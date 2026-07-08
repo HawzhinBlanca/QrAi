@@ -23,7 +23,7 @@ export interface LiveAlignmentEvent {
   alignments: WordAlignment[];
 }
 
-export type GatewayUploadStatus = "idle" | "connecting" | "connected" | "unavailable" | "error" | "closed";
+export type GatewayUploadStatus = "idle" | "connecting" | "connected" | "unavailable" | "error" | "closed" | "reconnecting";
 
 export interface GatewayAudioAck {
   kind: "audio.ack";
@@ -48,6 +48,8 @@ export interface StartGatewayUploadOptions {
   onStatusChange: (status: GatewayUploadStatus) => void;
   onAck: (ack: GatewayAudioAck) => void;
   onError: (message: string) => void;
+  maxReconnectAttempts?: number;
+  baseReconnectDelayMs?: number;
 }
 
 export interface MicCaptureController {
@@ -132,37 +134,79 @@ export function startGatewayAudioUpload(
     return null;
   }
 
-  options.onStatusChange("connecting");
-  const socket = new environment.WebSocket!(options.url);
+  const WebSocketImpl = environment.WebSocket!;
+  const maxReconnectAttempts = options.maxReconnectAttempts ?? 5;
+  const baseReconnectDelayMs = options.baseReconnectDelayMs ?? 500;
+  const maxReconnectDelayMs = 8000;
 
-  socket.binaryType = "arraybuffer";
-  socket.onopen = () => options.onStatusChange("connected");
-  socket.onclose = () => options.onStatusChange("closed");
-  socket.onerror = () => {
-    options.onStatusChange("error");
-    options.onError("Realtime gateway connection failed.");
-  };
-  socket.onmessage = (event) => {
-    if (typeof event.data !== "string") {
+  let socket: WebSocket;
+  let manualClose = false;
+  let reconnectAttempts = 0;
+  let reconnectTimer: ReturnType<typeof setTimeout> | undefined;
+
+  function handleDisconnect() {
+    if (manualClose) {
       return;
     }
 
-    const ack = parseGatewayAudioAck(event.data);
-    if (ack) {
-      options.onAck(ack);
+    if (reconnectAttempts >= maxReconnectAttempts) {
+      options.onStatusChange("error");
+      options.onError(
+        `Realtime gateway connection lost after ${maxReconnectAttempts} attempts — recitation audio is not reaching the server.`,
+      );
+      return;
     }
-  };
+
+    reconnectAttempts += 1;
+    options.onStatusChange("reconnecting");
+    const delay = Math.min(baseReconnectDelayMs * 2 ** (reconnectAttempts - 1), maxReconnectDelayMs);
+    reconnectTimer = setTimeout(() => {
+      reconnectTimer = undefined;
+      openSocket();
+    }, delay);
+  }
+
+  function openSocket() {
+    socket = new WebSocketImpl(options.url);
+    socket.binaryType = "arraybuffer";
+    socket.onopen = () => {
+      reconnectAttempts = 0;
+      options.onStatusChange("connected");
+    };
+    socket.onclose = () => handleDisconnect();
+    socket.onerror = () => options.onError("Realtime gateway connection failed.");
+    socket.onmessage = (event) => {
+      if (typeof event.data !== "string") {
+        return;
+      }
+
+      const ack = parseGatewayAudioAck(event.data);
+      if (ack) {
+        options.onAck(ack);
+      }
+    };
+  }
+
+  options.onStatusChange("connecting");
+  openSocket();
 
   return {
     sendChunk: (chunk) => {
-      if (socket.readyState !== environment.WebSocket!.OPEN || !chunk.blob) {
+      if (socket.readyState !== WebSocketImpl.OPEN || !chunk.blob) {
         return false;
       }
 
       socket.send(chunk.blob);
       return true;
     },
-    close: () => socket.close(),
+    close: () => {
+      manualClose = true;
+      if (reconnectTimer !== undefined) {
+        clearTimeout(reconnectTimer);
+        reconnectTimer = undefined;
+      }
+      socket.close();
+    },
   };
 }
 
