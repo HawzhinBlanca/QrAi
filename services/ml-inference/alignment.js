@@ -18,6 +18,29 @@ export function normalizeArabic(text) {
     .toLowerCase();
 }
 
+// Hamza-on-carrier (ؤ hamza-on-waw, ئ hamza-on-yaa) vs the bare carrier (و, ي) is a documented
+// Arabic ASR transcription ambiguity -- but unlike taa marbuta/haa above, it is NOT a confirmed
+// acoustic equivalence: hamza articulation is itself a real tajweed correctness point (hamzat
+// al-qat' is a genuine glottal stop the reciter must produce), so treating ؤ/ئ as fully equal to
+// و/ي would risk scoring a genuine dropped/mispronounced hamza as "matched" -- a false positive,
+// and a more serious failure mode for this product than the false "misread" taa-marbuta/haa was
+// causing. Pending a scholar ruling (see docs/SCHOLAR_REVIEW.md's sign-off pattern), this instead
+// gives a SUBSTITUTION of hamza-on-carrier <-> bare-carrier partial credit (0.5 instead of a full
+// 1) -- enough that ASR noise alone can no longer tip a correct recitation into "misread"/"missed"
+// (see alignment.test.mjs), while an outright DROPPED hamza (an insertion/deletion, not a
+// same-position substitution, e.g. "شيء" -> "شي") still costs a full edit and stays flagged, since
+// that is a real, uncorrected error a Quran teacher would catch, not an orthographic ambiguity.
+const HAMZA_CARRIER_SUBSTITUTIONS = new Set([
+  "ؤو", "وؤ", // ؤ <-> و
+  "ئي", "يئ", // ئ <-> ي
+]);
+
+function substitutionCost(ca, cb) {
+  if (ca === cb) return 0;
+  if (HAMZA_CARRIER_SUBSTITUTIONS.has(ca + cb)) return 0.5;
+  return 1;
+}
+
 export function levenshtein(a, b) {
   const m = a.length;
   const n = b.length;
@@ -28,7 +51,7 @@ export function levenshtein(a, b) {
 
   for (let i = 1; i <= m; i++) {
     for (let j = 1; j <= n; j++) {
-      const cost = a[i - 1] === b[j - 1] ? 0 : 1;
+      const cost = substitutionCost(a[i - 1], b[j - 1]);
       dp[i][j] = Math.min(
         dp[i - 1][j] + 1,
         dp[i][j - 1] + 1,
