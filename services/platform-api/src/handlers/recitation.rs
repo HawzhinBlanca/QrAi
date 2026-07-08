@@ -30,6 +30,13 @@ pub async fn create_session(
     let actor = actor_from_headers(&headers, &state.jwt_config)?;
     actor.require_self_or_any(&req.learner_id, &[ActorRole::Admin, ActorRole::Ops])?;
 
+    if !is_supported_language(&req.language) {
+        return Err(ApiError::BadRequest(format!(
+            "unsupported language {:?}; allowed: {SUPPORTED_LANGUAGE_CODES:?}",
+            req.language
+        )));
+    }
+
     let external_processing_allowed =
         req.consent.external_asr_processing && req.consent.guardian_approved;
 
