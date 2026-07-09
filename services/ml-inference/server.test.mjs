@@ -5,15 +5,17 @@
 
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
-import {
-  predictAlignment,
-  predictTajweed,
-  createEvalRun,
-  getAuditEvents,
-  safeStorageSegment,
-  route,
-} from "./server.mjs";
+// The audit trail is now persisted to JSONL under AUDIO_STORAGE_DIR (see server.mjs). Point it at a
+// fresh temp dir BEFORE importing the module (which reads AUDIO_STORAGE_DIR at load) so each test
+// run is hermetic — no accumulation across runs, no writes into the repo's audio-storage/.
+process.env.AUDIO_STORAGE_DIR = mkdtempSync(join(tmpdir(), "ml-inference-test-"));
+
+const { predictAlignment, predictTajweed, createEvalRun, getAuditEvents, safeStorageSegment, route } =
+  await import("./server.mjs");
 
 // Minimal mock of the http.IncomingMessage/ServerResponse pair route() needs. GET requests never
 // read a body here, so the mock request only needs `.url`/`.method`; the mock response just
@@ -65,6 +67,28 @@ test("alignment audit event records the REAL confidence and word counts, not the
   // spans the real 29-word Al-Fatihah 1:1-7, NOT the fixture's 8-word abbreviation.
   assert.equal(res.confidence, 1, "perfect default recitation scores 1.0 (real path)");
   assert.ok(res.alignments.length > 8, `expected the real 29-word set, got ${res.alignments.length}`);
+});
+
+test("audit events are persisted DURABLY to disk (JSONL), not just held in memory", async () => {
+  // Regression guard: the audit trail used to live only in a module-level array — unbounded and
+  // lost entirely on restart, so a learner's privacy export could report zero external-ASR calls
+  // even after their audio was sent to ASR. It must now be on disk, readable independently of the
+  // process's in-memory state.
+  const { readFileSync, existsSync } = await import("node:fs");
+  const { join } = await import("node:path");
+  const tenantId = `durable-audit-${Date.now()}`;
+
+  await predictAlignment({ tenantId, sessionId: "s-durable" });
+
+  const file = join(process.env.AUDIO_STORAGE_DIR, "audit-log", `${tenantId}.jsonl`);
+  assert.ok(existsSync(file), "a per-tenant audit JSONL file is written to disk");
+  const lines = readFileSync(file, "utf8").trim().split("\n").filter(Boolean);
+  assert.ok(lines.length >= 1, "at least one audit event was persisted");
+  const parsed = lines.map((l) => JSON.parse(l));
+  assert.ok(
+    parsed.some((e) => e.tenantId === tenantId && e.action === "ml.alignment.predicted"),
+    "the alignment audit event is on disk, not just in memory",
+  );
 });
 
 test("tajweed audit event records the REAL finding count, not the golden fixture's", async () => {
