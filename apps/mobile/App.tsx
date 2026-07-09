@@ -315,7 +315,9 @@ export default function App() {
         <Text style={styles.label}>Surah:</Text>
         <FlatList
           horizontal
-          data={surahs.slice(0, 10)}
+          // ponytail: all 114 surahs, horizontal scroll. A searchable/grid picker is the upgrade
+          // when scrolling to the later surahs feels long — the FlatList already virtualizes.
+          data={surahs}
           keyExtractor={(item) => String(item.surahNumber)}
           renderItem={({ item }) => (
             <TouchableOpacity
@@ -402,12 +404,24 @@ function LoginScreen({
   onLogin,
   error,
 }: {
-  onLogin: (userId: string, tenantId: string, password: string) => void;
+  onLogin: (userId: string, tenantId: string, password: string) => void | Promise<void>;
   error: string | null;
 }) {
   const [userId, setUserId] = useState("learner-1");
   const [tenantId, setTenantId] = useState("hikmah-pilot-erbil");
   const [password, setPassword] = useState("");
+  // Give the tap visible feedback and block a double-submit while the login request is in flight —
+  // otherwise Sign In looks inert on a slow network and invites a second, racing submission.
+  const [submitting, setSubmitting] = useState(false);
+  const submit = async () => {
+    if (submitting) return;
+    setSubmitting(true);
+    try {
+      await onLogin(userId, tenantId, password);
+    } finally {
+      setSubmitting(false);
+    }
+  };
   return (
     <View style={styles.container}>
       <Text style={styles.title}>Quran AI</Text>
@@ -422,8 +436,12 @@ function LoginScreen({
         secureTextEntry
         autoCapitalize="none"
       />
-      <TouchableOpacity style={styles.recordButton} onPress={() => onLogin(userId, tenantId, password)}>
-        <Text style={styles.recordButtonText}>Sign In</Text>
+      <TouchableOpacity
+        style={[styles.recordButton, submitting && styles.recordButtonDisabled]}
+        onPress={submit}
+        disabled={submitting}
+      >
+        <Text style={styles.recordButtonText}>{submitting ? "Signing in…" : "Sign In"}</Text>
       </TouchableOpacity>
       {error && <Text style={styles.error}>{error}</Text>}
     </View>
