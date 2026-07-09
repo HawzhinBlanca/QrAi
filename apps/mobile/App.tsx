@@ -40,6 +40,11 @@ import {
 // loopback interface, never the actual API host.
 const API_BASE = process.env.EXPO_PUBLIC_PLATFORM_API_URL || "http://127.0.0.1:8080";
 
+// One practice session covers the first N ayahs of the selected surah. Single source of truth so the
+// reader shows exactly what gets graded — showing the whole surah (286 ayahs for Al-Baqara) while
+// only ayahs 1..N are aligned would grade far less than the learner sees.
+const PRACTICE_AYAH_COUNT = 7;
+
 interface User {
   userId: string;
   tenantId: string;
@@ -266,9 +271,9 @@ export default function App() {
       // ayahEnd must never exceed the selected surah's real ayah count — the ML service's
       // getCanonicalWords only validates ayahStart against it, so an out-of-range ayahEnd (e.g. 7
       // for Surah 97 Al-Qadr, which has 5 ayahs) used to silently align a shorter range with no
-      // error. Cap at 7 to match the practice-session length used elsewhere in this app.
-      const selectedSurahAyahCount = surahs.find((s) => s.surahNumber === selectedSurah)?.ayahCount ?? 7;
-      const ayahEnd = Math.min(selectedSurahAyahCount, 7);
+      // error. Cap at PRACTICE_AYAH_COUNT to match the practice-session length used elsewhere in this app.
+      const selectedSurahAyahCount = surahs.find((s) => s.surahNumber === selectedSurah)?.ayahCount ?? PRACTICE_AYAH_COUNT;
+      const ayahEnd = Math.min(selectedSurahAyahCount, PRACTICE_AYAH_COUNT);
       const alignResp = await fetch(`${API_BASE}/v1/ml/alignments:predict`, {
         method: "POST",
         headers,
@@ -335,7 +340,7 @@ export default function App() {
           <Text style={styles.readerLoading}>Loading verses…</Text>
         ) : (
           <FlatList
-            data={verses}
+            data={verses.slice(0, PRACTICE_AYAH_COUNT)}
             keyExtractor={(item) => item.id}
             renderItem={({ item }) => (
               <View style={styles.verseLine}>
