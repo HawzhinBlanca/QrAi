@@ -109,6 +109,7 @@ test("runTajweedExplainerBatch turns findings into recorded runs (injected IO)",
   const written = [];
   const summary = await runTajweedExplainerBatch({
     fetchFindings: async () => findings,
+    fetchExisting: async () => [], // no prior runs -> nothing to dedup
     record: async (run) => {
       written.push(run);
       return { id: `run-${written.length}`, ...run };
@@ -116,11 +117,39 @@ test("runTajweedExplainerBatch turns findings into recorded runs (injected IO)",
   });
   assert.equal(summary.processedFindings, 2);
   assert.equal(summary.created, 2);
+  assert.equal(summary.skipped, 0);
   assert.equal(written.length, 2);
   assert.ok(written.every((r) => r.status === "needs-human-review"));
   assert.deepEqual(
     written.map((r) => r.findingId),
     ["f1", "f2"],
+  );
+});
+
+test("runTajweedExplainerBatch skips findings that already have an agent run (dedup)", async () => {
+  // Regression guard: every batch tick used to re-explain and re-record EVERY finding, growing
+  // agent_runs unboundedly and spamming the teacher review queue with duplicates. A finding that
+  // already has a recorded run (matched by findingId) must be skipped.
+  const findings = [
+    { id: "f1", rule: "Makhraj of ع", confidence: 0.84, sources: [] },
+    { id: "f2", rule: "Tafkhim of ص", confidence: 0.79, sources: [] },
+  ];
+  const written = [];
+  const summary = await runTajweedExplainerBatch({
+    fetchFindings: async () => findings,
+    fetchExisting: async () => [{ id: "run-old", findingId: "f1" }], // f1 already processed
+    record: async (run) => {
+      written.push(run);
+      return { id: `run-${written.length}`, ...run };
+    },
+  });
+  assert.equal(summary.processedFindings, 2);
+  assert.equal(summary.created, 1, "only the un-processed finding is recorded");
+  assert.equal(summary.skipped, 1);
+  assert.deepEqual(
+    written.map((r) => r.findingId),
+    ["f2"],
+    "f1 (already had a run) is skipped; only f2 is recorded",
   );
 });
 
@@ -209,7 +238,7 @@ test("runPracticeRecommenderBatch fans out over active learners (injected IO)", 
 
 test("batch runners tolerate a non-array upstream (no 'not iterable' crash)", async () => {
   // A malformed upstream that returns an object (HTTP 200) must mean "no items", not throw.
-  const tj = await runTajweedExplainerBatch({ fetchFindings: async () => ({ oops: true }), record: async () => ({}) });
+  const tj = await runTajweedExplainerBatch({ fetchFindings: async () => ({ oops: true }), fetchExisting: async () => [], record: async () => ({}) });
   assert.equal(tj.created, 0);
   const mp = await runMistakePatternSummarizerBatch({ fetchFindings: async () => null, record: async () => ({}) });
   assert.equal(mp.created, 0);
@@ -241,7 +270,7 @@ test("POST /run* with the wrong api key is rejected", async () => {
 test("runAllAgents aggregates every agent's runs (injected IO)", async () => {
   const noop = async (run) => ({ id: "x", ...run });
   const result = await runAllAgents({
-    tajweed: { fetchFindings: async () => [{ id: "f1", rule: "Ghunnah", confidence: 0.8, sources: [] }], record: noop },
+    tajweed: { fetchFindings: async () => [{ id: "f1", rule: "Ghunnah", confidence: 0.8, sources: [] }], fetchExisting: async () => [], record: noop },
     mistakes: { fetchFindings: async () => [{ rule: "Ghunnah", severity: "minor", confidence: 0.8 }], record: noop },
     recommend: {
       fetchLearnerIds: async () => ["learner-1"],
