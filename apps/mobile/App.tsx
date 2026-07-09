@@ -62,10 +62,18 @@ interface AlignmentResult {
   confidence: number;
 }
 
+interface Ayah {
+  ayahNumber: number;
+  id: string;
+  text: string;
+}
+
 export default function App() {
   const [user, setUser] = useState<User | null>(null);
   const [surahs, setSurahs] = useState<Surah[]>([]);
   const [selectedSurah, setSelectedSurah] = useState<number>(1);
+  const [verses, setVerses] = useState<Ayah[]>([]);
+  const [versesLoading, setVersesLoading] = useState(false);
   const [alignments, setAlignments] = useState<AlignmentResult[]>([]);
   const [recording, setRecording] = useState(false);
   const [loading, setLoading] = useState(false);
@@ -125,6 +133,25 @@ export default function App() {
       });
     return () => controller.abort();
   }, [user]);
+
+  // === Load the selected surah's ayahs so the learner can SEE the text to recite ===
+  // Same stale-response/abort guard as the surah-list fetch above: switching surah quickly must
+  // never let an earlier response overwrite the current selection's verses.
+  useEffect(() => {
+    if (!user) return;
+    const controller = new AbortController();
+    setVersesLoading(true);
+    fetch(`${API_BASE}/v1/quran/surahs/${selectedSurah}`, { signal: controller.signal })
+      .then((r) => r.json())
+      .then((d) => setVerses(Array.isArray(d?.ayahs) ? d.ayahs : []))
+      .catch((e) => {
+        if (e instanceof Error && e.name === "AbortError") return;
+        setError("Failed to load verses");
+        setVerses([]);
+      })
+      .finally(() => setVersesLoading(false));
+    return () => controller.abort();
+  }, [user, selectedSurah]);
 
   // === Audio Recording ===
   const startRecording = useCallback(async () => {
@@ -301,6 +328,25 @@ export default function App() {
         />
       </View>
 
+      {/* Verses to recite — the learner must SEE the canonical Arabic before reciting it.
+          Uthmani text straight from the platform API; never translated or altered. */}
+      <View style={styles.readerSection}>
+        {versesLoading ? (
+          <Text style={styles.readerLoading}>Loading verses…</Text>
+        ) : (
+          <FlatList
+            data={verses}
+            keyExtractor={(item) => item.id}
+            renderItem={({ item }) => (
+              <View style={styles.verseLine}>
+                <Text style={styles.verseNumber}>{item.ayahNumber}</Text>
+                <Text style={styles.verseArabic}>{item.text}</Text>
+              </View>
+            )}
+          />
+        )}
+      </View>
+
       {/* Consent — recording is blocked until the first toggle is on */}
       <View style={styles.section}>
         <View style={styles.consentRow}>
@@ -393,6 +439,11 @@ const styles = StyleSheet.create({
   surahChip: { padding: 10, backgroundColor: "#2a2a4e", borderRadius: 8, marginRight: 8 },
   surahChipActive: { backgroundColor: "#4a90d9" },
   surahChipText: { color: "#e0e0e0", fontSize: 14 },
+  readerSection: { flex: 1, marginBottom: 16 },
+  readerLoading: { color: "#888", fontSize: 14, textAlign: "center", paddingVertical: 20 },
+  verseLine: { flexDirection: "row-reverse", alignItems: "flex-start", backgroundColor: "#22223c", borderRadius: 8, padding: 12, marginBottom: 8 },
+  verseNumber: { color: "#4a90d9", fontSize: 13, fontWeight: "bold", marginLeft: 10, minWidth: 22, textAlign: "center" },
+  verseArabic: { color: "#e8e8f0", fontSize: 22, lineHeight: 40, flex: 1, textAlign: "right", writingDirection: "rtl" },
   consentRow: { flexDirection: "row", alignItems: "center", marginBottom: 10 },
   consentText: { color: "#cfcfe0", fontSize: 13, flex: 1, marginLeft: 10 },
   recordButton: { backgroundColor: "#4a90d9", padding: 20, borderRadius: 12, alignItems: "center", marginVertical: 20 },
