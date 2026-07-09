@@ -185,6 +185,10 @@ pub async fn list_agent_runs(
                 .and_then(|v| v.as_str())
                 .unwrap_or("")
                 .to_owned();
+            // finding_id lives in the trace JSONB (create_agent_run stores it there). Surface it so
+            // the agents service can dedup — skip findings that already have a run — instead of
+            // re-recording every finding on every batch tick. null for cohort-level runs.
+            let finding_id = trace.get("finding_id").and_then(|v| v.as_str());
             serde_json::json!({
                 "id": r.try_get::<String, _>("id").unwrap_or_default(),
                 "name": r.try_get::<String, _>("name").unwrap_or_default(),
@@ -194,6 +198,7 @@ pub async fn list_agent_runs(
                 "reviewStatus": r.try_get::<String, _>("review_status").unwrap_or_default(),
                 "sources": sources,
                 "lastEvent": last_event,
+                "findingId": finding_id,
             })
         })
         .collect();

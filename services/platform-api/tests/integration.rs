@@ -2167,6 +2167,56 @@ async fn create_agent_run_accepts_a_valid_run_and_it_is_listed() {
     );
 }
 
+/// list_agent_runs must surface `findingId` (from the run's trace) so the agents service can dedup
+/// — skip findings that already have a run — instead of re-recording every finding each batch tick.
+#[tokio::test]
+#[ignore = "requires live Postgres"]
+async fn list_agent_runs_surfaces_finding_id_for_dedup() {
+    let router = platform_router_with_rate_limit(test_state(), false);
+    let finding_id = format!("tf-dedup-{}", next_suffix());
+    let name = format!("run-fid-{}", next_suffix());
+
+    let created = send_json(
+        &router,
+        Method::POST,
+        "/v1/agent-runs",
+        Some("hikmah-pilot-erbil"),
+        Some("ops"),
+        json!({
+            "name": name,
+            "goal": "explain a finding",
+            "status": "queued",
+            "confidence": 0.5,
+            "reviewStatus": "ai-suggested",
+            "sources": [],
+            "findingId": finding_id
+        }),
+    )
+    .await;
+    assert_eq!(created.status(), StatusCode::OK);
+
+    let listed = send_json(
+        &router,
+        Method::GET,
+        "/v1/agent-runs",
+        Some("hikmah-pilot-erbil"),
+        Some("ops"),
+        Value::Null,
+    )
+    .await;
+    assert_eq!(listed.status(), StatusCode::OK);
+    let runs: Vec<Value> = read_json(listed).await;
+    let mine = runs
+        .iter()
+        .find(|r| r["name"] == json!(name))
+        .expect("created run is listed");
+    assert_eq!(
+        mine["findingId"],
+        json!(finding_id),
+        "findingId must be surfaced so the agents service can dedup: {mine:?}"
+    );
+}
+
 #[tokio::test]
 #[ignore = "requires live Postgres"]
 async fn register_rejects_a_password_shorter_than_eight_characters() {

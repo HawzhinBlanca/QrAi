@@ -76,20 +76,50 @@ async function recordAgentRun(run) {
   return res.json();
 }
 
+/** Existing agent runs (for dedup). Each carries `findingId` (surfaced from the run's trace by
+ *  platform-api's list_agent_runs) — the explainer skips findings that already have a run. */
+async function fetchExistingAgentRuns() {
+  const res = await fetch(`${PLATFORM_API_URL}/v1/agent-runs`, { headers: authHeaders() });
+  if (!res.ok) throw new Error(`agent-runs list ${res.status}`);
+  return toArray(await res.json());
+}
+
 // The core pipeline: findings -> explainer -> gate -> recorded runs. Exported for tests.
-export async function runTajweedExplainerBatch({ fetchFindings, record } = {}) {
+export async function runTajweedExplainerBatch({ fetchFindings, record, fetchExisting } = {}) {
   const getFindings = fetchFindings || fetchTajweedFindings;
   const write = record || recordAgentRun;
+  const getExisting = fetchExisting || fetchExistingAgentRuns;
   // Coerce to an array: a malformed upstream (non-array body with HTTP 200) must not throw
   // "findings is not iterable" (500) — it means "no findings".
   const findings = toArray(await getFindings());
+  // Dedup: skip any finding that already has a recorded agent run. Previously every batch tick
+  // re-explained and re-recorded EVERY finding, growing agent_runs unboundedly and spamming the
+  // teacher review queue with duplicates of the same finding.
+  const processed = new Set(
+    toArray(await getExisting())
+      .map((r) => r && r.findingId)
+      .filter(Boolean),
+  );
   const runs = [];
+  let skipped = 0;
   for (const finding of findings) {
+    if (finding && finding.id && processed.has(finding.id)) {
+      skipped += 1;
+      continue;
+    }
     const candidate = runTajweedExplainer(finding);
     const recorded = await write(candidate);
     runs.push(recorded);
+    // Guard against duplicate finding ids within a single batch too.
+    if (finding && finding.id) processed.add(finding.id);
   }
-  return { agent: "Tajweed Explainer", processedFindings: findings.length, created: runs.length, runs };
+  return {
+    agent: "Tajweed Explainer",
+    processedFindings: findings.length,
+    created: runs.length,
+    skipped,
+    runs,
+  };
 }
 
 // findings -> one cohort summary run. IO injectable for tests.
