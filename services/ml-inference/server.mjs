@@ -7,7 +7,7 @@
 
 import { createServer } from "node:http";
 import { randomUUID } from "node:crypto";
-import { readFileSync, existsSync, writeFileSync, mkdirSync, realpathSync } from "node:fs";
+import { readFileSync, existsSync, writeFileSync, appendFileSync, mkdirSync, realpathSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
@@ -58,6 +58,14 @@ if (AUDIO_STORAGE_DRIVER !== "filesystem") {
 const AUDIO_STORAGE_DIR = process.env.AUDIO_STORAGE_DIR ?? join(__dirname, "audio-storage");
 
 mkdirSync(AUDIO_STORAGE_DIR, { recursive: true });
+
+// Durable audit log: one append-only JSONL file per tenant on the audio_storage volume (which the
+// backup runbook already covers). Previously the audit trail lived only in an in-memory array —
+// unbounded (a slow memory leak over a long-running process) AND lost entirely on restart, so a
+// learner's privacy export could report zero external-ASR calls even if their audio was sent to ASR
+// the day before (a compliance-grade data-loss window). Writing to disk fixes both (P3.3).
+const AUDIT_LOG_DIR = join(AUDIO_STORAGE_DIR, "audit-log");
+mkdirSync(AUDIT_LOG_DIR, { recursive: true });
 
 const ASR_SERVICE_URL = process.env.ASR_SERVICE_URL ?? "http://127.0.0.1:8091";
 
@@ -136,9 +144,46 @@ async function listAudioObjects(tenantId, learnerId) {
   return { audioObjectKeys, metadataObjectKeys };
 }
 
-const auditEvents = [];
 const evalRuns = new Map();
 const deletionJobs = new Map();
+
+// Path to a tenant's append-only audit JSONL, or null if the tenantId isn't a safe path segment
+// (audit writes must never traverse the filesystem, and must never crash the request they audit).
+function auditFileFor(tenantId) {
+  if (typeof tenantId !== "string") return null;
+  const t = tenantId.trim();
+  if (
+    !t ||
+    t.length > 128 ||
+    t === "." ||
+    t === ".." ||
+    t.includes("..") ||
+    t.includes("/") ||
+    t.includes("\\") ||
+    t.includes("\0")
+  ) {
+    return null;
+  }
+  return join(AUDIT_LOG_DIR, `${t}.jsonl`);
+}
+
+// All audit events for a tenant, read from the durable JSONL. Empty for an unknown/invalid tenant.
+// Malformed lines are skipped rather than throwing — one bad line must not hide the rest of the
+// audit trail.
+function readTenantAuditEvents(tenantId) {
+  const file = auditFileFor(tenantId);
+  if (!file || !existsSync(file)) return [];
+  const events = [];
+  for (const line of readFileSync(file, "utf8").split("\n")) {
+    if (!line.trim()) continue;
+    try {
+      events.push(JSON.parse(line));
+    } catch {
+      // skip a corrupt line
+    }
+  }
+  return events;
+}
 
 // Load surah data cache
 const surahCache = new Map();
@@ -268,7 +313,18 @@ function appendAudit(tenantId, action, subjectId, details = {}) {
     details,
     createdAt: new Date().toISOString(),
   };
-  auditEvents.push(event);
+  // Append durably (JSONL). Best-effort: an audit-write failure is logged but never throws — it
+  // must not break the request being audited. The line is newline-terminated so appends compose.
+  const file = auditFileFor(tenantId);
+  if (file) {
+    try {
+      appendFileSync(file, `${JSON.stringify(event)}\n`);
+    } catch (err) {
+      console.error(`[audit] failed to persist event for tenant ${tenantId}: ${err.message}`);
+    }
+  } else {
+    console.error(`[audit] refusing to persist event for unsafe tenantId: ${tenantId}`);
+  }
   return event.id;
 }
 
@@ -677,13 +733,13 @@ async function exportPrivacy(requestBody) {
     learnerId,
     audioObjectKeys,
     metadataObjectKeys,
-    externalAsrCalls: auditEvents.filter(
-      (event) => event.tenantId === tenantId && event.action === "privacy.external-asr.called",
+    externalAsrCalls: readTenantAuditEvents(tenantId).filter(
+      (event) => event.action === "privacy.external-asr.called",
     ),
-    deniedExternalAsr: auditEvents.filter(
-      (event) => event.tenantId === tenantId && event.action === "privacy.external-asr.denied",
+    deniedExternalAsr: readTenantAuditEvents(tenantId).filter(
+      (event) => event.action === "privacy.external-asr.denied",
     ),
-    auditEvents: auditEvents.filter((event) => event.tenantId === tenantId),
+    auditEvents: readTenantAuditEvents(tenantId),
   };
 }
 
@@ -761,7 +817,7 @@ async function storeAudioChunk(requestBody) {
 // Test-only accessors. Importing this module does not start the server (see `isMain`), so the
 // hermetic node:test suite drives the handlers directly and asserts on the audit trail.
 export function getAuditEvents(tenantId) {
-  return tenantId ? auditEvents.filter((event) => event.tenantId === tenantId) : auditEvents;
+  return tenantId ? readTenantAuditEvents(tenantId) : [];
 }
 export { predictAlignment, predictTajweed, createEvalRun, safeStorageSegment, route };
 
@@ -797,11 +853,7 @@ async function route(request, response) {
     if (!tenantId) {
       throw httpError(400, "tenantId query parameter is required");
     }
-    jsonResponse(
-      response,
-      200,
-      auditEvents.filter((event) => event.tenantId === tenantId),
-    );
+    jsonResponse(response, 200, readTenantAuditEvents(tenantId));
     return;
   }
 
