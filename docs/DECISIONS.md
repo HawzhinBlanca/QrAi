@@ -5,6 +5,33 @@ architectural change. Newest first.
 
 ---
 
+## ADR-0013 — Agent-run dedup is application-level, not a DB unique constraint (for now)
+**Date:** 2026-07-08 · **Status:** Accepted
+
+**Context.** The Tajweed Explainer batch re-recorded every finding on every tick, growing
+`agent_runs` unboundedly and spamming the teacher review queue with duplicates. The obvious fix
+is a DB unique constraint on `(tenant_id, finding_id)` — but `finding_id` lives inside the
+`trace` JSONB, not a column, so that needs a new migration. New migrations currently can't ship
+green: CI's Postgres only applies `infra/sql/0001–0013` (its list in the CI-protected
+`.github/workflows/ci.yml`), so any integration test touching a new column fails `verify` — the
+exact wall that's kept PR #123 red since 2026-07-07.
+
+**Decision.** Dedup at the application layer instead (PR #193): `list_agent_runs` surfaces
+`findingId` from the *existing* `trace` JSONB (no migration), and the batch skips findings that
+already have a run. Sufficient because batches are sequential cron ticks, not concurrent.
+
+**Options.** (A) DB unique constraint — bulletproof against concurrency, but blocked on the
+`ci.yml` migration-list unblock. (B) App-level skip — ships now, CI-green, no schema change; not
+atomic against two concurrent batch runs.
+
+**Consequences.** Duplicates stop today. When the owner adds `0015–0020` (+#123's `0018`) to
+`ci.yml`, promote to Option A in the same batch: migration adds an indexed `finding_id` column +
+partial unique index, and `create_agent_run` uses `ON CONFLICT DO NOTHING`. Until then, a
+hypothetical concurrent double-run could still double-record — acceptable for a single-tenant
+cron pilot.
+
+---
+
 ## ADR-0012 — i18next/react-i18next for web i18n; content ships English-only
 **Date:** 2026-07-08 · **Status:** Accepted
 
