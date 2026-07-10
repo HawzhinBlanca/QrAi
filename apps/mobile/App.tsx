@@ -73,8 +73,21 @@ interface Ayah {
   text: string;
 }
 
+// Login disabled by default (pilot/demo): open straight into the app as a default learner, mirroring
+// apps/web's VITE_REQUIRE_LOGIN bypass. The LoginScreen component is kept below, just not reached —
+// re-enable the login screen with EXPO_PUBLIC_REQUIRE_LOGIN=1. The default learner carries no token,
+// so API calls use the platform API's header-auth identity (ALLOW_HEADER_AUTH), same as the web bypass.
+const LOGIN_ENABLED = process.env.EXPO_PUBLIC_REQUIRE_LOGIN === "1";
+const DEFAULT_LEARNER: User = {
+  userId: "learner-1",
+  tenantId: "hikmah-pilot-erbil",
+  role: "learner",
+  displayName: "Learner",
+  token: "",
+};
+
 export default function App() {
-  const [user, setUser] = useState<User | null>(null);
+  const [user, setUser] = useState<User | null>(LOGIN_ENABLED ? null : DEFAULT_LEARNER);
   const [surahs, setSurahs] = useState<Surah[]>([]);
   const [selectedSurah, setSelectedSurah] = useState<number>(1);
   const [verses, setVerses] = useState<Ayah[]>([]);
