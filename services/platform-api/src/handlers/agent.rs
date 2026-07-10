@@ -26,6 +26,13 @@ pub struct AgentRunRequest {
     pub last_event: String,
     #[serde(default)]
     pub finding_id: Option<String>,
+    /// The learner this run is about, when it's learner-specific (e.g. Practice Plan
+    /// Recommender). None for cohort-level runs (e.g. Mistake Pattern Summarizer). Recorded so
+    /// privacy.rs's erasure cascade can find and delete this learner's agent runs — without it,
+    /// a run's only reference to the learner is embedded as free text in `goal`, which erasure
+    /// has no way to search or scope a DELETE against.
+    #[serde(default)]
+    pub learner_id: Option<String>,
 }
 
 /// Record an agent run (written by the supervised agents service). Ops/Admin/Scholar
@@ -122,8 +129,8 @@ pub async fn create_agent_run(
 
     sqlx::query(
         "INSERT INTO agent_runs
-            (id, tenant_id, name, goal, status, confidence, review_status, source_refs, trace, audit_event_id)
-         VALUES ($1, $2, $3, $4, $5, $6::float8::numeric, $7, $8, $9, $10)",
+            (id, tenant_id, name, goal, status, confidence, review_status, source_refs, trace, audit_event_id, learner_id)
+         VALUES ($1, $2, $3, $4, $5, $6::float8::numeric, $7, $8, $9, $10, $11)",
     )
     .bind(&run_id)
     .bind(&actor.tenant_id)
@@ -135,6 +142,7 @@ pub async fn create_agent_run(
     .bind(&req.sources)
     .bind(&trace)
     .bind(&audit_id)
+    .bind(&req.learner_id)
     .execute(&mut *tx)
     .await?;
 
@@ -149,6 +157,7 @@ pub async fn create_agent_run(
         "reviewStatus": req.review_status,
         "sources": req.sources,
         "lastEvent": req.last_event,
+        "learnerId": req.learner_id,
     })))
 }
 
