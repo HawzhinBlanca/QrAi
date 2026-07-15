@@ -37,7 +37,7 @@
 ## Phase 5 — Production operations and resilience
 - [x] T5.1 Harden build and supply chain.
 - [x] T5.2 Provision production posture.
-- [ ] T5.3 Instrument SLOs.
+- [x] T5.3 Instrument SLOs.
 - [ ] T5.4 Load, soak, and chaos test staging.
 - [ ] T5.5 Rehearse incident and rollback.
 
