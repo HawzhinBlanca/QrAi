@@ -14,8 +14,8 @@
 - [x] T1.5 Keep neural Tajweed outside learner paths until separately approved.
 
 ## Phase 2 — Security, tenancy, and privacy under attack
-- [ ] T2.1 Run every ignored platform-api integration test against real Postgres.
-- [ ] T2.2 Add adversarial two-tenant RLS coverage for every table and object key.
+- [x] T2.1 Run every ignored platform-api integration test against real Postgres.
+- [x] T2.2 Add adversarial two-tenant RLS coverage for every table and object key.
 - [ ] T2.3 Validate auth/session/realtime boundaries.
 - [ ] T2.4 Prove consent, retention, export, and deletion.
 - [ ] T2.5 Commission independent security review.

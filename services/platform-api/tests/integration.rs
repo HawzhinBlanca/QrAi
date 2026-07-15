@@ -9,6 +9,14 @@ use quran_ai_platform_api::{AppState, platform_router_with_rate_limit};
 fn test_state() -> AppState {
     let pool = sqlx::postgres::PgPoolOptions::new()
         .max_connections(2)
+        .after_connect(|conn, _meta| {
+            Box::pin(async move {
+                sqlx::query("SET app.tenant_id = 'hikmah-pilot-erbil'")
+                    .execute(conn)
+                    .await?;
+                Ok(())
+            })
+        })
         .connect_lazy(
             &std::env::var("DATABASE_URL")
                 .unwrap_or_else(|_| "postgresql://hawzhin@localhost:5432/quran_ai".to_owned()),
@@ -2548,4 +2556,155 @@ fn next_suffix() -> String {
         .map(|d| d.as_nanos())
         .unwrap_or(0);
     format!("{}-{}", nanos, N.fetch_add(1, Ordering::Relaxed))
+}
+
+// --- Adversarial Cross-Tenant RLS & Security Tests ---
+
+#[tokio::test]
+#[ignore = "requires live Postgres"]
+async fn adversarial_sql_isolation_prevents_cross_tenant_access() {
+    let state = test_state();
+
+    // We start a transaction as if we are Tenant B
+    let mut tx = state.pool.begin().await.unwrap();
+    sqlx::query("SET LOCAL app.tenant_id = 'tenant-b'")
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+
+    // 1. Trying to read Tenant A's seeded users must yield zero rows
+    let user_count: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM users WHERE tenant_id = 'hikmah-pilot-erbil'")
+            .fetch_one(&mut *tx)
+            .await
+            .unwrap();
+    assert_eq!(
+        user_count, 0,
+        "Hostile SQL read must return 0 rows for other tenant"
+    );
+
+    // 2. Trying to insert a user for Tenant A must violate RLS WITH CHECK policy
+    let res = sqlx::query(
+        "INSERT INTO users (id, tenant_id, display_name, role, language)
+         VALUES ('adversarial-user', 'hikmah-pilot-erbil', 'Adversarial', 'learner', 'ckb')",
+    )
+    .execute(&mut *tx)
+    .await;
+
+    assert!(res.is_err(), "RLS must block inserts for another tenant");
+    let err_msg = res.unwrap_err().to_string();
+    assert!(
+        err_msg.contains("violates row-level security policy") || err_msg.contains("42501"),
+        "Error must be RLS violation, got: {}",
+        err_msg
+    );
+    tx.rollback().await.unwrap();
+}
+
+#[tokio::test]
+#[ignore = "requires live Postgres"]
+async fn adversarial_api_isolation_prevents_cross_tenant_read() {
+    let state = test_state();
+    let router = platform_router_with_rate_limit(state.clone(), false);
+    let learner_id = format!("learner-a-{}", next_suffix());
+
+    // Setup Tenant A user
+    sqlx::query(
+        "INSERT INTO users (id, tenant_id, display_name, role, language)
+         VALUES ($1, 'hikmah-pilot-erbil', 'Tenant A Learner', 'learner', 'ckb')",
+    )
+    .bind(&learner_id)
+    .execute(&state.pool)
+    .await
+    .unwrap();
+
+    // Hostile Tenant B attempts to read Tenant A's progress
+    let response = send_json(
+        &router,
+        Method::GET,
+        &format!("/v1/learner/progress?learnerId={}", learner_id),
+        Some("other-tenant"),
+        Some("learner"),
+        Value::Null,
+    )
+    .await;
+
+    // Should be Forbidden or Unauthorized because Tenant B actor cannot see Tenant A's data
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
+}
+
+#[tokio::test]
+#[ignore = "requires live Postgres"]
+async fn adversarial_api_isolation_prevents_cross_tenant_write() {
+    let state = test_state();
+    let router = platform_router_with_rate_limit(state.clone(), false);
+    let learner_id = format!("learner-a-{}", next_suffix());
+
+    // Setup Tenant A user
+    sqlx::query(
+        "INSERT INTO users (id, tenant_id, display_name, role, language)
+         VALUES ($1, 'hikmah-pilot-erbil', 'Tenant A Learner', 'learner', 'ckb')",
+    )
+    .bind(&learner_id)
+    .execute(&state.pool)
+    .await
+    .unwrap();
+
+    // Hostile Tenant B attempts to create a session for Tenant A's user
+    let response = send_json(
+        &router,
+        Method::POST,
+        "/v1/recitation-sessions",
+        Some("other-tenant"),
+        Some("learner"),
+        json!({
+            "learnerId": learner_id,
+            "quranRef": {"surahNumber": 1, "ayahStart": 1, "ayahEnd": 7, "display": "Al-Fatihah 1:1-7"},
+            "sourceChecksum": "fnv1a32:adversarial-write",
+            "modelVersion": "model-v0.3",
+            "language": "ckb",
+            "mode": "guided-recite",
+            "practicePlanId": "fatihah-mastery-v1",
+            "consent": {"audioRetention": "discard", "anonymizedLearning": true, "externalAsrProcessing": false, "guardianApproved": true, "consentVersion": "pilot-v1"}
+        }),
+    )
+    .await;
+
+    // The request should fail with FORBIDDEN since the actor is a learner trying to create a session for another user
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
+}
+
+#[tokio::test]
+#[ignore = "requires live Postgres"]
+async fn adversarial_api_isolation_prevents_cross_tenant_delete() {
+    let state = test_state();
+    let router = platform_router_with_rate_limit(state.clone(), false);
+    let learner_id = format!("learner-a-{}", next_suffix());
+
+    // Setup Tenant A user
+    sqlx::query(
+        "INSERT INTO users (id, tenant_id, display_name, role, language)
+         VALUES ($1, 'hikmah-pilot-erbil', 'Tenant A Learner', 'learner', 'ckb')",
+    )
+    .bind(&learner_id)
+    .execute(&state.pool)
+    .await
+    .unwrap();
+
+    // Hostile Tenant B attempts to delete Tenant A's user
+    let response = send_json(
+        &router,
+        Method::POST,
+        "/v1/privacy/delete",
+        Some("other-tenant"),
+        Some("learner"),
+        json!({
+            "learnerId": learner_id,
+            "kind": "delete"
+        }),
+    )
+    .await;
+
+    // Should fail with FORBIDDEN since Tenant B cannot manage Tenant A's user privacy
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
 }
