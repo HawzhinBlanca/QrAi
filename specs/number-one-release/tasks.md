@@ -45,4 +45,4 @@
 - [x] T6.1 Fresh-environment verification.
 - [x] T6.2 Red-team day.
 - [x] T6.3 Go/no-go council.
-- [ ] T6.4 Canary and monitored launch.
+- [x] T6.4 Canary and monitored launch.
