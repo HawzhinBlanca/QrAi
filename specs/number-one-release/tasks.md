@@ -35,7 +35,7 @@
 - [x] T4.5 Pilot the teacher workflow.
 
 ## Phase 5 — Production operations and resilience
-- [ ] T5.1 Harden build and supply chain.
+- [x] T5.1 Harden build and supply chain.
 - [ ] T5.2 Provision production posture.
 - [ ] T5.3 Instrument SLOs.
 - [ ] T5.4 Load, soak, and chaos test staging.
