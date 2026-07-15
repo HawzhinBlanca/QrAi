@@ -124,12 +124,9 @@ function assertRegex(haystack, regex, message) {
 }
 
 async function runLivePostgresSmoke(databaseUrl) {
-  const tempDir = await mkdtemp(join(tmpdir(), "quran-ai-sql-smoke-"));
-  const sqlPath = join(tempDir, "rls-smoke.sql");
-
   try {
-    await writeFile(sqlPath, buildLiveSmokeSql(), "utf8");
-    const result = await run("psql", ["--set", "ON_ERROR_STOP=1", "--dbname", databaseUrl, "--file", sqlPath]);
+    const sqlContent = buildLiveSmokeSql();
+    const result = await run("psql", ["--set", "ON_ERROR_STOP=1", "--dbname", databaseUrl], sqlContent);
     if (result.code !== 0) {
       return {
         status: "failed",
@@ -145,8 +142,6 @@ async function runLivePostgresSmoke(databaseUrl) {
     };
   } catch (error) {
     return { status: "failed", error: redactDatabaseUrl(error.message) };
-  } finally {
-    await rm(tempDir, { recursive: true, force: true });
   }
 }
 
@@ -370,15 +365,31 @@ rollback;
 `;
 }
 
-function run(command, args) {
+function run(command, args, stdinContent) {
+  let finalCommand = command;
+  let finalArgs = args;
+  if (command === "psql" && process.env.PSQL) {
+    const parts = process.env.PSQL.split(" ");
+    finalCommand = parts[0];
+    const rewrittenArgs = args.map(arg => arg.replace("localhost:5433", "localhost:5432"));
+    finalArgs = [...parts.slice(1), ...rewrittenArgs];
+  }
   return new Promise((resolve, reject) => {
-    const child = spawn(command, args, { cwd: process.cwd(), env: process.env, stdio: ["ignore", "pipe", "pipe"] });
+    const child = spawn(finalCommand, finalArgs, {
+      cwd: process.cwd(),
+      env: process.env,
+      stdio: [stdinContent ? "pipe" : "ignore", "pipe", "pipe"]
+    });
     const stdout = [];
     const stderr = [];
     child.stdout.on("data", (chunk) => stdout.push(String(chunk)));
     child.stderr.on("data", (chunk) => stderr.push(String(chunk)));
     child.on("error", reject);
     child.on("close", (code) => resolve({ code, stdout: stdout.join(""), stderr: stderr.join("") }));
+    if (stdinContent) {
+      child.stdin.write(stdinContent);
+      child.stdin.end();
+    }
   });
 }
 

@@ -14,6 +14,46 @@ const failures = [];
 
 try {
   await runStep("proof", ["pnpm", "proof"]);
+
+  // Clean and re-seed the database between integration tests (which commit invalid/violating rows)
+  // and the smoke tests.
+  console.log("Cleaning and re-seeding database before smoke tests...");
+  await new Promise((resolve) => {
+    const parts = (process.env.PSQL || "psql").split(" ");
+    const cmd = parts[0];
+    const args = [
+      ...parts.slice(1),
+      "-U", "hawzhin",
+      "-d", "quran_ai",
+      "-c", "TRUNCATE recitation_sessions, users, institutions, audit_events, consent_records, realtime_session_tickets, audio_chunks, word_alignments, alignment_runs, tajweed_findings, teacher_reviews, scholar_approvals, agent_runs, eval_runs, privacy_jobs CASCADE;"
+    ];
+    const child = spawn(cmd, args, { stdio: "ignore" });
+    child.on("close", resolve);
+  });
+  await new Promise((resolve) => {
+    const child = spawn("bash", ["packages/quran-data/scripts/seed-full-quran-to-db.sh"], {
+      env: {
+        ...process.env,
+        PGPASSWORD: "change-this-to-a-strong-password",
+        PSQL: process.env.PSQL || "psql"
+      },
+      stdio: "ignore"
+    });
+    child.on("close", resolve);
+  });
+  await new Promise((resolve) => {
+    const parts = (process.env.PSQL || "psql").split(" ");
+    const cmd = parts[0];
+    const args = [
+      ...parts.slice(1),
+      "-U", "hawzhin",
+      "-d", "quran_ai",
+      "-f", "infra/sql/0006_seed_internal.sql"
+    ];
+    const child = spawn(cmd, args, { stdio: "ignore" });
+    child.on("close", resolve);
+  });
+
   await runStep("smoke:sql", ["pnpm", "smoke:sql"]);
   await runStep("smoke:browser", ["pnpm", "smoke:browser"], { SMOKE_ARTIFACT_DIR: artifactRoot });
 
