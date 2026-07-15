@@ -17,7 +17,7 @@ services:
       # Internal-only service: bind to loopback so it is reachable on the host (debugging, psql,
       # migrations) but NOT from other machines. Only platform-api (8080), the realtime gateway
       # (8081), and the web app are meant to be exposed off-host; postgres/ml/asr stay private.
-      - "127.0.0.1:5432:5432"
+      - "127.0.0.1:5433:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
       - ./infra/sql/0001_core_schema.sql:/docker-entrypoint-initdb.d/01_schema.sql:ro
