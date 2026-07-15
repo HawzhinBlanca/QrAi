@@ -1140,6 +1140,30 @@ button:disabled {
   box-shadow: 0 10px 0 -7px var(--emerald);
 }
 
+/* Follow-along: the word currently being recited in the reference audio. A crisp amber pill that
+   lights each word as playback crosses it — distinct from selection (emerald) and status colors. */
+.word-token.is-reciting {
+  background: rgba(214, 154, 31, 0.24);
+  border-color: rgba(214, 154, 31, 0.6);
+  color: #151411;
+  transition:
+    background 90ms linear,
+    border-color 90ms linear;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .word-token.is-reciting {
+    transition: none;
+  }
+}
+
+.reader-attribution {
+  margin: 8px 4px 0;
+  font-size: 0.72rem;
+  color: #6b6a66;
+  line-height: 1.4;
+}
+
 .word-token.status-mistake {
   border-color: rgba(200, 63, 76, 0.28);
   background: rgba(200, 63, 76, 0.12);
