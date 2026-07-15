@@ -5,10 +5,148 @@
   "audioBase": "https://verses.quran.com/",
   "surahs": [
     {
-      "surah": 2,
-      "ayahsWithTimings": 283,
-      "ayahsExcluded": 3,
-      "totalAyahs": 286
+      "surah": 81,
+      "ayahsWithTimings": 29,
+      "ayahsExcluded": 0,
+      "totalAyahs": 29
+    },
+    {
+      "surah": 82,
+      "ayahsWithTimings": 19,
+      "ayahsExcluded": 0,
+      "totalAyahs": 19
+    },
+    {
+      "surah": 83,
+      "ayahsWithTimings": 36,
+      "ayahsExcluded": 0,
+      "totalAyahs": 36
+    },
+    {
+      "surah": 84,
+      "ayahsWithTimings": 25,
+      "ayahsExcluded": 0,
+      "totalAyahs": 25
+    },
+    {
+      "surah": 85,
+      "ayahsWithTimings": 22,
+      "ayahsExcluded": 0,
+      "totalAyahs": 22
+    },
+    {
+      "surah": 86,
+      "ayahsWithTimings": 17,
+      "ayahsExcluded": 0,
+      "totalAyahs": 17
+    },
+    {
+      "surah": 87,
+      "ayahsWithTimings": 19,
+      "ayahsExcluded": 0,
+      "totalAyahs": 19
+    },
+    {
+      "surah": 88,
+      "ayahsWithTimings": 26,
+      "ayahsExcluded": 0,
+      "totalAyahs": 26
+    },
+    {
+      "surah": 89,
+      "ayahsWithTimings": 30,
+      "ayahsExcluded": 0,
+      "totalAyahs": 30
+    },
+    {
+      "surah": 90,
+      "ayahsWithTimings": 20,
+      "ayahsExcluded": 0,
+      "totalAyahs": 20
+    },
+    {
+      "surah": 91,
+      "ayahsWithTimings": 15,
+      "ayahsExcluded": 0,
+      "totalAyahs": 15
+    },
+    {
+      "surah": 92,
+      "ayahsWithTimings": 21,
+      "ayahsExcluded": 0,
+      "totalAyahs": 21
+    },
+    {
+      "surah": 93,
+      "ayahsWithTimings": 11,
+      "ayahsExcluded": 0,
+      "totalAyahs": 11
+    },
+    {
+      "surah": 94,
+      "ayahsWithTimings": 8,
+      "ayahsExcluded": 0,
+      "totalAyahs": 8
+    },
+    {
+      "surah": 95,
+      "ayahsWithTimings": 8,
+      "ayahsExcluded": 0,
+      "totalAyahs": 8
+    },
+    {
+      "surah": 96,
+      "ayahsWithTimings": 19,
+      "ayahsExcluded": 0,
+      "totalAyahs": 19
+    },
+    {
+      "surah": 97,
+      "ayahsWithTimings": 5,
+      "ayahsExcluded": 0,
+      "totalAyahs": 5
+    },
+    {
+      "surah": 98,
+      "ayahsWithTimings": 8,
+      "ayahsExcluded": 0,
+      "totalAyahs": 8
+    },
+    {
+      "surah": 99,
+      "ayahsWithTimings": 8,
+      "ayahsExcluded": 0,
+      "totalAyahs": 8
+    },
+    {
+      "surah": 100,
+      "ayahsWithTimings": 11,
+      "ayahsExcluded": 0,
+      "totalAyahs": 11
+    },
+    {
+      "surah": 101,
+      "ayahsWithTimings": 11,
+      "ayahsExcluded": 0,
+      "totalAyahs": 11
+    },
+    {
+      "surah": 102,
+      "ayahsWithTimings": 8,
+      "ayahsExcluded": 0,
+      "totalAyahs": 8
+    },
+    {
+      "surah": 103,
+      "ayahsWithTimings": 3,
+      "ayahsExcluded": 0,
+      "totalAyahs": 3
+    },
+    {
+      "surah": 104,
+      "ayahsWithTimings": 9,
+      "ayahsExcluded": 0,
+      "totalAyahs": 9
     }
   ]
 }

@@ -1,0 +1,199 @@
+{
+  "surah": 102,
+  "reciter": "alafasy",
+  "reciterName": "Mishary Rashid al-Afasy",
+  "source": "api.quran.com v4 recitation 7",
+  "audioBase": "https://verses.quran.com/",
+  "license": "See docs/DATA_LICENSES.md#quran-com-word-segments-audio",
+  "ayahs": [
+    {
+      "ayah": 1,
+      "audioUrl": "Alafasy/mp3/102001.mp3",
+      "words": [
+        {
+          "wordId": "102:1:5",
+          "startMs": 150,
+          "endMs": 1320
+        },
+        {
+          "wordId": "102:1:6",
+          "startMs": 1330,
+          "endMs": 2690
+        }
+      ]
+    },
+    {
+      "ayah": 2,
+      "audioUrl": "Alafasy/mp3/102002.mp3",
+      "words": [
+        {
+          "wordId": "102:2:1",
+          "startMs": 30,
+          "endMs": 870
+        },
+        {
+          "wordId": "102:2:2",
+          "startMs": 880,
+          "endMs": 1770
+        },
+        {
+          "wordId": "102:2:3",
+          "startMs": 1780,
+          "endMs": 3330
+        }
+      ]
+    },
+    {
+      "ayah": 3,
+      "audioUrl": "Alafasy/mp3/102003.mp3",
+      "words": [
+        {
+          "wordId": "102:3:1",
+          "startMs": 30,
+          "endMs": 810
+        },
+        {
+          "wordId": "102:3:2",
+          "startMs": 820,
+          "endMs": 1530
+        },
+        {
+          "wordId": "102:3:3",
+          "startMs": 1540,
+          "endMs": 4720
+        }
+      ]
+    },
+    {
+      "ayah": 4,
+      "audioUrl": "Alafasy/mp3/102004.mp3",
+      "words": [
+        {
+          "wordId": "102:4:1",
+          "startMs": 30,
+          "endMs": 1650
+        },
+        {
+          "wordId": "102:4:2",
+          "startMs": 1660,
+          "endMs": 2510
+        },
+        {
+          "wordId": "102:4:3",
+          "startMs": 2520,
+          "endMs": 3190
+        },
+        {
+          "wordId": "102:4:4",
+          "startMs": 3200,
+          "endMs": 6000
+        }
+      ]
+    },
+    {
+      "ayah": 5,
+      "audioUrl": "Alafasy/mp3/102005.mp3",
+      "words": [
+        {
+          "wordId": "102:5:1",
+          "startMs": 50,
+          "endMs": 900
+        },
+        {
+          "wordId": "102:5:2",
+          "startMs": 910,
+          "endMs": 1270
+        },
+        {
+          "wordId": "102:5:3",
+          "startMs": 1280,
+          "endMs": 2570
+        },
+        {
+          "wordId": "102:5:4",
+          "startMs": 2580,
+          "endMs": 3180
+        },
+        {
+          "wordId": "102:5:5",
+          "startMs": 3190,
+          "endMs": 5910
+        }
+      ]
+    },
+    {
+      "ayah": 6,
+      "audioUrl": "Alafasy/mp3/102006.mp3",
+      "words": [
+        {
+          "wordId": "102:6:1",
+          "startMs": 150,
+          "endMs": 2250
+        },
+        {
+          "wordId": "102:6:2",
+          "startMs": 2260,
+          "endMs": 5240
+        }
+      ]
+    },
+    {
+      "ayah": 7,
+      "audioUrl": "Alafasy/mp3/102007.mp3",
+      "words": [
+        {
+          "wordId": "102:7:1",
+          "startMs": 40,
+          "endMs": 1170
+        },
+        {
+          "wordId": "102:7:2",
+          "startMs": 1180,
+          "endMs": 3800
+        },
+        {
+          "wordId": "102:7:3",
+          "startMs": 3810,
+          "endMs": 4470
+        },
+        {
+          "wordId": "102:7:4",
+          "startMs": 4480,
+          "endMs": 7470
+        }
+      ]
+    },
+    {
+      "ayah": 8,
+      "audioUrl": "Alafasy/mp3/102008.mp3",
+      "words": [
+        {
+          "wordId": "102:8:1",
+          "startMs": 30,
+          "endMs": 1650
+        },
+        {
+          "wordId": "102:8:2",
+          "startMs": 1660,
+          "endMs": 3850
+        },
+        {
+          "wordId": "102:8:3",
+          "startMs": 3860,
+          "endMs": 5120
+        },
+        {
+          "wordId": "102:8:4",
+          "startMs": 5130,
+          "endMs": 5660
+        },
+        {
+          "wordId": "102:8:5",
+          "startMs": 5670,
+          "endMs": 9930
+        }
+      ]
+    }
+  ],
+  "excludedAyahs": []
+}

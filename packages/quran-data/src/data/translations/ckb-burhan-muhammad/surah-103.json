@@ -1,0 +1,26 @@
+{
+  "surah": 103,
+  "slug": "ckb-burhan-muhammad",
+  "translationId": 81,
+  "translator": "Burhan Muhammad-Amin",
+  "language": "ckb",
+  "source": "api.quran.com v4 translation 81",
+  "publisher": "QuranEnc.com",
+  "license": "See docs/DATA_LICENSES.md#ckb-sorani-translation",
+  "fetchedAt": "2026-07-15",
+  "ayahs": [
+    {
+      "ayah": 1,
+      "text": "سوێند به زه‌مانه‌، سوێند به‌کاتی عه‌سر."
+    },
+    {
+      "ayah": 2,
+      "text": "به‌ڕاستی ئاده‌میزاد له زه‌ره‌رمه‌ندی و خه‌ساره‌تمه‌ندیدایه‌."
+    },
+    {
+      "ayah": 3,
+      "text": "بێجگه له‌وانه‌ی که باوه‌ڕیان هێناوه‌و کارو کرده‌وه چاکه‌کانیان ئه‌نجامداوه‌و ئامۆژگاری یه‌کتریشیان کردووه که هه‌میشه پابه‌ندی حه‌ق بن (پابه‌ندی حه‌قیش پێویستی به خۆگری هه‌یه‌)، له‌به‌ر ئه‌وه به‌رده‌وام ئامۆژگاری یه‌کتریان کردووه تا هه‌میشه و به‌رده‌وام، خۆگرو ئارامگریش بن."
+    }
+  ],
+  "missingAyahs": []
+}
