@@ -250,6 +250,14 @@ pub fn platform_router_with_rate_limit(state: AppState, rate_limit: bool) -> Rou
             axum::routing::post(handlers::ml_proxy::proxy_asr_transcribe)
                 .layer(DefaultBodyLimit::max(16 * 1024 * 1024)),
         )
+        // Forced alignment (T3): audio + canonical transcript → per-word timestamps. Same auth +
+        // server-side ASR key + 16 MB audio limit as transcribe; the browser never reaches the ASR
+        // service directly.
+        .route(
+            "/v1/asr/force-align",
+            axum::routing::post(handlers::ml_proxy::proxy_asr_force_align)
+                .layer(DefaultBodyLimit::max(16 * 1024 * 1024)),
+        )
         // Record request counts + latency for every route (matched-path labels keep cardinality
         // bounded). Applied inside TraceLayer so it wraps the actual handlers.
         .layer(axum::middleware::from_fn_with_state(
