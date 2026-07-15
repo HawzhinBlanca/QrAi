@@ -61,6 +61,14 @@ def align_words(waveform: torch.Tensor, arabic_words: list[str]) -> list[tuple[i
     with torch.inference_mode():
         logits = model(waveform).logits  # [1, T, V]
     emission = torch.log_softmax(logits, dim=-1)
+    # CTC forced alignment needs at least one emission frame per target token; when the transcript
+    # has more tokens than the audio produced frames (audio far shorter than the text — e.g. the
+    # learner recited only the first half of the ayah) torchaudio's forced_align raises a cryptic
+    # RuntimeError. Detect it here and raise a ValueError the endpoint maps to a clean 400.
+    if len(tokens) > emission.size(1):
+        raise ValueError(
+            f"transcript needs {len(tokens)} tokens but the audio only has {emission.size(1)} frames"
+        )
     targets = torch.tensor([tokens], dtype=torch.int32)
     aligned, scores = F.forced_align(emission, targets, blank=blank)
     token_spans = F.merge_tokens(aligned[0], scores[0])
