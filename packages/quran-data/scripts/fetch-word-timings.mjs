@@ -23,12 +23,12 @@
 //
 // Output: src/data/word-timings/<slug>/surah-XXX.json  +  src/data/word-timings/<slug>/manifest.json
 
-import { readFileSync, writeFileSync, mkdirSync } from "node:fs";
+import { writeFileSync, mkdirSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { getFlag, parseSurahArg, loadCanonicalAyahs, fetchJsonWithRetry } from "./_ingest-lib.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const DATA_DIR = join(__dirname, "..", "src", "data", "full-quran");
 const API = "https://api.quran.com/api/v4";
 const AUDIO_BASE = "https://verses.quran.com/";
 
@@ -57,25 +57,13 @@ function normalizeSkeleton(word) {
 }
 
 async function fetchSegments(key, reciterId) {
-  const url = `${API}/verses/by_key/${key}?audio=${reciterId}`;
-  for (let attempt = 0; attempt < 4; attempt++) {
-    try {
-      const res = await fetch(url, { headers: { "User-Agent": "qrai-word-timings-ingest" } });
-      if (res.status === 429 || res.status >= 500) throw new Error(`HTTP ${res.status}`);
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const audio = (await res.json())?.verse?.audio;
-      if (!audio?.segments) throw new Error("no segments in response");
-      return audio;
-    } catch (err) {
-      if (attempt === 3) throw err;
-      await new Promise((r) => setTimeout(r, 400 * (attempt + 1)));
-    }
-  }
-}
-
-function loadCanonicalAyahs(surah) {
-  const p = join(DATA_DIR, `surah-${String(surah).padStart(3, "0")}.json`);
-  return JSON.parse(readFileSync(p, "utf8")).ayahs;
+  const json = await fetchJsonWithRetry(
+    `${API}/verses/by_key/${key}?audio=${reciterId}`,
+    "qrai-word-timings-ingest",
+  );
+  const audio = json?.verse?.audio;
+  if (!audio?.segments) throw new Error("no segments in response");
+  return audio;
 }
 
 // Map Quran.com segments onto our canonical word ids. Returns {words, reason?} — reason set means
@@ -120,22 +108,6 @@ function alignAyah(surah, ayahNumber, canonicalWords, audio) {
     }
   }
   return { words, audioUrl: audio.url };
-}
-
-function parseSurahArg(arg) {
-  if (!arg) return Array.from({ length: 114 }, (_, i) => i + 1);
-  const out = new Set();
-  for (const part of arg.split(",")) {
-    const m = part.match(/^(\d+)-(\d+)$/);
-    if (m) for (let n = +m[1]; n <= +m[2]; n++) out.add(n);
-    else out.add(+part);
-  }
-  return [...out].sort((a, b) => a - b);
-}
-
-function getFlag(name, def) {
-  const i = process.argv.indexOf(`--${name}`);
-  return i >= 0 ? process.argv[i + 1] : def;
 }
 
 async function main() {
