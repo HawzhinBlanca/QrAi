@@ -2563,14 +2563,53 @@ fn next_suffix() -> String {
 #[tokio::test]
 #[ignore = "requires live Postgres"]
 async fn adversarial_sql_isolation_prevents_cross_tenant_access() {
-    let state = test_state();
+    // Deliberately NOT test_state(): its pool pins every connection's SESSION tenant to
+    // 'hikmah-pilot-erbil' (after_connect), so the old shape — `SET LOCAL app.tenant_id =
+    // 'tenant-b'` layered on top — FAILED OPEN whenever the LOCAL scope didn't take effect as
+    // assumed (observed as a CI flake: the "hostile" read ran as the victim tenant and saw its
+    // rows). A dedicated single-connection pool pinned session-level to tenant-b has no fallback
+    // identity to fail open into, and mirrors production more honestly: production pools have no
+    // session default at all (current_setting is NULL -> RLS yields zero rows, fail closed).
+    let pool = sqlx::postgres::PgPoolOptions::new()
+        .max_connections(1)
+        .after_connect(|conn, _meta| {
+            Box::pin(async move {
+                sqlx::query("SET app.tenant_id = 'tenant-b'")
+                    .execute(conn)
+                    .await?;
+                Ok(())
+            })
+        })
+        .connect_lazy(
+            &std::env::var("DATABASE_URL")
+                .unwrap_or_else(|_| "postgresql://hawzhin@localhost:5432/quran_ai".to_owned()),
+        )
+        .expect("failed to create tenant-b pool");
 
-    // We start a transaction as if we are Tenant B
-    let mut tx = state.pool.begin().await.unwrap();
-    sqlx::query("SET LOCAL app.tenant_id = 'tenant-b'")
+    let mut tx = pool.begin().await.unwrap();
+
+    // Drop to the production app role for the probes. CI's DATABASE_URL connects as the
+    // container SUPERUSER, and superusers bypass row-level security unconditionally (FORCE or
+    // not) — under that identity this test can never pass, which surfaced the day verify.sh's
+    // 2s psql probe first succeeded on a CI runner and the DB-gated suite actually ran there.
+    // quran_ai_app exists in every environment that applies infra/sql/rls-app-role.sql (CI does;
+    // local staging already connects as it, where SET ROLE to self is a no-op). LOCAL scope
+    // reverts the role at tx end.
+    sqlx::query("SET LOCAL ROLE quran_ai_app")
         .execute(&mut *tx)
         .await
+        .expect("quran_ai_app role must exist — apply infra/sql/rls-app-role.sql");
+
+    // Sanity gate: prove the hostile identity is in effect BEFORE probing, so any future
+    // scoping surprise fails loudly here instead of as a mysterious row-count assertion.
+    let ctx: String = sqlx::query_scalar("SELECT current_setting('app.tenant_id', true)")
+        .fetch_one(&mut *tx)
+        .await
         .unwrap();
+    assert_eq!(
+        ctx, "tenant-b",
+        "hostile tenant context must be active before the RLS probes"
+    );
 
     // 1. Trying to read Tenant A's seeded users must yield zero rows
     let user_count: i64 =
