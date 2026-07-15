@@ -18,7 +18,7 @@ import { OfflineBanner } from "./components/OfflineBanner";
 const LoginScreen = lazy(() => import("./components/LoginScreen").then(m => ({ default: m.LoginScreen })));
 import { AuthProvider, useAuth } from "./lib/auth";
 import { startAsr, splitTranscript, isAsrSupported, type AsrController } from "./lib/asr";
-import { startLocalAudioRecording, startServerAsr, isServerAsrSupported, type ServerAsrController } from "./lib/serverAsr";
+import { startLocalAudioRecording, startServerAsr, isServerAsrSupported, blobToBase64, type ServerAsrController } from "./lib/serverAsr";
 import { canRecordRecitation, canUseExternalSpeechFallback } from "./lib/consent";
 import { startMicVisualizer, type MicVisualizerStop } from "./lib/micVisualizer";
 import { getSurahTimings, getAyahTimings, ayahAudioUrl, recitingWordIdAt } from "./lib/wordTimings";
@@ -29,6 +29,8 @@ import {
   predictTajweed,
   createRecitationSession,
   persistSessionAlignments,
+  forceAlign,
+  type WordTimingMs,
   requestTeacherReview,
   fetchSurahList,
   type AlignmentResult,
@@ -640,7 +642,7 @@ function AuthenticatedApp({ bypassLogin = false }: { bypassLogin?: boolean }) {
     }
   }
 
-  async function runAlignmentAndTajweed(transcript: string) {
+  async function runAlignmentAndTajweed(transcript: string, audioBlob?: Blob | null) {
     if (!effectiveUser || !transcript.trim()) return;
     if (isLoading) return; // an alignment is already in flight — don't pile up requests
     setApiError(null);
@@ -663,6 +665,38 @@ function AuthenticatedApp({ bypassLogin = false }: { bypassLogin?: boolean }) {
       setQuranVerses((prev) => updateVersesWithAlignment(prev, alignment.alignments));
       setRecitationEvents(buildRecitationEvents(alignment.alignments));
 
+      // Real per-word timings via forced alignment (T3). Best-effort and fully optional: if the audio
+      // is unavailable or the aligner isn't reachable, timingsByWordId stays undefined and the persist
+      // below writes 0/0 exactly as before — the learner's practice never depends on it.
+      let timingsByWordId: Map<string, WordTimingMs> | undefined;
+      const canonicalAligned = alignment.alignments.filter((a) => a.status !== "extra");
+      if (audioBlob && canonicalAligned.length > 0) {
+        try {
+          const audioBase64 = await blobToBase64(audioBlob);
+          const aligned = await forceAlign({
+            tenantId: effectiveUser.tenantId,
+            userId: effectiveUser.userId,
+            authToken,
+            audioBase64,
+            audioFormat: (audioBlob.type.split("/")[1] || "webm").split(";")[0],
+            transcript: canonicalAligned.map((a) => a.canonicalText).join(" "),
+          });
+          // The aligner returns one span per transcript word, in order → map to that word's id.
+          timingsByWordId = new Map();
+          canonicalAligned.forEach((a, i) => {
+            const w = aligned[i];
+            if (w && w.end > w.start) {
+              timingsByWordId!.set(a.wordId, {
+                startMs: Math.round(w.start * 1000),
+                endMs: Math.round(w.end * 1000),
+              });
+            }
+          });
+        } catch {
+          timingsByWordId = undefined; // best-effort: fall back to 0/0
+        }
+      }
+
       // Persist the real alignment to this session so it appears in the Command console
       // (only for a real persisted session — not the `practice-<ts>` offline fallback).
       // Best-effort: a failure here must not disrupt the learner's practice.
@@ -673,6 +707,7 @@ function AuthenticatedApp({ bypassLogin = false }: { bypassLogin?: boolean }) {
           authToken,
           sessionId,
           alignments: alignment.alignments,
+          timingsByWordId,
         }).catch(() => {});
       }
 
@@ -731,7 +766,8 @@ function AuthenticatedApp({ bypassLogin = false }: { bypassLogin?: boolean }) {
             setApiError(t("app.errors.recitationSavedOffline"));
           } else if (result.transcript.trim()) {
             setIsLoading(false);
-            await runAlignmentAndTajweed(result.transcript);
+            // Pass the recorded audio so forced alignment can compute real per-word timings (T3).
+            await runAlignmentAndTajweed(result.transcript, result.audioBlob);
           } else {
             setApiError(t("app.errors.noClearSpeech"));
           }

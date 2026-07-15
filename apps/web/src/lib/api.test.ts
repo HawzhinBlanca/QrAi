@@ -47,3 +47,58 @@ describe("privacy self-service API", () => {
     await expect(deleteMyData({ tenantId: "t1", userId: "learner-1" })).rejects.toThrow();
   });
 });
+
+// T3 forced alignment: the web sends the recorded audio + canonical transcript to the ASR
+// force-align proxy, then persists the REAL per-word start/end (not the old hardcoded 0/0).
+describe("forced alignment (T3) API", () => {
+  it("forceAlign POSTs audio + transcript to /v1/asr/force-align and returns the word spans", async () => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init: RequestInit = {}) => {
+      expect(String(input)).toContain("/v1/asr/force-align");
+      expect(init.method).toBe("POST");
+      const body = JSON.parse(String(init.body));
+      expect(body.audioBase64).toBe("QUJD");
+      expect(body.transcript).toBe("بِسْمِ ٱللَّهِ");
+      return new Response(
+        JSON.stringify({ words: [{ word: "بِسْمِ", start: 0.06, end: 0.61, score: 0.9 }], duration: 0.61 }),
+        { status: 200 },
+      );
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { forceAlign } = await import("./api");
+    const words = await forceAlign({
+      tenantId: "t1",
+      userId: "learner-1",
+      audioBase64: "QUJD",
+      audioFormat: "webm",
+      transcript: "بِسْمِ ٱللَّهِ",
+    });
+    expect(words).toHaveLength(1);
+    expect(words[0].start).toBe(0.06);
+  });
+
+  it("persistSessionAlignments writes the real timing for a mapped word and 0/0 for an unmapped one", async () => {
+    let sent: any = null;
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init: RequestInit = {}) => {
+      expect(String(input)).toContain("/alignments");
+      sent = JSON.parse(String(init.body));
+      return new Response(JSON.stringify({ persisted: 2, skippedInvalidStatus: 0, skippedUnknownWord: 0 }), { status: 200 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { persistSessionAlignments } = await import("./api");
+    await persistSessionAlignments({
+      tenantId: "t1",
+      userId: "learner-1",
+      sessionId: "session-1",
+      alignments: [
+        { wordId: "1:1:1", canonicalText: "بِسْمِ", heardText: "بِسْمِ", status: "matched", confidence: 0.9 },
+        { wordId: "1:1:2", canonicalText: "ٱللَّهِ", heardText: "ٱللَّهِ", status: "matched", confidence: 0.9 },
+      ],
+      timingsByWordId: new Map([["1:1:1", { startMs: 60, endMs: 610 }]]),
+    });
+
+    expect(sent.alignments[0]).toMatchObject({ wordId: "1:1:1", startMs: 60, endMs: 610 });
+    expect(sent.alignments[1]).toMatchObject({ wordId: "1:1:2", startMs: 0, endMs: 0 });
+  });
+});
