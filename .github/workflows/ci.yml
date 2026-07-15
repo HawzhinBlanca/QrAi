@@ -45,6 +45,16 @@ jobs:
       # --- Bootstrap ---
       - run: pnpm install --frozen-lockfile
 
+      # --- Assert no missing SQL migrations in CI list ---
+      - name: Assert no missing SQL migrations in CI list
+        run: |
+          expected_count=$(ls infra/sql/*.sql | wc -l | tr -d ' ')
+          actual_count=19
+          if [ "$expected_count" != "$actual_count" ]; then
+            echo "::error::Migration file count mismatch! Expected $actual_count migration files in infra/sql, found $expected_count. Update ci.yml."
+            exit 1
+          fi
+
       # --- Seed Postgres with migrations ---
       - name: Apply SQL migrations
         run: |
@@ -61,9 +71,17 @@ jobs:
             infra/sql/0010_review_status_check.sql \
             infra/sql/0011_teacher_review_required_status.sql \
             infra/sql/0012_superuser_only_rls_bypass.sql \
-            infra/sql/0013_unique_email_per_tenant.sql; do
+            infra/sql/0013_unique_email_per_tenant.sql \
+            infra/sql/0015_teacher_review_scholar_approval_indexes.sql \
+            infra/sql/0016_missing_tenant_indexes.sql \
+            infra/sql/0017_eval_runs_index.sql \
+            infra/sql/0019_recitation_and_findings_sort_indexes.sql \
+            infra/sql/0020_language_check.sql; do
+            echo "Applying $sql..."
             psql "$DATABASE_URL" -f "$sql"
           done
+          echo "Applying rls-app-role.sql..."
+          psql "$DATABASE_URL" -v app_password="ci-dummy-password" -f infra/sql/rls-app-role.sql
 
       # --- Seed the full Quran (canonical_ayahs/words for all 114 surahs) so integration
       #     tests like gets_quran_surah_list_from_postgres (expects >= 114) hold in CI. The
@@ -72,6 +90,10 @@ jobs:
       #     postgres service, only PSQL needs the ubuntu path. ---
       - name: Seed full Quran
         run: PSQL=psql bash packages/quran-data/scripts/seed-full-quran-to-db.sh
+
+      # --- Run dependency vulnerability scan ---
+      - name: Dependency vulnerability scan
+        run: pnpm audit
 
       # --- The CODYSTEM gate (same script the agent runs locally) ---
       - run: bash scripts/verify.sh
