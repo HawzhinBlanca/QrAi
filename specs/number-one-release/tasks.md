@@ -21,7 +21,7 @@
 - [x] T2.5 Commission independent security review.
 
 ## Phase 3 — Make the core journey boringly reliable
-- [ ] T3.1 Implement/repair the complete learner-to-teacher vertical slice.
+- [x] T3.1 Implement/repair the complete learner-to-teacher vertical slice.
 - [ ] T3.2 Cover failure and recovery states.
 - [ ] T3.3 Prove role-specific surfaces.
 - [ ] T3.4 Test privacy journey in-browser.
