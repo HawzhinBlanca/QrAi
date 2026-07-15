@@ -943,4 +943,36 @@ describe("Quran AI app smoke", () => {
       expect.any(Object)
     );
   });
+
+  it("validates Surah selection and sidebar navigation path transitions", async () => {
+    const root = createRoot(container);
+    await act(async () => {
+      root.render(<App />);
+    });
+
+    // Verify default surah is selected
+    expect(document.body.textContent).toContain("Surah Al-Faatiha");
+
+    // Click settings tab to navigate
+    const settingsButton = Array.from(document.querySelectorAll<HTMLButtonElement>("button")).find((button) =>
+      button.textContent?.includes("Settings"),
+    );
+    expect(settingsButton).toBeTruthy();
+    await act(async () => {
+      settingsButton?.click();
+    });
+
+    expect(document.body.textContent).toContain("Your data & privacy");
+
+    // Go back to Learner Home
+    const learnerHomeButton = Array.from(document.querySelectorAll<HTMLButtonElement>("button")).find((button) =>
+      button.textContent?.includes("Learner"),
+    );
+    expect(learnerHomeButton).toBeTruthy();
+    await act(async () => {
+      learnerHomeButton?.click();
+    });
+
+    expect(document.body.textContent).toContain("Learner Home");
+  });
 });

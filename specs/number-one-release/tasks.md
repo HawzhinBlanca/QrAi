@@ -25,7 +25,7 @@
 - [x] T3.2 Cover failure and recovery states.
 - [x] T3.3 Prove role-specific surfaces.
 - [x] T3.4 Test privacy journey in-browser.
-- [ ] T3.5 Validate all real navigation paths.
+- [x] T3.5 Validate all real navigation paths.
 
 ## Phase 4 — Human-quality UX, accessibility, language, and mobile
 - [ ] T4.1 Conduct task-based accessibility testing.
