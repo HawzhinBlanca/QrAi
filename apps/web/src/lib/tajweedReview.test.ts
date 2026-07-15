@@ -26,4 +26,15 @@ describe("tajweed review badge", () => {
     expect(tajweedReviewBadge({ ...base, reviewStatus: "teacher-reviewed", sources: [] }).verified).toBe(false);
     expect(tajweedReviewBadge({ ...base, reviewStatus: "teacher-reviewed", confidence: 0.5 }).verified).toBe(false);
   });
+
+  it("ensures that any unapproved/withheld rule (e.g. mushaddad-ghunnah) that is only 'ai-suggested' is strictly provisional", () => {
+    const unapprovedFinding = {
+      ...base,
+      rule: "mushaddad-ghunnah",
+      reviewStatus: "ai-suggested" as const
+    };
+    const badge = tajweedReviewBadge(unapprovedFinding);
+    expect(badge.verified).toBe(false);
+    expect(badge.labelKey).toBe("tajweedPanel.aiSuggestion");
+  });
 });
