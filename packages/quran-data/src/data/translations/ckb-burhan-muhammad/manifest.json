@@ -10,10 +10,166 @@
   "fetchedAt": "2026-07-15",
   "surahs": [
     {
-      "surah": 108,
-      "ayahsTranslated": 2,
+      "surah": 78,
+      "ayahsTranslated": 40,
+      "totalAyahs": 40,
+      "missing": 0
+    },
+    {
+      "surah": 79,
+      "ayahsTranslated": 46,
+      "totalAyahs": 46,
+      "missing": 0
+    },
+    {
+      "surah": 80,
+      "ayahsTranslated": 42,
+      "totalAyahs": 42,
+      "missing": 0
+    },
+    {
+      "surah": 81,
+      "ayahsTranslated": 29,
+      "totalAyahs": 29,
+      "missing": 0
+    },
+    {
+      "surah": 82,
+      "ayahsTranslated": 19,
+      "totalAyahs": 19,
+      "missing": 0
+    },
+    {
+      "surah": 83,
+      "ayahsTranslated": 36,
+      "totalAyahs": 36,
+      "missing": 0
+    },
+    {
+      "surah": 84,
+      "ayahsTranslated": 25,
+      "totalAyahs": 25,
+      "missing": 0
+    },
+    {
+      "surah": 85,
+      "ayahsTranslated": 22,
+      "totalAyahs": 22,
+      "missing": 0
+    },
+    {
+      "surah": 86,
+      "ayahsTranslated": 17,
+      "totalAyahs": 17,
+      "missing": 0
+    },
+    {
+      "surah": 87,
+      "ayahsTranslated": 19,
+      "totalAyahs": 19,
+      "missing": 0
+    },
+    {
+      "surah": 88,
+      "ayahsTranslated": 26,
+      "totalAyahs": 26,
+      "missing": 0
+    },
+    {
+      "surah": 89,
+      "ayahsTranslated": 30,
+      "totalAyahs": 30,
+      "missing": 0
+    },
+    {
+      "surah": 90,
+      "ayahsTranslated": 20,
+      "totalAyahs": 20,
+      "missing": 0
+    },
+    {
+      "surah": 91,
+      "ayahsTranslated": 15,
+      "totalAyahs": 15,
+      "missing": 0
+    },
+    {
+      "surah": 92,
+      "ayahsTranslated": 21,
+      "totalAyahs": 21,
+      "missing": 0
+    },
+    {
+      "surah": 93,
+      "ayahsTranslated": 11,
+      "totalAyahs": 11,
+      "missing": 0
+    },
+    {
+      "surah": 94,
+      "ayahsTranslated": 8,
+      "totalAyahs": 8,
+      "missing": 0
+    },
+    {
+      "surah": 95,
+      "ayahsTranslated": 8,
+      "totalAyahs": 8,
+      "missing": 0
+    },
+    {
+      "surah": 96,
+      "ayahsTranslated": 19,
+      "totalAyahs": 19,
+      "missing": 0
+    },
+    {
+      "surah": 97,
+      "ayahsTranslated": 5,
+      "totalAyahs": 5,
+      "missing": 0
+    },
+    {
+      "surah": 98,
+      "ayahsTranslated": 8,
+      "totalAyahs": 8,
+      "missing": 0
+    },
+    {
+      "surah": 99,
+      "ayahsTranslated": 8,
+      "totalAyahs": 8,
+      "missing": 0
+    },
+    {
+      "surah": 100,
+      "ayahsTranslated": 11,
+      "totalAyahs": 11,
+      "missing": 0
+    },
+    {
+      "surah": 101,
+      "ayahsTranslated": 11,
+      "totalAyahs": 11,
+      "missing": 0
+    },
+    {
+      "surah": 102,
+      "ayahsTranslated": 8,
+      "totalAyahs": 8,
+      "missing": 0
+    },
+    {
+      "surah": 103,
+      "ayahsTranslated": 3,
       "totalAyahs": 3,
-      "missing": 1
+      "missing": 0
+    },
+    {
+      "surah": 104,
+      "ayahsTranslated": 9,
+      "totalAyahs": 9,
+      "missing": 0
     }
   ]
 }
