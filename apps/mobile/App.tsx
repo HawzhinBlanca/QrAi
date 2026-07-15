@@ -20,11 +20,11 @@ import {
   StyleSheet,
   Switch,
   Alert,
-  Platform,
 } from "react-native";
 import { Audio } from "expo-av";
 
 import {
+  audioFormatFromUri,
   authHeaders as buildAuthHeaders,
   buildConsentPayload,
   canStartRecording,
@@ -267,7 +267,9 @@ export default function App() {
         reader.readAsDataURL(blob);
       });
 
-      const audioFormat = Platform.OS === "ios" ? "m4a" : "webm";
+      // Derive the format from the recording expo-av actually wrote (HIGH_QUALITY = .m4a on both
+      // ios and android), not a platform guess — see audioFormatFromUri.
+      const audioFormat = audioFormatFromUri(uri);
       const headers = { "content-type": "application/json", ...authHeaders() };
 
       // 1) Transcribe via the platform API's ASR proxy (server-side ASR key; audio never hits ASR directly).
