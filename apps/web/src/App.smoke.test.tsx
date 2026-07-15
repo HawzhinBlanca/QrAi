@@ -979,4 +979,29 @@ describe("Quran AI app smoke", () => {
 
     expect(document.body.textContent).toContain("Learner Home");
   });
+
+  it("only offers live and pilot languages in production mode", async () => {
+    vi.stubEnv("MODE", "production");
+    const originalHas = URLSearchParams.prototype.has;
+    URLSearchParams.prototype.has = () => false;
+
+    try {
+      const root = createRoot(container);
+      await act(async () => {
+        root.render(<App />);
+      });
+
+      const options = Array.from(document.querySelectorAll(".language-button select option"));
+      const values = options.map((opt) => opt.getAttribute("value"));
+
+      expect(values).toContain("en");
+      expect(values).toContain("ar");
+      expect(values).toContain("ckb");
+      expect(values).not.toContain("tr");
+      expect(values).not.toContain("de");
+    } finally {
+      vi.unstubAllEnvs();
+      URLSearchParams.prototype.has = originalHas;
+    }
+  });
 });

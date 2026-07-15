@@ -56,7 +56,7 @@ export function TopBar({
                 (typeof window !== "undefined" && new URLSearchParams(window.location.search).has("smoke"));
               const offeredLanguages = isTestOrSmoke
                 ? supportedLanguages
-                : supportedLanguages.filter((l) => l.code === "en");
+                : supportedLanguages.filter((l) => l.readiness === "live" || l.readiness === "pilot");
               return offeredLanguages.map((language) => (
                 <option key={language.code} value={language.code}>
                   {language.nativeName}
