@@ -39,7 +39,7 @@
 - [x] T5.2 Provision production posture.
 - [x] T5.3 Instrument SLOs.
 - [x] T5.4 Load, soak, and chaos test staging.
-- [ ] T5.5 Rehearse incident and rollback.
+- [x] T5.5 Rehearse incident and rollback.
 
 ## Phase 6 — Independent release challenge
 - [ ] T6.1 Fresh-environment verification.
