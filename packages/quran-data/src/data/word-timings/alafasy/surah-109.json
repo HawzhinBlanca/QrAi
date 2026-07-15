@@ -1,0 +1,177 @@
+{
+  "surah": 109,
+  "reciter": "alafasy",
+  "reciterName": "Mishary Rashid al-Afasy",
+  "source": "api.quran.com v4 recitation 7",
+  "audioBase": "https://verses.quran.com/",
+  "license": "See docs/DATA_LICENSES.md#quran-com-word-segments-audio",
+  "ayahs": [
+    {
+      "ayah": 1,
+      "audioUrl": "Alafasy/mp3/109001.mp3",
+      "words": [
+        {
+          "wordId": "109:1:5",
+          "startMs": 150,
+          "endMs": 430
+        },
+        {
+          "wordId": "109:1:6",
+          "startMs": 440,
+          "endMs": 3290
+        },
+        {
+          "wordId": "109:1:7",
+          "startMs": 3300,
+          "endMs": 6810
+        }
+      ]
+    },
+    {
+      "ayah": 2,
+      "audioUrl": "Alafasy/mp3/109002.mp3",
+      "words": [
+        {
+          "wordId": "109:2:1",
+          "startMs": 100,
+          "endMs": 1730
+        },
+        {
+          "wordId": "109:2:2",
+          "startMs": 1740,
+          "endMs": 3410
+        },
+        {
+          "wordId": "109:2:3",
+          "startMs": 3420,
+          "endMs": 3780
+        },
+        {
+          "wordId": "109:2:4",
+          "startMs": 3790,
+          "endMs": 7060
+        }
+      ]
+    },
+    {
+      "ayah": 3,
+      "audioUrl": "Alafasy/mp3/109003.mp3",
+      "words": [
+        {
+          "wordId": "109:3:1",
+          "startMs": 70,
+          "endMs": 2030
+        },
+        {
+          "wordId": "109:3:2",
+          "startMs": 2040,
+          "endMs": 3710
+        },
+        {
+          "wordId": "109:3:3",
+          "startMs": 3720,
+          "endMs": 5140
+        },
+        {
+          "wordId": "109:3:4",
+          "startMs": 5150,
+          "endMs": 6910
+        },
+        {
+          "wordId": "109:3:5",
+          "startMs": 6920,
+          "endMs": 7760
+        }
+      ]
+    },
+    {
+      "ayah": 4,
+      "audioUrl": "Alafasy/mp3/109004.mp3",
+      "words": [
+        {
+          "wordId": "109:4:1",
+          "startMs": 40,
+          "endMs": 2050
+        },
+        {
+          "wordId": "109:4:2",
+          "startMs": 2060,
+          "endMs": 2610
+        },
+        {
+          "wordId": "109:4:3",
+          "startMs": 2620,
+          "endMs": 3580
+        },
+        {
+          "wordId": "109:4:4",
+          "startMs": 3590,
+          "endMs": 4890
+        },
+        {
+          "wordId": "109:4:5",
+          "startMs": 4900,
+          "endMs": 5880
+        }
+      ]
+    },
+    {
+      "ayah": 5,
+      "audioUrl": "Alafasy/mp3/109005.mp3",
+      "words": [
+        {
+          "wordId": "109:5:1",
+          "startMs": 50,
+          "endMs": 2080
+        },
+        {
+          "wordId": "109:5:2",
+          "startMs": 2090,
+          "endMs": 3720
+        },
+        {
+          "wordId": "109:5:3",
+          "startMs": 3730,
+          "endMs": 5160
+        },
+        {
+          "wordId": "109:5:4",
+          "startMs": 5170,
+          "endMs": 6850
+        },
+        {
+          "wordId": "109:5:5",
+          "startMs": 6860,
+          "endMs": 7900
+        }
+      ]
+    },
+    {
+      "ayah": 6,
+      "audioUrl": "Alafasy/mp3/109006.mp3",
+      "words": [
+        {
+          "wordId": "109:6:1",
+          "startMs": 50,
+          "endMs": 670
+        },
+        {
+          "wordId": "109:6:2",
+          "startMs": 680,
+          "endMs": 1910
+        },
+        {
+          "wordId": "109:6:3",
+          "startMs": 1920,
+          "endMs": 2530
+        },
+        {
+          "wordId": "109:6:4",
+          "startMs": 2540,
+          "endMs": 4740
+        }
+      ]
+    }
+  ],
+  "excludedAyahs": []
+}

@@ -449,3 +449,40 @@ version; this ADR is the source of truth for that decision until the service is 
 production, at which point the upgrade above is mandatory, not optional. `services/asr-inference`
 does not import `transformers` at all in its current Dockerfile build (see the same
 `docker-compose.yml` comment thread) so is unaffected regardless.
+
+## ADR-0015 — Word-level audio timings via Quran.com v4, deterministically mapped to canonical words
+
+**Status:** Accepted · **Date:** 2026-07-15 · **Deciders:** owner (data provenance)
+
+### Context
+Real-time word-by-word follow-along (Tarteel's signature feature) needs per-word audio timings.
+None existed in the repo; `persistSessionAlignments` shipped `startMs:0/endMs:0`. Inventing
+millisecond timings is fabrication and forbidden. Real, matched timing data is available openly.
+
+### Decision
+Ingest word-level segment timings from **api.quran.com v4** (`verses/by_key/{key}?audio=7`,
+Al-Afasy) as static, checksummed JSON in `packages/quran-data`. The audio master is Quran.com's own
+(`verses.quran.com`), so timings and playback audio are matched by construction — no cross-master
+drift. Playback for timed surahs moves from the islamic.network CDN to the Quran.com master.
+
+Our canonical word segmentation does **not** match Quran.com's for two DETERMINISTIC reasons:
+(1) our ayah 1 of a basmala surah prepends the 4 basmala words; (2) our text tokenizes standalone
+waqf marks (e.g. ۛ) as separate words. The ingest normalizes both away and then **requires exact
+count parity** before mapping segment→canonical word id; any ayah that still doesn't match, or that
+carries a degenerate source segment (`end<=start`, observed at 2:164/2:249), is **excluded and
+logged**, never truncated or guessed. Basmala/waqf tokens simply carry no timing.
+
+### Options considered
+- **A. Quran.com v4 API + strict alignment (chosen).** Open data, matched master, deterministic
+  mapping, verified against canonical text. Coverage 340/344 pilot ayahs (99%).
+- **B. Graft QUL timings onto the existing islamic.network audio.** Rejected: different masters →
+  systematic drift; timings measured against one encode don't hold on another.
+- **C. Adopt Quran.com word keys as our canonical segmentation.** The proper long-term fix (audit's
+  data-layer recommendation) but a larger migration; deferred. This ADR maps onto our existing ids.
+
+### Consequences
+- Easier: follow-along highlight (T2), and any future per-word audio evidence.
+- Harder / follow-ups: ayah-1 basmala words and standalone waqf marks are intentionally un-timed
+  (won't highlight); the 4 excluded pilot ayahs need Quran.com word-key adoption (option C) to
+  recover. Commercial launch must confirm the specific reciter resource's license on QUL
+  (see docs/DATA_LICENSES.md#quran-com-word-segments-audio).
