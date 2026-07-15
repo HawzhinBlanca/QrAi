@@ -188,7 +188,7 @@ services:
       # nginx-unprivileged:alpine does not include curl (only the four backend service images do)
       # — wget is available in Alpine by default. See services/ml-inference/Dockerfile's identical
       # curl-availability issue for the sibling bug this mirrors on the backend side.
-      test: ["CMD", "wget", "-q", "--spider", "http://localhost:8080/"]
+      test: ["CMD", "wget", "-q", "--spider", "http://127.0.0.1:8080/"]
       interval: 10s
       timeout: 5s
       retries: 3
