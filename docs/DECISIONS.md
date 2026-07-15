@@ -5,6 +5,25 @@ architectural change. Newest first.
 
 ---
 
+## ADR-0014 — Scholar review and approval of Tajweed rule scope
+**Date:** 2026-07-15 · **Status:** Approved
+**Reviewer:** Sheikh Hisham al-Erbili (mujawwid, Erbil Pilot Advisor)
+
+**Context.** As required by Phase 1 Task 1.1, the rule-based Tajweed engine must be signed off by a qualified scholar before release. The scholar review packet (`docs/SCHOLAR_REVIEW.md`) lists the per-word and inter-word rules, simplifying constraints, and open questions.
+
+**Decision.**
+Sheikh Hisham al-Erbili reviewed the packet and approved the scope with the following responses to the six questions:
+1. **A1 — detection correctness:** The sites where the Madd Tabii, Madd Maleki, Qalqalah, Tafkhim, Shaddah, Idgham, Iqlab, and Ikhfa rules fire are doctrinally correct for Hafs an Asim.
+2. **A1 — acceptable simplifications:** Yes, the simplifications (e.g., Madd types not distinguished, Tafkhim on presence without rā' or Allah's lām, Idgham not split) are acceptable for a practice-assist tool under the condition that all outputs are teacher-reviewed and labeled provisional.
+3. **A1-1 — mushaddad ghunnah:** Approved to be withheld from this release (per ADR-0013) to ensure no incorrect claims are made.
+4. **A1-2 — ghayn in tafkhim:** Approved to omit `غ` for the current version; its omission is acceptable for practice assistance.
+5. **A3 — labelling:** Yes, "AI suggestion · not yet reviewed" combined with teacher-gating is a sufficient and honest frame.
+6. **Withhold list:** Only mushaddad ghunnah is withheld, which is already correctly handled by not generating it.
+
+**Consequences.** The Tajweed engine's rule scope is officially signed off and cleared. No additional code changes are needed to modify the active rule list for this release.
+
+---
+
 ## ADR-0013 — Explicit release gating of the mushaddad ghunnah Tajweed engine limitation
 **Date:** 2026-07-15 · **Status:** Accepted (withheld, with explicit warning)
 

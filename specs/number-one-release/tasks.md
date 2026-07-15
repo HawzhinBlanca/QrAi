@@ -7,7 +7,7 @@
 - [x] T0.4 Establish a disposable staging environment.
 
 ## Phase 1 — Correctness before features
-- [ ] T1.1 Produce the scholar rule packet and hold a recorded review.
+- [x] T1.1 Produce the scholar rule packet and hold a recorded review.
 - [ ] T1.2 Keep withheld rules impossible to surface as feedback.
 - [ ] T1.3 Validate canonical Quran data independently.
 - [ ] T1.4 Establish a real evaluation methodology.
