@@ -315,6 +315,31 @@ export async function forceAlign(params: {
   return data.words ?? [];
 }
 
+/**
+ * Map forced-alignment spans back to word ids by POSITION. The force-align endpoint returns exactly
+ * one span per whitespace token of the transcript, in order, so `aligned[i]` corresponds to
+ * `recitedAligned[i]` — but ONLY when the counts match. If the transcript tokenized to a different
+ * count (e.g. a canonicalText with internal whitespace, or an empty one), the indices no longer line
+ * up and mapping by position would misattribute every subsequent word's timing. In that case bail
+ * (return undefined) so the caller persists 0/0 rather than wrong timings — the T3 "degrade safely"
+ * guarantee. Callers must pass only words actually recited (exclude "missed"/"extra"), since the
+ * aligner is asked to place exactly these words in the audio.
+ */
+export function buildTimingsByWordId(
+  recitedAligned: Pick<AlignmentResult, "wordId">[],
+  aligned: ForceAlignWord[],
+): Map<string, WordTimingMs> | undefined {
+  if (aligned.length !== recitedAligned.length) return undefined;
+  const map = new Map<string, WordTimingMs>();
+  recitedAligned.forEach((a, i) => {
+    const w = aligned[i];
+    if (w && w.end > w.start) {
+      map.set(a.wordId, { startMs: Math.round(w.start * 1000), endMs: Math.round(w.end * 1000) });
+    }
+  });
+  return map;
+}
+
 async function fetchJson(path: string): Promise<unknown> {
   const response = await fetchWithTimeout(`${API_BASE}${path}`);
   if (!response.ok) {

@@ -30,6 +30,7 @@ import {
   createRecitationSession,
   persistSessionAlignments,
   forceAlign,
+  buildTimingsByWordId,
   type WordTimingMs,
   requestTeacherReview,
   fetchSurahList,
@@ -669,8 +670,13 @@ function AuthenticatedApp({ bypassLogin = false }: { bypassLogin?: boolean }) {
       // is unavailable or the aligner isn't reachable, timingsByWordId stays undefined and the persist
       // below writes 0/0 exactly as before — the learner's practice never depends on it.
       let timingsByWordId: Map<string, WordTimingMs> | undefined;
-      const canonicalAligned = alignment.alignments.filter((a) => a.status !== "extra");
-      if (audioBlob && canonicalAligned.length > 0) {
+      // Only words the learner ACTUALLY RECITED: exclude "extra" (spoken but not canonical) AND
+      // "missed" (canonical but not spoken). Feeding a missed word into the aligner asks it to place
+      // a word that isn't in the audio, distorting that word's span and every neighbor's.
+      const recitedAligned = alignment.alignments.filter(
+        (a) => a.status !== "extra" && a.status !== "missed",
+      );
+      if (audioBlob && recitedAligned.length > 0) {
         try {
           const audioBase64 = await blobToBase64(audioBlob);
           const aligned = await forceAlign({
@@ -679,19 +685,10 @@ function AuthenticatedApp({ bypassLogin = false }: { bypassLogin?: boolean }) {
             authToken,
             audioBase64,
             audioFormat: (audioBlob.type.split("/")[1] || "webm").split(";")[0],
-            transcript: canonicalAligned.map((a) => a.canonicalText).join(" "),
+            transcript: recitedAligned.map((a) => a.canonicalText).join(" "),
           });
-          // The aligner returns one span per transcript word, in order → map to that word's id.
-          timingsByWordId = new Map();
-          canonicalAligned.forEach((a, i) => {
-            const w = aligned[i];
-            if (w && w.end > w.start) {
-              timingsByWordId!.set(a.wordId, {
-                startMs: Math.round(w.start * 1000),
-                endMs: Math.round(w.end * 1000),
-              });
-            }
-          });
+          // Positional map, but only when counts line up — otherwise bail to 0/0 (see helper).
+          timingsByWordId = buildTimingsByWordId(recitedAligned, aligned);
         } catch {
           timingsByWordId = undefined; // best-effort: fall back to 0/0
         }

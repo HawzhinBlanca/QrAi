@@ -101,4 +101,42 @@ describe("forced alignment (T3) API", () => {
     expect(sent.alignments[0]).toMatchObject({ wordId: "1:1:1", startMs: 60, endMs: 610 });
     expect(sent.alignments[1]).toMatchObject({ wordId: "1:1:2", startMs: 0, endMs: 0 });
   });
+
+  it("buildTimingsByWordId maps spans to word ids by position and converts seconds to ms", async () => {
+    const { buildTimingsByWordId } = await import("./api");
+    const recited = [{ wordId: "1:1:1" }, { wordId: "1:1:2" }];
+    const aligned = [
+      { word: "بِسْمِ", start: 0.06, end: 0.61, score: 0.9 },
+      { word: "ٱللَّهِ", start: 0.7, end: 1.2, score: 0.9 },
+    ];
+    const map = buildTimingsByWordId(recited, aligned);
+    expect(map).toBeDefined();
+    expect(map!.get("1:1:1")).toEqual({ startMs: 60, endMs: 610 });
+    expect(map!.get("1:1:2")).toEqual({ startMs: 700, endMs: 1200 });
+  });
+
+  it("buildTimingsByWordId BAILS (undefined) on a count mismatch so no misattributed timing is persisted", async () => {
+    const { buildTimingsByWordId } = await import("./api");
+    // 2 recited words but the aligner returned 3 spans (e.g. a canonicalText tokenized to two) —
+    // positional mapping is no longer trustworthy, so the whole map must be dropped.
+    const recited = [{ wordId: "1:1:1" }, { wordId: "1:1:2" }];
+    const aligned = [
+      { word: "a", start: 0, end: 0.3, score: 0.9 },
+      { word: "b", start: 0.3, end: 0.6, score: 0.9 },
+      { word: "c", start: 0.6, end: 0.9, score: 0.9 },
+    ];
+    expect(buildTimingsByWordId(recited, aligned)).toBeUndefined();
+  });
+
+  it("buildTimingsByWordId skips a zero/negative-length span but keeps the rest", async () => {
+    const { buildTimingsByWordId } = await import("./api");
+    const recited = [{ wordId: "1:1:1" }, { wordId: "1:1:2" }];
+    const aligned = [
+      { word: "a", start: 0.5, end: 0.5, score: 0.9 }, // zero-length -> skipped
+      { word: "b", start: 0.7, end: 1.2, score: 0.9 },
+    ];
+    const map = buildTimingsByWordId(recited, aligned);
+    expect(map!.has("1:1:1")).toBe(false);
+    expect(map!.get("1:1:2")).toEqual({ startMs: 700, endMs: 1200 });
+  });
 });
