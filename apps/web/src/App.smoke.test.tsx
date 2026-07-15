@@ -1031,4 +1031,145 @@ describe("Quran AI app smoke", () => {
       window.dispatchEvent(new Event("resize"));
     }
   });
+
+  it("allows teacher to load the queue, select a session, view alignments, and submit a review", async () => {
+    localStorage.setItem("quran-ai-auth", JSON.stringify({
+      userId: "teacher-1",
+      tenantId: "hikmah-pilot-erbil",
+      role: "teacher",
+      displayName: "Test Teacher",
+      token: "test-jwt-token",
+    }));
+
+    const originalSearch = window.location.search;
+    Object.defineProperty(window, "location", {
+      writable: true,
+      configurable: true,
+      value: {
+        ...window.location,
+        search: "?smokeMode=teacher",
+      },
+    });
+
+    const mockFetch = vi.fn().mockImplementation((url: string, options?: RequestInit) => {
+      if (url.includes("/v1/recitation-sessions") && url.endsWith("/audio")) {
+        return Promise.resolve(new Response("mock-audio-bytes"));
+      }
+      if (url.includes("/v1/recitation-sessions") && url.endsWith("/alignments")) {
+        return Promise.resolve(new Response(JSON.stringify([
+          { wordId: "1:1:1", canonicalText: "بِسْمِ", heardText: "بِسْمِ", startMs: 0, endMs: 500, confidence: 0.95, status: "matched" },
+          { wordId: "1:1:2", canonicalText: "اللَّهِ", heardText: "الْلَّهَ", startMs: 500, endMs: 1000, confidence: 0.85, status: "misread" }
+        ])));
+      }
+      if (url.includes("/v1/recitation-sessions")) {
+        return Promise.resolve(new Response(JSON.stringify([
+          {
+            id: "practice-offline-smoke",
+            learnerId: "learner-1",
+            mode: "guided-recite",
+            confidence: 0.9,
+            reviewStatus: "teacher-review-required",
+            latencyMs: 120,
+            startedAt: new Date().toISOString(),
+            quranRef: { surahNumber: 1, ayahStart: 1, ayahEnd: 7, display: "Surah 1 1-7" }
+          }
+        ])));
+      }
+      if (url.includes("/v1/tajweed-findings")) {
+        return Promise.resolve(new Response(JSON.stringify([
+          {
+            id: "finding-1",
+            wordId: "1:1:2",
+            rule: "Ghunnah",
+            severity: "warning",
+            confidence: 0.85,
+            explanation: "Mock explanation",
+            reviewStatus: "teacher-review-required",
+            sources: []
+          }
+        ])));
+      }
+      if (url.includes("/v1/teacher-reviews")) {
+        return Promise.resolve(new Response(JSON.stringify({ ok: true })));
+      }
+      return Promise.reject(new Error("no backend in smoke test"));
+    });
+    vi.stubGlobal("fetch", mockFetch);
+    vi.stubGlobal("Audio", class {
+      addEventListener() {}
+      removeEventListener() {}
+      play() { return Promise.resolve(); }
+      pause() {}
+    });
+    vi.stubGlobal("URL", {
+      createObjectURL: vi.fn().mockReturnValue("mock-object-url"),
+      revokeObjectURL: vi.fn(),
+    });
+
+    try {
+      const root = createRoot(container);
+      await act(async () => {
+        root.render(<App />);
+      });
+
+      // Wait for queue loading to finish
+      await act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 100));
+      });
+
+      // Verify that it renders Teacher Queue surface
+      expect(document.body.textContent).toContain("Teacher Queue");
+
+      // Verify the mock session is rendered in the list
+      expect(document.body.textContent).toContain("Surah 1 1-7");
+
+      // Select the session
+      const sessionButton = document.querySelector<HTMLButtonElement>("button[data-session-id='practice-offline-smoke']");
+      expect(sessionButton).toBeTruthy();
+      await act(async () => {
+        sessionButton?.click();
+      });
+
+      // Wait for alignments to load
+      await act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 100));
+      });
+
+      // Verify alignments display
+      expect(document.body.textContent).toContain("بِسْمِ");
+      expect(document.body.textContent).toContain("اللَّهِ");
+
+      // Verify findings display
+      expect(document.body.textContent).toContain("Ghunnah Rule");
+      expect(document.body.textContent).toContain("Mock explanation");
+
+      // Click Accept Review
+      const acceptButton = Array.from(document.querySelectorAll<HTMLButtonElement>("button")).find((button) =>
+        button.textContent?.includes("Accept"),
+      );
+      expect(acceptButton).toBeTruthy();
+      await act(async () => {
+        acceptButton?.click();
+      });
+
+      // Wait for success feedback note or state update
+      await act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 100));
+      });
+
+      expect(mockFetch).toHaveBeenCalledWith(
+        expect.stringContaining("/v1/teacher-reviews"),
+        expect.any(Object)
+      );
+    } finally {
+      Object.defineProperty(window, "location", {
+        writable: true,
+        configurable: true,
+        value: {
+          ...window.location,
+          search: originalSearch,
+        },
+      });
+    }
+  });
 });
