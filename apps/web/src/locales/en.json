@@ -138,7 +138,9 @@
     "statusGood": "Good",
     "statusMistake": "Mistake",
     "statusNeedsWork": "Needs improvement",
-    "statusMissed": "Missed"
+    "statusMissed": "Missed",
+    "translationToggle": "Translation",
+    "translationSource": "Translation: {{source}}"
   },
   "surahPicker": {
     "label": "Practice surah",
