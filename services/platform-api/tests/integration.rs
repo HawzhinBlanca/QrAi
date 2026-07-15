@@ -2073,6 +2073,44 @@ async fn asr_transcribe_proxy_passes_through_a_successful_upstream_response() {
 
 #[tokio::test]
 #[ignore = "requires live Postgres"]
+async fn asr_force_align_proxy_forwards_and_requires_auth() {
+    let mock_asr = spawn_mock_upstream_200(
+        "/v1/force-align",
+        json!({"words": [{"word": "بِسْمِ", "start": 0.06, "end": 0.61, "score": 0.9}], "duration": 0.61}),
+    )
+    .await;
+    let state = test_state().with_asr_inference_url(mock_asr);
+    let router = platform_router_with_rate_limit(state, false);
+
+    // Unauthenticated -> 401 (never reaches the ASR service).
+    let unauth = send_json(
+        &router,
+        Method::POST,
+        "/v1/asr/force-align",
+        None,
+        None,
+        json!({}),
+    )
+    .await;
+    assert_eq!(unauth.status(), StatusCode::UNAUTHORIZED);
+
+    // Authenticated -> forwarded, response passed through.
+    let ok = send_json(
+        &router,
+        Method::POST,
+        "/v1/asr/force-align",
+        Some("hikmah-pilot-erbil"),
+        Some("learner"),
+        json!({ "audioBase64": "AAAA", "transcript": "بِسْمِ" }),
+    )
+    .await;
+    assert_eq!(ok.status(), StatusCode::OK);
+    let body: Value = read_json(ok).await;
+    assert_eq!(body["words"][0]["word"], "بِسْمِ");
+}
+
+#[tokio::test]
+#[ignore = "requires live Postgres"]
 async fn ml_proxy_maps_upstream_error_status_to_bad_gateway() {
     let mock_ml = spawn_mock_upstream_500("/v1/alignments:predict").await;
     let state = test_state().with_ml_inference_url(mock_ml);

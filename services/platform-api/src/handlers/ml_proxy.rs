@@ -163,32 +163,52 @@ pub async fn proxy_asr_transcribe(
     headers: HeaderMap,
     Json(body): Json<serde_json::Value>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
-    // Authenticate the caller (propagates 401 on a missing/invalid actor). The actor value itself is
-    // unused because the transcribe call is not tenant-scoped.
-    actor_from_headers(&headers, &state.jwt_config)?;
+    proxy_asr(&state, &headers, "/v1/transcribe", "transcribe", body).await
+}
+
+/// Proxy forced alignment (T3) to the internal ASR service — audio + canonical transcript in,
+/// per-word timestamps out. Same auth + server-side key control as transcribe; not tenant-scoped.
+pub async fn proxy_asr_force_align(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(body): Json<serde_json::Value>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    proxy_asr(&state, &headers, "/v1/force-align", "force-align", body).await
+}
+
+/// Shared ASR forward: authenticate the caller, forward `body` to `{asr_inference_url}{path}` with
+/// the server-side ASR key, and map upstream failures to a generic 502 (internal URL/errors are
+/// logged, never returned). The ASR calls are not tenant-scoped (they return recognized text /
+/// timestamps and perform no tenant writes), so authentication alone is the control.
+async fn proxy_asr(
+    state: &AppState,
+    headers: &HeaderMap,
+    path: &str,
+    label: &str,
+    body: serde_json::Value,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    actor_from_headers(headers, &state.jwt_config)?;
 
     let response = state
         .http_client
-        .post(format!("{}/v1/transcribe", state.asr_inference_url))
+        .post(format!("{}{}", state.asr_inference_url, path))
         .header("content-type", "application/json")
         .header("x-asr-api-key", &state.asr_api_key)
         .json(&body)
         .send()
         .await
         .map_err(|e| {
-            tracing::error!("ASR proxy transcribe send error: {e}");
+            tracing::error!("ASR proxy {label} send error: {e}");
             ApiError::Upstream("ASR service unavailable".to_owned())
         })?;
 
     if !response.status().is_success() {
-        tracing::warn!("ASR proxy transcribe upstream status {}", response.status());
+        tracing::warn!("ASR proxy {label} upstream status {}", response.status());
         return Err(ApiError::Upstream("ASR service error".to_owned()));
     }
 
-    let result: serde_json::Value = response.json().await.map_err(|e| {
-        tracing::error!("ASR proxy transcribe parse error: {e}");
+    response.json().await.map(Json).map_err(|e| {
+        tracing::error!("ASR proxy {label} parse error: {e}");
         ApiError::Upstream("ASR service returned an invalid response".to_owned())
-    })?;
-
-    Ok(Json(result))
+    })
 }
