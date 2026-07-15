@@ -1878,6 +1878,108 @@ async fn spawn_mock_upstream_200(path: &'static str, body: serde_json::Value) ->
     format!("http://{addr}")
 }
 
+// Echoes the request body back as a 200 — lets a test read exactly what the proxy FORWARDED,
+// which is how the server-authoritative-consent overwrite is verified end to end.
+async fn spawn_mock_upstream_echo(path: &'static str) -> String {
+    let app = axum::Router::new().route(
+        path,
+        axum::routing::post(
+            |axum::Json(body): axum::Json<serde_json::Value>| async move { axum::Json(body) },
+        ),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+    format!("http://{addr}")
+}
+
+#[tokio::test]
+#[ignore = "requires live Postgres"]
+async fn ml_proxy_refuses_analysis_for_a_session_that_does_not_exist() {
+    // Fails closed BEFORE any upstream forward — no mock ML needed.
+    let router = platform_router_with_rate_limit(test_state(), false);
+    let response = send_json(
+        &router,
+        Method::POST,
+        "/v1/ml/alignments:predict",
+        Some("hikmah-pilot-erbil"),
+        Some("learner"),
+        json!({ "sessionId": "session-does-not-exist-xyz", "consent": { "guardianApproved": true } }),
+    )
+    .await;
+    assert_eq!(
+        response.status(),
+        StatusCode::FORBIDDEN,
+        "analysis against a nonexistent/foreign session must be refused, not forwarded"
+    );
+}
+
+#[tokio::test]
+#[ignore = "requires live Postgres"]
+async fn ml_proxy_overwrites_client_consent_with_the_stored_session_consent() {
+    let mock_ml = spawn_mock_upstream_echo("/v1/alignments:predict").await;
+    let state = test_state().with_ml_inference_url(mock_ml);
+    let router = platform_router_with_rate_limit(state, false);
+
+    // Create a session whose STORED consent withholds guardian approval and external ASR.
+    let created = send_json(
+        &router,
+        Method::POST,
+        "/v1/recitation-sessions",
+        Some("hikmah-pilot-erbil"),
+        Some("learner"),
+        json!({
+            "learnerId": "learner-1",
+            "quranRef": { "surahNumber": 1, "ayahStart": 1, "ayahEnd": 7, "display": "Al-Fatihah 1:1-7" },
+            "sourceChecksum": "fnv1a32:consent-test",
+            "modelVersion": "model-v0.3",
+            "language": "ckb",
+            "mode": "guided-recite",
+            "practicePlanId": "fatihah-mastery-v1",
+            "consent": { "audioRetention": "discard", "anonymizedLearning": true, "externalAsrProcessing": false, "guardianApproved": false, "consentVersion": "pilot-v1" }
+        }),
+    )
+    .await;
+    assert_eq!(created.status(), StatusCode::OK);
+    let created_body: Value = read_json(created).await;
+    let session_id = created_body["id"].as_str().unwrap().to_string();
+
+    // The client LIES on the analysis request, claiming full consent it never stored.
+    let response = send_json(
+        &router,
+        Method::POST,
+        "/v1/ml/alignments:predict",
+        Some("hikmah-pilot-erbil"),
+        Some("learner"),
+        json!({
+            "sessionId": session_id,
+            "consent": { "guardianApproved": true, "externalAsrProcessing": true, "audioRetention": "training-opt-in" }
+        }),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+
+    // The echo mock returns exactly what the proxy forwarded: the STORED consent must have won.
+    let forwarded: Value = read_json(response).await;
+    assert_eq!(
+        forwarded["consent"]["guardianApproved"],
+        json!(false),
+        "stored guardian approval must override the client's claim"
+    );
+    assert_eq!(
+        forwarded["consent"]["externalAsrProcessing"],
+        json!(false),
+        "stored external-ASR consent must override the client's claim"
+    );
+    assert_eq!(
+        forwarded["consent"]["audioRetention"],
+        json!("discard"),
+        "stored audio retention must override the client's claim"
+    );
+}
+
 #[tokio::test]
 #[ignore = "requires live Postgres"]
 async fn ml_proxy_passes_through_a_successful_upstream_response() {
