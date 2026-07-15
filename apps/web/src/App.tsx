@@ -251,6 +251,24 @@ function AuthenticatedApp({ bypassLogin = false }: { bypassLogin?: boolean }) {
     };
   }, [recordedAudioUrl]);
 
+  // Release ALL live media on unmount: stop the mic (server ASR recorder + mic visualizer's
+  // AudioContext + Web Speech) and pause any playing audio. With login disabled AuthenticatedApp
+  // rarely unmounts, but if it does (e.g. logout when VITE_REQUIRE_LOGIN=1) a hot mic or a running
+  // AudioContext must not linger — a privacy issue. Reads refs directly so it needs no deps.
+  useEffect(() => {
+    return () => {
+      try {
+        visualizerStopRef.current?.();
+      } catch {
+        // visualizer already stopped
+      }
+      serverAsrRef.current?.stop();
+      asrRef.current?.stop();
+      audioRef.current?.pause();
+      recordingAudioRef.current?.pause();
+    };
+  }, []);
+
   // Role-gated section redirection to prevent URL/state-based bypass
   useEffect(() => {
     const role = effectiveUser?.role;

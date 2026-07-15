@@ -1,9 +1,32 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { blobToBase64, encodeWav, transcribeWav } from "./serverAsr";
+import { blobToBase64, encodeWav, transcribeWav, startLocalAudioRecording } from "./serverAsr";
 
 describe("server ASR (trained Quran model path)", () => {
   afterEach(() => {
     vi.restoreAllMocks();
+    vi.unstubAllGlobals();
+  });
+
+  it("releases the mic and returns null if MediaRecorder construction throws after getUserMedia", async () => {
+    // getUserMedia succeeds and opens a mic stream; then `new MediaRecorder(...)` throws (unsupported
+    // mime / InvalidStateError). The stream's tracks MUST be stopped so the mic doesn't stay hot, and
+    // the call must resolve to null (not reject with an unhandled rejection).
+    const trackStop = vi.fn();
+    const stream = { getTracks: () => [{ stop: trackStop }] };
+    vi.stubGlobal("window", {});
+    vi.stubGlobal("navigator", { mediaDevices: { getUserMedia: vi.fn(async () => stream) } });
+    const ThrowingRecorder = function () {
+      throw new Error("MediaRecorder not supported");
+    } as unknown as typeof MediaRecorder;
+    (ThrowingRecorder as unknown as { isTypeSupported: () => boolean }).isTypeSupported = () => false;
+    vi.stubGlobal("MediaRecorder", ThrowingRecorder);
+
+    const onError = vi.fn();
+    const controller = await startLocalAudioRecording({ onStatusChange: () => {}, onError });
+
+    expect(controller).toBeNull();
+    expect(trackStop).toHaveBeenCalledOnce(); // mic released, not left hot
+    expect(onError).toHaveBeenCalledOnce();
   });
 
   it("encodes mono float samples as a valid 16-bit PCM WAV", async () => {
