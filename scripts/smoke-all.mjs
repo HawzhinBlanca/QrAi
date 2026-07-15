@@ -12,41 +12,36 @@ const startedServices = [];
 const results = [];
 const failures = [];
 
-try {
-  await runStep("proof", ["pnpm", "proof"]);
-
-  // Clean and re-seed the database between integration tests (which commit invalid/violating rows)
-  // and the smoke tests.
-  console.log("Cleaning and re-seeding database before smoke tests...");
-  async function runDbCommand(args, stdinContent) {
-    let cmd = "psql";
-    let finalArgs = [...args];
-    if (process.env.PSQL) {
-      const parts = process.env.PSQL.split(" ");
-      cmd = parts[0];
-      finalArgs = [...parts.slice(1), ...args];
-    }
-    return new Promise((resolve, reject) => {
-      const child = spawn(cmd, finalArgs, {
-        cwd: process.cwd(),
-        env: process.env,
-        stdio: [stdinContent ? "pipe" : "inherit", "inherit", "inherit"]
-      });
-      child.on("error", reject);
-      child.on("close", (code) => {
-        if (code !== 0) {
-          reject(new Error(`Database command failed with exit code ${code}`));
-        } else {
-          resolve();
-        }
-      });
-      if (stdinContent) {
-        child.stdin.write(stdinContent);
-        child.stdin.end();
+async function runDbCommand(args, stdinContent) {
+  let cmd = "psql";
+  let finalArgs = [...args];
+  if (process.env.PSQL) {
+    const parts = process.env.PSQL.split(" ");
+    cmd = parts[0];
+    finalArgs = [...parts.slice(1), ...args];
+  }
+  return new Promise((resolve, reject) => {
+    const child = spawn(cmd, finalArgs, {
+      cwd: process.cwd(),
+      env: process.env,
+      stdio: [stdinContent ? "pipe" : "inherit", "inherit", "inherit"]
+    });
+    child.on("error", reject);
+    child.on("close", (code) => {
+      if (code !== 0) {
+        reject(new Error(`Database command failed with exit code ${code}`));
+      } else {
+        resolve();
       }
     });
-  }
+    if (stdinContent) {
+      child.stdin.write(stdinContent);
+      child.stdin.end();
+    }
+  });
+}
 
+async function cleanAndSeedDatabase() {
   await runDbCommand([
     "-U", "hawzhin",
     "-d", "quran_ai",
@@ -77,6 +72,16 @@ try {
     "-U", "hawzhin",
     "-d", "quran_ai"
   ], internalSeedSql);
+}
+
+try {
+  console.log("Initializing database before proof...");
+  await cleanAndSeedDatabase();
+
+  await runStep("proof", ["pnpm", "proof"]);
+
+  console.log("Cleaning and re-seeding database before smoke tests...");
+  await cleanAndSeedDatabase();
 
   await runStep("smoke:sql", ["pnpm", "smoke:sql"]);
   await runStep("smoke:browser", ["pnpm", "smoke:browser"], { SMOKE_ARTIFACT_DIR: artifactRoot });
