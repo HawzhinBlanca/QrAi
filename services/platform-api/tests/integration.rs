@@ -2708,3 +2708,58 @@ async fn adversarial_api_isolation_prevents_cross_tenant_delete() {
     // Should fail with FORBIDDEN since Tenant B cannot manage Tenant A's user privacy
     assert_eq!(response.status(), StatusCode::FORBIDDEN);
 }
+
+#[tokio::test]
+async fn test_platform_api_cors_origin_validation() {
+    use std::sync::Mutex;
+    static CORS_LOCK: Mutex<()> = Mutex::new(());
+    let _guard = CORS_LOCK.lock().unwrap();
+
+    // 1. Setup environment allowed origin
+    unsafe {
+        std::env::set_var("CORS_ALLOWED_ORIGINS", "https://allowed.example.com");
+    }
+
+    let state = test_state();
+    let router = platform_router_with_rate_limit(state, false);
+
+    // 2. Disallowed origin request
+    let disallowed_req = Request::builder()
+        .method(Method::GET)
+        .uri("/health")
+        .header("origin", "https://disallowed.example.com")
+        .body(Body::empty())
+        .unwrap();
+
+    let res = router.clone().oneshot(disallowed_req).await.unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+    assert!(
+        res.headers().get("access-control-allow-origin").is_none(),
+        "CORS header must be absent for disallowed origins"
+    );
+
+    // 3. Allowed origin request
+    let allowed_req = Request::builder()
+        .method(Method::GET)
+        .uri("/health")
+        .header("origin", "https://allowed.example.com")
+        .body(Body::empty())
+        .unwrap();
+
+    let res = router.oneshot(allowed_req).await.unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+    assert_eq!(
+        res.headers()
+            .get("access-control-allow-origin")
+            .unwrap()
+            .to_str()
+            .unwrap(),
+        "https://allowed.example.com",
+        "CORS header must be present and match allowed origin"
+    );
+
+    // Clean up
+    unsafe {
+        std::env::remove_var("CORS_ALLOWED_ORIGINS");
+    }
+}
