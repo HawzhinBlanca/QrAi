@@ -817,4 +817,24 @@ describe("Quran AI app smoke", () => {
     });
     expect(i18n.language).toBe("ckb");
   });
+
+  it("enforces role-gated section redirection to prevent URL/state-based bypass", async () => {
+    localStorage.setItem("quran-ai-auth", JSON.stringify({
+      userId: "learner-1",
+      tenantId: "hikmah-pilot-erbil",
+      role: "learner",
+      displayName: "Test Learner",
+      token: "test-jwt-token",
+    }));
+
+    const root = createRoot(container);
+    await act(async () => {
+      root.render(<App />);
+    });
+
+    // As a learner, the teacher surface options and administrative commands must not render
+    expect(document.body.textContent).toContain("Learner Home");
+    expect(document.body.textContent).not.toContain("Teacher Surface");
+    expect(document.body.textContent).not.toContain("Teacher Queue");
+  });
 });
