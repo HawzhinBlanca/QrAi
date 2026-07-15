@@ -15,7 +15,7 @@ task below serves one of those, or removes a platform blocker the audit found.
 | T10 — server-authoritative consent on the ML proxy | ✅ **DONE** | #205 |
 | T15 (core) — Prometheus `/metrics` on platform-api, access-controlled | ✅ **DONE** | #208 |
 | — data expansion: both features now cover all 39 beginner-core surahs (1, 2, Juz Amma 78–114) | ✅ **DONE** | #207 |
-| **T3 — forced alignment (learner word timestamps)** | 🟢 **PROVEN CORRECT** — `services/asr-inference/forced_align_poc.py` aligns real Al-Afasy audio to canonical Arabic and lands word-starts within **52 ms MAE** of Quran.com's ground-truth segments (10 words, Al-Fatihah). Core alignment done + validated; remaining = wrap as a service endpoint + thread through ml/Rust/web + swap to the Apache model. | #210 |
+| **T3 — forced alignment (learner word timestamps)** | 🟢 **PROVEN CORRECT, SHIPPABLE ALIGNER VALIDATED** — two aligners validated vs Quran.com ground truth: MMS_FA (eval, CC-BY-NC) **52 ms** MAE (`forced_align_poc.py`), and the **Apache-2.0** `jonatasgrosman/wav2vec2-large-xlsr-53-arabic` (production-licensed) **64 ms** MAE on diacritic-stripped Arabic chars (`forced_align_arabic.py`). Word-*start* times (drive follow-along) accurate to ~±100 ms; last-word *end* drifts into trailing silence (expected — measure madd separately). Remaining = wrap `align_words()` as the asr `/v1/force-align` endpoint + thread through ml/Rust/web. | #210, #211 |
 | T6, T7, T8 | ⏳ ML, feasible in the same venv; T7/T8 gated on dataset licenses | — |
 | T12, T13, T16, T18, T15-rest | ⏳ straightforward-code, not started | — |
 | T0, T5, T7/T8 licenses, T11, on-device tests, scholar | 🔒 owner/human-gated | — |
