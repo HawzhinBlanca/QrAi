@@ -868,8 +868,10 @@ function AuthenticatedApp({ bypassLogin = false }: { bypassLogin?: boolean }) {
         const controller = startAsr({
           language: "ar-SA",
           onResult: (result) => {
-            setAsrTranscript((prev) => prev + " " + result.transcript);
+            // Append + align only FINAL segments. Interim results fire repeatedly for the same
+            // segment as it's revised, so appending them would duplicate the transcript.
             if (result.isFinal) {
+              setAsrTranscript((prev) => (prev ? prev + " " : "") + result.transcript);
               void runAlignmentAndTajweed(result.transcript);
             }
           },
