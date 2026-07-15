@@ -5,6 +5,20 @@ architectural change. Newest first.
 
 ---
 
+## ADR-0013 — Explicit release gating of the mushaddad ghunnah Tajweed engine limitation
+**Date:** 2026-07-15 · **Status:** Accepted (withheld, with explicit warning)
+
+**Context.** The rule-based tajweed engine (`services/ml-inference/tajweed.js`) handles natural madd, dagger alif, coarse ghunnah, and qalqalah. However, it does not currently implement nūn/mīm mushaddad ghunnah (obligatory nasalisation on نّ/مّ, e.g. in `إِنَّ`, `ثُمَّ`), which is marked as a `TODO` in `services/ml-inference/tajweed.test.mjs`. In a religious-education and Quran-learning product, shipping an AI/rule-based engine that silently ignores this rule or conflates it with simple shaddah without scholar sign-off poses a doctrinal correctness risk.
+
+**Decision.**
+1. We explicitly **withhold** mushaddad ghunnah from the active rule-detection set for the current release. The engine will continue to flag simple consonant doubling (`shaddah`) without incorrectly claiming it has graded the obligatory ghunnah nasalisation.
+2. We added a visible note in the scholar review guidelines (`docs/SCHOLAR_REVIEW.md` Question A1-1) to ensure the next iteration of the engine (which will implement the two-count mushaddad ghunnah detection) is reviewed and signed off by a qualified scholar before it is enabled.
+3. For general transparency, the learner-facing interface labels all AI-generated tajweed suggestions as *"AI suggestion · not yet reviewed"* and gates them behind the contract's teacher review/approval gates (`contracts` check `canShowLearnerFacingAiOutput`), preventing any unverified feedback from reaching the student.
+
+**Consequences.** The current release candidate remains doctrinally safe and honest. It does not present half-implemented or unverified tajweed feedback to the learner. Implementing and signing off on the mushaddad ghunnah rule is tracked as a post-release enhancement requiring a qualified scholar's verification packet sign-off.
+
+---
+
 ## ADR-0012 — i18next/react-i18next for web i18n; content ships English-only
 **Date:** 2026-07-08 · **Status:** Accepted
 
