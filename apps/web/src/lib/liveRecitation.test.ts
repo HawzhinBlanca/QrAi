@@ -190,4 +190,42 @@ describe("live recitation audio helpers", () => {
     expect(statuses).toEqual(["connecting", "connected"]);
     expect(acks).toHaveLength(1);
   });
+
+  it("transitions status to error and triggers onError when WebSocket fails to connect", () => {
+    FakeWebSocket.instances = [];
+    const statuses: string[] = [];
+    const errors: string[] = [];
+    startGatewayAudioUpload(
+      {
+        url: "ws://gateway/audio",
+        onStatusChange: (status) => statuses.push(status),
+        onAck: () => undefined,
+        onError: (message) => errors.push(message),
+      },
+      { WebSocket: FakeWebSocket as unknown as typeof WebSocket },
+    );
+    const socket = FakeWebSocket.instances[0];
+    socket.onerror?.();
+
+    expect(statuses).toEqual(["connecting", "error"]);
+    expect(errors).toContain("Realtime gateway connection failed.");
+  });
+
+  it("transitions status to closed when WebSocket connection is closed", () => {
+    FakeWebSocket.instances = [];
+    const statuses: string[] = [];
+    startGatewayAudioUpload(
+      {
+        url: "ws://gateway/audio",
+        onStatusChange: (status) => statuses.push(status),
+        onAck: () => undefined,
+        onError: () => undefined,
+      },
+      { WebSocket: FakeWebSocket as unknown as typeof WebSocket },
+    );
+    const socket = FakeWebSocket.instances[0];
+    socket.onclose?.();
+
+    expect(statuses).toEqual(["connecting", "closed"]);
+  });
 });
