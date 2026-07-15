@@ -24,7 +24,7 @@
 - [x] T3.1 Implement/repair the complete learner-to-teacher vertical slice.
 - [x] T3.2 Cover failure and recovery states.
 - [x] T3.3 Prove role-specific surfaces.
-- [ ] T3.4 Test privacy journey in-browser.
+- [x] T3.4 Test privacy journey in-browser.
 - [ ] T3.5 Validate all real navigation paths.
 
 ## Phase 4 — Human-quality UX, accessibility, language, and mobile

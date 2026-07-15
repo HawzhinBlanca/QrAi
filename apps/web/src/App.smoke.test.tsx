@@ -837,4 +837,110 @@ describe("Quran AI app smoke", () => {
     expect(document.body.textContent).not.toContain("Teacher Surface");
     expect(document.body.textContent).not.toContain("Teacher Queue");
   });
+
+  it("completes the learner privacy journey: exporting data and deleting data with confirmation", async () => {
+    localStorage.setItem("quran-ai-auth", JSON.stringify({
+      userId: "learner-1",
+      tenantId: "hikmah-pilot-erbil",
+      role: "learner",
+      displayName: "Test Learner",
+      token: "test-jwt-token",
+    }));
+
+    // Mock successful export and delete responses
+    const mockFetch = vi.fn().mockImplementation((url: string) => {
+      if (url.includes("/v1/privacy/export")) {
+        return Promise.resolve({
+          ok: true,
+          status: 200,
+          json: () => Promise.resolve({
+            jobId: "job-export-123",
+            status: "completed",
+            includedRecords: ["recitation-1", "recitation-2"],
+          }),
+        });
+      }
+      if (url.includes("/v1/privacy/delete")) {
+        return Promise.resolve({
+          ok: true,
+          status: 200,
+          json: () => Promise.resolve({
+            jobId: "job-delete-123",
+            status: "completed",
+            deletedRecords: ["recitation-1", "recitation-2"],
+            audioObjectKeysDeleted: ["audio-key-1"],
+          }),
+        });
+      }
+      return Promise.reject(new Error("no backend in smoke test"));
+    });
+    vi.stubGlobal("fetch", mockFetch);
+
+    const root = createRoot(container);
+    await act(async () => {
+      root.render(<App />);
+    });
+
+    // Navigate to settings (privacy settings)
+    const settingsButton = Array.from(document.querySelectorAll<HTMLButtonElement>("button")).find((button) =>
+      button.textContent?.includes("Settings"),
+    );
+    expect(settingsButton).toBeTruthy();
+    await act(async () => {
+      settingsButton?.click();
+    });
+
+    expect(document.body.textContent).toContain("Your data & privacy");
+    expect(document.body.textContent).toContain("See my data");
+
+    // Click Export my data button ("See what data you hold about me")
+    const exportButton = Array.from(document.querySelectorAll<HTMLButtonElement>("button")).find((button) =>
+      button.textContent?.includes("See what data you hold about me"),
+    );
+    expect(exportButton).toBeTruthy();
+    await act(async () => {
+      exportButton?.click();
+    });
+
+    // Wait for async state update
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    expect(mockFetch).toHaveBeenCalledWith(
+      expect.stringContaining("/v1/privacy/export"),
+      expect.any(Object)
+    );
+    expect(document.body.textContent).toContain("We currently hold 2 record(s) for you.");
+
+    // Click Delete my data button to start confirmation
+    const deleteButton = Array.from(document.querySelectorAll<HTMLButtonElement>("button")).find((button) =>
+      button.textContent?.includes("Delete my data"),
+    );
+    expect(deleteButton).toBeTruthy();
+    await act(async () => {
+      deleteButton?.click();
+    });
+
+    expect(document.body.textContent).toContain("Permanently delete your recordings and practice data? This cannot be undone.");
+
+    // Click Confirm Delete
+    const confirmDeleteButton = Array.from(document.querySelectorAll<HTMLButtonElement>("button")).find((button) =>
+      button.textContent?.includes("Yes, delete everything"),
+    );
+    expect(confirmDeleteButton).toBeTruthy();
+    await act(async () => {
+      confirmDeleteButton?.click();
+    });
+
+    // Wait for async state update
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    expect(mockFetch).toHaveBeenCalledWith(
+      expect.stringContaining("/v1/privacy/delete"),
+      expect.any(Object)
+    );
+  });
 });
