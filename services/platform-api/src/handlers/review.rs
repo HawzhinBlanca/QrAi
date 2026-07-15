@@ -93,7 +93,7 @@ pub async fn list_teacher_review_queue(
 
     let rows = sqlx::query(
         "SELECT id, tenant_id, finding_id, teacher_id, decision, note, audit_event_id
-         FROM teacher_reviews WHERE tenant_id = $1 ORDER BY created_at DESC",
+         FROM teacher_reviews WHERE tenant_id = $1 ORDER BY created_at DESC LIMIT 200",
     )
     .bind(&actor.tenant_id)
     .fetch_all(&mut *tx)
@@ -217,7 +217,7 @@ pub async fn list_scholar_approvals(
 
     let rows = sqlx::query(
         "SELECT id, topic, reviewer_id, status, risk, source_refs
-         FROM scholar_approvals WHERE tenant_id = $1 ORDER BY created_at DESC",
+         FROM scholar_approvals WHERE tenant_id = $1 ORDER BY created_at DESC LIMIT 200",
     )
     .bind(&actor.tenant_id)
     .fetch_all(&mut *tx)
@@ -267,7 +267,7 @@ pub async fn list_tajweed_findings(
          FROM tajweed_findings tf
          JOIN word_alignments wa ON wa.id = tf.alignment_id
          WHERE tf.tenant_id = $1
-         ORDER BY tf.confidence DESC",
+         ORDER BY tf.confidence DESC LIMIT 200",
     )
     .bind(&actor.tenant_id)
     .fetch_all(&mut *tx)
