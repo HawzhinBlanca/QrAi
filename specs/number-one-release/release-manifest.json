@@ -1,8 +1,8 @@
 {
   "schemaVersion": "1.0.0",
-  "timestamp": "2026-07-15T08:43:51.367Z",
-  "candidateSha": "466bb1dea931ce52b186c52c0ca5d1a2a53f707a",
-  "traceId": "release-trace-b87d43b39add3256",
+  "timestamp": "2026-07-15T08:44:15.699Z",
+  "candidateSha": "9bc2a358756e6c5101f0acdcfaf11733a93f3f59",
+  "traceId": "release-trace-c95017083ee6449d",
   "environment": {
     "nodeVersion": "v22.13.1",
     "platform": "darwin",
