@@ -1897,6 +1897,51 @@ async fn ml_proxy_passes_through_a_successful_upstream_response() {
 
 #[tokio::test]
 #[ignore = "requires live Postgres"]
+async fn ml_proxy_allows_approved_model_version() {
+    let mock_ml = spawn_mock_upstream_200(
+        "/v1/alignments:predict",
+        json!({"alignments": [], "modelVersion": "ml-aligner-v0.2"}),
+    )
+    .await;
+    let state = test_state().with_ml_inference_url(mock_ml);
+    let router = platform_router_with_rate_limit(state, false);
+
+    let response = send_json(
+        &router,
+        Method::POST,
+        "/v1/ml/alignments:predict",
+        Some("hikmah-pilot-erbil"),
+        Some("learner"),
+        json!({"modelVersion": "ml-aligner-v0.2"}),
+    )
+    .await;
+
+    assert_eq!(response.status(), StatusCode::OK);
+}
+
+#[tokio::test]
+#[ignore = "requires live Postgres"]
+async fn ml_proxy_rejects_unapproved_model_version() {
+    let state = test_state();
+    let router = platform_router_with_rate_limit(state, false);
+
+    let response = send_json(
+        &router,
+        Method::POST,
+        "/v1/ml/alignments:predict",
+        Some("hikmah-pilot-erbil"),
+        Some("learner"),
+        json!({"modelVersion": "neural-tajweed-v1"}),
+    )
+    .await;
+
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let body: Value = read_json(response).await;
+    assert!(body["error"].as_str().unwrap().contains("not approved"));
+}
+
+#[tokio::test]
+#[ignore = "requires live Postgres"]
 async fn asr_transcribe_proxy_passes_through_a_successful_upstream_response() {
     let mock_asr = spawn_mock_upstream_200("/v1/transcribe", json!({"text": "بِسْمِ اللَّهِ"})).await;
     let state = test_state().with_asr_inference_url(mock_asr);

@@ -28,6 +28,20 @@ async fn proxy_ml(
     let obj = body
         .as_object_mut()
         .ok_or_else(|| ApiError::BadRequest("request body must be a JSON object".to_owned()))?;
+
+    // Runtime guard: reject unapproved / experimental model configurations
+    const APPROVED_MODELS: &[&str] = &["ml-aligner-v0.2"];
+    if let Some(model_str) = obj
+        .get("modelVersion")
+        .and_then(|v| v.as_str())
+        .filter(|s| !APPROVED_MODELS.contains(s))
+    {
+        return Err(ApiError::BadRequest(format!(
+            "Model version '{}' is not approved for production use",
+            model_str
+        )));
+    }
+
     // Server-authoritative tenant: ignore whatever the client claimed.
     obj.insert(
         "tenantId".to_owned(),

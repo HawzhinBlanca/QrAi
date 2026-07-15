@@ -11,7 +11,7 @@
 - [x] T1.2 Keep withheld rules impossible to surface as feedback.
 - [x] T1.3 Validate canonical Quran data independently.
 - [x] T1.4 Establish a real evaluation methodology.
-- [ ] T1.5 Keep neural Tajweed outside learner paths until separately approved.
+- [x] T1.5 Keep neural Tajweed outside learner paths until separately approved.
 
 ## Phase 2 — Security, tenancy, and privacy under attack
 - [ ] T2.1 Run every ignored platform-api integration test against real Postgres.
