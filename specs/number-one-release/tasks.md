@@ -4,7 +4,7 @@
 - [x] T0.1 Reconcile every current change into reviewed commits or explicitly discard it.
 - [x] T0.2 Make protected CI execute all required quality gates.
 - [x] T0.3 Make stale evidence impossible to reuse (Release Manifest).
-- [ ] T0.4 Establish a disposable staging environment.
+- [x] T0.4 Establish a disposable staging environment.
 
 ## Phase 1 — Correctness before features
 - [ ] T1.1 Produce the scholar rule packet and hold a recorded review.
