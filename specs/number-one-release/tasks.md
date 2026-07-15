@@ -29,7 +29,7 @@
 
 ## Phase 4 — Human-quality UX, accessibility, language, and mobile
 - [x] T4.1 Conduct task-based accessibility testing.
-- [ ] T4.2 Implement and validate RTL.
+- [x] T4.2 Implement and validate RTL.
 - [ ] T4.3 Ship reviewed languages, not a misleading picker.
 - [ ] T4.4 Prove real-device mobile.
 - [ ] T4.5 Pilot the teacher workflow.

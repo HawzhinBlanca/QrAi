@@ -805,6 +805,8 @@ describe("Quran AI app smoke", () => {
     });
 
     expect(i18n.language).toBe("de");
+    expect(document.documentElement.dir).toBe("ltr");
+    expect(document.documentElement.lang).toBe("de");
 
     // "de" has no real translated content yet (see i18n/index.ts) -- fallbackLng must still
     // resolve every key to its real English string rather than the raw key or empty text.
@@ -816,6 +818,8 @@ describe("Quran AI app smoke", () => {
       select!.dispatchEvent(new Event("change", { bubbles: true }));
     });
     expect(i18n.language).toBe("ckb");
+    expect(document.documentElement.dir).toBe("rtl");
+    expect(document.documentElement.lang).toBe("ckb");
   });
 
   it("enforces role-gated section redirection to prevent URL/state-based bypass", async () => {
