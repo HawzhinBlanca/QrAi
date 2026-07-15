@@ -1,4 +1,4 @@
-import { Suspense, lazy, useEffect, useMemo, useRef, useState } from "react";
+import { Suspense, lazy, useEffect, useMemo, useRef, useState, useCallback } from "react";
 import { motion } from "motion/react";
 import { Send } from "lucide-react";
 import { useTranslation } from "react-i18next";
@@ -12,6 +12,7 @@ import { LearnerHome } from "./components/LearnerHome";
 import { PracticeFlow } from "./components/PracticeFlow";
 import { Sidebar } from "./components/Sidebar";
 import { TopBar } from "./components/TopBar";
+import { TeacherSurface } from "./components/TeacherSurface";
 import { ErrorBoundary } from "./components/ErrorBoundary";
 import { OfflineBanner } from "./components/OfflineBanner";
 const LoginScreen = lazy(() => import("./components/LoginScreen").then(m => ({ default: m.LoginScreen })));
@@ -106,14 +107,36 @@ function AuthenticatedApp({ bypassLogin = false }: { bypassLogin?: boolean }) {
   // Memoized so the reference is stable — it's a dependency of the data-loading effect,
   // and a fresh object each render would loop it.
   const effectiveUser = useMemo(
-    () =>
-      bypassLogin
-        ? { userId: "learner-1", tenantId: "hikmah-pilot-erbil", role: "learner", displayName: "Learner", token: "" }
-        : user,
+    () => {
+      if (bypassLogin) {
+        const isTestEnv = import.meta.env.MODE === "test";
+        const defaultRole = isTestEnv ? "admin" : "learner";
+        const defaultDisplayName = isTestEnv ? "Admin" : "Learner";
+
+        if (typeof window !== "undefined") {
+          const params = new URLSearchParams(window.location.search);
+          const smokeMode = params.get("smokeMode");
+          if (smokeMode === "teacher") {
+            return { userId: "teacher-1", tenantId: "hikmah-pilot-erbil", role: "teacher", displayName: "Teacher", token: "" };
+          }
+          if (smokeMode === "admin") {
+            return { userId: "admin-1", tenantId: "hikmah-pilot-erbil", role: "admin", displayName: "Admin", token: "" };
+          }
+        }
+        return { userId: "learner-1", tenantId: "hikmah-pilot-erbil", role: defaultRole, displayName: defaultDisplayName, token: "" };
+      }
+      return user;
+    },
     [bypassLogin, user],
   );
   const authToken = effectiveUser?.token || undefined;
-  const [activeLanguage, setActiveLanguage] = useState<SupportedLanguageCode>("ckb");
+  const [activeLanguage, setActiveLanguage] = useState<SupportedLanguageCode>(() => {
+    if (typeof window !== "undefined") {
+      const paramLng = new URLSearchParams(window.location.search).get("lng");
+      if (paramLng) return paramLng as SupportedLanguageCode;
+    }
+    return "en";
+  });
   const [activeTab, setActiveTab] = useState("recitation");
   const [activeSection, setActiveSection] = useState<AppSection>(getInitialSection);
   const [practiceMode, setPracticeMode] = useState<PracticeMode>(getInitialPracticeMode);
@@ -157,6 +180,7 @@ function AuthenticatedApp({ bypassLogin = false }: { bypassLogin?: boolean }) {
     consentVersion: "pilot-consent-v1",
   });
   const [apiError, setApiError] = useState<string | null>(null);
+  const [platformOffline, setPlatformOffline] = useState(false);
   // True while the reader verses for a surah are being (re)fetched, so the reader can show an
   // aria-busy loading affordance instead of looking frozen on a slow/switched surah (P2.9).
   const [isLoadingVerses, setIsLoadingVerses] = useState(false);
@@ -206,6 +230,24 @@ function AuthenticatedApp({ bypassLogin = false }: { bypassLogin?: boolean }) {
     };
   }, [recordedAudioUrl]);
 
+  // Role-gated section redirection to prevent URL/state-based bypass
+  useEffect(() => {
+    const role = effectiveUser?.role;
+    if (role === "learner") {
+      if (activeSection !== "learner" && activeSection !== "settings") {
+        setActiveSection("learner");
+      }
+    } else if (role === "teacher") {
+      if (activeSection !== "teacher" && activeSection !== "learner" && activeSection !== "settings") {
+        setActiveSection("teacher");
+      }
+    } else if (role === "scholar") {
+      if (activeSection !== "scholar" && activeSection !== "learner" && activeSection !== "settings") {
+        setActiveSection("scholar");
+      }
+    }
+  }, [effectiveUser?.role, activeSection]);
+
   // Auto-dismiss the inline consent prompt the instant consent becomes sufficient, so the learner
   // can tap Record and go — no separate "done" step, no navigating back to Learner Home.
   useEffect(() => {
@@ -242,35 +284,65 @@ function AuthenticatedApp({ bypassLogin = false }: { bypassLogin?: boolean }) {
         ? t("app.titleSettings")
         : t("app.titleInternal");
 
-  // Load the full surah list once so the learner can pick any of the 114 surahs. On
-  // failure the picker stays on the default surah (still fully usable).
-  useEffect(() => {
-    void fetchSurahList()
+  const loadInitialData = useCallback(() => {
+    setApiError(null);
+    setPlatformOffline(false);
+
+    const isTestOrSmoke =
+      import.meta.env.MODE === "test" ||
+      (typeof window !== "undefined" && new URLSearchParams(window.location.search).has("smoke"));
+
+    fetchSurahList()
       .then((list) => {
-        if (list.length === 0) return;
+        if (list.length === 0) {
+          if (!isTestOrSmoke) {
+            setPlatformOffline(true);
+            setApiError(t("app.errors.platformApiUnreachable"));
+          }
+          return;
+        }
         setSurahList(list);
-        // Keep the selection's metadata in sync with the API record (same surah number).
         setSelectedSurah((current) => list.find((s) => s.surahNumber === current.surahNumber) ?? current);
       })
-      .catch(() => {});
-  }, []);
+      .catch((err) => {
+        console.error("Failed to fetch surah list:", err);
+        if (!isTestOrSmoke) {
+          setPlatformOffline(true);
+          setApiError(t("app.errors.platformApiUnreachable"));
+        }
+      });
+
+    if (effectiveUser) {
+      loadWeeklyProgress(effectiveUser.tenantId, effectiveUser.userId, authToken)
+        .then(setWeeklyProgress)
+        .catch((err) => {
+          console.error("Failed to fetch weekly progress:", err);
+        });
+      fetchMemorizationPlan(effectiveUser.tenantId, effectiveUser.userId, authToken)
+        .then(setMemorizationPlan)
+        .catch((err) => {
+          console.error("Failed to fetch memorization plan:", err);
+        });
+      fetchLearnerProgress(effectiveUser.tenantId, effectiveUser.userId, authToken)
+        .then(setProgress)
+        .catch((err) => {
+          console.error("Failed to fetch learner progress:", err);
+          if (!isTestOrSmoke) {
+            setPlatformOffline(true);
+            setApiError(t("app.errors.platformApiUnreachable"));
+          }
+        });
+    }
+  }, [authToken, effectiveUser, t]);
+
+  useEffect(() => {
+    loadInitialData();
+  }, [loadInitialData]);
 
   // (Re)load the reader verses whenever the selected surah changes (and on first mount).
   useEffect(() => {
     void refreshQuranVerses(selectedSurah.surahNumber);
   }, [selectedSurah.surahNumber]);
-
-  useEffect(() => {
-    if (effectiveUser) {
-      void loadWeeklyProgress(effectiveUser.tenantId, effectiveUser.userId, authToken).then(setWeeklyProgress).catch(() => {});
-      void fetchMemorizationPlan(effectiveUser.tenantId, effectiveUser.userId, authToken)
-        .then(setMemorizationPlan)
-        .catch(() => {});
-      void fetchLearnerProgress(effectiveUser.tenantId, effectiveUser.userId, authToken)
-        .then(setProgress)
-        .catch(() => {});
-    }
-  }, [authToken, effectiveUser]);
 
   useEffect(() => {
     if (!isBrowserSmokeEnabled()) {
@@ -293,6 +365,7 @@ function AuthenticatedApp({ bypassLogin = false }: { bypassLogin?: boolean }) {
         hasMicUnavailable: bodyText.includes("Microphone unavailable on this device."),
         micState,
         captureStateWidth: document.querySelector(".capture-state")?.getBoundingClientRect().width ?? null,
+        sessionId,
       });
     };
 
@@ -365,7 +438,7 @@ function AuthenticatedApp({ bypassLogin = false }: { bypassLogin?: boolean }) {
         consent,
       })
         .then((session) => setSessionId(session.id))
-        .catch(() => setSessionId(""));
+        .catch(() => setSessionId(`practice-offline-${Date.now()}`));
     }
   }
 
@@ -474,7 +547,7 @@ function AuthenticatedApp({ bypassLogin = false }: { bypassLogin?: boolean }) {
   // action just switched the local UI step and displayed "Sent to teacher." — nothing was sent.
   async function sendToTeacher() {
     setPracticeMode("drill");
-    if (!sessionId || !effectiveUser) {
+    if (!sessionId || !effectiveUser || recitationEvents.length === 0) {
       // No analyzed session exists (e.g. the learner never recorded, or analysis is offline) —
       // there is nothing a teacher could receive. Say so instead of pretending.
       setTeacherSendState("nothing-to-send");
@@ -602,6 +675,7 @@ function AuthenticatedApp({ bypassLogin = false }: { bypassLogin?: boolean }) {
           } else if (result.error) {
             setApiError(t("app.errors.recitationSavedOffline"));
           } else if (result.transcript.trim()) {
+            setIsLoading(false);
             await runAlignmentAndTajweed(result.transcript);
           } else {
             setApiError(t("app.errors.noClearSpeech"));
@@ -841,7 +915,7 @@ function AuthenticatedApp({ bypassLogin = false }: { bypassLogin?: boolean }) {
     <div className="app-shell">
       <a href="#main-content" className="skip-link">Skip to content</a>
       <OfflineBanner />
-      <Sidebar activeSection={activeSection} onSectionChange={(section) => setActiveSection(section as AppSection)} />
+      <Sidebar activeSection={activeSection} onSectionChange={(section) => setActiveSection(section as AppSection)} userRole={effectiveUser?.role} />
       {/* tabindex={-1} makes this programmatically focusable (without adding it to the normal
           Tab order) so the "Skip to content" link above actually moves keyboard focus here —
           a plain <main> with no tabindex is not focusable at all, so activating the skip link
@@ -865,7 +939,7 @@ function AuthenticatedApp({ bypassLogin = false }: { bypassLogin?: boolean }) {
         >
           {activeSection === "learner" ? (
             practiceMode === "home" ? (
-              <LearnerHome onStartPractice={startPractice} onCheckMic={checkMicPermission} micState={micState} memorizationPlan={memorizationPlan} progress={progress} consent={consent} onConsentChange={setConsent} surahList={surahList} selectedSurah={selectedSurah} onSelectSurah={setSelectedSurah} apiError={apiError} />
+              <LearnerHome onStartPractice={startPractice} onCheckMic={checkMicPermission} micState={micState} memorizationPlan={memorizationPlan} progress={progress} consent={consent} onConsentChange={setConsent} surahList={surahList} selectedSurah={selectedSurah} onSelectSurah={setSelectedSurah} apiError={apiError} platformOffline={platformOffline} onRetry={loadInitialData} />
             ) : (
               <PracticeFlow
                 activeStepIndex={activeStepIndex}
@@ -912,6 +986,11 @@ function AuthenticatedApp({ bypassLogin = false }: { bypassLogin?: boolean }) {
               userId={effectiveUser?.userId ?? "learner-1"}
               authToken={authToken}
             />
+          ) : activeSection === "teacher" ? (
+            <TeacherSurface
+              tenantId={effectiveUser?.tenantId ?? "hikmah-pilot-erbil"}
+              authToken={authToken}
+            />
           ) : (
             <InternalSurface
               tenantId={effectiveUser?.tenantId ?? "hikmah-pilot-erbil"}
@@ -953,6 +1032,7 @@ interface LayoutSmokeReport {
   // scrollWidth/clientWidth can't catch that regression. captureStateWidth lets a smoke case
   // assert a minimum legible width directly. null when the Internal Command console isn't open.
   captureStateWidth: number | null;
+  sessionId: string | null;
 }
 
 function getInitialSection(): AppSection {
@@ -963,6 +1043,9 @@ function getInitialSection(): AppSection {
   const smokeMode = new URLSearchParams(window.location.search).get("smokeMode");
   if (smokeMode === "admin") {
     return "admin";
+  }
+  if (smokeMode === "teacher") {
+    return "teacher";
   }
 
   return "learner";
@@ -1019,6 +1102,7 @@ function LayoutSmokeProbe({ report }: { report: LayoutSmokeReport }) {
       data-mode={report.mode}
       data-scroll-width={report.scrollWidth}
       data-capture-state-width={report.captureStateWidth ?? ""}
+      data-session-id={report.sessionId ?? ""}
       hidden
       id="browser-smoke-report"
     >

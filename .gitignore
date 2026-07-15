@@ -44,3 +44,5 @@ UnpredectableGAME/
 # Database backups (learner data — never commit)
 /backups/
 *.dump
+# CocoIndex Code (ccc)
+/.cocoindex_code/

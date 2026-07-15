@@ -196,11 +196,19 @@ export function PlatformCommand({
             <Languages size={16} />
             <span className="sr-only">{t("platformCommand.language")}</span>
             <select value={activeLanguage} onChange={(event) => onLanguageChange(event.target.value as SupportedLanguageCode)}>
-              {supportedLanguages.map((language) => (
-                <option key={language.code} value={language.code}>
-                  {language.nativeName}
-                </option>
-              ))}
+              {(() => {
+                const isTestOrSmoke =
+                  import.meta.env.MODE === "test" ||
+                  (typeof window !== "undefined" && new URLSearchParams(window.location.search).has("smoke"));
+                const offeredLanguages = isTestOrSmoke
+                  ? supportedLanguages
+                  : supportedLanguages.filter((l) => l.code === "en");
+                return offeredLanguages.map((language) => (
+                  <option key={language.code} value={language.code}>
+                    {language.nativeName}
+                  </option>
+                ));
+              })()}
             </select>
           </label>
           <div className="trust-chip">

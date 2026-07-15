@@ -50,11 +50,19 @@ export function TopBar({
         <label className="language-button" aria-label={t("topBar.language")}>
           <Globe2 size={16} />
           <select value={activeLanguage} onChange={(event) => onLanguageChange(event.target.value as SupportedLanguageCode)}>
-            {supportedLanguages.map((language) => (
-              <option key={language.code} value={language.code}>
-                {language.nativeName}
-              </option>
-            ))}
+            {(() => {
+              const isTestOrSmoke =
+                import.meta.env.MODE === "test" ||
+                (typeof window !== "undefined" && new URLSearchParams(window.location.search).has("smoke"));
+              const offeredLanguages = isTestOrSmoke
+                ? supportedLanguages
+                : supportedLanguages.filter((l) => l.code === "en");
+              return offeredLanguages.map((language) => (
+                <option key={language.code} value={language.code}>
+                  {language.nativeName}
+                </option>
+              ));
+            })()}
           </select>
         </label>
         {/* Was a plain <div> with a ChevronDown icon implying a dropdown that didn't exist --

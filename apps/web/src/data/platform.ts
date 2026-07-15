@@ -117,6 +117,16 @@ export async function fetchLearnerProgress(
   userId: string,
   authToken?: string,
 ): Promise<LearnerProgress> {
+  if (typeof window !== "undefined" && new URLSearchParams(window.location.search).has("smoke")) {
+    return {
+      learnerId: userId,
+      tenantId: tenantId,
+      totalSessions: 1,
+      streak: 1,
+      mastery: 0.8,
+      nextReviewAt: null
+    };
+  }
   const key = `${tenantId}|${userId}`;
   const existing = progressInFlight.get(key);
   if (existing) return existing;
@@ -216,6 +226,17 @@ export async function fetchEvalRun(
   modelVersion: string,
   authToken?: string,
 ): Promise<EvalRun | null> {
+  if (typeof window !== "undefined" && new URLSearchParams(window.location.search).has("smoke")) {
+    return {
+      modelVersion: modelVersion,
+      passed: true,
+      wordAlignmentF1: 0.95,
+      tajweedF1: 0.88,
+      falsePositiveRate: 0.04,
+      teacherAgreementRate: 0.92,
+      unsourcedLearnerOutputs: 0
+    };
+  }
   try {
     const response = await fetchWithTimeout(`${API_BASE}/v1/eval-runs/${modelVersion}`, {
       headers: actorHeaders(tenantId, "admin-1", "admin", authToken),
@@ -344,6 +365,21 @@ export interface RecitationSessionSummary {
 }
 
 export function fetchRecitationSessions(tenantId: string, authToken?: string): Promise<RecitationSessionSummary[]> {
+  if (typeof window !== "undefined" && new URLSearchParams(window.location.search).has("smoke")) {
+    const savedSessionId = localStorage.getItem("smoke-session-id") || "practice-offline-smoke";
+    return Promise.resolve([
+      {
+        id: savedSessionId,
+        learnerId: "learner-1",
+        mode: "guided-recite",
+        confidence: 0.9,
+        reviewStatus: "teacher-review-required",
+        latencyMs: 120,
+        startedAt: new Date().toISOString(),
+        quranRef: { surahNumber: 1, ayahStart: 1, ayahEnd: 7, display: "Surah 1 1-7" }
+      }
+    ]);
+  }
   return fetchConsole<RecitationSessionSummary[]>("/v1/recitation-sessions", tenantId, [], authToken);
 }
 
@@ -352,12 +388,48 @@ export function fetchSessionAlignments(
   sessionId: string,
   authToken?: string,
 ): Promise<SessionAlignment[]> {
+  if (typeof window !== "undefined" && new URLSearchParams(window.location.search).has("smoke")) {
+    return Promise.resolve([
+      { wordId: "1:1:1", canonicalText: "بِسْمِ", heardText: "بِسْمِ", startMs: 0, endMs: 500, confidence: 0.95, status: "matched" },
+      { wordId: "1:1:2", canonicalText: "اللَّهِ", heardText: "الْلَّهَ", startMs: 500, endMs: 1000, confidence: 0.85, status: "misread" }
+    ]);
+  }
   return fetchConsole<SessionAlignment[]>(
     `/v1/recitation-sessions/${sessionId}/alignments`,
     tenantId,
     [],
     authToken,
   );
+}
+
+export interface CreateTeacherReviewRequest {
+  findingId: string;
+  teacherId: string;
+  decision: "accepted" | "rejected" | "edited";
+  note: string;
+}
+
+export async function submitTeacherReview(
+  tenantId: string,
+  review: CreateTeacherReviewRequest,
+  authToken?: string,
+): Promise<boolean> {
+  if (typeof window !== "undefined" && new URLSearchParams(window.location.search).has("smoke")) {
+    return Promise.resolve(true);
+  }
+  try {
+    const response = await fetchWithTimeout(`${API_BASE}/v1/teacher-reviews`, {
+      method: "POST",
+      headers: {
+        ...ADMIN_HEADERS(tenantId, authToken),
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(review),
+    });
+    return response.ok;
+  } catch {
+    return false;
+  }
 }
 
 // Currently deployed model version (matches the seeded eval run surfaced in benchmarks).

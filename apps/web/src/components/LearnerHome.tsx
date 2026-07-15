@@ -33,6 +33,8 @@ export interface LearnerHomeProps {
   /** A data-load error (e.g. verses/progress fetch failed) — surfaced here so a home-screen
    *  failure isn't silent; previously apiError only showed inside the practice flow. */
   apiError: string | null;
+  platformOffline?: boolean;
+  onRetry?: () => void;
 }
 
 export function LearnerHome({
@@ -47,16 +49,10 @@ export function LearnerHome({
   selectedSurah,
   onSelectSurah,
   apiError,
+  platformOffline,
+  onRetry,
 }: LearnerHomeProps) {
   const { t } = useTranslation();
-  const masteryPct = Math.round((progress?.mastery ?? 0) * 100);
-  // Labeled estimate derived from the REAL session the learner is about to start (the same
-  // practiceRange cap the practice flow uses): ~1 minute per ayah in the loop + 2 minutes for
-  // listen/review overhead. A previous version showed a frozen "8 minutes" for every surah.
-  const sessionAyahs = practiceRange(selectedSurah).ayahEnd;
-  const estimatedMinutes = sessionAyahs + 2;
-  // A brand-new learner has no sessions yet. Show an inviting first-run experience instead of a
-  // wall of 0%/0/0 metrics that reads as "you are failing" before they have even started (P2.2).
   const isNewLearner = (progress?.totalSessions ?? 0) === 0;
   const [onboardingDismissed, setOnboardingDismissed] = useState(readOnboardingDismissed);
   function dismissOnboarding() {
@@ -67,6 +63,68 @@ export function LearnerHome({
       // Non-persistent (private mode / storage disabled) — the card just reappears next load.
     }
   }
+
+  if (platformOffline) {
+    return (
+      <section className="learner-home" aria-label={t("learnerHome.ariaLabel")}>
+        <div 
+          className="offline-card" 
+          style={{ 
+            maxWidth: "600px", 
+            margin: "60px auto", 
+            padding: "40px 32px", 
+            textAlign: "center", 
+            background: "rgba(30, 41, 59, 0.4)",
+            backdropFilter: "blur(12px)",
+            borderRadius: "16px", 
+            border: "1px solid rgba(255, 255, 255, 0.08)", 
+            display: "flex", 
+            flexDirection: "column", 
+            alignItems: "center", 
+            gap: "20px",
+            boxShadow: "0 8px 32px 0 rgba(0, 0, 0, 0.3)"
+          }}
+        >
+          <div 
+            style={{ 
+              width: "64px", 
+              height: "64px", 
+              borderRadius: "50%", 
+              background: "rgba(239, 68, 68, 0.1)", 
+              display: "flex", 
+              alignItems: "center", 
+              justifyContent: "center", 
+              border: "1px solid rgba(239, 68, 68, 0.2)",
+              color: "#ef4444"
+            }}
+          >
+            <ShieldCheck size={32} />
+          </div>
+          <h2 style={{ fontSize: "1.5rem", fontWeight: 600, color: "var(--text)" }}>
+            {t("app.errors.practiceUnavailableTitle")}
+          </h2>
+          <p style={{ color: "var(--text-quiet)", lineHeight: 1.6, fontSize: "0.95rem" }}>
+            {t("app.errors.practiceUnavailableBody")}
+          </p>
+          <button 
+            className="primary-action start-practice-button" 
+            onClick={onRetry} 
+            type="button" 
+            style={{ marginTop: "12px", padding: "10px 24px", minWidth: "160px" }}
+          >
+            {t("app.errors.retryConnection")}
+          </button>
+        </div>
+      </section>
+    );
+  }
+
+  const masteryPct = Math.round((progress?.mastery ?? 0) * 100);
+  // Labeled estimate derived from the REAL session the learner is about to start (the same
+  // practiceRange cap the practice flow uses): ~1 minute per ayah in the loop + 2 minutes for
+  // listen/review overhead. A previous version showed a frozen "8 minutes" for every surah.
+  const sessionAyahs = practiceRange(selectedSurah).ayahEnd;
+  const estimatedMinutes = sessionAyahs + 2;
   const showOnboarding = isNewLearner && !onboardingDismissed;
   return (
     <section className="learner-home" aria-label={t("learnerHome.ariaLabel")}>

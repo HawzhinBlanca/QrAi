@@ -375,6 +375,9 @@
     "titleSettings": "Settings",
     "errors": {
       "platformApiUnreachable": "Could not reach the platform API. Please try again.",
+      "practiceUnavailableTitle": "Practice is temporarily unavailable",
+      "practiceUnavailableBody": "We couldn't connect to our servers to load your recitation and progress data. Please check your connection and try again.",
+      "retryConnection": "Retry Connection",
       "mlAnalysisUnavailable": "ML analysis unavailable. Make sure the platform API and ML service are running.",
       "asrConsentRequired": "Recording saved in this browser. Enable ASR processing consent to run automatic analysis.",
       "recitationSavedOffline": "Saved your recitation — you can play it back. Analysis is offline right now.",

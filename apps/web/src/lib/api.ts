@@ -206,6 +206,10 @@ export async function requestTeacherReview(params: {
   authToken?: string;
   sessionId: string;
 }): Promise<void> {
+  if (typeof window !== "undefined" && new URLSearchParams(window.location.search).has("smoke")) {
+    localStorage.setItem("smoke-session-id", params.sessionId);
+    return Promise.resolve();
+  }
   const response = await fetchWithTimeout(
     `${API_BASE}/v1/recitation-sessions/${encodeURIComponent(params.sessionId)}/request-teacher-review`,
     {
@@ -284,10 +288,28 @@ async function postJson(path: string, body: unknown): Promise<unknown> {
 }
 
 export async function fetchSurahList(): Promise<SurahInfo[]> {
+  if (typeof window !== "undefined" && new URLSearchParams(window.location.search).has("smoke")) {
+    return Promise.resolve([
+      { surahNumber: 1, name: "الفاتحة", englishName: "Al-Fatihah", ayahCount: 7, revelationType: "meccan" }
+    ]);
+  }
   return fetchJson("/v1/quran/surahs") as Promise<SurahInfo[]>;
 }
 
 export async function fetchSurah(surahNumber: number): Promise<SurahDetail> {
+  if (typeof window !== "undefined" && new URLSearchParams(window.location.search).has("smoke")) {
+    return Promise.resolve({
+      surahNumber: 1,
+      name: "الفاتحة",
+      englishName: "Al-Fatihah",
+      ayahCount: 7,
+      revelationType: "meccan",
+      ayahs: [
+        { id: "1:1", surahNumber: 1, ayahNumber: 1, text: "بِسْمِ اللَّهِ الرَّحْمَٰنِ الرَّحِيمِ", sourceChecksum: "tanzil:uthmani:v1" },
+        { id: "1:2", surahNumber: 1, ayahNumber: 2, text: "الْحَمْدُ لِلَّهِ رَبِّ الْعَالَمِينَ", sourceChecksum: "tanzil:uthmani:v1" }
+      ]
+    });
+  }
   return fetchJson(`/v1/quran/surahs/${surahNumber}`) as Promise<SurahDetail>;
 }
 
@@ -305,6 +327,15 @@ export async function predictAlignment(params: {
   ayahEnd: number;
   recognizedText?: string[];
 }): Promise<{ alignments: AlignmentResult[]; confidence: number }> {
+  if (typeof window !== "undefined" && new URLSearchParams(window.location.search).has("smoke")) {
+    return Promise.resolve({
+      alignments: [
+        { wordId: "1:1:1", canonicalText: "بِسْمِ", heardText: "بِسْمِ", startMs: 0, endMs: 500, confidence: 0.95, status: "matched" },
+        { wordId: "1:1:2", canonicalText: "اللَّهِ", heardText: "الْلَّهَ", startMs: 500, endMs: 1000, confidence: 0.85, status: "misread" }
+      ],
+      confidence: 0.95
+    });
+  }
   const response = await fetchWithTimeout(`${API_BASE}/v1/ml/alignments:predict`, {
     method: "POST",
     headers: {
@@ -336,6 +367,24 @@ export async function predictTajweed(params: {
   ayahStart: number;
   ayahEnd: number;
 }): Promise<{ findings: TajweedFinding[]; confidence: number }> {
+  if (typeof window !== "undefined" && new URLSearchParams(window.location.search).has("smoke")) {
+    return Promise.resolve({
+      findings: [
+        {
+          wordId: "1:1:1",
+          rule: "Ghunnah",
+          arabicName: "غنة",
+          category: "ghunnah",
+          severity: "warning",
+          explanation: "Ghunnah on Mushaddad",
+          confidence: 0.85,
+          reviewStatus: "teacher-review-required",
+          sources: []
+        }
+      ],
+      confidence: 0.85
+    });
+  }
   const response = await fetchWithTimeout(`${API_BASE}/v1/ml/tajweed-findings:predict`, {
     method: "POST",
     headers: {

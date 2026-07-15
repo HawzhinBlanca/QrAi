@@ -667,13 +667,13 @@ describe("Quran AI app smoke", () => {
       root.render(<App />);
     });
 
-    const teacherButton = Array.from(document.querySelectorAll<HTMLButtonElement>("button")).find(
-      (button) => button.textContent?.trim() === "Teacher",
+    const modelOpsButton = Array.from(document.querySelectorAll<HTMLButtonElement>("button")).find(
+      (button) => button.textContent?.trim() === "Model Ops",
     );
     await act(async () => {
-      teacherButton?.click();
+      modelOpsButton?.click();
     });
-    expect(document.body.textContent).toContain("Teacher Review");
+    expect(document.body.textContent).toContain("Model Ops");
     expect(document.body.textContent).not.toContain("Quran AI intelligence platform");
 
     const openCommandButton = Array.from(document.querySelectorAll<HTMLButtonElement>("button")).find((button) =>
@@ -726,7 +726,7 @@ describe("Quran AI app smoke", () => {
 
     // Clicking must navigate OUT of Internal Command into the Teacher placeholder — not just
     // relabel which button in the still-visible console carries the "active" class.
-    expect(document.body.textContent).toContain("Teacher Review");
+    expect(document.body.textContent).toContain("Teacher Queue");
     expect(document.body.textContent).not.toContain("Quran AI intelligence platform");
   });
 
@@ -742,7 +742,7 @@ describe("Quran AI app smoke", () => {
 
     const select = document.querySelector<HTMLSelectElement>(".language-button select");
     expect(select, "TopBar must render a real, functional language <select>").toBeTruthy();
-    expect(select!.value).toBe("ckb");
+    expect(select!.value).toBe("en");
 
     const nativeValueSetter = Object.getOwnPropertyDescriptor(window.HTMLSelectElement.prototype, "value")!.set!;
     await act(async () => {

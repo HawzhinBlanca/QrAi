@@ -2588,9 +2588,8 @@ button:disabled {
 
   .sidebar {
     position: fixed;
-    right: 0;
+    inset-inline: 0;
     bottom: 0;
-    left: 0;
     z-index: 20;
     flex-direction: column;
     align-items: center;

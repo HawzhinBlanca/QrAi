@@ -70,12 +70,31 @@ if [[ "$FAST" != "--fast" ]]; then
   run "test: rust gateway"        "cargo test --manifest-path $GW"
   run "test: rust platform-api"   "cargo test --manifest-path $API"
 
-  # DB-gated integration tests — only when a live Postgres answers. Skipped, not faked.
-  if command -v pg_isready >/dev/null 2>&1 && pg_isready -d "$DATABASE_URL" >/dev/null 2>&1; then
+  # DB-gated integration tests — only when a live Postgres answers and allows authentication. Skipped, not faked.
+  can_auth="no"
+  if command -v psql >/dev/null 2>&1; then
+    PGCONNECT_TIMEOUT=2 psql "$DATABASE_URL" -c "SELECT 1" >/dev/null 2>&1 &
+    PSQL_PID=$!
+    count=0
+    while kill -0 $PSQL_PID 2>/dev/null && [ $count -lt 20 ]; do
+      sleep 0.1
+      count=$((count + 1))
+    done
+    if kill -0 $PSQL_PID 2>/dev/null; then
+      kill -9 $PSQL_PID 2>/dev/null
+      wait $PSQL_PID 2>/dev/null || true
+    else
+      if wait $PSQL_PID 2>/dev/null; then
+        can_auth="yes"
+      fi
+    fi
+  fi
+
+  if [[ "$can_auth" == "yes" ]]; then
     run "test: platform-api integration (live Postgres)" "cargo test --manifest-path $API -- --include-ignored"
   else
     say "test: platform-api integration"
-    echo "    • SKIP — no live Postgres at \$DATABASE_URL."
+    echo "    • SKIP — no live Postgres or authentication failed at \$DATABASE_URL."
     echo "      Run \`docker compose up -d postgres\` (or set DATABASE_URL) to include them."
   fi
 
