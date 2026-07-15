@@ -5,6 +5,22 @@ Tarteel head-on in consumer hifz. It wins two empty categories: **(1) the Quran-
 for Kurdish speakers** and **(2) the AI-feedback + teacher-in-the-loop madrasa platform**. Every
 task below serves one of those, or removes a platform blocker the audit found.
 
+## Progress (updated 2026-07-15)
+
+| Task | Status | Ref |
+|------|--------|-----|
+| T1 — QUL/Quran.com word-timing ingest | ✅ **DONE** | #202 |
+| T2 — real-time follow-along word highlight (the Tarteel-signature feature) | ✅ **DONE** | #203 |
+| T4 — Sorani (Kurdish) ayah translations | ✅ **DONE** | #204 |
+| T10 — server-authoritative consent on the ML proxy | ✅ **DONE** | #205 |
+| T3, T6, T7, T8 | ⏸ code-doable but heavy-ML (model downloads / GPU) — confirm infra before starting | — |
+| T12, T13, T15, T16, T18 | ⏳ straightforward-code, not started | — |
+| T0, T5, T7/T8 licenses, T11, on-device tests, scholar | 🔒 owner/human-gated | — |
+
+The two features that DEFINE the #1 strategy (follow-along word highlight + Kurdish translations) are
+live and merged. Each shipped change was verified live, uses only licensed/measured data (no
+fabrication), and every external source has a `docs/DATA_LICENSES.md` entry + ADR (0015, 0016).
+
 ## How to execute a task (rules for any agent picking one up)
 
 1. **Ground first.** Read every file the task names before editing. If the code no longer matches
