@@ -5,7 +5,7 @@ Tarteel head-on in consumer hifz. It wins two empty categories: **(1) the Quran-
 for Kurdish speakers** and **(2) the AI-feedback + teacher-in-the-loop madrasa platform**. Every
 task below serves one of those, or removes a platform blocker the audit found.
 
-## Progress (updated 2026-07-15)
+## Progress (updated 2026-07-16)
 
 | Task | Status | Ref |
 |------|--------|-----|
@@ -13,9 +13,21 @@ task below serves one of those, or removes a platform blocker the audit found.
 | T2 — real-time follow-along word highlight (the Tarteel-signature feature) | ✅ **DONE** | #203 |
 | T4 — Sorani (Kurdish) ayah translations | ✅ **DONE** | #204 |
 | T10 — server-authoritative consent on the ML proxy | ✅ **DONE** | #205 |
-| T3, T6, T7, T8 | ⏸ code-doable but heavy-ML (model downloads / GPU) — confirm infra before starting | — |
-| T12, T13, T15, T16, T18 | ⏳ straightforward-code, not started | — |
+| T15 (core) — Prometheus `/metrics` on platform-api, access-controlled | ✅ **DONE** | #208 |
+| — data expansion: both features now cover all 39 beginner-core surahs (1, 2, Juz Amma 78–114) | ✅ **DONE** | #207 |
+| **T3 — forced alignment (learner word timestamps)** | 🟢 **PROVEN FEASIBLE** — `services/asr-inference/.venv` has torch 2.12 + torchaudio 2.11; `torchaudio.functional.forced_align` + `MMS_FA` run end-to-end here (model cached). Ready to build (see note). | — |
+| T6, T7, T8 | ⏳ ML, feasible in the same venv; T7/T8 gated on dataset licenses | — |
+| T12, T13, T16, T18, T15-rest | ⏳ straightforward-code, not started | — |
 | T0, T5, T7/T8 licenses, T11, on-device tests, scholar | 🔒 owner/human-gated | — |
+
+**T3 build note (de-risked 2026-07-16):** forced alignment runs in the service venv. For the
+production path use an **Apache-2.0 Arabic CTC** model (`jonatasgrosman/wav2vec2-large-xlsr-53-arabic`)
+with `torchaudio.functional.forced_align` — aligning against the Arabic character sequence avoids
+MMS_FA's uroman romanization step AND its CC-BY-NC license. Real audio fixtures already exist (the
+T1 Al-Afasy per-ayah mp3s + their canonical text). Remaining work is a multi-service integration
+(asr-inference `/v1/force-align` real impl → ml-inference threads timing → Rust persists non-zero
+`start_ms/end_ms` → web sends audio) + an eval on the fixtures — a focused effort, no longer an
+infra gamble. Run with `KMP_DUPLICATE_LIB_OK=TRUE` (a libomp double-init workaround in this env).
 
 The two features that DEFINE the #1 strategy (follow-along word highlight + Kurdish translations) are
 live and merged. Each shipped change was verified live, uses only licensed/measured data (no
