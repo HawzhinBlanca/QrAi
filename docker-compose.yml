@@ -36,6 +36,8 @@ services:
       - ./infra/sql/0015_teacher_review_scholar_approval_indexes.sql:/docker-entrypoint-initdb.d/15_teacher_review_scholar_approval_indexes.sql:ro
       - ./infra/sql/0016_missing_tenant_indexes.sql:/docker-entrypoint-initdb.d/16_missing_tenant_indexes.sql:ro
       - ./infra/sql/0017_eval_runs_index.sql:/docker-entrypoint-initdb.d/17_eval_runs_index.sql:ro
+      - ./infra/sql/rls-app-role.sql:/tmp/rls-app-role.sql:ro
+      - ./infra/sql/99_init_app_role.sh:/docker-entrypoint-initdb.d/99_init_app_role.sh:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U hawzhin -d quran_ai"]
       interval: 5s
@@ -49,7 +51,7 @@ services:
       context: .
       dockerfile: services/platform-api/Dockerfile
     environment:
-      DATABASE_URL: "postgresql://hawzhin:${POSTGRES_PASSWORD}@postgres:5432/quran_ai"
+      DATABASE_URL: "postgresql://quran_ai_app:${POSTGRES_PASSWORD}@postgres:5432/quran_ai"
       JWT_SECRET: "${JWT_SECRET:?JWT_SECRET is required in production}"
       REALTIME_GATEWAY_TICKET_SECRET: "${REALTIME_GATEWAY_TICKET_SECRET:?REALTIME_GATEWAY_TICKET_SECRET is required in production}"
       PLATFORM_API_BIND: "0.0.0.0:8080"
@@ -108,6 +110,7 @@ services:
       context: .
       dockerfile: services/ml-inference/Dockerfile
     environment:
+      ML_INFERENCE_HOST: "0.0.0.0"
       ML_INFERENCE_PORT: "8090"
       ASR_SERVICE_URL: "http://asr-inference:8091"
       ASR_API_KEY: "${ASR_API_KEY:?ASR_API_KEY is required}"
@@ -135,6 +138,7 @@ services:
       context: .
       dockerfile: services/asr-inference/Dockerfile
     environment:
+      ASR_HOST: "0.0.0.0"
       ASR_PORT: "8091"
       # NOTE: this pins the service to generic openai-whisper "base", NOT the specialized
       # Quran-fine-tuned model (tarteel-ai/whisper-base-ar-quran) that server.py defaults to and

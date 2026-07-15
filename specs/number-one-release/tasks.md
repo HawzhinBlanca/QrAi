@@ -17,7 +17,7 @@
 - [x] T2.1 Run every ignored platform-api integration test against real Postgres.
 - [x] T2.2 Add adversarial two-tenant RLS coverage for every table and object key.
 - [x] T2.3 Validate auth/session/realtime boundaries.
-- [ ] T2.4 Prove consent, retention, export, and deletion.
+- [x] T2.4 Prove consent, retention, export, and deletion.
 - [ ] T2.5 Commission independent security review.
 
 ## Phase 3 — Make the core journey boringly reliable
