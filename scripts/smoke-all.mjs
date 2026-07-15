@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { mkdir, writeFile } from "node:fs/promises";
+import { mkdir, writeFile, readFile } from "node:fs/promises";
 import { createServer } from "node:net";
 import { join } from "node:path";
 
@@ -18,7 +18,7 @@ try {
   // Clean and re-seed the database between integration tests (which commit invalid/violating rows)
   // and the smoke tests.
   console.log("Cleaning and re-seeding database before smoke tests...");
-  async function runDbCommand(...args) {
+  async function runDbCommand(args, stdinContent) {
     let cmd = "psql";
     let finalArgs = [...args];
     if (process.env.PSQL) {
@@ -27,7 +27,11 @@ try {
       finalArgs = [...parts.slice(1), ...args];
     }
     return new Promise((resolve, reject) => {
-      const child = spawn(cmd, finalArgs, { stdio: "inherit" });
+      const child = spawn(cmd, finalArgs, {
+        cwd: process.cwd(),
+        env: process.env,
+        stdio: [stdinContent ? "pipe" : "inherit", "inherit", "inherit"]
+      });
       child.on("error", reject);
       child.on("close", (code) => {
         if (code !== 0) {
@@ -36,14 +40,18 @@ try {
           resolve();
         }
       });
+      if (stdinContent) {
+        child.stdin.write(stdinContent);
+        child.stdin.end();
+      }
     });
   }
 
-  await runDbCommand(
+  await runDbCommand([
     "-U", "hawzhin",
     "-d", "quran_ai",
     "-c", "TRUNCATE recitation_sessions, users, institutions, audit_events, consent_records, realtime_session_tickets, audio_chunks, word_alignments, alignment_runs, tajweed_findings, teacher_reviews, scholar_approvals, agent_runs, eval_runs, privacy_jobs CASCADE;"
-  );
+  ]);
 
   await new Promise((resolve, reject) => {
     const child = spawn("bash", ["packages/quran-data/scripts/seed-full-quran-to-db.sh"], {
@@ -64,11 +72,11 @@ try {
     });
   });
 
-  await runDbCommand(
+  const internalSeedSql = await readFile("infra/sql/0006_seed_internal.sql", "utf8");
+  await runDbCommand([
     "-U", "hawzhin",
-    "-d", "quran_ai",
-    "-f", "infra/sql/0006_seed_internal.sql"
-  );
+    "-d", "quran_ai"
+  ], internalSeedSql);
 
   await runStep("smoke:sql", ["pnpm", "smoke:sql"]);
   await runStep("smoke:browser", ["pnpm", "smoke:browser"], { SMOKE_ARTIFACT_DIR: artifactRoot });
