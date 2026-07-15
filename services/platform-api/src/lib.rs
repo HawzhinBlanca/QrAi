@@ -10,9 +10,11 @@ use tower_http::trace::TraceLayer;
 
 pub mod auth;
 pub mod handlers;
+pub mod metrics;
 pub mod types;
 
 use auth::JwtConfig;
+use metrics::Metrics;
 
 pub const REALTIME_TICKET_TTL_SECONDS: u64 = 300;
 
@@ -31,6 +33,12 @@ pub struct AppState {
     pub ml_api_key: String,
     pub asr_inference_url: String,
     pub asr_api_key: String,
+    /// Request metrics (counts + latency histogram), rendered as Prometheus text at `/metrics`.
+    pub metrics: Arc<Metrics>,
+    /// When set, `/metrics` requires `x-metrics-token` to match this value. Read once at startup.
+    pub metrics_token: Option<String>,
+    /// When true (dev only), `/metrics` is served without a token. Read once at startup.
+    pub metrics_dev_open: bool,
 }
 
 fn env_or(key: &str, default: &str) -> String {
@@ -67,7 +75,21 @@ impl AppState {
             ml_api_key: env_or("ML_API_KEY", "smoke-ml-api-key"),
             asr_inference_url: env_or("ASR_INFERENCE_URL", "http://127.0.0.1:8091"),
             asr_api_key: env_or("ASR_API_KEY", "smoke-asr-api-key"),
+            metrics: Arc::new(Metrics::new()),
+            metrics_token: std::env::var("METRICS_TOKEN")
+                .ok()
+                .filter(|s| !s.is_empty()),
+            metrics_dev_open: std::env::var("ALLOW_INSECURE_DEFAULTS")
+                .map(|v| v == "1")
+                .unwrap_or(false),
         }
+    }
+
+    /// Override `/metrics` access for tests (avoids process-env races in the parallel test suite).
+    pub fn with_metrics_access(mut self, token: Option<&str>, dev_open: bool) -> Self {
+        self.metrics_token = token.map(str::to_owned);
+        self.metrics_dev_open = dev_open;
+        self
     }
 
     /// Point the ML inference endpoint at a specific URL (tests use a mock server so the audio
@@ -113,6 +135,7 @@ pub fn platform_router_with_rate_limit(state: AppState, rate_limit: bool) -> Rou
     let base_router = Router::new()
         .route("/health", axum::routing::get(health))
         .route("/ready", axum::routing::get(ready))
+        .route("/metrics", axum::routing::get(metrics_endpoint))
         .route(
             "/v1/auth/token",
             axum::routing::post(handlers::auth::issue_token),
@@ -227,6 +250,12 @@ pub fn platform_router_with_rate_limit(state: AppState, rate_limit: bool) -> Rou
             axum::routing::post(handlers::ml_proxy::proxy_asr_transcribe)
                 .layer(DefaultBodyLimit::max(16 * 1024 * 1024)),
         )
+        // Record request counts + latency for every route (matched-path labels keep cardinality
+        // bounded). Applied inside TraceLayer so it wraps the actual handlers.
+        .layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            track_metrics,
+        ))
         .layer(TraceLayer::new_for_http())
         .with_state(state);
 
@@ -291,6 +320,62 @@ async fn ready(axum::extract::State(state): axum::extract::State<AppState>) -> i
     match sqlx::query("SELECT 1").execute(&state.pool).await {
         Ok(_) => (axum::http::StatusCode::OK, "ready"),
         Err(_) => (axum::http::StatusCode::SERVICE_UNAVAILABLE, "not ready"),
+    }
+}
+
+/// Records request count + latency for every routed request (matched-path label keeps cardinality
+/// bounded — `/v1/…/{id}/…` collapses to one series regardless of the id).
+async fn track_metrics(
+    axum::extract::State(state): axum::extract::State<AppState>,
+    request: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> axum::response::Response {
+    let method = request.method().as_str().to_owned();
+    let path = request
+        .extensions()
+        .get::<axum::extract::MatchedPath>()
+        .map(|m| m.as_str().to_owned())
+        .unwrap_or_else(|| "<unmatched>".to_owned());
+    let start = std::time::Instant::now();
+    let response = next.run(request).await;
+    let latency_ms = start.elapsed().as_millis() as u64;
+    state
+        .metrics
+        .record(&method, &path, response.status().as_u16(), latency_ms);
+    response
+}
+
+/// Prometheus scrape endpoint. Access is fail-closed in production: it serves metrics only when the
+/// request presents `x-metrics-token` matching the `METRICS_TOKEN` env var. In dev
+/// (`ALLOW_INSECURE_DEFAULTS=1`) with no token configured it is open. Otherwise it 404s — hiding the
+/// endpoint's existence — so metrics are never public by default (the audit flagged the gateway's
+/// /metrics as publicly exposed; this API must not repeat that).
+async fn metrics_endpoint(
+    axum::extract::State(state): axum::extract::State<AppState>,
+    headers: axum::http::HeaderMap,
+) -> axum::response::Response {
+    if !metrics_access_allowed(&state, &headers) {
+        return axum::http::StatusCode::NOT_FOUND.into_response();
+    }
+    (
+        [(
+            axum::http::header::CONTENT_TYPE,
+            "text/plain; version=0.0.4; charset=utf-8",
+        )],
+        state.metrics.render(),
+    )
+        .into_response()
+}
+
+fn metrics_access_allowed(state: &AppState, headers: &axum::http::HeaderMap) -> bool {
+    match &state.metrics_token {
+        Some(token) => headers
+            .get("x-metrics-token")
+            .and_then(|v| v.to_str().ok())
+            .map(|v| v == token)
+            .unwrap_or(false),
+        // No token configured: allow only in explicit dev mode, otherwise fail closed.
+        None => state.metrics_dev_open,
     }
 }
 
