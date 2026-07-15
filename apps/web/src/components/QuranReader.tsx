@@ -9,6 +9,11 @@ interface QuranReaderProps {
   onSelectWord: (wordId: string) => void;
   /** Local ayah (verseNumber) currently playing in the Listen step, or null. */
   playingVerseNumber?: number | null;
+  /** Canonical id (`surah:ayah:index`) of the word currently being recited in the reference audio,
+   *  for word-level follow-along. null when no timing data exists (verse-level highlight only). */
+  recitingWordId?: string | null;
+  /** Reciter/source attribution shown when the matched reference audio is in use (licensing). */
+  recitationAttribution?: string | null;
   /** True while the surah's verses are being (re)fetched — marks the reader aria-busy and dims it
    *  so a slow/switched surah reads as loading, not frozen (P2.9). */
   isLoading?: boolean;
@@ -21,7 +26,7 @@ const statusLabelKeys = {
   missed: "quranReader.statusMissed",
 };
 
-export function QuranReader({ activeWordId, onSelectWord, selectedWordId, verses, playingVerseNumber = null, isLoading = false }: QuranReaderProps) {
+export function QuranReader({ activeWordId, onSelectWord, selectedWordId, verses, playingVerseNumber = null, recitingWordId = null, recitationAttribution = null, isLoading = false }: QuranReaderProps) {
   const { t } = useTranslation();
   const frameRef = useRef<HTMLDivElement | null>(null);
 
@@ -54,9 +59,11 @@ export function QuranReader({ activeWordId, onSelectWord, selectedWordId, verses
                     `status-${word.status}`,
                     activeWordId === word.id ? "is-active" : "",
                     selectedWordId === word.id ? "is-selected" : "",
+                    recitingWordId === word.id ? "is-reciting" : "",
                   ]
                     .filter(Boolean)
                     .join(" ")}
+                  data-reciting={recitingWordId === word.id ? "true" : undefined}
                   key={word.id}
                   onClick={() => onSelectWord(word.id)}
                   type="button"
@@ -75,6 +82,10 @@ export function QuranReader({ activeWordId, onSelectWord, selectedWordId, verses
         <span><i className="dot mistake" /> {t("quranReader.statusMistake")}</span>
         <span><i className="dot missed" /> {t("quranReader.statusMissed")}</span>
       </div>
+
+      {recitationAttribution && (
+        <p className="reader-attribution">{recitationAttribution}</p>
+      )}
     </section>
   );
 }

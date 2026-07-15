@@ -21,6 +21,8 @@ import { startAsr, splitTranscript, isAsrSupported, type AsrController } from ".
 import { startLocalAudioRecording, startServerAsr, isServerAsrSupported, type ServerAsrController } from "./lib/serverAsr";
 import { canRecordRecitation, canUseExternalSpeechFallback } from "./lib/consent";
 import { startMicVisualizer, type MicVisualizerStop } from "./lib/micVisualizer";
+import { getSurahTimings, getAyahTimings, ayahAudioUrl, recitingWordIdAt } from "./lib/wordTimings";
+import type { SurahTimings } from "@quran-ai/quran-data";
 import {
   predictAlignment,
   predictTajweed,
@@ -211,6 +213,16 @@ function AuthenticatedApp({ bypassLogin = false }: { bypassLogin?: boolean }) {
   // Local ayah number of the reference recitation currently playing (or paused), so the reader can
   // highlight and scroll to the verse the learner is hearing — audio-text sync for the Listen step.
   const [playingAyah, setPlayingAyah] = useState<number | null>(null);
+  // Word-level follow-along (T2): the canonical word id (`surah:ayah:index`) currently being recited
+  // in the reference audio, or null. Driven by the matched word timings; null for surahs with no
+  // timing data (graceful verse-level fallback). Held in a ref too so the audio `timeupdate` handler
+  // reads the latest timings without being re-bound every render.
+  const [recitingWordId, setRecitingWordId] = useState<string | null>(null);
+  const surahTimingsRef = useRef<SurahTimings | null>(null);
+  // Reciter/source attribution shown whenever the matched (Quran.com) reference audio is in use —
+  // a licensing requirement (see docs/DATA_LICENSES.md#quran-com-word-segments-audio). null when the
+  // surah has no timing data and the fallback CDN audio is used.
+  const [recitationAttribution, setRecitationAttribution] = useState<string | null>(null);
   // The learner's own recorded recitation, kept for playback.
   const [recordedAudioUrl, setRecordedAudioUrl] = useState<string>("");
   const recordingAudioRef = useRef<HTMLAudioElement | null>(null);
@@ -342,6 +354,25 @@ function AuthenticatedApp({ bypassLogin = false }: { bypassLogin?: boolean }) {
   // (Re)load the reader verses whenever the selected surah changes (and on first mount).
   useEffect(() => {
     void refreshQuranVerses(selectedSurah.surahNumber);
+  }, [selectedSurah.surahNumber]);
+
+  // Load word-level timings for the selected surah so the Listen step can follow along word-by-word.
+  // Stored in a ref (read by the audio timeupdate handler); the stale-surah guard prevents a slow
+  // load for a previous surah from winning after the learner has switched.
+  useEffect(() => {
+    let current = true;
+    surahTimingsRef.current = null;
+    setRecitationAttribution(null);
+    void getSurahTimings(selectedSurah.surahNumber).then((tm) => {
+      if (!current) return;
+      surahTimingsRef.current = tm;
+      setRecitationAttribution(
+        tm ? `Recitation: ${tm.reciterName}. Audio & word timings via Quran.com (Quran Foundation).` : null,
+      );
+    });
+    return () => {
+      current = false;
+    };
   }, [selectedSurah.surahNumber]);
 
   useEffect(() => {
@@ -823,6 +854,7 @@ function AuthenticatedApp({ bypassLogin = false }: { bypassLogin?: boolean }) {
     }
     setIsPlaying(false);
     setPlayingAyah(null);
+    setRecitingWordId(null);
   }
 
   // "Listen": play the selected surah's practice passage sequentially from the Al Quran
@@ -858,10 +890,28 @@ function AuthenticatedApp({ bypassLogin = false }: { bypassLogin?: boolean }) {
         stopPlayback();
         return;
       }
-      setPlayingAyah(ayah - offset); // local ayah number for the reader highlight
-      const audio = new Audio(`https://cdn.islamic.network/quran/audio/128/ar.alafasy/${ayah}.mp3`);
+      const localAyah = ayah - offset;
+      setPlayingAyah(localAyah); // local ayah number for the reader highlight
+      setRecitingWordId(null);
+
+      // Prefer the reciter master that our word timings were measured against (Quran.com), so the
+      // word-level follow-along is accurate. Falls back to the per-ayah islamic.network CDN (global
+      // numbering) when this surah has no timing data — verse-level highlight only, no drift risk.
+      const timings = surahTimingsRef.current;
+      const ayahTimings = getAyahTimings(timings, localAyah);
+      const matchedUrl = ayahAudioUrl(timings, ayahTimings);
+      const audio = new Audio(
+        matchedUrl ?? `https://cdn.islamic.network/quran/audio/128/ar.alafasy/${ayah}.mp3`,
+      );
       audioRef.current = audio;
       audio.onended = () => playAyah(ayah + 1);
+      // Follow-along: advance the highlighted word as playback crosses each word's segment. Only
+      // wired when this ayah has timings; `timeupdate` fires ~4x/s, which reads smooth for recitation.
+      if (ayahTimings) {
+        audio.ontimeupdate = () => {
+          setRecitingWordId(recitingWordIdAt(ayahTimings, audio.currentTime * 1000));
+        };
+      }
       audio.onerror = () => {
         setApiError(t("app.errors.recitationAudioLoadFailed"));
         stopPlayback();
@@ -968,6 +1018,8 @@ function AuthenticatedApp({ bypassLogin = false }: { bypassLogin?: boolean }) {
                 surahTitle={surahLabel(selectedSurah)}
                 quranVerses={quranVerses}
                 playingAyah={playingAyah}
+                recitingWordId={recitingWordId}
+                recitationAttribution={recitationAttribution}
                 isLoadingVerses={isLoadingVerses}
                 recitationEvents={recitationEvents}
                 alignmentResults={alignmentResults}
