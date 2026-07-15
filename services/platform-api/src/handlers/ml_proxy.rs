@@ -1,6 +1,7 @@
 use axum::Json;
 use axum::extract::State;
 use axum::http::HeaderMap;
+use sqlx::Row;
 
 use crate::AppState;
 use crate::auth::actor_from_headers;
@@ -47,6 +48,47 @@ async fn proxy_ml(
         "tenantId".to_owned(),
         serde_json::Value::String(actor.tenant_id.clone()),
     );
+
+    // Server-authoritative CONSENT. The ML service (services/ml-inference) decides external-ASR and
+    // child-safety gating from the request body's `consent` object — so a client that re-supplies
+    // `consent: { guardianApproved: true, externalAsrProcessing: true }` on an analysis request could
+    // claim approval it never gave. The only trustworthy consent is the record captured when the
+    // session was created. For any session-scoped request, load that record (within the actor's
+    // tenant, so RLS also isolates it) and OVERWRITE the forwarded consent with the stored values. A
+    // sessionId that resolves to no session in the actor's tenant is refused — you cannot run analysis
+    // against a session that isn't yours or doesn't exist.
+    if let Some(session_id) = obj
+        .get("sessionId")
+        .and_then(|v| v.as_str())
+        .map(str::to_owned)
+    {
+        let mut tx = crate::begin_tenant_tx(&state.pool, &actor.tenant_id).await?;
+        let row = sqlx::query(
+            "SELECT c.guardian_approved, c.external_asr_processing, c.audio_retention
+             FROM recitation_sessions s
+             JOIN consent_records c ON c.id = s.consent_record_id
+             WHERE s.id = $1 AND s.tenant_id = $2",
+        )
+        .bind(&session_id)
+        .bind(&actor.tenant_id)
+        .fetch_optional(&mut *tx)
+        .await?;
+        tx.commit().await?;
+
+        let row = row.ok_or(ApiError::Forbidden)?;
+        let guardian_approved: bool = row.try_get("guardian_approved")?;
+        let external_asr_processing: bool = row.try_get("external_asr_processing")?;
+        let audio_retention: String = row.try_get("audio_retention")?;
+
+        obj.insert(
+            "consent".to_owned(),
+            serde_json::json!({
+                "guardianApproved": guardian_approved,
+                "externalAsrProcessing": external_asr_processing,
+                "audioRetention": audio_retention,
+            }),
+        );
+    }
 
     let response = state
         .http_client
