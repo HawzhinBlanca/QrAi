@@ -2904,3 +2904,92 @@ async fn test_platform_api_cors_origin_validation() {
         std::env::remove_var("CORS_ALLOWED_ORIGINS");
     }
 }
+
+// --- /metrics endpoint (T15 observability) ---
+
+#[tokio::test]
+async fn metrics_endpoint_serves_prometheus_and_counts_requests() {
+    // Dev-open (no token). No DB needed: /health and /metrics never touch the pool.
+    let state = test_state().with_metrics_access(None, true);
+    let router = platform_router_with_rate_limit(state, false);
+
+    // Generate some traffic so there is something to report.
+    for _ in 0..3 {
+        let r = send_json(&router, Method::GET, "/health", None, None, Value::Null).await;
+        assert_eq!(r.status(), StatusCode::OK);
+    }
+
+    let response = send_json(&router, Method::GET, "/metrics", None, None, Value::Null).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = String::from_utf8(
+        axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap()
+            .to_vec(),
+    )
+    .unwrap();
+    assert!(
+        body.contains("http_requests_total{method=\"GET\",path=\"/health\",status=\"200\"} 3"),
+        "expected 3 counted /health hits, got:\n{body}"
+    );
+    assert!(body.contains("http_request_duration_ms_count"));
+    assert!(body.contains("http_request_duration_ms_bucket{le=\"+Inf\"}"));
+}
+
+#[tokio::test]
+async fn metrics_endpoint_requires_a_token_when_one_is_configured() {
+    let state = test_state().with_metrics_access(Some("scrape-secret"), false);
+    let router = platform_router_with_rate_limit(state, false);
+
+    // No token -> 404 (hides existence).
+    let no_token = send_json(&router, Method::GET, "/metrics", None, None, Value::Null).await;
+    assert_eq!(no_token.status(), StatusCode::NOT_FOUND);
+
+    // Wrong token -> 404.
+    let wrong = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::GET)
+                .uri("/metrics")
+                .header("x-metrics-token", "nope")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(wrong.status(), StatusCode::NOT_FOUND);
+
+    // Correct token -> 200 with Prometheus content type.
+    let ok = router
+        .oneshot(
+            Request::builder()
+                .method(Method::GET)
+                .uri("/metrics")
+                .header("x-metrics-token", "scrape-secret")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(ok.status(), StatusCode::OK);
+    let ct = ok
+        .headers()
+        .get(axum::http::header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or_default()
+        .to_owned();
+    assert!(ct.starts_with("text/plain"), "content type was {ct}");
+}
+
+#[tokio::test]
+async fn metrics_endpoint_is_closed_by_default_without_dev_flag_or_token() {
+    let state = test_state().with_metrics_access(None, false);
+    let router = platform_router_with_rate_limit(state, false);
+    let response = send_json(&router, Method::GET, "/metrics", None, None, Value::Null).await;
+    assert_eq!(
+        response.status(),
+        StatusCode::NOT_FOUND,
+        "metrics must be fail-closed when neither a token nor dev mode is set"
+    );
+}
