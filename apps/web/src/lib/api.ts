@@ -230,6 +230,12 @@ export async function requestTeacherReview(params: {
  * in the Command console (which reads real alignment, not just seeded demo rows). Synthetic
  * "extra" words are dropped server-side. Best-effort: callers fire-and-forget.
  */
+/** Per-word start/end (ms) from forced alignment, keyed by canonical wordId. */
+export interface WordTimingMs {
+  startMs: number;
+  endMs: number;
+}
+
 export async function persistSessionAlignments(params: {
   tenantId: string;
   userId: string;
@@ -237,6 +243,8 @@ export async function persistSessionAlignments(params: {
   sessionId: string;
   alignments: AlignmentResult[];
   modelVersion?: string;
+  /** Real per-word timings from forced alignment (T3); a word absent here persists 0/0 as before. */
+  timingsByWordId?: Map<string, WordTimingMs>;
 }): Promise<{ persisted: number; skippedInvalidStatus: number; skippedUnknownWord: number }> {
   const response = await fetchWithTimeout(
     `${API_BASE}/v1/recitation-sessions/${encodeURIComponent(params.sessionId)}/alignments`,
@@ -248,14 +256,17 @@ export async function persistSessionAlignments(params: {
       },
       body: JSON.stringify({
         modelVersion: params.modelVersion ?? "model-v0.3",
-        alignments: params.alignments.map((a) => ({
-          wordId: a.wordId,
-          heardText: a.heardText ?? "",
-          startMs: 0,
-          endMs: 0,
-          confidence: a.confidence,
-          status: a.status,
-        })),
+        alignments: params.alignments.map((a) => {
+          const t = params.timingsByWordId?.get(a.wordId);
+          return {
+            wordId: a.wordId,
+            heardText: a.heardText ?? "",
+            startMs: t?.startMs ?? 0,
+            endMs: t?.endMs ?? 0,
+            confidence: a.confidence,
+            status: a.status,
+          };
+        }),
       }),
     },
   );
@@ -265,6 +276,43 @@ export async function persistSessionAlignments(params: {
     skippedInvalidStatus: number;
     skippedUnknownWord: number;
   }>;
+}
+
+export interface ForceAlignWord {
+  word: string;
+  start: number; // seconds
+  end: number; // seconds
+  score: number;
+}
+
+/**
+ * Forced alignment (T3): send the recitation audio + the canonical `transcript` (words in wordId
+ * order) to the platform API's ASR force-align proxy; get back one {start,end} per transcript word,
+ * in order. Best-effort — callers treat a failure/absence as "no timings" and persist 0/0 as before.
+ */
+export async function forceAlign(params: {
+  tenantId: string;
+  userId: string;
+  authToken?: string;
+  audioBase64: string;
+  audioFormat: string;
+  transcript: string;
+}): Promise<ForceAlignWord[]> {
+  const response = await fetchWithTimeout(`${API_BASE}/v1/asr/force-align`, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      ...actorHeaders(params.tenantId, params.userId, "learner", params.authToken),
+    },
+    body: JSON.stringify({
+      audioBase64: params.audioBase64,
+      audioFormat: params.audioFormat,
+      transcript: params.transcript,
+    }),
+  });
+  if (!response.ok) throw new Error(`Force align ${response.status}`);
+  const data = (await response.json()) as { words?: ForceAlignWord[] };
+  return data.words ?? [];
 }
 
 async function fetchJson(path: string): Promise<unknown> {
