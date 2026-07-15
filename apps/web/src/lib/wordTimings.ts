@@ -5,33 +5,14 @@
 // simply never highlights a word (graceful verse-level fallback in the reader).
 
 import type { SurahTimings, AyahTimings, WordTiming } from "@quran-ai/quran-data";
+import { lazySurahLoader } from "./lazySurahLoader";
 
 // Vite resolves this glob at build time into one lazy chunk per surah JSON.
-const timingModules = import.meta.glob<{ default: SurahTimings }>(
-  "../../../../packages/quran-data/src/data/word-timings/alafasy/surah-*.json",
+export const getSurahTimings = lazySurahLoader<SurahTimings>(
+  import.meta.glob<{ default: SurahTimings }>(
+    "../../../../packages/quran-data/src/data/word-timings/alafasy/surah-*.json",
+  ),
 );
-
-// filename -> loader, keyed by surah number.
-const loaderBySurah = new Map<number, () => Promise<{ default: SurahTimings }>>();
-for (const [path, loader] of Object.entries(timingModules)) {
-  const m = path.match(/surah-(\d{3})\.json$/);
-  if (m) loaderBySurah.set(Number(m[1]), loader);
-}
-
-const cache = new Map<number, SurahTimings | null>();
-
-/** Load timings for a surah, or null when none were ingested for it. Cached after first load. */
-export async function getSurahTimings(surahNumber: number): Promise<SurahTimings | null> {
-  if (cache.has(surahNumber)) return cache.get(surahNumber) ?? null;
-  const loader = loaderBySurah.get(surahNumber);
-  if (!loader) {
-    cache.set(surahNumber, null);
-    return null;
-  }
-  const mod = await loader();
-  cache.set(surahNumber, mod.default);
-  return mod.default;
-}
 
 export function getAyahTimings(timings: SurahTimings | null, localAyahNumber: number): AyahTimings | null {
   if (!timings) return null;

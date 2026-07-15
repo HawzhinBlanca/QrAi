@@ -8,12 +8,11 @@
  * docs/DATA_LICENSES.md#quran-com-word-segments-audio for licensing/attribution.
  */
 
-import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { loadSurahJson } from "./load-surah-json";
 
-const __dirname = dirname(fileURLToPath(import.meta.url));
-const TIMINGS_DIR = join(__dirname, "data", "word-timings");
+const TIMINGS_DIR = join(dirname(fileURLToPath(import.meta.url)), "data", "word-timings");
 
 export interface WordTiming {
   /** Canonical word id, `surah:ayah:index` (1-based index into the full canonical word list). */
@@ -47,26 +46,10 @@ export interface SurahTimings {
   excludedAyahs: ExcludedAyah[];
 }
 
-const cache = new Map<string, SurahTimings | null>();
-
 /**
  * Load word timings for a surah, or null when no timing data has been ingested for it yet.
  * Node-only (reads the packaged JSON); the web app consumes the JSON via a bundler import.
  */
 export function getWordTimings(surahNumber: number, reciter = "alafasy"): SurahTimings | null {
-  if (surahNumber < 1 || surahNumber > 114) {
-    throw new Error(`Invalid surah number: ${surahNumber}. Must be 1-114.`);
-  }
-  const key = `${reciter}/${surahNumber}`;
-  if (cache.has(key)) return cache.get(key) ?? null;
-
-  const file = join(TIMINGS_DIR, reciter, `surah-${String(surahNumber).padStart(3, "0")}.json`);
-  let data: SurahTimings | null = null;
-  try {
-    data = JSON.parse(readFileSync(file, "utf8")) as SurahTimings;
-  } catch {
-    data = null; // not ingested yet — callers fall back to verse-level behavior
-  }
-  cache.set(key, data);
-  return data;
+  return loadSurahJson<SurahTimings>(TIMINGS_DIR, reciter, surahNumber);
 }

@@ -17,49 +17,19 @@
 // Usage: node scripts/fetch-translations.mjs --id 81 --slug ckb-burhan-muhammad --surahs 1,2,105-114
 // Output: src/data/translations/<slug>/surah-XXX.json + manifest.json
 
-import { readFileSync, writeFileSync, mkdirSync } from "node:fs";
+import { writeFileSync, mkdirSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { getFlag, parseSurahArg, loadCanonicalAyahs, fetchJsonWithRetry } from "./_ingest-lib.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const DATA_DIR = join(__dirname, "..", "src", "data", "full-quran");
 const API = "https://api.quran.com/api/v4";
 
 async function fetchTranslation(key, id) {
-  const url = `${API}/verses/by_key/${key}?translations=${id}`;
-  for (let attempt = 0; attempt < 4; attempt++) {
-    try {
-      const res = await fetch(url, { headers: { "User-Agent": "qrai-translation-ingest" } });
-      if (res.status === 429 || res.status >= 500) throw new Error(`HTTP ${res.status}`);
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const tr = (await res.json())?.verse?.translations?.[0]?.text;
-      if (typeof tr !== "string" || tr.length === 0) throw new Error("empty translation");
-      return tr; // VERBATIM — no trim, no cleanup (license condition 1).
-    } catch (err) {
-      if (attempt === 3) throw err;
-      await new Promise((r) => setTimeout(r, 400 * (attempt + 1)));
-    }
-  }
-}
-
-function loadCanonicalAyahs(surah) {
-  return JSON.parse(readFileSync(join(DATA_DIR, `surah-${String(surah).padStart(3, "0")}.json`), "utf8")).ayahs;
-}
-
-function parseSurahArg(arg) {
-  if (!arg) return Array.from({ length: 114 }, (_, i) => i + 1);
-  const out = new Set();
-  for (const part of arg.split(",")) {
-    const m = part.match(/^(\d+)-(\d+)$/);
-    if (m) for (let n = +m[1]; n <= +m[2]; n++) out.add(n);
-    else out.add(+part);
-  }
-  return [...out].sort((a, b) => a - b);
-}
-
-function getFlag(name, def) {
-  const i = process.argv.indexOf(`--${name}`);
-  return i >= 0 ? process.argv[i + 1] : def;
+  const json = await fetchJsonWithRetry(`${API}/verses/by_key/${key}?translations=${id}`, "qrai-translation-ingest");
+  const tr = json?.verse?.translations?.[0]?.text;
+  if (typeof tr !== "string" || tr.length === 0) throw new Error("empty translation");
+  return tr; // VERBATIM — no trim, no cleanup (license condition 1).
 }
 
 async function main() {

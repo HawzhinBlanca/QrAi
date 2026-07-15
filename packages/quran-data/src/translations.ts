@@ -6,12 +6,11 @@
  * docs/DATA_LICENSES.md#ckb-sorani-translation.
  */
 
-import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { loadSurahJson } from "./load-surah-json";
 
-const __dirname = dirname(fileURLToPath(import.meta.url));
-const DIR = join(__dirname, "data", "translations");
+const DIR = join(dirname(fileURLToPath(import.meta.url)), "data", "translations");
 
 export interface AyahTranslation {
   ayah: number;
@@ -37,22 +36,7 @@ export interface SurahTranslation {
   missingAyahs: MissingTranslation[];
 }
 
-const cache = new Map<string, SurahTranslation | null>();
-
 /** Load a surah's translation for a slug, or null when none was ingested. Node-only loader. */
 export function getSurahTranslation(surahNumber: number, slug = "ckb-burhan-muhammad"): SurahTranslation | null {
-  if (surahNumber < 1 || surahNumber > 114) {
-    throw new Error(`Invalid surah number: ${surahNumber}. Must be 1-114.`);
-  }
-  const key = `${slug}/${surahNumber}`;
-  if (cache.has(key)) return cache.get(key) ?? null;
-  const file = join(DIR, slug, `surah-${String(surahNumber).padStart(3, "0")}.json`);
-  let data: SurahTranslation | null = null;
-  try {
-    data = JSON.parse(readFileSync(file, "utf8")) as SurahTranslation;
-  } catch {
-    data = null;
-  }
-  cache.set(key, data);
-  return data;
+  return loadSurahJson<SurahTranslation>(DIR, slug, surahNumber);
 }
