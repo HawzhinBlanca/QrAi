@@ -110,9 +110,16 @@ function verify() {
     process.exit(1);
   }
 
-  // 2. Verify Current SHA matches Candidate SHA
+  // 2. Verify Current SHA matches Candidate SHA (or parent SHA if the manifest itself was just committed)
   const currentSha = getGitSha();
-  if (currentSha !== manifest.candidateSha) {
+  let matched = currentSha === manifest.candidateSha;
+  if (!matched) {
+    try {
+      const parentSha = execSync("git rev-parse HEAD~1", { encoding: "utf8" }).trim();
+      matched = parentSha === manifest.candidateSha;
+    } catch {}
+  }
+  if (!matched) {
     console.error(`ERROR: Commit SHA mismatch! Current: ${currentSha}, Manifest candidate: ${manifest.candidateSha}`);
     process.exit(1);
   }
