@@ -1,8 +1,8 @@
 {
   "schemaVersion": "1.0.0",
-  "timestamp": "2026-07-15T08:46:28.385Z",
-  "candidateSha": "d0e59eb4e5a4311527d9bf5ebac33fd2c7e3e217",
-  "traceId": "release-trace-6344e6d230d4c463",
+  "timestamp": "2026-07-15T09:55:22.813Z",
+  "candidateSha": "849e2f2daf01f750a28adb598833d0dc51768be7",
+  "traceId": "release-trace-a7a7a1856aedb39c",
   "environment": {
     "nodeVersion": "v22.13.1",
     "platform": "darwin",
@@ -21,6 +21,6 @@
     "specs/number-one-release/spec.md": "266afe7055ccbfc8dec915b27b7c2402e49ba88963a811344f5e5f9affd3687c",
     "specs/number-one-release/research.md": "b9dd5675242b5ef9cf3c8223ea88d215b67c383e807ecec5772f09e004e53fbd",
     "specs/number-one-release/impact-map.md": "406132b26226688db5b5919ee98263179037d9d776ff7d174b637aca8cccc9cc",
-    "specs/number-one-release/tasks.md": "f6e2eba45f51813bb716711afd20759e40316af960787d900bf92ed1106ca214"
+    "specs/number-one-release/tasks.md": "74d64b5cd53c1febffa70181dd27a3901ce9d754283552e46c7583e083242128"
   }
 }
