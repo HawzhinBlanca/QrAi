@@ -377,6 +377,87 @@ async fn registers_then_logs_in_a_new_user() {
     assert_eq!(missing.status(), StatusCode::UNAUTHORIZED);
 }
 
+/// Security regression: an admin/ops may create elevated-role users (teacher/scholar/admin/ops)
+/// only within THEIR OWN tenant. The registration tx is scoped to the client-supplied req.tenant_id,
+/// so RLS's `with check (tenant_id = app.current_tenant_id())` is satisfied for whatever tenant the
+/// caller names — role alone is not enough. Before the fix, a tenant-A admin could POST
+/// {tenantId:"B", role:"admin", password:...} and mint an attacker-controlled admin in tenant B,
+/// then log in for full cross-tenant takeover. Assert the cross-tenant attempt is Forbidden while a
+/// same-tenant elevated registration still succeeds.
+#[tokio::test]
+#[ignore = "requires live Postgres"]
+async fn register_cannot_create_elevated_user_in_another_tenant() {
+    let state = test_state();
+    let router = platform_router_with_rate_limit(state.clone(), false);
+
+    // A second, real tenant must EXIST so the target-tenant existence check passes and we reach the
+    // authorization check (otherwise a nonexistent tenant would 404 and mask the 403 we're proving).
+    let victim_tenant = format!("tenant-cross-register-victim-{}", next_suffix());
+    sqlx::query("INSERT INTO institutions (id, name, region) VALUES ($1, 'Victim Tenant', 'test') ON CONFLICT (id) DO NOTHING")
+        .bind(&victim_tenant)
+        .execute(&state.pool)
+        .await
+        .unwrap();
+
+    // Admin of hikmah-pilot-erbil tries to create an ADMIN in the victim tenant -> Forbidden.
+    let cross = send_json(
+        &router,
+        Method::POST,
+        "/v1/auth/register",
+        Some("hikmah-pilot-erbil"),
+        Some("admin"),
+        json!({
+            "tenantId": victim_tenant,
+            "displayName": "Injected Admin",
+            "role": "admin",
+            "language": "en",
+            "password": "AttackerSet1234"
+        }),
+    )
+    .await;
+    assert_eq!(
+        cross.status(),
+        StatusCode::FORBIDDEN,
+        "an admin must not create an elevated-role user in another tenant"
+    );
+
+    // Sanity: no user was written into the victim tenant.
+    let leaked: Option<(i64,)> =
+        sqlx::query_as("SELECT count(*) FROM users WHERE tenant_id = $1 AND role = 'admin'")
+            .bind(&victim_tenant)
+            .fetch_optional(&state.pool)
+            .await
+            .unwrap();
+    assert_eq!(
+        leaked.map(|c| c.0),
+        Some(0),
+        "no admin leaked into victim tenant"
+    );
+
+    // Regression: the legitimate same-tenant path still works — an admin CAN create a teacher in
+    // their own tenant.
+    let same_tenant = send_json(
+        &router,
+        Method::POST,
+        "/v1/auth/register",
+        Some("hikmah-pilot-erbil"),
+        Some("admin"),
+        json!({
+            "tenantId": "hikmah-pilot-erbil",
+            "displayName": "Legit Teacher",
+            "role": "teacher",
+            "language": "ckb",
+            "password": "LegitTeach1234"
+        }),
+    )
+    .await;
+    assert_eq!(
+        same_tenant.status(),
+        StatusCode::OK,
+        "an admin must still be able to create an elevated-role user in their own tenant"
+    );
+}
+
 /// Security/data-integrity regression: registration's email-uniqueness check is SELECT-then-INSERT,
 /// which under READ COMMITTED is a TOCTOU race — verified empirically that 10 truly concurrent
 /// registrations with an identical email ALL succeeded before this was fixed (0013 migration adds a
