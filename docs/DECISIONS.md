@@ -518,3 +518,31 @@ missing and render nothing — never invented.
   and schedule periodic re-fetch (the license's continuing-update duty); Quran.com's API exposes no
   version field, so `fetchedAt` is only a drift anchor. Native-speaker review of the *UI strings*
   (ckb bundle) remains T5 — this ADR covers verse translations only.
+
+## ADR-0017 — /v1/force-align is a real CTC forced aligner (T3), replacing Whisper-prompt bias
+
+**Status:** Accepted · **Date:** 2026-07-16 · **Deciders:** owner (new model dependency)
+
+### Context
+`/v1/force-align` was dead code that used Whisper's `initial_prompt` to *bias* decoding — it did not
+guarantee word-for-word correspondence with the canonical text, so it could not produce trustworthy
+per-word timestamps (T3). The learner path still persisted `startMs:0/endMs:0`.
+
+### Decision
+Reimplement `/v1/force-align` as true CTC forced alignment: `torchaudio.functional.forced_align`
+against an **Apache-2.0** Arabic model (`jonatasgrosman/wav2vec2-large-xlsr-53-arabic`, overridable
+via `FORCE_ALIGN_MODEL`) on the diacritic-stripped canonical characters, so response word *i* IS
+transcript word *i*. Logic lives in `services/asr-inference/forced_align.py`; the alignment model
+loads lazily on first call (separate from the ASR model) so the service boots unchanged.
+
+Validated: `forced_align_arabic.py` imports the exact shipped `align_words` and checks it against
+Quran.com ground truth — mean word-START error ~64-100 ms over Al-Fatihah 1:1-1:3 -> PASS.
+
+### Consequences
+- New dependency: **`transformers`** (Apache-2.0), NOT yet in `requirements.lock.txt` — the endpoint
+  lazy-imports it and returns 500 if absent (other endpoints unaffected). Before deploying force-
+  align, regenerate the lock per its header (add `transformers`) and re-run pip-audit. Until then
+  the aligner runs from the service venv (where it was validated).
+- Remaining T3 wiring (separate PRs): ml-inference threads timing into the alignment response ->
+  Rust persists non-zero start_ms/end_ms -> web sends audioBase64. Last-word END drifts into
+  trailing silence (measure madd separately).
