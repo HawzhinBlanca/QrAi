@@ -2563,14 +2563,41 @@ fn next_suffix() -> String {
 #[tokio::test]
 #[ignore = "requires live Postgres"]
 async fn adversarial_sql_isolation_prevents_cross_tenant_access() {
-    let state = test_state();
+    // Deliberately NOT test_state(): its pool pins every connection's SESSION tenant to
+    // 'hikmah-pilot-erbil' (after_connect), so the old shape — `SET LOCAL app.tenant_id =
+    // 'tenant-b'` layered on top — FAILED OPEN whenever the LOCAL scope didn't take effect as
+    // assumed (observed as a CI flake: the "hostile" read ran as the victim tenant and saw its
+    // rows). A dedicated single-connection pool pinned session-level to tenant-b has no fallback
+    // identity to fail open into, and mirrors production more honestly: production pools have no
+    // session default at all (current_setting is NULL -> RLS yields zero rows, fail closed).
+    let pool = sqlx::postgres::PgPoolOptions::new()
+        .max_connections(1)
+        .after_connect(|conn, _meta| {
+            Box::pin(async move {
+                sqlx::query("SET app.tenant_id = 'tenant-b'")
+                    .execute(conn)
+                    .await?;
+                Ok(())
+            })
+        })
+        .connect_lazy(
+            &std::env::var("DATABASE_URL")
+                .unwrap_or_else(|_| "postgresql://hawzhin@localhost:5432/quran_ai".to_owned()),
+        )
+        .expect("failed to create tenant-b pool");
 
-    // We start a transaction as if we are Tenant B
-    let mut tx = state.pool.begin().await.unwrap();
-    sqlx::query("SET LOCAL app.tenant_id = 'tenant-b'")
-        .execute(&mut *tx)
+    let mut tx = pool.begin().await.unwrap();
+
+    // Sanity gate: prove the hostile identity is in effect BEFORE probing, so any future
+    // scoping surprise fails loudly here instead of as a mysterious row-count assertion.
+    let ctx: String = sqlx::query_scalar("SELECT current_setting('app.tenant_id', true)")
+        .fetch_one(&mut *tx)
         .await
         .unwrap();
+    assert_eq!(
+        ctx, "tenant-b",
+        "hostile tenant context must be active before the RLS probes"
+    );
 
     // 1. Trying to read Tenant A's seeded users must yield zero rows
     let user_count: i64 =
