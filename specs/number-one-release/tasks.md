@@ -43,6 +43,6 @@
 
 ## Phase 6 — Independent release challenge
 - [x] T6.1 Fresh-environment verification.
-- [ ] T6.2 Red-team day.
+- [x] T6.2 Red-team day.
 - [ ] T6.3 Go/no-go council.
 - [ ] T6.4 Canary and monitored launch.
