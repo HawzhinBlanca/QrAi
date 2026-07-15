@@ -1,0 +1,14 @@
+{
+  "reciter": "alafasy",
+  "reciterId": 7,
+  "source": "api.quran.com v4 recitation 7",
+  "audioBase": "https://verses.quran.com/",
+  "surahs": [
+    {
+      "surah": 2,
+      "ayahsWithTimings": 283,
+      "ayahsExcluded": 3,
+      "totalAyahs": 286
+    }
+  ]
+}

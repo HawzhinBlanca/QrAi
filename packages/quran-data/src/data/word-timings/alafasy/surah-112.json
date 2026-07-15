@@ -1,0 +1,110 @@
+{
+  "surah": 112,
+  "reciter": "alafasy",
+  "reciterName": "Mishary Rashid al-Afasy",
+  "source": "api.quran.com v4 recitation 7",
+  "audioBase": "https://verses.quran.com/",
+  "license": "See docs/DATA_LICENSES.md#quran-com-word-segments-audio",
+  "ayahs": [
+    {
+      "ayah": 1,
+      "audioUrl": "Alafasy/mp3/112001.mp3",
+      "words": [
+        {
+          "wordId": "112:1:5",
+          "startMs": 30,
+          "endMs": 390
+        },
+        {
+          "wordId": "112:1:6",
+          "startMs": 400,
+          "endMs": 790
+        },
+        {
+          "wordId": "112:1:7",
+          "startMs": 800,
+          "endMs": 1640
+        },
+        {
+          "wordId": "112:1:8",
+          "startMs": 1650,
+          "endMs": 2300
+        }
+      ]
+    },
+    {
+      "ayah": 2,
+      "audioUrl": "Alafasy/mp3/112002.mp3",
+      "words": [
+        {
+          "wordId": "112:2:1",
+          "startMs": 40,
+          "endMs": 980
+        },
+        {
+          "wordId": "112:2:2",
+          "startMs": 990,
+          "endMs": 1850
+        }
+      ]
+    },
+    {
+      "ayah": 3,
+      "audioUrl": "Alafasy/mp3/112003.mp3",
+      "words": [
+        {
+          "wordId": "112:3:1",
+          "startMs": 60,
+          "endMs": 390
+        },
+        {
+          "wordId": "112:3:2",
+          "startMs": 400,
+          "endMs": 1000
+        },
+        {
+          "wordId": "112:3:3",
+          "startMs": 1010,
+          "endMs": 1720
+        },
+        {
+          "wordId": "112:3:4",
+          "startMs": 1730,
+          "endMs": 2490
+        }
+      ]
+    },
+    {
+      "ayah": 4,
+      "audioUrl": "Alafasy/mp3/112004.mp3",
+      "words": [
+        {
+          "wordId": "112:4:1",
+          "startMs": 30,
+          "endMs": 650
+        },
+        {
+          "wordId": "112:4:2",
+          "startMs": 660,
+          "endMs": 1130
+        },
+        {
+          "wordId": "112:4:3",
+          "startMs": 1140,
+          "endMs": 2040
+        },
+        {
+          "wordId": "112:4:4",
+          "startMs": 2050,
+          "endMs": 2950
+        },
+        {
+          "wordId": "112:4:5",
+          "startMs": 2960,
+          "endMs": 3570
+        }
+      ]
+    }
+  ],
+  "excludedAyahs": []
+}
