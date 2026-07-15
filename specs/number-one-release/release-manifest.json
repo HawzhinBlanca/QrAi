@@ -1,0 +1,26 @@
+{
+  "schemaVersion": "1.0.0",
+  "timestamp": "2026-07-15T08:43:51.367Z",
+  "candidateSha": "466bb1dea931ce52b186c52c0ca5d1a2a53f707a",
+  "traceId": "release-trace-b87d43b39add3256",
+  "environment": {
+    "nodeVersion": "v22.13.1",
+    "platform": "darwin",
+    "arch": "arm64",
+    "pnpmVersion": "11.7.0"
+  },
+  "imageDigests": {
+    "platform-api": null,
+    "realtime-gateway": null,
+    "ml-inference": null,
+    "asr-inference": null,
+    "web": null
+  },
+  "artifactHashes": {
+    "specs/number-one-release/plan.md": "16e0880ad3df9b844c2afabb356ff0f490fa7e4f12560ef7e9904f624accac96",
+    "specs/number-one-release/spec.md": "266afe7055ccbfc8dec915b27b7c2402e49ba88963a811344f5e5f9affd3687c",
+    "specs/number-one-release/research.md": "b9dd5675242b5ef9cf3c8223ea88d215b67c383e807ecec5772f09e004e53fbd",
+    "specs/number-one-release/impact-map.md": "406132b26226688db5b5919ee98263179037d9d776ff7d174b637aca8cccc9cc",
+    "specs/number-one-release/tasks.md": "b194a060f36edf6541bd88b50f2f2eaf7eed6d5b18a015d7cb4304c4a94b1127"
+  }
+}
