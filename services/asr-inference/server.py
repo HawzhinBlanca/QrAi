@@ -39,6 +39,8 @@ from fastapi import Depends, FastAPI, Header, HTTPException, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
+from audio_guards import MAX_AUDIO_SECONDS, enforce_max_duration
+
 # API-key gate. The browser must NOT reach this service directly — it is fronted by the platform-api
 # /v1/asr/* proxy, which holds ASR_API_KEY server-side (like ML_API_KEY for ml-inference). ml-inference
 # also sends the key on its server-to-server transcribe call. Health stays open. In dev/CI the default
@@ -364,6 +366,8 @@ async def transcribe(req: TranscribeRequest):
         tmp_path = tmp.name
 
     try:
+        # Reject over-long audio before running the (CPU-bound, potentially multi-minute) model.
+        enforce_max_duration(tmp_path)
         if asr_pipe is not None:
             # HF Quran ASR — this checkpoint is fine-tuned for Arabic Quran, so a plain
             # call returns diacritized Quran text. (Word-level timing comes from the
@@ -414,8 +418,13 @@ async def transcribe(req: TranscribeRequest):
             latencyMs=latency_ms,
         )
 
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Transcription failed: {str(e)}")
+    except HTTPException:
+        raise
+    except Exception:
+        # Log the real error server-side; return a generic message so internal detail (tensor
+        # shapes, ffmpeg command lines, temp paths) never crosses the trust boundary.
+        logger.exception("transcription failed")
+        raise HTTPException(status_code=500, detail="transcription failed")
     finally:
         os.unlink(tmp_path)
 
@@ -454,14 +463,26 @@ async def force_align(req: ForceAlignRequest):
     wav_path = in_path + ".16k.wav"
 
     try:
+        # Reject over-long audio up front (metadata probe, no decode) so a decompression bomb never
+        # reaches the single full-waveform CTC forward pass below.
+        enforce_max_duration(in_path)
+
         # Decode/resample to 16kHz mono via ffmpeg (the aligner model's expected input), then align
         # off the event loop — CTC inference is CPU-bound and would otherwise block /health etc.
         def _run() -> tuple[list, float]:
             subprocess.run(
-                ["ffmpeg", "-y", "-i", in_path, "-ar", "16000", "-ac", "1", "-f", "wav", wav_path],
+                # `-t` bounds the decode to just past the duration cap: even when the container
+                # duration was unknown (ffprobe returned 0, so enforce_max_duration let it through),
+                # ffmpeg cannot expand an arbitrarily long input into an unbounded waveform.
+                ["ffmpeg", "-y", "-i", in_path, "-ar", "16000", "-ac", "1",
+                 "-t", str(int(MAX_AUDIO_SECONDS) + 1), "-f", "wav", wav_path],
                 check=True, capture_output=True,
             )
             data, sr = sf.read(wav_path, dtype="float32")
+            # Backstop for the unknown-duration case: if the (now decode-bounded) audio is still over
+            # the cap, the original was too long — reject rather than align a silently truncated clip.
+            if len(data) / sr > MAX_AUDIO_SECONDS:
+                raise HTTPException(status_code=413, detail=f"audio too long; max {int(MAX_AUDIO_SECONDS)}s")
             waveform = torch.from_numpy(data).unsqueeze(0)
             from forced_align import align_words
 
@@ -482,8 +503,13 @@ async def force_align(req: ForceAlignRequest):
         )
     except HTTPException:
         raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Force alignment failed: {str(e)}")
+    except ValueError:
+        # align_words raises ValueError when the transcript needs more CTC tokens than the audio has
+        # emission frames (transcript longer than the audio supports) — a client input problem, 400.
+        raise HTTPException(status_code=400, detail="transcript is longer than the audio supports")
+    except Exception:
+        logger.exception("force alignment failed")
+        raise HTTPException(status_code=500, detail="force alignment failed")
     finally:
         for p in (in_path, wav_path):
             try:
@@ -697,8 +723,9 @@ async def analyze_tajweed(req: TajweedAnalysisRequest):
         )
     except HTTPException:
         raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Tajweed analysis failed: {str(e)}")
+    except Exception:
+        logger.exception("tajweed analysis failed")
+        raise HTTPException(status_code=500, detail="tajweed analysis failed")
     finally:
         os.unlink(tmp_path)
 
