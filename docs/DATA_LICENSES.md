@@ -34,6 +34,39 @@ integrity is checked. Religious content is never AI-generated; it is licensed or
 
 ---
 
+## ckb-sorani-translation
+
+- **What:** Central Kurdish (Sorani) ayah translation, shipped under
+  `packages/quran-data/src/data/translations/ckb-burhan-muhammad/`.
+- **Source:** api.quran.com v4, `GET /verses/by_key/{key}?translations=81`. Translation id 81 =
+  **Burhan Muhammad-Amin** ("Tafsiri Asan"), the default Kurdish translation on Quran.com,
+  originating from the QuranEnc.com ecosystem.
+- **License (QuranEnc, verified 2026-07-15 at quranenc.com/en/home/about — all 7 conditions):**
+  republish allowed with (1) **no modification/addition/deletion** of content, (2) attribution to
+  **publisher + QuranEnc.com**, (3) **version stated**, (4) transcript info kept in the document,
+  (5) QuranEnc notified of any notes, (6) a **continuing duty to update to the latest issued
+  version**, (7) no inappropriate advertisements.
+- **Compliance in this repo:**
+  - (1) Text stored and rendered **verbatim** (`fetch-translations.mjs` does no trimming/cleanup;
+    the reader renders it unaltered). ZWNJ and all script formatting preserved.
+  - (2) Attribution shown in-app whenever translations are visible ("Translation: Burhan
+    Muhammad-Amin (Tafsiri Asan) — via QuranEnc.com").
+  - (3)/(6) ⚠️ **Version gap:** Quran.com's v4 API exposes no version field. The manifest records
+    `fetchedAt` (2026-07-15) as a drift anchor, but the canonical QuranEnc version string must be
+    confirmed directly at QuranEnc and recorded here before a production launch, and a periodic
+    re-fetch scheduled to satisfy the update duty.
+- **Attribution string:** "Translation: Burhan Muhammad-Amin (Tafsiri Asan) — via QuranEnc.com"
+- **Date fetched:** 2026-07-15.
+- **Integrity:** every ayah is translated or recorded in `missingAyahs` with a reason (108:3 has no
+  entry in resource 81 — Quran.com 404s the join — shown as no-translation, never invented);
+  grounded against canonical text by `tests/translations-integrity.test.ts`.
+- **Regeneration:** `node packages/quran-data/scripts/fetch-translations.mjs --id 81 --slug ckb-burhan-muhammad --surahs <list>`.
+- **Follow-up:** a second verified Sorani source exists (2025 Data in Brief scholar corpus,
+  PMC12032946) for cross-checking; Bamoki (id 143) and Salahuddin are alternate QuranEnc Sorani
+  translations if a different scholarly reading is preferred.
+
+---
+
 ## quran-com-audio (playback, pre-existing)
 
 - **What:** Per-ayah reference recitation MP3s currently used by the web player.

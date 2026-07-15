@@ -1164,6 +1164,36 @@ button:disabled {
   line-height: 1.4;
 }
 
+/* Sorani translation line under each ayah's Arabic. */
+.verse-translation {
+  margin: 6px 0 2px;
+  padding-inline-start: 34px; /* clear the verse-number gutter */
+  color: #4a4843;
+  font-size: 0.95rem;
+  line-height: 1.7;
+}
+
+.reader-controls {
+  display: flex;
+  justify-content: flex-end;
+  margin-bottom: 6px;
+}
+
+.translation-toggle {
+  padding: 4px 12px;
+  border: 1px solid rgba(8, 125, 100, 0.32);
+  border-radius: 999px;
+  background: transparent;
+  color: #087d64;
+  font: inherit;
+  font-size: 0.8rem;
+  cursor: pointer;
+}
+
+.translation-toggle.is-on {
+  background: rgba(8, 125, 100, 0.12);
+}
+
 .word-token.status-mistake {
   border-color: rgba(200, 63, 76, 0.28);
   background: rgba(200, 63, 76, 0.12);

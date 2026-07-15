@@ -107,3 +107,63 @@ describe("QuranReader word highlight (DOM)", () => {
     expect(r.container.querySelector(".reader-attribution")?.textContent).toContain("Quran.com");
   });
 });
+
+function renderReaderWithTranslation(showTranslation: boolean, translation: Map<number, string>) {
+  const verses: QuranVerse[] = [
+    { id: "1:1", verseNumber: 1, words: [{ id: "1:1:1", text: "بِسْمِ", status: "good" }] },
+    { id: "1:2", verseNumber: 2, words: [{ id: "1:2:1", text: "ٱلْحَمْدُ", status: "good" }] },
+  ];
+  const container = document.createElement("div");
+  document.body.appendChild(container);
+  const root = createRoot(container);
+  act(() => {
+    root.render(
+      <QuranReader
+        activeWordId=""
+        selectedWordId=""
+        onSelectWord={() => {}}
+        verses={verses}
+        translationByAyah={translation}
+        translationAttribution="Burhan Muhammad-Amin (Tafsiri Asan) — via QuranEnc.com"
+        showTranslation={showTranslation}
+        onToggleTranslation={() => {}}
+      />,
+    );
+  });
+  return { container, root };
+}
+
+describe("QuranReader Sorani translation", () => {
+  const mounted: Array<{ container: HTMLElement; root: ReturnType<typeof createRoot> }> = [];
+  afterEach(() => {
+    for (const m of mounted) {
+      act(() => m.root.unmount());
+      m.container.remove();
+    }
+    mounted.length = 0;
+  });
+
+  const translation = new Map<number, string>([
+    [1, "به ناوی خوای به‌خشنده‌ی میهره‌بان"],
+    // ayah 2 deliberately absent → must render nothing for it (honest missing state)
+  ]);
+
+  it("renders the verbatim translation line (RTL, ckb) for ayahs that have one, and nothing for those that don't", () => {
+    const r = renderReaderWithTranslation(true, translation);
+    mounted.push(r);
+    const lines = r.container.querySelectorAll(".verse-translation");
+    expect(lines).toHaveLength(1); // only ayah 1 has a translation
+    expect(lines[0].getAttribute("dir")).toBe("rtl");
+    expect(lines[0].getAttribute("lang")).toBe("ckb");
+    expect(lines[0].textContent).toBe("به ناوی خوای به‌خشنده‌ی میهره‌بان");
+    expect(r.container.querySelector(".reader-attribution")?.textContent).toContain("QuranEnc.com");
+  });
+
+  it("shows no translation lines when the toggle is off", () => {
+    const r = renderReaderWithTranslation(false, translation);
+    mounted.push(r);
+    expect(r.container.querySelectorAll(".verse-translation")).toHaveLength(0);
+    // the toggle control is still present (data exists)
+    expect(r.container.querySelector(".translation-toggle")).not.toBeNull();
+  });
+});

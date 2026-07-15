@@ -14,6 +14,14 @@ interface QuranReaderProps {
   recitingWordId?: string | null;
   /** Reciter/source attribution shown when the matched reference audio is in use (licensing). */
   recitationAttribution?: string | null;
+  /** Local ayah number → verbatim translation text (empty map when none). */
+  translationByAyah?: Map<number, string>;
+  /** Translator/publisher attribution shown when translations are visible (licensing). */
+  translationAttribution?: string | null;
+  /** Whether the translation lines are shown. */
+  showTranslation?: boolean;
+  /** Toggle translation visibility. When omitted, the toggle control is hidden. */
+  onToggleTranslation?: () => void;
   /** True while the surah's verses are being (re)fetched — marks the reader aria-busy and dims it
    *  so a slow/switched surah reads as loading, not frozen (P2.9). */
   isLoading?: boolean;
@@ -26,7 +34,7 @@ const statusLabelKeys = {
   missed: "quranReader.statusMissed",
 };
 
-export function QuranReader({ activeWordId, onSelectWord, selectedWordId, verses, playingVerseNumber = null, recitingWordId = null, recitationAttribution = null, isLoading = false }: QuranReaderProps) {
+export function QuranReader({ activeWordId, onSelectWord, selectedWordId, verses, playingVerseNumber = null, recitingWordId = null, recitationAttribution = null, translationByAyah, translationAttribution = null, showTranslation = false, onToggleTranslation, isLoading = false }: QuranReaderProps) {
   const { t } = useTranslation();
   const frameRef = useRef<HTMLDivElement | null>(null);
 
@@ -39,6 +47,18 @@ export function QuranReader({ activeWordId, onSelectWord, selectedWordId, verses
 
   return (
     <section className="reader-panel" aria-label={t("quranReader.ariaLabel")} aria-busy={isLoading}>
+      {onToggleTranslation && (translationByAyah?.size ?? 0) > 0 && (
+        <div className="reader-controls">
+          <button
+            type="button"
+            className={showTranslation ? "translation-toggle is-on" : "translation-toggle"}
+            aria-pressed={showTranslation}
+            onClick={onToggleTranslation}
+          >
+            {t("quranReader.translationToggle")}
+          </button>
+        </div>
+      )}
       <div className={isLoading ? "reader-frame is-loading" : "reader-frame"} ref={frameRef}>
         {verses.map((verse) => (
           <div
@@ -72,6 +92,13 @@ export function QuranReader({ activeWordId, onSelectWord, selectedWordId, verses
                 </button>
               ))}
             </div>
+            {/* Sorani translation — verbatim licensed text (QuranEnc: no modification). Shown only
+                when enabled AND present for this ayah; a missing ayah renders nothing (honest). */}
+            {showTranslation && translationByAyah?.get(verse.verseNumber) && (
+              <p className="verse-translation" dir="rtl" lang="ckb">
+                {translationByAyah.get(verse.verseNumber)}
+              </p>
+            )}
           </div>
         ))}
       </div>
@@ -85,6 +112,9 @@ export function QuranReader({ activeWordId, onSelectWord, selectedWordId, verses
 
       {recitationAttribution && (
         <p className="reader-attribution">{recitationAttribution}</p>
+      )}
+      {showTranslation && translationAttribution && (translationByAyah?.size ?? 0) > 0 && (
+        <p className="reader-attribution">{t("quranReader.translationSource", { source: translationAttribution })}</p>
       )}
     </section>
   );

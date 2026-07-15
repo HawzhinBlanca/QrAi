@@ -1,0 +1,19 @@
+{
+  "slug": "ckb-burhan-muhammad",
+  "translationId": 81,
+  "translator": "Burhan Muhammad-Amin",
+  "title": "Tafsiri Asan",
+  "language": "ckb",
+  "source": "api.quran.com v4 translation 81",
+  "publisher": "QuranEnc.com",
+  "license": "See docs/DATA_LICENSES.md#ckb-sorani-translation",
+  "fetchedAt": "2026-07-15",
+  "surahs": [
+    {
+      "surah": 108,
+      "ayahsTranslated": 2,
+      "totalAyahs": 3,
+      "missing": 1
+    }
+  ]
+}

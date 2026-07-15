@@ -22,6 +22,7 @@ import { startLocalAudioRecording, startServerAsr, isServerAsrSupported, type Se
 import { canRecordRecitation, canUseExternalSpeechFallback } from "./lib/consent";
 import { startMicVisualizer, type MicVisualizerStop } from "./lib/micVisualizer";
 import { getSurahTimings, getAyahTimings, ayahAudioUrl, recitingWordIdAt } from "./lib/wordTimings";
+import { getSurahTranslation, translationByAyah } from "./lib/translations";
 import type { SurahTimings } from "@quran-ai/quran-data";
 import {
   predictAlignment,
@@ -223,6 +224,11 @@ function AuthenticatedApp({ bypassLogin = false }: { bypassLogin?: boolean }) {
   // a licensing requirement (see docs/DATA_LICENSES.md#quran-com-word-segments-audio). null when the
   // surah has no timing data and the fallback CDN audio is used.
   const [recitationAttribution, setRecitationAttribution] = useState<string | null>(null);
+  // Sorani translation (T4): per-ayah verbatim text for the reader, its attribution, and whether it
+  // is shown. Default on for Kurdish learners (the whole point of the translation), toggleable.
+  const [translationMap, setTranslationMap] = useState<Map<number, string>>(new Map());
+  const [translationAttribution, setTranslationAttribution] = useState<string | null>(null);
+  const [showTranslation, setShowTranslation] = useState<boolean>(activeLanguage === "ckb");
   // The learner's own recorded recitation, kept for playback.
   const [recordedAudioUrl, setRecordedAudioUrl] = useState<string>("");
   const recordingAudioRef = useRef<HTMLAudioElement | null>(null);
@@ -368,6 +374,24 @@ function AuthenticatedApp({ bypassLogin = false }: { bypassLogin?: boolean }) {
       surahTimingsRef.current = tm;
       setRecitationAttribution(
         tm ? `Recitation: ${tm.reciterName}. Audio & word timings via Quran.com (Quran Foundation).` : null,
+      );
+    });
+    return () => {
+      current = false;
+    };
+  }, [selectedSurah.surahNumber]);
+
+  // Load the Sorani translation for the selected surah (T4). Verbatim per-ayah text + attribution;
+  // stale-surah guard as above.
+  useEffect(() => {
+    let current = true;
+    setTranslationMap(new Map());
+    setTranslationAttribution(null);
+    void getSurahTranslation(selectedSurah.surahNumber).then((tr) => {
+      if (!current) return;
+      setTranslationMap(translationByAyah(tr));
+      setTranslationAttribution(
+        tr ? `${tr.translator} (Tafsiri Asan) — via ${tr.publisher}` : null,
       );
     });
     return () => {
@@ -1020,6 +1044,10 @@ function AuthenticatedApp({ bypassLogin = false }: { bypassLogin?: boolean }) {
                 playingAyah={playingAyah}
                 recitingWordId={recitingWordId}
                 recitationAttribution={recitationAttribution}
+                translationByAyah={translationMap}
+                translationAttribution={translationAttribution}
+                showTranslation={showTranslation}
+                onToggleTranslation={() => setShowTranslation((v) => !v)}
                 isLoadingVerses={isLoadingVerses}
                 recitationEvents={recitationEvents}
                 alignmentResults={alignmentResults}

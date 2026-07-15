@@ -1,0 +1,38 @@
+{
+  "surah": 114,
+  "slug": "ckb-burhan-muhammad",
+  "translationId": 81,
+  "translator": "Burhan Muhammad-Amin",
+  "language": "ckb",
+  "source": "api.quran.com v4 translation 81",
+  "publisher": "QuranEnc.com",
+  "license": "See docs/DATA_LICENSES.md#ckb-sorani-translation",
+  "fetchedAt": "2026-07-15",
+  "ayahs": [
+    {
+      "ayah": 1,
+      "text": "(ئه‌ی محمد (صلی الله علیه وسلم) ئه‌ی ئیماندار) بڵێ: په‌نا ده‌گرم به په‌روه‌ردگاری خه‌ڵکی."
+    },
+    {
+      "ayah": 2,
+      "text": "پادشای خه‌ڵکی"
+    },
+    {
+      "ayah": 3,
+      "text": "به خوای خه‌ڵکی."
+    },
+    {
+      "ayah": 4,
+      "text": "له شه‌ڕ و خراپه‌ی ئه‌وه‌ی که وه‌سوه‌سه و خه‌ته‌ره و خه‌یاڵ ده‌خاته دڵه‌وه که (خه‌ناسه‌). بریتیه له‌وه‌ی که وه‌سوه‌سه فڕێ ده‌داته سینه و دڵ و ده‌رونی خه‌ڵکییه‌وه‌."
+    },
+    {
+      "ayah": 5,
+      "text": "له په‌ری و خه‌ڵکی، له جنۆکه و ئاده‌میزاد (ئه‌وانه‌ی که شه‌یتان سیفه‌تن)."
+    },
+    {
+      "ayah": 6,
+      "text": "له په‌ری و خه‌ڵكی (له جنۆكه و ئینسان ئه‌وانه‌ی شه‌یتان سیفه‌تن)."
+    }
+  ],
+  "missingAyahs": []
+}

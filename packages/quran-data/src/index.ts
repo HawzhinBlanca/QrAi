@@ -33,6 +33,13 @@ export type {
   SurahTimings,
 } from "./word-timings";
 
+// Licensed ayah translations (server-only loader; the web app imports the JSON via its bundler).
+export type {
+  AyahTranslation,
+  MissingTranslation,
+  SurahTranslation,
+} from "./translations";
+
 export const CANONICAL_IMPORT_VERSION = "2026-06-24-fatihah-seed-v1";
 
 export const CANONICAL_SOURCE_MANIFESTS: CanonicalSourceManifest[] = [

@@ -486,3 +486,35 @@ logged**, never truncated or guessed. Basmala/waqf tokens simply carry no timing
   (won't highlight); the 4 excluded pilot ayahs need Quran.com word-key adoption (option C) to
   recover. Commercial launch must confirm the specific reciter resource's license on QUL
   (see docs/DATA_LICENSES.md#quran-com-word-segments-audio).
+
+## ADR-0016 — Sorani (Kurdish) ayah translations via Quran.com/QuranEnc, rendered verbatim
+
+**Status:** Accepted · **Date:** 2026-07-15 · **Deciders:** owner (content provenance)
+
+### Context
+The app's default language is Central Kurdish (Sorani, `ckb`) but it shipped ZERO translated verse
+content — a Kurdistan learner read an English UI over Arabic they may not understand. This is the
+core of the "#1 for Kurdish speakers" strategy (ROAD_TO_1 T4). Fabricating Quran translation is
+forbidden; a licensed Sorani translation exists as open data.
+
+### Decision
+Ingest translation id 81 (**Burhan Muhammad-Amin / Tafsiri Asan**, the default Kurdish on
+Quran.com, from the QuranEnc ecosystem) from api.quran.com v4 as static JSON in packages/quran-data,
+and display it under each ayah in the reader (RTL, `lang="ckb"`), toggleable, default-on when the
+app language is `ckb`. Text is stored and rendered **verbatim** — QuranEnc's license forbids any
+modification. Ayahs the source has no entry for (e.g. 108:3, which Quran.com 404s) are recorded as
+missing and render nothing — never invented.
+
+### Options considered
+- **A. Quran.com v4 id 81 (chosen).** Live, licensed, the region's default reading, 339/340 pilot
+  ayahs. Attribution + verbatim storage satisfy the license.
+- **B. QuranEnc bulk JSON dumps.** Same underlying text; heavier ingest, no per-ayah API. A valid
+  alternate if the API is unavailable.
+- **C. Machine translation.** Rejected outright — fabrication of religious content.
+
+### Consequences
+- Easier: Kurdish learners get meaning; sets the pattern for Arabic/other translations (add a slug).
+- Follow-ups (docs/DATA_LICENSES.md#ckb-sorani-translation): confirm the QuranEnc **version string**
+  and schedule periodic re-fetch (the license's continuing-update duty); Quran.com's API exposes no
+  version field, so `fetchedAt` is only a drift anchor. Native-speaker review of the *UI strings*
+  (ckb bundle) remains T5 — this ADR covers verse translations only.
