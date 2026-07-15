@@ -36,6 +36,8 @@ services:
       - ./infra/sql/0015_teacher_review_scholar_approval_indexes.sql:/docker-entrypoint-initdb.d/15_teacher_review_scholar_approval_indexes.sql:ro
       - ./infra/sql/0016_missing_tenant_indexes.sql:/docker-entrypoint-initdb.d/16_missing_tenant_indexes.sql:ro
       - ./infra/sql/0017_eval_runs_index.sql:/docker-entrypoint-initdb.d/17_eval_runs_index.sql:ro
+      - ./infra/sql/0019_recitation_and_findings_sort_indexes.sql:/docker-entrypoint-initdb.d/19_recitation_and_findings_sort_indexes.sql:ro
+      - ./infra/sql/0020_language_check.sql:/docker-entrypoint-initdb.d/20_language_check.sql:ro
       - ./infra/sql/rls-app-role.sql:/tmp/rls-app-role.sql:ro
       - ./infra/sql/99_init_app_role.sh:/docker-entrypoint-initdb.d/99_init_app_role.sh:ro
     healthcheck:
