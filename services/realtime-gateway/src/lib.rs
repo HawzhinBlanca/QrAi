@@ -3,7 +3,6 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use axum::Json;
 use axum::Router;
 use axum::extract::ws::{Message, WebSocket};
 use axum::extract::{Path, Query, State, WebSocketUpgrade};
@@ -413,6 +412,12 @@ pub struct GatewayServerConfig {
     /// availability for a guarantee that a ticket used during a Redis outage can't be
     /// replayed on another instance. Default false (fail open). Env: REALTIME_TICKET_FAIL_CLOSED.
     pub ticket_fail_closed: bool,
+    /// Shared secret required in `x-metrics-token` to scrape /metrics. Unlike postgres/ml/asr, this
+    /// gateway is meant to be reachable OFF-HOST (docker-compose publishes 8081 on all interfaces),
+    /// so an unauthenticated /metrics publishes operational telemetry to the internet. Env: METRICS_TOKEN.
+    pub metrics_token: Option<String>,
+    /// Allow scraping /metrics with no token — dev/CI only. Env: ALLOW_INSECURE_DEFAULTS=1.
+    pub metrics_dev_open: bool,
 }
 
 impl Default for GatewayServerConfig {
@@ -428,6 +433,12 @@ impl Default for GatewayServerConfig {
             tenant_id: std::env::var("GATEWAY_TENANT_ID")
                 .unwrap_or_else(|_| "hikmah-pilot-erbil".to_owned()),
             ticket_fail_closed: std::env::var("REALTIME_TICKET_FAIL_CLOSED")
+                .map(|v| v == "1" || v == "true")
+                .unwrap_or(false),
+            metrics_token: std::env::var("METRICS_TOKEN")
+                .ok()
+                .filter(|t| !t.trim().is_empty()),
+            metrics_dev_open: std::env::var("ALLOW_INSECURE_DEFAULTS")
                 .map(|v| v == "1" || v == "true")
                 .unwrap_or(false),
         }
@@ -546,22 +557,110 @@ pub fn gateway_router_with_rate_limit(config: GatewayServerConfig, rate_limited:
     }
 }
 
-async fn metrics(State(state): State<GatewayServerState>) -> impl IntoResponse {
-    let gateway_metrics = state.gateway.metrics().await;
+/// Prometheus scrape endpoint. Access is FAIL-CLOSED: it serves metrics only when the request
+/// presents `x-metrics-token` matching `METRICS_TOKEN`; in dev (`ALLOW_INSECURE_DEFAULTS=1`) with no
+/// token configured it is open; otherwise it 404s, hiding the endpoint's existence.
+///
+/// This endpoint used to be unauthenticated JSON. An earlier audit flagged exactly that (see the
+/// note on platform-api's metrics_endpoint, which was built fail-closed so as "not to repeat" it) —
+/// but the gateway itself was never fixed. It matters MORE here than on platform-api: compose
+/// publishes 8081 on all interfaces, so session/chunk/ticket telemetry was world-readable.
+/// Output is Prometheus text exposition (was JSON, which no scraper can read).
+async fn metrics(
+    State(state): State<GatewayServerState>,
+    headers: axum::http::HeaderMap,
+) -> axum::response::Response {
+    if !metrics_access_allowed(&state.config, &headers) {
+        return StatusCode::NOT_FOUND.into_response();
+    }
+    let m = state.gateway.metrics().await;
     let ticket_count = state.consumed_tickets.read().await.len();
+    let body = render_prometheus(&m, ticket_count);
     (
-        StatusCode::OK,
-        Json(serde_json::json!({
-            "active_sessions": gateway_metrics.active_sessions,
-            "sessions_started": gateway_metrics.sessions_started,
-            "sessions_ended": gateway_metrics.sessions_ended,
-            "chunks_accepted": gateway_metrics.chunks_accepted,
-            "chunks_rejected_backpressure": gateway_metrics.chunks_rejected_backpressure,
-            "chunks_rejected_missing_session": gateway_metrics.chunks_rejected_missing_session,
-            "chunks_forward_failed": gateway_metrics.chunks_forward_failed,
-            "consumed_tickets_count": ticket_count,
-        })),
+        [(
+            axum::http::header::CONTENT_TYPE,
+            "text/plain; version=0.0.4; charset=utf-8",
+        )],
+        body,
     )
+        .into_response()
+}
+
+fn metrics_access_allowed(config: &GatewayServerConfig, headers: &axum::http::HeaderMap) -> bool {
+    match &config.metrics_token {
+        Some(token) => headers
+            .get("x-metrics-token")
+            .and_then(|v| v.to_str().ok())
+            .map(|v| v == token)
+            .unwrap_or(false),
+        // No token configured: allow only in explicit dev mode, otherwise fail closed.
+        None => config.metrics_dev_open,
+    }
+}
+
+/// Render the gateway counters as Prometheus text exposition. Cardinality is fixed (no labels), so
+/// this cannot blow up a scraper.
+fn render_prometheus(m: &GatewayMetrics, consumed_tickets: usize) -> String {
+    let mut out = String::new();
+    let gauge = |out: &mut String, name: &str, help: &str, value: u64| {
+        out.push_str(&format!(
+            "# HELP {name} {help}\n# TYPE {name} gauge\n{name} {value}\n"
+        ));
+    };
+    let counter = |out: &mut String, name: &str, help: &str, value: u64| {
+        out.push_str(&format!(
+            "# HELP {name} {help}\n# TYPE {name} counter\n{name} {value}\n"
+        ));
+    };
+    gauge(
+        &mut out,
+        "realtime_gateway_active_sessions",
+        "Sessions currently connected.",
+        m.active_sessions as u64,
+    );
+    counter(
+        &mut out,
+        "realtime_gateway_sessions_started_total",
+        "Audio sessions started.",
+        m.sessions_started,
+    );
+    counter(
+        &mut out,
+        "realtime_gateway_sessions_ended_total",
+        "Audio sessions ended.",
+        m.sessions_ended,
+    );
+    counter(
+        &mut out,
+        "realtime_gateway_chunks_accepted_total",
+        "Audio chunks accepted.",
+        m.chunks_accepted,
+    );
+    counter(
+        &mut out,
+        "realtime_gateway_chunks_rejected_backpressure_total",
+        "Audio chunks rejected because the session buffer was full.",
+        m.chunks_rejected_backpressure,
+    );
+    counter(
+        &mut out,
+        "realtime_gateway_chunks_rejected_missing_session_total",
+        "Audio chunks rejected for an unknown session.",
+        m.chunks_rejected_missing_session,
+    );
+    counter(
+        &mut out,
+        "realtime_gateway_chunks_forward_failed_total",
+        "Audio chunks that failed to forward to ML inference.",
+        m.chunks_forward_failed,
+    );
+    gauge(
+        &mut out,
+        "realtime_gateway_consumed_tickets",
+        "Consumed single-use tickets retained in memory for replay defence.",
+        consumed_tickets as u64,
+    );
+    out
 }
 
 async fn health() -> impl IntoResponse {
@@ -982,11 +1081,88 @@ mod tests {
     use std::collections::HashMap;
 
     use super::{
-        AudioChunk, GatewayError, GatewayServerConfig, GatewayServerState, MAX_CHUNK_BYTES,
-        RealtimeGateway, TicketCheckOutcome, TicketDedup, TicketError, check_ticket, evict_expired,
-        gateway_router, gateway_router_with_rate_limit, issue_realtime_ticket, ticket_hash,
+        AudioChunk, GatewayError, GatewayMetrics, GatewayServerConfig, GatewayServerState,
+        MAX_CHUNK_BYTES, RealtimeGateway, TicketCheckOutcome, TicketDedup, TicketError,
+        check_ticket, evict_expired, gateway_router, gateway_router_with_rate_limit,
+        issue_realtime_ticket, metrics_access_allowed, render_prometheus, ticket_hash,
         unix_now_seconds, validate_realtime_ticket,
     };
+
+    fn metrics_headers(token: Option<&str>) -> axum::http::HeaderMap {
+        let mut h = axum::http::HeaderMap::new();
+        if let Some(t) = token {
+            h.insert("x-metrics-token", t.parse().unwrap());
+        }
+        h
+    }
+
+    /// Security: /metrics publishes operational telemetry and this gateway is published off-host
+    /// (compose maps 8081 on all interfaces), so it must NEVER be readable without a token unless
+    /// dev mode is explicitly enabled. It used to be wholly unauthenticated.
+    #[test]
+    fn metrics_access_is_fail_closed_without_a_token_or_dev_mode() {
+        let config = GatewayServerConfig {
+            metrics_token: None,
+            metrics_dev_open: false,
+            ..GatewayServerConfig::default()
+        };
+        assert!(
+            !metrics_access_allowed(&config, &metrics_headers(None)),
+            "no token configured and not dev-open must FAIL CLOSED"
+        );
+        assert!(
+            !metrics_access_allowed(&config, &metrics_headers(Some("guess"))),
+            "a guessed token must not open it either when none is configured"
+        );
+    }
+
+    #[test]
+    fn metrics_access_requires_the_matching_token_when_configured() {
+        let config = GatewayServerConfig {
+            metrics_token: Some("s3cret".to_owned()),
+            metrics_dev_open: true, // must NOT override a configured token
+            ..GatewayServerConfig::default()
+        };
+        assert!(metrics_access_allowed(
+            &config,
+            &metrics_headers(Some("s3cret"))
+        ));
+        assert!(!metrics_access_allowed(
+            &config,
+            &metrics_headers(Some("wrong"))
+        ));
+        assert!(!metrics_access_allowed(&config, &metrics_headers(None)));
+    }
+
+    #[test]
+    fn metrics_access_is_open_in_explicit_dev_mode_with_no_token() {
+        let config = GatewayServerConfig {
+            metrics_token: None,
+            metrics_dev_open: true,
+            ..GatewayServerConfig::default()
+        };
+        assert!(metrics_access_allowed(&config, &metrics_headers(None)));
+    }
+
+    #[test]
+    fn renders_prometheus_text_exposition_not_json() {
+        let m = GatewayMetrics {
+            active_sessions: 2,
+            sessions_started: 5,
+            sessions_ended: 3,
+            chunks_accepted: 40,
+            chunks_rejected_backpressure: 1,
+            chunks_rejected_missing_session: 2,
+            chunks_forward_failed: 4,
+        };
+        let out = render_prometheus(&m, 7);
+        assert!(out.contains("# TYPE realtime_gateway_active_sessions gauge"));
+        assert!(out.contains("realtime_gateway_active_sessions 2"));
+        assert!(out.contains("# TYPE realtime_gateway_chunks_forward_failed_total counter"));
+        assert!(out.contains("realtime_gateway_chunks_forward_failed_total 4"));
+        assert!(out.contains("realtime_gateway_consumed_tickets 7"));
+        assert!(!out.contains('{'), "must be Prometheus text, not JSON");
+    }
 
     fn chunk(session_id: &str, chunk_id: &str) -> AudioChunk {
         AudioChunk::new(session_id, chunk_id, 0, 20, 16_000, vec![1, 2, 3, 4]).unwrap()
