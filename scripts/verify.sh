@@ -67,6 +67,11 @@ if [[ "$FAST" != "--fast" ]]; then
   # `isMain`, so server.test.mjs can import it directly; keep explicit paths (a dir glob would
   # still pick up non-test .mjs files).
   run "test: node services"       "node --test services/ml-inference/alignment.test.mjs services/ml-inference/tajweed.test.mjs services/ml-inference/server.test.mjs services/agents/agents.test.mjs"
+  # apps/mobile is NOT a pnpm workspace member, so the TS `test: ts` line above never covered it and
+  # its consent/auth/audio-format helpers went unguarded (a real audioFormat bug shipped there). The
+  # helpers import ONLY node builtins, so this needs no install — just Node's type-stripping to read
+  # the .ts directly. Same explicit-path style as the node services line above.
+  run "test: mobile"              "node --experimental-strip-types --test apps/mobile/lib/session.test.ts"
   run "test: rust gateway"        "cargo test --manifest-path $GW"
   run "test: rust platform-api"   "cargo test --manifest-path $API"
 
