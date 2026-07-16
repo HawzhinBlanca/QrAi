@@ -520,6 +520,16 @@ describe("Quran AI app smoke", () => {
     expect(document.body.textContent).toContain("1 chunks");
     expect(document.body.textContent).toContain("KB streamed");
     expect(document.body.textContent).toContain("1 accepted acks");
+
+    // T13 proof #2 (UI honesty): when the gateway drops mid-session the learner must SEE that the
+    // session is reconnecting — not a frozen "connected" that quietly streams into a dead socket.
+    // A real close flips readyState before firing onclose.
+    await act(async () => {
+      FakeWebSocket.instances[0].readyState = 3;
+      FakeWebSocket.instances[0].onclose?.();
+    });
+    expect(document.body.textContent).toContain("reconnecting");
+    expect(document.body.textContent).not.toContain("gatewayReconnecting"); // rendered, not a raw i18n key
   });
 
   it("double-clicking Start live recitation opens only one WebSocket and one mic stream", async () => {
