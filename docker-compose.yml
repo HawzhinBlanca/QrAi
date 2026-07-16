@@ -174,9 +174,17 @@ services:
     build:
       context: .
       dockerfile: apps/web/Dockerfile
-    environment:
-      VITE_PLATFORM_API_URL: "http://localhost:8080"
-      VITE_REALTIME_GATEWAY_URL: "ws://localhost:8081"
+      # Vite inlines VITE_* at BUILD time. These were previously under `environment:` — runtime env
+      # on an nginx container serving a pre-built bundle, i.e. inert: the image ignored them and
+      # used the code defaults. Declared here as build args so what is written is what ships.
+      #
+      # Values chosen to MATCH the behaviour that was actually shipping, not the inert declarations:
+      #   - API "" -> relative /v1/, proxied by nginx on this origin (the old "http://localhost:8080"
+      #     never took effect; baking it would newly bypass the proxy and need CORS).
+      #   - gateway ws://localhost:8081 -> the direct port this stack publishes.
+      args:
+        VITE_PLATFORM_API_URL: ""
+        VITE_REALTIME_GATEWAY_URL: "ws://localhost:8081"
     ports:
       - "5173:8080"
     depends_on:
