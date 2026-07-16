@@ -47,6 +47,35 @@ const lastEvent = (tenantId, action) => {
   return events[events.length - 1];
 };
 
+test("child-profile audio without guardian consent is NOT sent to ASR (consent/child-safety gate)", async () => {
+  // Regression: the transcribe call fired on `audioBase64` presence ALONE, decoupled from the
+  // consent + child-safety decision it audits — so a child's raw audio was shipped to Whisper even
+  // when the request was audited `external-asr.denied`. This test is hermetic (no ASR service), so a
+  // wrongly-attempted transcribe would throw (transcribeAudio fetches ASR_SERVICE_URL and 502s);
+  // the gate must skip it and fall through to the canonical path instead.
+  const tenantId = `child-consent-gate-${Date.now()}`;
+  const res = await predictAlignment({
+    tenantId,
+    sessionId: "s-child",
+    profileKind: "child",
+    externalAsrRequested: true,
+    consent: { externalAsrProcessing: true, guardianApproved: false }, // guardian did NOT approve
+    audioBase64: "AAAA",
+    quranRef: { surahNumber: 1, ayahStart: 1, ayahEnd: 7, display: "Al-Fatihah 1:1-7" },
+  });
+
+  // Fell back to a canonical alignment (no ASR), and is gated for teacher review.
+  assert.ok(res.alignments.length > 0, "returns a canonical-fallback alignment, not an ASR error");
+  assert.equal(res.alignments[0].reviewStatus, "teacher-review-required");
+  // The denial is audited AND no external-asr.called event exists for this tenant.
+  assert.ok(lastEvent(tenantId, "privacy.external-asr.denied"), "the ASR denial is audited");
+  assert.equal(
+    lastEvent(tenantId, "privacy.external-asr.called"),
+    undefined,
+    "external ASR was never marked called — the audio was not sent",
+  );
+});
+
 test("alignment audit event records the REAL confidence and word counts, not the golden fixture's", async () => {
   const tenantId = "test-audit-alignment-honesty";
   // Default quranRef (Al-Fatihah 1:1-7) intentionally matches a golden fixture, with no audio and
