@@ -16,9 +16,18 @@ task below serves one of those, or removes a platform blocker the audit found.
 | T15 (core) — Prometheus `/metrics` on platform-api, access-controlled | ✅ **DONE** | #208 |
 | — data expansion: both features now cover all 39 beginner-core surahs (1, 2, Juz Amma 78–114) | ✅ **DONE** | #207 |
 | **T3 — forced alignment (learner word timestamps)** | 🟢 **ALIGNER + ENDPOINT BUILT & VALIDATED** — `forced_align.py` (Apache-2.0 CTC, diacritic-stripped Arabic) validated vs Quran.com ground truth (~64–100 ms word-start MAE); the asr `/v1/force-align` endpoint now uses it (real CTC, not Whisper-prompt bias — ADR-0017). Remaining: add `transformers` to the lock (deploy), then thread timing ml→Rust (persist non-zero start/end)→web sends audio. | #210, #211, #213 |
+| T15 (gateway) — realtime-gateway `/metrics`: fail-closed + Prometheus exposition | ✅ **DONE** | #229 |
 | T6, T7, T8 | ⏳ ML, feasible in the same venv; T7/T8 gated on dataset licenses | — |
-| T12, T13, T16, T18, T15-rest | ⏳ straightforward-code, not started | — |
+| T12, T13, T16, T18 | ⏳ straightforward-code, not started | — |
+| T15 (remaining) — ml-inference `/metrics`, Grafana dashboards, k6 load profile | ⏳ Grafana/k6 need a running deploy to be more than a config file | — |
 | T0, T5, T7/T8 licenses, T11, on-device tests, scholar | 🔒 owner/human-gated | — |
+
+### 2026-07-16 hardening sweep (outside the T-list)
+A two-round adversarial review of every service; each confirmed finding fixed with a regression test
+and merged green. Highlights: cross-tenant privilege escalation in `register` (#218), force-align
+timings misattributed to the wrong words (#219), an ASR decode-bomb DoS (#220), a child's audio sent
+to ASR despite a `denied` consent decision (#225), and the gateway's world-readable `/metrics`
+(#229 — flagged by an earlier audit, never remediated until now). Full list: #216–#229.
 
 **T3 build note (de-risked 2026-07-16):** forced alignment runs in the service venv. For the
 production path use an **Apache-2.0 Arabic CTC** model (`jonatasgrosman/wav2vec2-large-xlsr-53-arabic`)
