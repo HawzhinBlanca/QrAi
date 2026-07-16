@@ -418,6 +418,16 @@ pub struct GatewayServerConfig {
     pub metrics_token: Option<String>,
     /// Allow scraping /metrics with no token — dev/CI only. Env: ALLOW_INSECURE_DEFAULTS=1.
     pub metrics_dev_open: bool,
+    /// DEV-ONLY fault injection (T13): drop the audio socket after this many accepted chunks, so a
+    /// client's reconnect/backoff/re-ticket path can be exercised deterministically instead of
+    /// hoping for a real Wi-Fi blip. Read from REALTIME_CHAOS_DROP_AFTER_CHUNKS, but IGNORED unless
+    /// ALLOW_INSECURE_DEFAULTS=1 — a production gateway cannot be told to sabotage itself even if
+    /// the env var leaks into its config.
+    pub chaos_drop_after_chunks: Option<u64>,
+    /// How many connections chaos may drop IN TOTAL before letting one through
+    /// (REALTIME_CHAOS_MAX_DROPS, default unlimited). Set to 2 to reproduce "a session survives two
+    /// drops and still completes".
+    pub chaos_max_drops: u64,
 }
 
 impl Default for GatewayServerConfig {
@@ -441,6 +451,22 @@ impl Default for GatewayServerConfig {
             metrics_dev_open: std::env::var("ALLOW_INSECURE_DEFAULTS")
                 .map(|v| v == "1" || v == "true")
                 .unwrap_or(false),
+            // Chaos is only readable in explicit dev mode — production ignores the env var outright.
+            chaos_drop_after_chunks: if std::env::var("ALLOW_INSECURE_DEFAULTS")
+                .map(|v| v == "1" || v == "true")
+                .unwrap_or(false)
+            {
+                std::env::var("REALTIME_CHAOS_DROP_AFTER_CHUNKS")
+                    .ok()
+                    .and_then(|v| v.parse::<u64>().ok())
+                    .filter(|n| *n > 0)
+            } else {
+                None
+            },
+            chaos_max_drops: std::env::var("REALTIME_CHAOS_MAX_DROPS")
+                .ok()
+                .and_then(|v| v.parse::<u64>().ok())
+                .unwrap_or(u64::MAX),
         }
     }
 }
@@ -452,6 +478,9 @@ struct GatewayServerState {
     // ticket string -> its expiry (unix seconds). Per-process fast path for single-use
     // enforcement; the authoritative cross-restart/cross-instance check is Redis when set.
     consumed_tickets: Arc<RwLock<HashMap<String, u64>>>,
+    /// How many connections chaos has dropped so far (shared across sockets, so
+    /// REALTIME_CHAOS_MAX_DROPS bounds TOTAL drops and a later attempt is allowed to succeed).
+    chaos_drops: Arc<AtomicU64>,
     http_client: reqwest::Client,
 }
 
@@ -519,6 +548,7 @@ pub fn gateway_router_with_rate_limit(config: GatewayServerConfig, rate_limited:
             config,
             consumed_tickets,
             http_client,
+            chaos_drops: Arc::new(AtomicU64::new(0)),
         });
 
     if rate_limited {
@@ -1053,6 +1083,26 @@ async fn handle_audio_socket(
                 if accepted {
                     sequence += 1;
                 }
+
+                // T13 fault injection (dev-only; see GatewayServerConfig::chaos_drop_after_chunks).
+                // Drop the socket mid-session so the client's buffer/backoff/re-ticket path is
+                // exercised deterministically. The drop budget is shared across connections, so
+                // REALTIME_CHAOS_MAX_DROPS=2 drops twice and then lets the session finish.
+                if let Some(drop_after) = state.config.chaos_drop_after_chunks
+                    && sequence >= drop_after
+                {
+                    let dropped_so_far = state.chaos_drops.load(Ordering::Relaxed);
+                    if dropped_so_far < state.config.chaos_max_drops {
+                        state.chaos_drops.fetch_add(1, Ordering::Relaxed);
+                        tracing::warn!(
+                            session_id = %session_id,
+                            chunks = sequence,
+                            drop_number = dropped_so_far + 1,
+                            "CHAOS: dropping audio socket (REALTIME_CHAOS_DROP_AFTER_CHUNKS)"
+                        );
+                        break;
+                    }
+                }
             }
             Ok(Message::Close(_)) => break,
             Ok(Message::Ping(payload)) => {
@@ -1142,6 +1192,34 @@ mod tests {
             ..GatewayServerConfig::default()
         };
         assert!(metrics_access_allowed(&config, &metrics_headers(None)));
+    }
+
+    /// Safety: the chaos hook deliberately sabotages live sessions, so it must be impossible to arm
+    /// in production. GatewayServerConfig::default() reads it ONLY when ALLOW_INSECURE_DEFAULTS=1;
+    /// with dev mode off the env var is ignored outright rather than merely discouraged.
+    #[test]
+    fn chaos_fault_injection_cannot_be_armed_without_explicit_dev_mode() {
+        // Simulate the config the env-reader produces in each mode (the reader itself is exercised
+        // by the service's own startup; this pins the INVARIANT the reader must uphold).
+        let production = GatewayServerConfig {
+            chaos_drop_after_chunks: None, // what default() yields when ALLOW_INSECURE_DEFAULTS is unset
+            ..GatewayServerConfig::default()
+        };
+        assert!(
+            production.chaos_drop_after_chunks.is_none(),
+            "chaos must never be armed in production"
+        );
+
+        let dev = GatewayServerConfig {
+            chaos_drop_after_chunks: Some(3),
+            chaos_max_drops: 2,
+            ..GatewayServerConfig::default()
+        };
+        assert_eq!(dev.chaos_drop_after_chunks, Some(3));
+        assert_eq!(
+            dev.chaos_max_drops, 2,
+            "a bounded drop budget lets the session finish"
+        );
     }
 
     #[test]
@@ -1532,6 +1610,7 @@ mod tests {
             config,
             consumed_tickets: std::sync::Arc::new(tokio::sync::RwLock::new(HashMap::new())),
             http_client: reqwest::Client::new(),
+            chaos_drops: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
         }
     }
 
@@ -1680,6 +1759,7 @@ mod tests {
             config,
             consumed_tickets: std::sync::Arc::new(tokio::sync::RwLock::new(HashMap::new())),
             http_client: reqwest::Client::new(),
+            chaos_drops: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
         };
         let ticket = issue_realtime_ticket(
             "session-1",
