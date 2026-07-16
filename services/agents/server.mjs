@@ -103,7 +103,11 @@ export async function runTajweedExplainerBatch({ fetchFindings, record, fetchExi
   const runs = [];
   let skipped = 0;
   for (const finding of findings) {
-    if (finding && finding.id && processed.has(finding.id)) {
+    // Skip anything we can't dedup: a finding with no id can never be recorded in `processed`, so
+    // without treating it as skippable it would be re-explained and re-recorded on EVERY batch tick
+    // (unbounded agent_runs growth + duplicate teacher-review-queue entries). A finding must have an
+    // id to be processed exactly once.
+    if (!finding || !finding.id || processed.has(finding.id)) {
       skipped += 1;
       continue;
     }
@@ -111,7 +115,7 @@ export async function runTajweedExplainerBatch({ fetchFindings, record, fetchExi
     const recorded = await write(candidate);
     runs.push(recorded);
     // Guard against duplicate finding ids within a single batch too.
-    if (finding && finding.id) processed.add(finding.id);
+    processed.add(finding.id);
   }
   return {
     agent: "Tajweed Explainer",
