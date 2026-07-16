@@ -294,6 +294,14 @@ function AuthenticatedApp({ bypassLogin = false }: { bypassLogin?: boolean }) {
     document.documentElement.lang = activeLanguage;
   }, [activeLanguage]);
 
+  // Default the verse translation ON for Kurdish (ckb) and off otherwise WHENEVER the UI language
+  // changes — otherwise the useState initializer only honored ?lng=ckb at first load, so a learner
+  // who picked Kurdish from the TopBar dropdown saw the Arabic-only reader with no Sorani line. A
+  // manual toggle afterward is respected until the next language change (deps: [activeLanguage]).
+  useEffect(() => {
+    setShowTranslation(activeLanguage === "ckb");
+  }, [activeLanguage]);
+
   const activeStepIndex = Math.max(0, practiceSteps.findIndex((step) => step.id === practiceMode));
   const isLearnerHome = activeSection === "learner" && practiceMode === "home";
   const pageTitle =
