@@ -297,6 +297,8 @@
       "statusReady": "Ready",
       "gatewayConnecting": "connecting",
       "gatewayConnected": "connected",
+      "gatewayReconnecting": "reconnecting… (audio is being buffered)",
+      "gatewayDegraded": "live feedback unavailable — finishing offline",
       "gatewayUnavailable": "unavailable",
       "gatewayError": "error",
       "gatewayClosed": "closed",

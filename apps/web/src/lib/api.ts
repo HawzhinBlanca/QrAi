@@ -278,6 +278,43 @@ export async function persistSessionAlignments(params: {
   }>;
 }
 
+export interface RealtimeTicket {
+  token: string;
+  expiresAt: string;
+  allowedSampleRates: number[];
+}
+
+/**
+ * Mint a SINGLE-USE realtime gateway ticket for `sessionId` (T13).
+ *
+ * The gateway rejects an audio WebSocket with no `?ticket=` (401) and refuses any ticket it has
+ * already seen (replay defence), so every connection — including each reconnect — needs a FRESH
+ * token from here.
+ */
+export async function fetchRealtimeTicket(params: {
+  tenantId: string;
+  userId: string;
+  /** The endpoint allows a learner to ticket their OWN session, or admin/ops any in-tenant session. */
+  role?: string;
+  authToken?: string;
+  sessionId: string;
+  requestedSampleRates?: number[];
+}): Promise<RealtimeTicket> {
+  const response = await fetchWithTimeout(`${API_BASE}/v1/realtime-session-tickets`, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      ...actorHeaders(params.tenantId, params.userId, params.role ?? "learner", params.authToken),
+    },
+    body: JSON.stringify({
+      sessionId: params.sessionId,
+      requestedSampleRates: params.requestedSampleRates ?? [16000],
+    }),
+  });
+  if (!response.ok) throw new Error(`Realtime ticket ${response.status}`);
+  return response.json() as Promise<RealtimeTicket>;
+}
+
 export interface ForceAlignWord {
   word: string;
   start: number; // seconds

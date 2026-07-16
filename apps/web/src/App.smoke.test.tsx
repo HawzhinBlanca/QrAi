@@ -99,7 +99,27 @@ describe("Quran AI app smoke", () => {
     // Hermetic: this smoke test asserts the no-backend fallbacks, so make every fetch fail
     // fast regardless of whether the local services happen to be running (Node 22 ships a
     // real global fetch that would otherwise hit them and make the test non-deterministic).
-    vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new Error("no backend in smoke test")));
+    //
+    // EXCEPT the realtime ticket: live upload now mints a single-use gateway ticket and puts it in
+    // the socket URL (without one the gateway 401s — the reason live upload never actually
+    // connected before). It is a hard dependency of the socket path this test drives, so serve it
+    // and keep failing everything else.
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL) => {
+        if (String(input).includes("/v1/realtime-session-tickets")) {
+          return new Response(
+            JSON.stringify({
+              token: "smoke-ticket",
+              expiresAt: "9999999999",
+              allowedSampleRates: [16000],
+            }),
+            { status: 200, headers: { "content-type": "application/json" } },
+          );
+        }
+        throw new Error("no backend in smoke test");
+      }),
+    );
   });
 
   afterEach(() => {
@@ -477,6 +497,9 @@ describe("Quran AI app smoke", () => {
     // gateway audio path shape rather than a hardcoded session id.
     expect(FakeWebSocket.instances[0].url).toContain("/v1/recitation-sessions/");
     expect(FakeWebSocket.instances[0].url).toContain("/audio");
+    // Regression: the socket MUST carry a single-use ticket. It previously connected with none, so
+    // the real gateway answered 401 and live upload never worked at all.
+    expect(FakeWebSocket.instances[0].url).toContain("ticket=smoke-ticket");
 
     await act(async () => {
       FakeMediaRecorder.instances[0].emitChunk(new Blob(["audio"], { type: "audio/webm" }));
