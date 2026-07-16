@@ -179,17 +179,17 @@ export function TeacherSurface({ tenantId, authToken }: TeacherSurfaceProps) {
       );
 
       if (ok) {
-        setMessage({ type: "success", text: "Review submitted successfully!" });
+        setMessage({ type: "success", text: t("teacherSurface.reviewSuccess") });
         setReviewNote("");
         // Reload queue to update status
         await loadQueue();
         // Clear selected session if it has no more pending findings
         setSelectedSession(null);
       } else {
-        setMessage({ type: "error", text: "Failed to submit review. Please try again." });
+        setMessage({ type: "error", text: t("teacherSurface.reviewFailedRetry") });
       }
     } catch {
-      setMessage({ type: "error", text: "Failed to submit review." });
+      setMessage({ type: "error", text: t("teacherSurface.reviewFailed") });
     } finally {
       setSubmitting(false);
     }
@@ -201,13 +201,13 @@ export function TeacherSurface({ tenantId, authToken }: TeacherSurfaceProps) {
       <aside style={{ background: "var(--card)", border: "1px solid var(--line)", borderRadius: "12px", padding: "20px", display: "flex", flexDirection: "column", gap: "16px" }}>
         <h2 style={{ fontSize: "1.2rem", fontWeight: 600, display: "flex", alignItems: "center", gap: "8px", margin: 0 }}>
           <ListTodo size={20} />
-          Teacher Queue
+          {t("teacherSurface.queueTitle")}
         </h2>
         
         {loading ? (
-          <p style={{ color: "var(--text-quiet)", textAlign: "center", padding: "20px 0" }}>Loading queue...</p>
+          <p style={{ color: "var(--text-quiet)", textAlign: "center", padding: "20px 0" }}>{t("teacherSurface.loadingQueue")}</p>
         ) : sessions.length === 0 ? (
-          <p style={{ color: "var(--text-quiet)", textAlign: "center", padding: "20px 0" }}>No pending recitations.</p>
+          <p style={{ color: "var(--text-quiet)", textAlign: "center", padding: "20px 0" }}>{t("teacherSurface.noPending")}</p>
         ) : (
           <div style={{ display: "flex", flexDirection: "column", gap: "10px", overflowY: "auto", maxHeight: "600px" }}>
             {sessions.map((session) => (
@@ -218,7 +218,7 @@ export function TeacherSurface({ tenantId, authToken }: TeacherSurfaceProps) {
                 style={{
                   width: "100%",
                   padding: "12px",
-                  textAlign: "left",
+                  textAlign: "start",
                   background: selectedSession?.id === session.id ? "var(--bg-accent, rgba(255, 255, 255, 0.05))" : "transparent",
                   border: "1px solid",
                   borderColor: selectedSession?.id === session.id ? "var(--border-accent, var(--text))" : "var(--line)",
@@ -252,16 +252,16 @@ export function TeacherSurface({ tenantId, authToken }: TeacherSurfaceProps) {
             <header style={{ borderBottom: "1px solid var(--line)", paddingBottom: "16px" }}>
               <h1 style={{ margin: "0 0 8px 0", fontSize: "1.6rem" }}>{selectedSession.quranRef.display}</h1>
               <div style={{ display: "flex", gap: "16px", color: "var(--text-quiet)", fontSize: "0.9rem" }}>
-                <span>Learner: <strong>{selectedSession.learnerId}</strong></span>
+                <span>{t("teacherSurface.learnerLabel")}: <strong>{selectedSession.learnerId}</strong></span>
                 <span>•</span>
-                <span>Accuracy Score: <strong>{Math.round(selectedSession.confidence * 100)}%</strong></span>
+                <span>{t("teacherSurface.accuracyLabel")}: <strong>{Math.round(selectedSession.confidence * 100)}%</strong></span>
               </div>
             </header>
 
             {/* Audio Section */}
             <section style={{ background: "var(--bg-card-secondary, rgba(255, 255, 255, 0.02))", border: "1px solid var(--line)", borderRadius: "8px", padding: "16px", display: "flex", alignItems: "center", gap: "16px" }}>
               {loadingAudio ? (
-                <span style={{ color: "var(--text-quiet)" }}>Downloading recitation audio...</span>
+                <span style={{ color: "var(--text-quiet)" }}>{t("teacherSurface.downloadingAudio")}</span>
               ) : audioUrl ? (
                 <>
                   <button
@@ -279,26 +279,26 @@ export function TeacherSurface({ tenantId, authToken }: TeacherSurfaceProps) {
                       cursor: "pointer"
                     }}
                   >
-                    {isPlaying ? <Pause size={20} /> : <Play size={20} style={{ marginLeft: "2px" }} />}
+                    {isPlaying ? <Pause size={20} /> : <Play size={20} style={{ marginInlineStart: "2px" }} />}
                   </button>
                   <div>
-                    <strong style={{ display: "block" }}>Listen to Recitation</strong>
-                    <span style={{ fontSize: "0.85rem", color: "var(--text-quiet)" }}>Review pronunciation and flow before deciding.</span>
+                    <strong style={{ display: "block" }}>{t("teacherSurface.listenTitle")}</strong>
+                    <span style={{ fontSize: "0.85rem", color: "var(--text-quiet)" }}>{t("teacherSurface.listenHint")}</span>
                   </div>
                 </>
               ) : (
                 <span style={{ color: "var(--text-quiet)", display: "flex", alignItems: "center", gap: "6px" }}>
                   <AlertCircle size={16} />
-                  No audio available for this session.
+                  {t("teacherSurface.noAudio")}
                 </span>
               )}
             </section>
 
             {/* Alignments / Transcription words */}
             <section>
-              <h3 style={{ margin: "0 0 12px 0", fontSize: "1.1rem" }}>Learner Transcription Alignments</h3>
+              <h3 style={{ margin: "0 0 12px 0", fontSize: "1.1rem" }}>{t("teacherSurface.alignmentsTitle")}</h3>
               {loadingAlignments ? (
-                <p style={{ color: "var(--text-quiet)" }}>Loading words...</p>
+                <p style={{ color: "var(--text-quiet)" }}>{t("teacherSurface.loadingWords")}</p>
               ) : (
                 <div style={{ display: "flex", flexWrap: "wrap", gap: "10px", padding: "16px", border: "1px solid var(--line)", borderRadius: "8px", background: "var(--bg)" }}>
                   {alignments.map((align, index) => {
@@ -316,7 +316,7 @@ export function TeacherSurface({ tenantId, authToken }: TeacherSurfaceProps) {
                         }}
                       >
                         <div style={{ fontSize: "1.2rem", fontWeight: "bold" }}>{align.canonicalText}</div>
-                        <div style={{ fontSize: "0.8rem", color: "var(--text-quiet)" }}>Heard: {align.heardText || "—"}</div>
+                        <div style={{ fontSize: "0.8rem", color: "var(--text-quiet)" }}>{t("teacherSurface.heardLabel")}: {align.heardText || "—"}</div>
                       </div>
                     );
                   })}
@@ -326,10 +326,10 @@ export function TeacherSurface({ tenantId, authToken }: TeacherSurfaceProps) {
 
             {/* Tajweed Findings requiring Teacher Review */}
             <section style={{ display: "flex", flexDirection: "column", gap: "16px" }}>
-              <h3 style={{ margin: 0, fontSize: "1.1rem" }}>Tajweed and Alignment Findings</h3>
+              <h3 style={{ margin: 0, fontSize: "1.1rem" }}>{t("teacherSurface.findingsTitle")}</h3>
               
               {sessionFindings.length === 0 ? (
-                <p style={{ color: "var(--text-quiet)" }}>No findings require review. You can safely accept the recitation.</p>
+                <p style={{ color: "var(--text-quiet)" }}>{t("teacherSurface.noFindings")}</p>
               ) : (
                 <div style={{ display: "flex", flexDirection: "column", gap: "16px" }}>
                   {sessionFindings.map((finding) => (
@@ -344,11 +344,11 @@ export function TeacherSurface({ tenantId, authToken }: TeacherSurfaceProps) {
                     >
                       <div style={{ display: "flex", justifyContent: "space-between", marginBottom: "12px" }}>
                         <div>
-                          <strong style={{ fontSize: "1.05rem", color: "#f59e0b" }}>{finding.rule} Rule</strong>
-                          <span style={{ display: "block", fontSize: "0.85rem", color: "var(--text-quiet)" }}>Word Ref: {finding.wordId}</span>
+                          <strong style={{ fontSize: "1.05rem", color: "#f59e0b" }}>{t("teacherSurface.ruleLabel", { rule: finding.rule })}</strong>
+                          <span style={{ display: "block", fontSize: "0.85rem", color: "var(--text-quiet)" }}>{t("teacherSurface.wordRef", { wordId: finding.wordId })}</span>
                         </div>
                         <span style={{ fontSize: "0.8rem", padding: "4px 8px", borderRadius: "12px", background: "rgba(239, 68, 68, 0.1)", color: "#ef4444", alignSelf: "flex-start" }}>
-                          Confidence: {Math.round(finding.confidence * 100)}%
+                          {t("teacherSurface.confidence", { percent: Math.round(finding.confidence * 100) })}
                         </span>
                       </div>
                       
@@ -357,7 +357,7 @@ export function TeacherSurface({ tenantId, authToken }: TeacherSurfaceProps) {
                       {/* Review input */}
                       <div style={{ display: "flex", flexDirection: "column", gap: "12px" }}>
                         <textarea
-                          placeholder="Write correction feedback or notes (optional)..."
+                          placeholder={t("teacherSurface.notePlaceholder")}
                           value={reviewNote}
                           onChange={(e) => setReviewNote(e.target.value)}
                           style={{
@@ -404,7 +404,7 @@ export function TeacherSurface({ tenantId, authToken }: TeacherSurfaceProps) {
                             }}
                           >
                             <Check size={16} />
-                            Accept Finding
+                            {t("teacherSurface.accept")}
                           </button>
                           <button
                             disabled={submitting}
@@ -423,7 +423,7 @@ export function TeacherSurface({ tenantId, authToken }: TeacherSurfaceProps) {
                             }}
                           >
                             <X size={16} />
-                            Reject Finding
+                            {t("teacherSurface.reject")}
                           </button>
                           <button
                             disabled={submitting}
@@ -442,7 +442,7 @@ export function TeacherSurface({ tenantId, authToken }: TeacherSurfaceProps) {
                             }}
                           >
                             <Edit3 size={16} />
-                            Correct / Edit
+                            {t("teacherSurface.edit")}
                           </button>
                         </div>
                       </div>
@@ -455,7 +455,7 @@ export function TeacherSurface({ tenantId, authToken }: TeacherSurfaceProps) {
         ) : (
           <div style={{ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", height: "100%", color: "var(--text-quiet)", gap: "12px", minHeight: "300px" }}>
             <ListTodo size={40} />
-            <h3>Select a recitation from the queue to start review.</h3>
+            <h3>{t("teacherSurface.emptyState")}</h3>
           </div>
         )}
       </main>
