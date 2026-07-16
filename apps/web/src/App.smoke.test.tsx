@@ -530,6 +530,18 @@ describe("Quran AI app smoke", () => {
     });
     expect(document.body.textContent).toContain("reconnecting");
     expect(document.body.textContent).not.toContain("gatewayReconnecting"); // rendered, not a raw i18n key
+
+    // Tear the session down. Not cosmetic: the drop above armed a REAL backoff timer, and this
+    // suite does not inject a fake one. Leaving it live lets it fire during a LATER test, mint a
+    // ticket, and push a stray socket into FakeWebSocket.instances (which beforeEach resets) — the
+    // next test then asserts against a socket it does not own. Closing sets closedByCaller, which
+    // the scheduled retry checks before reconnecting.
+    const stopButton = Array.from(document.querySelectorAll<HTMLButtonElement>("button")).find(
+      (button) => button.textContent?.includes("Stop live recitation"),
+    );
+    await act(async () => {
+      stopButton?.click();
+    });
   });
 
   it("double-clicking Start live recitation opens only one WebSocket and one mic stream", async () => {

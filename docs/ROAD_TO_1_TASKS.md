@@ -17,8 +17,9 @@ task below serves one of those, or removes a platform blocker the audit found.
 | — data expansion: both features now cover all 39 beginner-core surahs (1, 2, Juz Amma 78–114) | ✅ **DONE** | #207 |
 | **T3 — forced alignment (learner word timestamps)** | 🟢 **ALIGNER + ENDPOINT BUILT & VALIDATED** — `forced_align.py` (Apache-2.0 CTC, diacritic-stripped Arabic) validated vs Quran.com ground truth (~64–100 ms word-start MAE); the asr `/v1/force-align` endpoint now uses it (real CTC, not Whisper-prompt bias — ADR-0017). Remaining: add `transformers` to the lock (deploy), then thread timing ml→Rust (persist non-zero start/end)→web sends audio. | #210, #211, #213 |
 | T15 (gateway) — realtime-gateway `/metrics`: fail-closed + Prometheus exposition | ✅ **DONE** | #229 |
+| **T13 — realtime resilience: WS reconnect + buffering** | ✅ **DONE** — all 4 proofs. Found+fixed the cause it was untestable: the web NEVER fetched a ticket, so the gateway 401'd every audio socket (live upload was dead). Proof 1: real chaos run survived 2 forced drops, `sent=12/12 acked=12 drops=2 tickets=3`, jittered backoff 484ms/397ms, fresh ticket per reconnect. Proof 2: smoke test asserts the UI renders "reconnecting" on a real drop (an assertion, not a screenshot — it runs on every gate). Proof 3: bounded buffer — 1000-chunk outage stays at 50, all 950 drops counted+reported. Proof 4: 9 state-machine unit tests. | #231, #232, #233 |
 | T6, T7, T8 | ⏳ ML, feasible in the same venv; T7/T8 gated on dataset licenses | — |
-| T12, T13, T16, T18 | ⏳ straightforward-code, not started | — |
+| T12, T16, T18 | ⏳ straightforward-code, not started | — |
 | T15 (remaining) — ml-inference `/metrics`, Grafana dashboards, k6 load profile | ⏳ Grafana/k6 need a running deploy to be more than a config file | — |
 | T0, T5, T7/T8 licenses, T11, on-device tests, scholar | 🔒 owner/human-gated | — |
 
