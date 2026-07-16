@@ -1357,6 +1357,7 @@ async fn teacher_review_author_is_actor_and_realignment_cascades() {
         StatusCode::OK,
         "re-record must not FK-violate"
     );
+    let rerecord_body: Value = read_json(rerecord).await;
     let gone: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM tajweed_findings WHERE id = $1")
         .bind(&finding_id)
         .fetch_one(&state.pool)
@@ -1365,6 +1366,24 @@ async fn teacher_review_author_is_actor_and_realignment_cascades() {
     assert_eq!(
         gone, 0,
         "stale finding should be cascaded away on re-record"
+    );
+
+    // (3) The cascade above just destroyed a TEACHER's review on behalf of a LEARNER (the session
+    // owner). Whether that policy is right is a separate product decision — but it must never be
+    // INVISIBLE: the persist audit event must record what it actually erased.
+    let audit_event_id = rerecord_body["auditEventId"].as_str().unwrap().to_owned();
+    let meta: Value = sqlx::query_scalar("SELECT metadata FROM audit_events WHERE id = $1")
+        .bind(&audit_event_id)
+        .fetch_one(&state.pool)
+        .await
+        .unwrap();
+    assert_eq!(
+        meta["deletedTeacherReviews"], 1,
+        "the erased teacher review must be visible in the persist audit metadata"
+    );
+    assert_eq!(
+        meta["deletedTajweedFindings"], 1,
+        "the erased tajweed finding must be visible in the persist audit metadata"
     );
 }
 

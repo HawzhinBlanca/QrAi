@@ -503,6 +503,47 @@ pub async fn persist_session_alignments(
         .await?
         .unwrap_or_else(|| "model-v0.3".to_owned());
 
+    // Replace-on-write: clear the session's prior alignment first, in FK-safe order.
+    // tajweed_findings.alignment_id and teacher_reviews.finding_id both RESTRICT, so a naked
+    // DELETE of word_alignments would raise a foreign_key_violation (→ 500) for any session
+    // that already has findings/reviews. Re-recording the alignment invalidates those old
+    // findings anyway (they point at words being re-aligned), so cascade them explicitly:
+    // teacher_reviews → tajweed_findings → word_alignments, all scoped to this session.
+    let deleted_teacher_reviews = sqlx::query(
+        "DELETE FROM teacher_reviews WHERE tenant_id = $1 AND finding_id IN (
+             SELECT tf.id FROM tajweed_findings tf
+             JOIN word_alignments wa ON wa.id = tf.alignment_id
+             WHERE wa.session_id = $2 AND wa.tenant_id = $1)",
+    )
+    .bind(&actor.tenant_id)
+    .bind(&id)
+    .execute(&mut *tx)
+    .await?
+    .rows_affected();
+
+    let deleted_tajweed_findings = sqlx::query(
+        "DELETE FROM tajweed_findings WHERE tenant_id = $1 AND alignment_id IN (
+             SELECT id FROM word_alignments WHERE session_id = $2 AND tenant_id = $1)",
+    )
+    .bind(&actor.tenant_id)
+    .bind(&id)
+    .execute(&mut *tx)
+    .await?
+    .rows_affected();
+
+    sqlx::query("DELETE FROM word_alignments WHERE session_id = $1 AND tenant_id = $2")
+        .bind(&id)
+        .bind(&actor.tenant_id)
+        .execute(&mut *tx)
+        .await?;
+
+    // Audit AFTER the cascade, recording what this request ACTUALLY destroyed. The cascade above is
+    // authorized for the session OWNER (require_self_or_any), so a learner re-recording their own
+    // session silently erased any teacher_reviews a teacher had already submitted on it — with the
+    // audit event giving no hint that review history was destroyed. Whether that cascade is the right
+    // POLICY is a product decision (still open); making the erasure VISIBLE is not, so record the
+    // real deleted counts. Still ordered before the word_alignments INSERTs below, which FK-reference
+    // this audit row.
     let audit_id = next_id("audit");
     let trace_id = crate::auth::extract_trace_id(&headers);
     sqlx::query(
@@ -513,41 +554,14 @@ pub async fn persist_session_alignments(
     .bind(&actor.tenant_id)
     .bind(&actor.user_id)
     .bind(&id)
-    .bind(serde_json::json!({"trace_id": trace_id, "count": req.alignments.len()}))
+    .bind(serde_json::json!({
+        "trace_id": trace_id,
+        "count": req.alignments.len(),
+        "deletedTeacherReviews": deleted_teacher_reviews,
+        "deletedTajweedFindings": deleted_tajweed_findings,
+    }))
     .execute(&mut *tx)
     .await?;
-
-    // Replace-on-write: clear the session's prior alignment first, in FK-safe order.
-    // tajweed_findings.alignment_id and teacher_reviews.finding_id both RESTRICT, so a naked
-    // DELETE of word_alignments would raise a foreign_key_violation (→ 500) for any session
-    // that already has findings/reviews. Re-recording the alignment invalidates those old
-    // findings anyway (they point at words being re-aligned), so cascade them explicitly:
-    // teacher_reviews → tajweed_findings → word_alignments, all scoped to this session.
-    sqlx::query(
-        "DELETE FROM teacher_reviews WHERE tenant_id = $1 AND finding_id IN (
-             SELECT tf.id FROM tajweed_findings tf
-             JOIN word_alignments wa ON wa.id = tf.alignment_id
-             WHERE wa.session_id = $2 AND wa.tenant_id = $1)",
-    )
-    .bind(&actor.tenant_id)
-    .bind(&id)
-    .execute(&mut *tx)
-    .await?;
-
-    sqlx::query(
-        "DELETE FROM tajweed_findings WHERE tenant_id = $1 AND alignment_id IN (
-             SELECT id FROM word_alignments WHERE session_id = $2 AND tenant_id = $1)",
-    )
-    .bind(&actor.tenant_id)
-    .bind(&id)
-    .execute(&mut *tx)
-    .await?;
-
-    sqlx::query("DELETE FROM word_alignments WHERE session_id = $1 AND tenant_id = $2")
-        .bind(&id)
-        .bind(&actor.tenant_id)
-        .execute(&mut *tx)
-        .await?;
 
     const VALID_STATUS: [&str; 5] = ["matched", "misread", "missed", "extra", "needs-review"];
     // Partition once. An UNRECOGNISED status is a data-quality signal from the ML service (e.g. a typo
