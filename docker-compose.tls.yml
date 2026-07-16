@@ -1,0 +1,65 @@
+# TLS stack (T12). OPT-IN overlay — deliberately NOT named docker-compose.override.yml, which
+# docker compose auto-loads: the TLS stack needs certs to exist first, so silently changing the
+# default `docker compose up` would break anyone who hasn't generated them.
+#
+#   bash scripts/gen-dev-tls-cert.sh
+#   docker compose -f docker-compose.yml -f docker-compose.tls.yml up -d --build
+#
+#   https://localhost/   (http://localhost/ 301s to it)
+#
+# What changes vs the plain stack: nginx terminates TLS and the app talks to the API and gateway
+# through THAT SAME ORIGIN, instead of reaching :8080/:8081 directly. Same-origin is what makes the
+# tighter CSP (connect-src 'self') and wss:// possible — and getUserMedia work at all off-host.
+services:
+  web:
+    build:
+      # BUILD args, not runtime env: Vite inlines VITE_* into the bundle at build time, so the TLS
+      # stack must be BUILT for TLS — `up` alone won't do, hence --build in the command above.
+      args:
+        # Relative: the app calls /v1/... on this origin and nginx proxies it. An absolute
+        # http://localhost:8080 would be mixed content and blocked from an https page.
+        VITE_PLATFORM_API_URL: ""
+        # Same origin, wss://, through the /ws/ location. ws:// from https is blocked too.
+        VITE_REALTIME_GATEWAY_URL: "wss://localhost/ws"
+    volumes:
+      - ./apps/web/nginx-tls.conf:/etc/nginx/conf.d/default.conf:ro
+      - ./infra/tls:/etc/nginx/tls:ro
+    ports: !override
+      # !override, not a merge: compose UNIONs port lists by default, which would keep the base's
+      # 5173:8080 alongside these and leave a second, stray HTTP entrypoint published.
+      # nginx-unprivileged cannot bind privileged ports, so it listens 8080/8443 inside.
+      - "80:8080"
+      - "443:8443"
+    healthcheck:
+      # The base healthcheck hits http://127.0.0.1:8080/, which now 301s to https — wget would
+      # follow it and fail on the self-signed cert, marking the container unhealthy and blocking
+      # everything that depends_on it. Check the TLS listener directly and skip cert validation
+      # (it's a dev self-signed cert; this proves nginx serves, not that the CA is trusted).
+      test: ["CMD", "wget", "-q", "--no-check-certificate", "--spider", "https://127.0.0.1:8443/"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
+  realtime-gateway:
+    environment:
+      # MANDATORY with the nginx front: every WS connection now arrives from nginx's address, so
+      # without this the gateway's per-IP rate limiter keys on nginx and collapses every learner
+      # into one shared bucket. Opts it into SmartIpKeyExtractor / X-Real-IP, which nginx-tls.conf
+      # sets. Only safe BECAUSE the gateway is no longer reachable directly in this stack.
+      TRUST_PROXY_HEADERS: "1"
+      # The gateway's CSWSH defence fails CLOSED: with this unset it rejects EVERY WebSocket
+      # ("CORS_ALLOWED_ORIGINS unset in production" — verified by curl against the running stack),
+      # so the TLS origin must be named or live streaming cannot connect at all. NOTE: the base
+      # docker-compose.yml does not set this either, which is one of the reasons live streaming
+      # never worked in that deployment.
+      CORS_ALLOWED_ORIGINS: "https://localhost"
+    ports: !override
+      # Not published: the gateway is reached only through nginx's wss:// proxy now. Leaving 8081
+      # exposed would let a client bypass TLS entirely and hand the spoofable X-Real-IP header
+      # straight to the limiter it was just told to trust.
+      - "127.0.0.1:8081:8081"
+
+  platform-api:
+    ports: !override
+      # Same: reached through nginx /v1/ only. Loopback-bound for host debugging.
+      - "127.0.0.1:8080:8080"
