@@ -113,12 +113,30 @@
     "trustStateValue": "Teacher review available"
   },
   "practiceSteps": {
-    "listen": { "label": "Listen", "helper": "Hear the teacher-paced model once." },
-    "guidedRecite": { "label": "Guided recite", "helper": "Recite with the mushaf visible." },
-    "memoryRecite": { "label": "Memory recite", "helper": "Try without looking first." },
-    "correction": { "label": "Correction", "helper": "Review only the words that need care." },
-    "drill": { "label": "Drill", "helper": "Repeat the short phrase three times." },
-    "complete": { "label": "Complete", "helper": "Save progress and next review." }
+    "listen": {
+      "label": "Listen",
+      "helper": "Hear the teacher-paced model once."
+    },
+    "guidedRecite": {
+      "label": "Guided recite",
+      "helper": "Recite with the mushaf visible."
+    },
+    "memoryRecite": {
+      "label": "Memory recite",
+      "helper": "Try without looking first."
+    },
+    "correction": {
+      "label": "Correction",
+      "helper": "Review only the words that need care."
+    },
+    "drill": {
+      "label": "Drill",
+      "helper": "Repeat the short phrase three times."
+    },
+    "complete": {
+      "label": "Complete",
+      "helper": "Save progress and next review."
+    }
   },
   "practiceFlow": {
     "ariaLabel": "Learner practice",
@@ -261,10 +279,22 @@
     "humanReviewed": "Human reviewed",
     "appsAriaLabel": "Platform apps",
     "apps": {
-      "learner": { "label": "Learner", "description": "Live alignment and memorization" },
-      "teacher": { "label": "Teacher", "description": "Classrooms and review loops" },
-      "scholar": { "label": "Scholar", "description": "Approved religious content" },
-      "modelOps": { "label": "Model Ops", "description": "Benchmarks and data flywheel" }
+      "learner": {
+        "label": "Learner",
+        "description": "Live alignment and memorization"
+      },
+      "teacher": {
+        "label": "Teacher",
+        "description": "Classrooms and review loops"
+      },
+      "scholar": {
+        "label": "Scholar",
+        "description": "Approved religious content"
+      },
+      "modelOps": {
+        "label": "Model Ops",
+        "description": "Benchmarks and data flywheel"
+      }
     },
     "tabsAriaLabel": "Command center views",
     "tabs": {
@@ -366,10 +396,22 @@
       "eyebrow": "Trust governance",
       "title": "Religious safety controls",
       "sourceLine": "Source coverage: {{coverage}} · canonical Quran text never machine-modified.",
-      "canonicalText": { "label": "Canonical Quran text", "status": "locked" },
-      "humanReviewed": { "label": "Human reviewed", "status": "teacher + scholar gates" },
-      "languages": { "label": "9 languages", "status": "UI ready, content gated" },
-      "dataFlywheel": { "label": "Data flywheel", "status": "opt-in only" }
+      "canonicalText": {
+        "label": "Canonical Quran text",
+        "status": "locked"
+      },
+      "humanReviewed": {
+        "label": "Human reviewed",
+        "status": "teacher + scholar gates"
+      },
+      "languages": {
+        "label": "9 languages",
+        "status": "UI ready, content gated"
+      },
+      "dataFlywheel": {
+        "label": "Data flywheel",
+        "status": "opt-in only"
+      }
     }
   },
   "app": {
@@ -413,5 +455,32 @@
     "confirmCancel": "Cancel",
     "deleteResult": "Deleted {{records}} record(s) and erased {{audio}} audio file(s).",
     "deleteError": "Couldn't complete the deletion right now. Please try again."
+  },
+  "teacherSurface": {
+    "queueTitle": "Teacher Queue",
+    "loadingQueue": "Loading queue…",
+    "noPending": "No pending recitations.",
+    "learnerLabel": "Learner",
+    "accuracyLabel": "Accuracy Score",
+    "downloadingAudio": "Downloading recitation audio…",
+    "listenTitle": "Listen to Recitation",
+    "listenHint": "Review pronunciation and flow before deciding.",
+    "noAudio": "No audio available for this session.",
+    "alignmentsTitle": "Learner Transcription Alignments",
+    "loadingWords": "Loading words…",
+    "heardLabel": "Heard",
+    "findingsTitle": "Tajweed and Alignment Findings",
+    "noFindings": "No findings require review. You can safely accept the recitation.",
+    "ruleLabel": "{{rule}} Rule",
+    "wordRef": "Word Ref: {{wordId}}",
+    "confidence": "Confidence: {{percent}}%",
+    "notePlaceholder": "Write correction feedback or notes (optional)…",
+    "accept": "Accept Finding",
+    "reject": "Reject Finding",
+    "edit": "Correct / Edit",
+    "emptyState": "Select a recitation from the queue to start review.",
+    "reviewSuccess": "Review submitted successfully.",
+    "reviewFailedRetry": "Failed to submit review. Please try again.",
+    "reviewFailed": "Failed to submit review."
   }
 }
