@@ -1939,6 +1939,159 @@ async fn list_tajweed_findings_returns_the_seeded_finding_not_an_empty_list() {
     );
 }
 
+/// T18 proof #2 — the teacher cockpit's cross-tenant isolation.
+///
+/// The existing `adversarial_api_isolation_prevents_cross_tenant_read` does NOT cover this: it
+/// sends a LEARNER actor at /v1/learner/progress, so `require_self_or_any` rejects it on the ROLE
+/// check before tenant scoping is ever reached — it proves learner-vs-learner authz and passes even
+/// if tenant isolation were broken. The hostile actor here is a TEACHER of tenant B, who passes
+/// every role check, so the ONLY thing that can stop them is tenant scoping — which is what the
+/// teacher cockpit actually relies on.
+///
+/// Covers the three endpoints TeacherSurface reads: the session, its alignments, and the findings
+/// list. Each assertion has a same-tenant CONTROL, because "empty" would otherwise be
+/// indistinguishable from "the endpoint is broken" — a test that passes for the wrong reason is
+/// exactly what this replaces.
+#[tokio::test]
+#[ignore = "requires live Postgres"]
+async fn teacher_of_another_tenant_cannot_read_this_tenants_sessions_findings_or_alignments() {
+    let state = test_state();
+    let router = platform_router_with_rate_limit(state.clone(), false);
+    let suffix = next_suffix();
+
+    // --- Tenant A: a real learner with a real session + finding (what a teacher would review) ---
+    let learner_id = format!("learner-xtenant-{suffix}");
+    sqlx::query(
+        "INSERT INTO users (id, tenant_id, display_name, role, language)
+         VALUES ($1, 'hikmah-pilot-erbil', 'Cross-tenant Probe Learner', 'learner', 'ckb')",
+    )
+    .bind(&learner_id)
+    .execute(&state.pool)
+    .await
+    .unwrap();
+    let session_id = create_test_session_for_learner(&router, &learner_id).await;
+    let (finding_id, _review_id) = seed_reviewed_finding(&state.pool, &session_id, "xtenant").await;
+
+    // --- Tenant B: a real, separate institution (institutions is not RLS-scoped) ---
+    let tenant_b = format!("tenant-b-teacher-probe-{suffix}");
+    sqlx::query(
+        "INSERT INTO institutions (id, name, region) VALUES ($1, 'Rival Madrasa', 'test')
+         ON CONFLICT (id) DO NOTHING",
+    )
+    .bind(&tenant_b)
+    .execute(&state.pool)
+    .await
+    .unwrap();
+
+    // --- CONTROL: tenant A's own teacher CAN see all three. Without this, the assertions below
+    //     would also pass if the endpoints simply returned nothing. ---
+    let own = send_json(
+        &router,
+        Method::GET,
+        &format!("/v1/recitation-sessions/{session_id}"),
+        Some("hikmah-pilot-erbil"),
+        Some("teacher"),
+        Value::Null,
+    )
+    .await;
+    assert_eq!(
+        own.status(),
+        StatusCode::OK,
+        "control: in-tenant teacher reads the session"
+    );
+
+    let own_alignments = send_json(
+        &router,
+        Method::GET,
+        &format!("/v1/recitation-sessions/{session_id}/alignments"),
+        Some("hikmah-pilot-erbil"),
+        Some("teacher"),
+        Value::Null,
+    )
+    .await;
+    assert_eq!(own_alignments.status(), StatusCode::OK);
+    let own_align_list: Vec<Value> = read_json(own_alignments).await;
+    assert!(
+        !own_align_list.is_empty(),
+        "control: the session HAS alignments in its own tenant — otherwise 'empty for tenant B' below would prove nothing"
+    );
+
+    let own_findings = send_json(
+        &router,
+        Method::GET,
+        "/v1/tajweed-findings",
+        Some("hikmah-pilot-erbil"),
+        Some("teacher"),
+        Value::Null,
+    )
+    .await;
+    assert_eq!(own_findings.status(), StatusCode::OK);
+    let own_list: Vec<Value> = read_json(own_findings).await;
+    // Assert NON-EMPTY rather than "contains finding_id": the list is capped at LIMIT 200 and the
+    // shared dev DB already holds >200 findings for this tenant, so whether one specific row
+    // survives the cutoff is not something this isolation test should depend on. Non-empty is
+    // deterministic and is all the control needs to prove — the endpoint returns data in-tenant,
+    // which is what makes "empty for tenant B" below meaningful.
+    assert!(
+        !own_list.is_empty(),
+        "control: the findings endpoint returns data for its own tenant"
+    );
+
+    // --- The actual isolation checks: a TEACHER of tenant B (passes every role gate) ---
+    let stolen_session = send_json(
+        &router,
+        Method::GET,
+        &format!("/v1/recitation-sessions/{session_id}"),
+        Some(&tenant_b),
+        Some("teacher"),
+        Value::Null,
+    )
+    .await;
+    assert_eq!(
+        stolen_session.status(),
+        StatusCode::NOT_FOUND,
+        "a teacher of another tenant must not read this tenant's session"
+    );
+
+    // Alignments answer 200 with an EMPTY list rather than 404: the query filters
+    // `wa.tenant_id = $2` bound to the ACTOR's tenant, so tenant B simply matches no rows. That is
+    // the "empty" outcome T18's proof allows — what matters is that none of the learner's recitation
+    // crosses the boundary, which the non-empty control above makes meaningful.
+    let stolen_alignments = send_json(
+        &router,
+        Method::GET,
+        &format!("/v1/recitation-sessions/{session_id}/alignments"),
+        Some(&tenant_b),
+        Some("teacher"),
+        Value::Null,
+    )
+    .await;
+    assert_eq!(stolen_alignments.status(), StatusCode::OK);
+    let stolen_align_list: Vec<Value> = read_json(stolen_alignments).await;
+    assert!(
+        stolen_align_list.is_empty(),
+        "the learner's recitation leaked to another tenant's teacher: {stolen_align_list:?}"
+    );
+
+    let stolen_findings = send_json(
+        &router,
+        Method::GET,
+        "/v1/tajweed-findings",
+        Some(&tenant_b),
+        Some("teacher"),
+        Value::Null,
+    )
+    .await;
+    assert_eq!(stolen_findings.status(), StatusCode::OK);
+    let stolen_list: Vec<Value> = read_json(stolen_findings).await;
+    // Stronger than "doesn't contain finding_id": tenant B owns NO findings, so its queue must be
+    // entirely empty. Paired with the non-empty control above, that is unambiguous isolation.
+    assert!(
+        stolen_list.is_empty(),
+        "tenant A's findings leaked into tenant B's teacher queue: {stolen_list:?}"
+    );
+}
+
 /// Spawn a throwaway HTTP server that always answers 500, to exercise the ML/ASR proxy handlers'
 /// upstream-error path (their `if !status.is_success()` check).
 async fn spawn_mock_upstream_500(path: &'static str) -> String {
