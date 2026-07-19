@@ -3,9 +3,36 @@ import { randomUUID } from "node:crypto";
 import { mkdir, writeFile, readFile } from "node:fs/promises";
 import { createServer } from "node:net";
 import { join } from "node:path";
+import { databaseConnectionArgs, resolvePsqlCommand, smokeAdminDatabaseUrl } from "./smoke-database.mjs";
+import { assertExpectedCandidateSha, createCandidateBoundSmokeSummary, getCheckoutCandidateSha, parseImageDigests } from "./smoke-evidence.mjs";
 
 const artifactRoot = process.env.SMOKE_ARTIFACT_DIR ?? join("out", "smoke", new Date().toISOString().replace(/[:.]/g, "-"));
 const smokeTraceId = process.env.SMOKE_TRACE_ID ?? `smoke-trace-${randomUUID()}`;
+const smokeStartedAt = new Date().toISOString();
+const repositoryRoot = process.cwd();
+const expectedCandidateSha = process.env.SMOKE_CANDIDATE_SHA ?? getCheckoutCandidateSha(repositoryRoot);
+const candidateSha = assertExpectedCandidateSha(repositoryRoot, expectedCandidateSha);
+const requireCandidateEvidence = process.env.SMOKE_REQUIRE_CANDIDATE_EVIDENCE === "1";
+const smokeEnvironment = {
+  class: process.env.SMOKE_ENVIRONMENT_CLASS ?? "local",
+  provider: process.env.SMOKE_ENVIRONMENT_PROVIDER ?? "developer-workstation",
+};
+const smokeTestActorClass = process.env.SMOKE_TEST_ACTOR_CLASS ?? "automated-smoke";
+const imageDigests = parseImageDigests(process.env.SMOKE_IMAGE_DIGESTS_JSON, { required: requireCandidateEvidence });
+const smokeAdminUrl = smokeAdminDatabaseUrl();
+const smokeAdminEnv = smokeAdminUrl ? { DATABASE_URL: smokeAdminUrl } : {};
+const psqlCommand = resolvePsqlCommand();
+const smokeScriptFiles = [
+  "scripts/smoke-all.mjs",
+  "scripts/smoke-sql.mjs",
+  "scripts/smoke-browser.mjs",
+  "scripts/smoke-api.mjs",
+  "scripts/smoke-gateway.mjs",
+  "scripts/smoke-ml.mjs",
+  "scripts/smoke-privacy.mjs",
+  "scripts/proof.sh",
+  "packages/quran-data/scripts/seed-full-quran-to-db.sh",
+];
 await mkdir(artifactRoot, { recursive: true });
 
 const startedServices = [];
@@ -13,13 +40,9 @@ const results = [];
 const failures = [];
 
 async function runDbCommand(args, stdinContent) {
-  let cmd = "psql";
-  let finalArgs = [...args];
-  if (process.env.PSQL) {
-    const parts = process.env.PSQL.split(" ");
-    cmd = parts[0];
-    finalArgs = [...parts.slice(1), ...args];
-  }
+  const parts = psqlCommand.split(" ");
+  const cmd = parts[0];
+  const finalArgs = [...parts.slice(1), ...args];
   return new Promise((resolve, reject) => {
     const child = spawn(cmd, finalArgs, {
       cwd: process.cwd(),
@@ -43,8 +66,7 @@ async function runDbCommand(args, stdinContent) {
 
 async function cleanAndSeedDatabase() {
   await runDbCommand([
-    "-U", "hawzhin",
-    "-d", "quran_ai",
+    ...databaseConnectionArgs(smokeAdminUrl),
     "-c", "TRUNCATE recitation_sessions, users, institutions, audit_events, consent_records, realtime_session_tickets, audio_chunks, word_alignments, alignment_runs, tajweed_findings, teacher_reviews, scholar_approvals, agent_runs, eval_runs, privacy_jobs CASCADE;"
   ]);
 
@@ -52,8 +74,8 @@ async function cleanAndSeedDatabase() {
     const child = spawn("bash", ["packages/quran-data/scripts/seed-full-quran-to-db.sh"], {
       env: {
         ...process.env,
-        PGPASSWORD: "change-this-to-a-strong-password",
-        PSQL: process.env.PSQL || "psql"
+        ...smokeAdminEnv,
+        PSQL: psqlCommand,
       },
       stdio: "inherit"
     });
@@ -68,10 +90,7 @@ async function cleanAndSeedDatabase() {
   });
 
   const internalSeedSql = await readFile("infra/sql/0006_seed_internal.sql", "utf8");
-  await runDbCommand([
-    "-U", "hawzhin",
-    "-d", "quran_ai"
-  ], internalSeedSql);
+  await runDbCommand(databaseConnectionArgs(smokeAdminUrl), internalSeedSql);
 }
 
 try {
@@ -83,7 +102,9 @@ try {
   console.log("Cleaning and re-seeding database before smoke tests...");
   await cleanAndSeedDatabase();
 
-  await runStep("smoke:sql", ["pnpm", "smoke:sql"]);
+  await runStep("smoke:sql", ["pnpm", "smoke:sql"], {
+    ...(smokeAdminUrl ? { POSTGRES_RLS_SMOKE_URL: smokeAdminUrl } : {}),
+  });
   await runStep("smoke:browser", ["pnpm", "smoke:browser"], { SMOKE_ARTIFACT_DIR: artifactRoot });
 
   // Privacy delete erases the learner's audio from ml-inference BEFORE the DB transaction (fail-closed
@@ -94,7 +115,10 @@ try {
 
   const platformApi = await platformApiServiceConfig(mlUp ? mlInference.baseUrl : undefined);
   if (await ensureHttpService(platformApi)) {
-    await runStep("smoke:api", ["pnpm", "smoke:api"], platformApi.smokeEnv);
+    await runStep("smoke:api", ["pnpm", "smoke:api"], {
+      ...platformApi.smokeEnv,
+      ...smokeAdminEnv,
+    });
   }
 
   const realtimeGateway = await realtimeGatewayServiceConfig();
@@ -112,6 +136,10 @@ try {
     process.exitCode = 1;
   }
 } catch (error) {
+  if (failures.length === 0) {
+    failures.push({ step: "aggregate", error: error.message });
+    results.push({ step: "aggregate", status: "failed", error: error.message });
+  }
   await writeSummary("failed", error);
   console.error(error.message);
   process.exitCode = 1;
@@ -237,7 +265,7 @@ async function runStep(name, command, env = {}) {
   const logPath = join(artifactRoot, `${name.replace(/:/g, "-")}.log`);
   const child = spawn(command[0], command.slice(1), {
     cwd: process.cwd(),
-      env: { ...process.env, SMOKE_TRACE_ID: smokeTraceId, ...env },
+    env: { ...process.env, PSQL: psqlCommand, SMOKE_TRACE_ID: smokeTraceId, ...env },
     stdio: ["ignore", "pipe", "pipe"],
   });
 
@@ -291,19 +319,27 @@ function getFreePort() {
 }
 
 async function writeSummary(status, error) {
+  const summary = createCandidateBoundSmokeSummary({
+    repositoryRoot,
+    candidateSha,
+    expectedCandidateSha,
+    traceId: smokeTraceId,
+    startedAt: smokeStartedAt,
+    completedAt: new Date().toISOString(),
+    artifactRoot,
+    status,
+    results,
+    failures,
+    error: error?.message,
+    environment: smokeEnvironment,
+    testActorClass: smokeTestActorClass,
+    imageDigests,
+    requireDeployableImages: requireCandidateEvidence,
+    requireReleaseTrace: requireCandidateEvidence,
+    scriptFiles: smokeScriptFiles,
+  });
   await writeFile(
     join(artifactRoot, "summary.json"),
-    JSON.stringify(
-      {
-        status,
-        artifactRoot,
-        traceId: smokeTraceId,
-        results,
-        failures,
-        error: error?.message,
-      },
-      null,
-      2,
-    ),
+    JSON.stringify(summary, null, 2),
   );
 }

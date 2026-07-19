@@ -1,9 +1,15 @@
 import { describe, expect, it } from "vitest";
 
-import { tajweedReviewBadge } from "./tajweedReview";
+import { learnerVisibleTajweedFindings, tajweedReviewBadge } from "./tajweedReview";
 import type { TajweedFinding } from "./api";
 
-const base: Pick<TajweedFinding, "confidence" | "reviewStatus" | "sources"> = {
+const base: TajweedFinding = {
+  wordId: "1:1:1",
+  rule: "ghunnah",
+  arabicName: "غنة",
+  category: "ghunnah",
+  severity: "warning",
+  explanation: "Hold the nasalization.",
   confidence: 0.9,
   reviewStatus: "ai-suggested",
   sources: [{ id: "s1", title: "Ref", citation: "Ref, p. 1" }],
@@ -36,5 +42,16 @@ describe("tajweed review badge", () => {
     const badge = tajweedReviewBadge(unapprovedFinding);
     expect(badge.verified).toBe(false);
     expect(badge.labelKey).toBe("tajweedPanel.aiSuggestion");
+  });
+
+  it("withholds unreviewed or unsourced findings from the learner surface", () => {
+    const visible = learnerVisibleTajweedFindings([
+      { ...base, reviewStatus: "ai-suggested" },
+      { ...base, reviewStatus: "teacher-review-required" },
+      { ...base, reviewStatus: "teacher-reviewed", sources: [] },
+      { ...base, reviewStatus: "scholar-approved" },
+    ]);
+
+    expect(visible).toEqual([{ ...base, reviewStatus: "scholar-approved" }]);
   });
 });

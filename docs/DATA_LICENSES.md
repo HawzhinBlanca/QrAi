@@ -38,6 +38,11 @@ integrity is checked. Religious content is never AI-generated; it is licensed or
 
 - **What:** Central Kurdish (Sorani) ayah translation, shipped under
   `packages/quran-data/src/data/translations/ckb-burhan-muhammad/`.
+  Its authoritative current provenance record is
+  `packages/quran-data/src/translation-bundles.ts`:
+  `2026-07-19-provenance-v2`. The older adjacent `manifest.json` is retained
+  as historical import material and is not an authority for counts or release
+  claims; it was generated before later source files were added.
 - **Source:** api.quran.com v4, `GET /verses/by_key/{key}?translations=81`. Translation id 81 =
   **Burhan Muhammad-Amin** ("Tafsiri Asan"), the default Kurdish translation on Quran.com,
   originating from the QuranEnc.com ecosystem.
@@ -60,7 +65,8 @@ integrity is checked. Religious content is never AI-generated; it is licensed or
 - **Integrity:** every ayah is translated or recorded in `missingAyahs` with a reason (108:3 has no
   entry in resource 81 — Quran.com 404s the join — shown as no-translation, never invented);
   grounded against canonical text by `tests/translations-integrity.test.ts`.
-- **Regeneration:** `node packages/quran-data/scripts/fetch-translations.mjs --id 81 --slug ckb-burhan-muhammad --surahs <list>`.
+- **Regeneration:** `node packages/quran-data/scripts/fetch-translations.mjs --id 81 --slug ckb-burhan-muhammad --version <new-version> --surahs <list>`.
+  Imports are append-only: the script refuses to overwrite a version directory.
 - **Follow-up:** a second verified Sorani source exists (2025 Data in Brief scholar corpus,
   PMC12032946) for cross-checking; Bamoki (id 143) and Salahuddin are alternate QuranEnc Sorani
   translations if a different scholarly reading is preferred.

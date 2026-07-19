@@ -269,16 +269,20 @@ impl RealtimeGateway {
     ) -> Result<SessionReader, GatewayError> {
         let session_id = session_id.into();
         let (sender, receiver) = mpsc::channel(self.chunk_capacity);
-        let mut sessions = self.sessions.write().await;
-
-        if sessions.contains_key(&session_id) {
-            return Err(GatewayError::SessionAlreadyExists(session_id));
+        {
+            let mut sessions = self.sessions.write().await;
+            if sessions.contains_key(&session_id) {
+                return Err(GatewayError::SessionAlreadyExists(session_id));
+            }
+            sessions.insert(session_id.clone(), sender);
         }
 
-        sessions.insert(session_id.clone(), sender);
         self.counters
             .sessions_started
             .fetch_add(1, Ordering::Relaxed);
+        // Redis is observability/state reconciliation only. Never hold the in-process session
+        // lock while a network handshake or timeout is pending: that would make an unavailable
+        // Redis instance stall all chunk sends for an otherwise valid active session.
         self.redis_track_session(&session_id, "start").await;
         Ok(SessionReader {
             session_id,
@@ -320,9 +324,13 @@ impl RealtimeGateway {
     }
 
     pub async fn end_session(&self, session_id: &str) -> Result<(), GatewayError> {
-        let mut sessions = self.sessions.write().await;
-        if sessions.remove(session_id).is_some() {
+        let removed = {
+            let mut sessions = self.sessions.write().await;
+            sessions.remove(session_id).is_some()
+        };
+        if removed {
             self.counters.sessions_ended.fetch_add(1, Ordering::Relaxed);
+            // As above, no network await may monopolize the in-process session map.
             self.redis_track_session(session_id, "end").await;
             Ok(())
         } else {
@@ -1368,6 +1376,81 @@ mod tests {
         assert!(received.is_none());
         assert_eq!(gateway.active_session_count().await, 0);
         assert_eq!(gateway.metrics().await.sessions_ended, 1);
+    }
+
+    #[tokio::test]
+    async fn redis_tracking_never_holds_the_session_lock_across_network_io() {
+        // Accept the TCP connection but never answer Redis' handshake. This keeps the tracking
+        // future pending long enough to prove a chunk send is not blocked behind it.
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let (accepted_tx, accepted_rx) = tokio::sync::oneshot::channel();
+        let stalled_redis = tokio::spawn(async move {
+            let (_stream, _) = listener.accept().await.unwrap();
+            let _ = accepted_tx.send(());
+            tokio::time::sleep(Duration::from_secs(5)).await;
+        });
+
+        let gateway = RealtimeGateway::with_redis(2, Some(format!("redis://{address}")));
+        let start_gateway = gateway.clone();
+        let starting = tokio::spawn(async move { start_gateway.start_session("session-1").await });
+
+        timeout(Duration::from_secs(1), accepted_rx)
+            .await
+            .expect("gateway should connect to the stalled Redis endpoint")
+            .expect("listener should acknowledge the accepted connection");
+
+        let sent = timeout(
+            Duration::from_millis(100),
+            gateway.send_chunk(chunk("session-1", "chunk-1")),
+        )
+        .await;
+        assert!(
+            matches!(sent, Ok(Ok(()))),
+            "session lock must not wait for Redis tracking"
+        );
+
+        starting.abort();
+        stalled_redis.abort();
+    }
+
+    #[tokio::test]
+    async fn redis_end_tracking_never_blocks_session_lookup() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let (accepted_tx, accepted_rx) = tokio::sync::oneshot::channel();
+        let stalled_redis = tokio::spawn(async move {
+            let (_stream, _) = listener.accept().await.unwrap();
+            let _ = accepted_tx.send(());
+            tokio::time::sleep(Duration::from_secs(5)).await;
+        });
+
+        // Create the session before enabling the deliberately stalled Redis endpoint, then prove
+        // end-session's best-effort reconciliation does not block a concurrent map lookup.
+        let mut gateway = RealtimeGateway::new(2);
+        let _reader = gateway.start_session("session-1").await.unwrap();
+        gateway.redis_url = Some(format!("redis://{address}"));
+        let end_gateway = gateway.clone();
+        let ending = tokio::spawn(async move { end_gateway.end_session("session-1").await });
+
+        timeout(Duration::from_secs(1), accepted_rx)
+            .await
+            .expect("gateway should connect to the stalled Redis endpoint")
+            .expect("listener should acknowledge the accepted connection");
+
+        let lookup = timeout(
+            Duration::from_millis(100),
+            gateway.send_chunk(chunk("session-1", "chunk-1")),
+        )
+        .await;
+        assert_eq!(
+            lookup,
+            Ok(Err(GatewayError::SessionNotFound("session-1".to_owned()))),
+            "session lookup must not wait for Redis end tracking"
+        );
+
+        ending.abort();
+        stalled_redis.abort();
     }
 
     #[tokio::test]

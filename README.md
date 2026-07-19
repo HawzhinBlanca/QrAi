@@ -69,6 +69,7 @@ pnpm smoke:sql
 
 ```bash
 bash scripts/verify.sh   # CODYSTEM gate: guard + Rust fmt/clippy + TS typecheck + tests + build
+bash scripts/verify.sh --release # clean-candidate gate: dedicated DB + full-stack smoke + external evidence
 pnpm test                # same checks, but runs platform-api integration tests (needs live Postgres)
 pnpm build
 pnpm proof               # legacy strict gate (scripts/proof.sh); also needs live Postgres
@@ -79,6 +80,13 @@ pnpm smoke:all
 fmt/clippy/test for both `realtime-gateway` and `platform-api`, TS typecheck/test/build for
 `contracts` + `quran-data` + `web`, and **skips** the Postgres-only platform-api integration
 tests when no DB is reachable (it never fakes them).
+`bash scripts/verify.sh --release` refuses a dirty checkout and requires an explicitly
+configured disposable database, external smoke/test/environment evidence paths, a release
+trace, environment identity, and complete image digests. A release build must also produce a
+separate candidate-bound build-provenance record that the signed manifest hashes and verifies.
+The gate then runs the live integration suite and aggregate smoke before writing candidate-bound
+evidence. Run it only from protected CI or a deliberately isolated release environment; a
+successful local ordinary gate is not release certification.
 `pnpm proof` (`scripts/proof.sh`) runs the same checks but executes the platform-api tests
 with `--include-ignored`, so it **requires** a live Postgres.
 `pnpm smoke:all` runs proof plus SQL, browser, Platform API, realtime gateway, ML, and privacy smoke with retained artifacts under `out/smoke/`.

@@ -1,7 +1,7 @@
 import { AlertTriangle, ShieldAlert, Sparkles } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import type { TajweedFinding } from "../lib/api";
-import { tajweedReviewBadge } from "../lib/tajweedReview";
+import { learnerVisibleTajweedFindings, tajweedReviewBadge } from "../lib/tajweedReview";
 
 interface TajweedPanelProps {
   findings: TajweedFinding[];
@@ -15,17 +15,22 @@ const ICONS = {
 
 export function TajweedPanel({ findings }: TajweedPanelProps) {
   const { t } = useTranslation();
+  const learnerFindings = learnerVisibleTajweedFindings(findings);
+  const hasWithheldFindings = findings.length > learnerFindings.length;
+
   return (
     <section className="panel tajweed-panel" aria-label={t("tajweedPanel.ariaLabel")}>
       <div className="panel-title">
         <h2>{t("tajweedPanel.title")}</h2>
-        <span>{findings.length}</span>
+        <span>{learnerFindings.length}</span>
       </div>
-      {findings.length === 0 ? (
-        <p className="panel-empty">{t("tajweedPanel.empty")}</p>
+      {learnerFindings.length === 0 ? (
+        <p className="panel-empty">
+          {hasWithheldFindings ? t("tajweedPanel.awaitingReview") : t("tajweedPanel.empty")}
+        </p>
       ) : (
         <div className="tajweed-list">
-          {findings.map((finding) => {
+          {learnerFindings.map((finding) => {
             const Icon = ICONS[finding.severity] ?? Sparkles;
             const review = tajweedReviewBadge(finding);
             return (
@@ -44,13 +49,29 @@ export function TajweedPanel({ findings }: TajweedPanelProps) {
                   <span className="tajweed-conf">{Math.round(finding.confidence * 100)}%</span>
                 </div>
                 <p>{finding.explanation}</p>
-                {/* Honest provenance: live AI output is provisional until a teacher reviews it. */}
                 <span
                   className={`tajweed-review ${review.verified ? "verified" : "provisional"}`}
                   title={review.verified ? t("tajweedPanel.verifiedTitle") : t("tajweedPanel.aiSuggestionTitle")}
                 >
                   {t(review.labelKey)}
                 </span>
+                <div className="tajweed-sources">
+                  <strong>{t("tajweedPanel.sources")}</strong>
+                  <ul>
+                    {finding.sources.map((source) => (
+                      <li key={`${finding.wordId}-${source.id}`}>
+                        {source.url ? (
+                          <a href={source.url} target="_blank" rel="noreferrer">
+                            {source.title}
+                          </a>
+                        ) : (
+                          <span>{source.title}</span>
+                        )}
+                        <span>{source.citation}</span>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
               </div>
             );
           })}

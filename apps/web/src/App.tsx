@@ -49,6 +49,7 @@ import {
 import {
   fetchMemorizationPlan,
   fetchLearnerProgress,
+  resolveSelectableInterfaceLanguage,
   updateLearnerProgress,
   supportedLanguages,
   type MemorizationPlan,
@@ -139,7 +140,7 @@ function AuthenticatedApp({ bypassLogin = false }: { bypassLogin?: boolean }) {
   const [activeLanguage, setActiveLanguage] = useState<SupportedLanguageCode>(() => {
     if (typeof window !== "undefined") {
       const paramLng = new URLSearchParams(window.location.search).get("lng");
-      if (paramLng) return paramLng as SupportedLanguageCode;
+      if (paramLng) return resolveSelectableInterfaceLanguage(paramLng);
     }
     return "en";
   });

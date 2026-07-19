@@ -3077,6 +3077,27 @@ button:disabled {
   background: #dcefe0;
   color: #2f6b45;
 }
+.tajweed-sources {
+  margin-top: 10px;
+  color: #5b5340;
+  font-size: 12px;
+  line-height: 1.45;
+}
+.tajweed-sources ul {
+  display: grid;
+  gap: 3px;
+  margin: 4px 0 0;
+  padding-left: 18px;
+}
+.tajweed-sources li {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+.tajweed-sources li span:last-child::before {
+  content: "—";
+  margin-right: 4px;
+}
 .panel-empty {
   font-size: 13px;
   color: #8a7e66;

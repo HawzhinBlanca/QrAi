@@ -14,10 +14,10 @@
 //     partial hedge on the version duty (6); Quran.com's API exposes no version field, so the
 //     canonical version must still be confirmed against QuranEnc directly (see DATA_LICENSES.md).
 //
-// Usage: node scripts/fetch-translations.mjs --id 81 --slug ckb-burhan-muhammad --surahs 1,2,105-114
-// Output: src/data/translations/<slug>/surah-XXX.json + manifest.json
+// Usage: node scripts/fetch-translations.mjs --id 81 --slug ckb-burhan-muhammad --version 2026-07-19-v3 --surahs 1,2,105-114
+// Output: src/data/translations/<slug>/<version>/surah-XXX.json + manifest.json
 
-import { writeFileSync, mkdirSync } from "node:fs";
+import { existsSync, writeFileSync, mkdirSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { getFlag, parseSurahArg, loadCanonicalAyahs, fetchJsonWithRetry } from "./_ingest-lib.mjs";
@@ -35,12 +35,17 @@ async function fetchTranslation(key, id) {
 async function main() {
   const id = +getFlag("id", "81");
   const slug = getFlag("slug", "ckb-burhan-muhammad");
+  const version = getFlag("version");
   const surahs = parseSurahArg(getFlag("surahs"));
-  const outDir = join(__dirname, "..", "src", "data", "translations", slug);
+  if (!version) throw new Error("--version is required; translation imports are append-only");
+  const outDir = join(__dirname, "..", "src", "data", "translations", slug, version);
+  if (existsSync(outDir)) throw new Error(`refusing to overwrite existing translation bundle: ${outDir}`);
   mkdirSync(outDir, { recursive: true });
 
   const fetchedAt = new Date().toISOString().slice(0, 10);
   const manifest = {
+    bundleVersion: version,
+    assetSlug: slug,
     slug,
     translationId: id,
     translator: "Burhan Muhammad-Amin",

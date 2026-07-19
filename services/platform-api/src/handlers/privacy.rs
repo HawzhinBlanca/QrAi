@@ -146,8 +146,26 @@ async fn create_privacy_job(
         })
         .collect();
 
+    let agent_runs =
+        sqlx::query("SELECT id FROM agent_runs WHERE tenant_id = $1 AND learner_id = $2")
+            .bind(&actor.tenant_id)
+            .bind(&req.learner_id)
+            .fetch_all(&mut *tx)
+            .await?;
+
+    let agent_run_ids: Vec<String> = agent_runs
+        .into_iter()
+        .map(|r| {
+            format!(
+                "agent_run:{}",
+                r.try_get::<String, _>("id").unwrap_or_default()
+            )
+        })
+        .collect();
+
     let mut included_ids = session_ids.clone();
     included_ids.extend(progress_ids);
+    included_ids.extend(agent_run_ids);
 
     let deleted_ids = if kind == PrivacyJobKind::Delete {
         included_ids.clone()
@@ -284,6 +302,12 @@ async fn create_privacy_job(
             .await?;
 
         sqlx::query("DELETE FROM consent_records WHERE tenant_id = $1 AND user_id = $2")
+            .bind(&actor.tenant_id)
+            .bind(&req.learner_id)
+            .execute(&mut *tx)
+            .await?;
+
+        sqlx::query("DELETE FROM agent_runs WHERE tenant_id = $1 AND learner_id = $2")
             .bind(&actor.tenant_id)
             .bind(&req.learner_id)
             .execute(&mut *tx)

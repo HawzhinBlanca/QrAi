@@ -3,10 +3,19 @@ import { canShowLearnerFacingAiOutput } from "@quran-ai/contracts";
 import type { TajweedFinding } from "./api";
 
 /**
- * The badge a learner sees for a tajweed finding. Live practice output is `ai-suggested` (not yet
- * human-reviewed), so it is shown but honestly labeled as provisional — never presented as verified.
- * A finding only reads as "verified" once it clears the platform's real learner-facing gate
- * (`canShowLearnerFacingAiOutput`: teacher-reviewed / scholar-approved, confident, and sourced).
+ * The learner surface must never receive a finding until it clears the shared
+ * platform gate: human review, sufficient confidence, and a source citation.
+ * Keep the original findings for the authenticated review workflow; this only
+ * selects the subset that is safe to present as learning guidance.
+ */
+export function learnerVisibleTajweedFindings(findings: TajweedFinding[]): TajweedFinding[] {
+  return findings.filter(canShowLearnerFacingAiOutput);
+}
+
+/**
+ * The badge a learner sees for an already eligible tajweed finding. The guard above
+ * prevents unreviewed findings from entering this surface; the badge remains
+ * defensive so a future caller cannot accidentally label an ineligible finding verified.
  */
 export function tajweedReviewBadge(
   finding: Pick<TajweedFinding, "confidence" | "reviewStatus" | "sources">,

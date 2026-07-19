@@ -62,7 +62,44 @@ DATABASE_URL=postgresql://user@host:5432/db bash scripts/verify.sh
 ## Smoke tests (services)
 `pnpm smoke:all` exercises the running stack (SQL/browser/API/ML/privacy) and retains
 artifacts under `out/smoke/`. These need services up (`docker compose up`) and are
-**not** part of `verify.sh` — they validate a deployed stack, not a code change.
+**not** part of the ordinary `verify.sh` gate — they validate a deployed stack,
+not just a code change. `bash scripts/verify.sh --release` is the stricter
+release-only path: it requires a clean candidate, an explicit disposable
+database, external artifact locations, release trace, environment identity,
+and all deployable image digests before it runs the aggregate smoke. It writes
+candidate-bound smoke/test/environment evidence only after the full gate
+passes; it is not a substitute for protected CI or independent verification.
+
+### Secure-stack smoke configuration
+
+The running Platform API must use its restricted application `DATABASE_URL`.
+The aggregate smoke resets and seeds a disposable database, which requires a
+separate administrative connection. Set `SMOKE_DATABASE_ADMIN_URL` to that
+disposable administrative URL before `pnpm smoke:all`; the runner uses it only
+for reset/seed and SQL-RLS setup, while the Platform API retains its original
+application URL. Do not grant truncate or ownership privileges to the
+application role to make a smoke pass.
+
+The aggregate runner honors `PSQL` when supplied and otherwise discovers the
+standard Homebrew PostgreSQL 16 client path before falling back to `psql` on
+`PATH`.
+
+### Independent release challenge
+
+`scripts/release-challenge.mjs` is the clean-checkout harness used after a
+candidate manifest has been generated. It always re-verifies the signed
+manifest from the supplied candidate checkout and requires its `--runner-id`
+to differ from the build-provenance `builderId`.
+
+`--verify-manifest-only` is useful for an adversarial manifest challenge, but
+its external report is deliberately labeled `manifest-verified-only`; it is
+not release proof. `--run-release` additionally requires a dedicated
+`RELEASE_DATABASE_URL`, fresh external smoke/test/environment destinations,
+image digests from the verified manifest, and a release trace. It reruns
+`bash scripts/verify.sh --release` in the clean candidate checkout and writes
+`status: "passed"` only when that complete rerun succeeds. The protected CI
+job and an independently retained successful/adversarial run remain P0.7
+requirements; the local harness does not claim they have happened.
 
 ## Verifying RLS enforcement (production posture)
 The tenant-isolation policies (`infra/sql/0003_tenant_rls.sql`,

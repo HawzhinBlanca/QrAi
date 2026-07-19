@@ -16,24 +16,149 @@ import type {
 } from "../types/platform";
 import { fetchWithTimeout } from "../lib/http";
 
-// Static UI configuration (not mock data — these are app config, not learner data)
-export const supportedLanguages: Array<{
+// Static UI configuration (not mock data — these are app config, not learner data).
+//
+// A language in the catalog is not necessarily an interface language we can offer to a learner.
+// Keep interface review evidence separate from sourced Quran-translation availability: a verbatim
+// Sorani ayah translation is valuable, but it does not make the surrounding learner UI Sorani.
+// This registry is the single policy source for every user-facing language selector.
+type InterfaceCapability =
+  | {
+      availability: "available";
+      source: "source-language";
+      bundlePath: string;
+      keyCount: number;
+    }
+  | {
+      availability: "available";
+      source: "reviewed-translation";
+      bundlePath: string;
+      keyCount: number;
+      reviewedBy: string;
+      reviewedAt: string;
+      reviewExpiresAt: string;
+    }
+  | {
+      availability: "unavailable";
+      source: "not-shipped";
+      evidence: string;
+    };
+
+export interface LocaleCapability {
   code: SupportedLanguageCode;
   label: string;
   nativeName: string;
   direction: "ltr" | "rtl";
-  readiness: "live" | "reviewing" | "pilot";
-}> = [
-  { code: "ar", label: "Arabic", nativeName: "العربية", direction: "rtl", readiness: "live" },
-  { code: "ckb", label: "Kurdish Sorani", nativeName: "کوردیی ناوەندی", direction: "rtl", readiness: "pilot" },
-  { code: "en", label: "English", nativeName: "English", direction: "ltr", readiness: "live" },
-  { code: "tr", label: "Turkish", nativeName: "Türkçe", direction: "ltr", readiness: "reviewing" },
-  { code: "ur", label: "Urdu", nativeName: "اردو", direction: "rtl", readiness: "reviewing" },
-  { code: "id", label: "Indonesian", nativeName: "Indonesia", direction: "ltr", readiness: "reviewing" },
-  { code: "ms", label: "Malay", nativeName: "Melayu", direction: "ltr", readiness: "reviewing" },
-  { code: "fr", label: "French", nativeName: "Français", direction: "ltr", readiness: "reviewing" },
-  { code: "de", label: "German", nativeName: "Deutsch", direction: "ltr", readiness: "reviewing" },
+  interface: InterfaceCapability;
+  quranTranslation: {
+    availability: "none" | "bounded-sourced";
+    evidence: string;
+  };
+}
+
+export const localeCapabilities: LocaleCapability[] = [
+  {
+    code: "ar",
+    label: "Arabic",
+    nativeName: "العربية",
+    direction: "rtl",
+    interface: { availability: "unavailable", source: "not-shipped", evidence: "No reviewed Arabic interface bundle is shipped." },
+    quranTranslation: { availability: "none", evidence: "Canonical Arabic Quran text is not an Arabic interface translation." },
+  },
+  {
+    code: "ckb",
+    label: "Kurdish Sorani",
+    nativeName: "کوردیی ناوەندی",
+    direction: "rtl",
+    interface: { availability: "unavailable", source: "not-shipped", evidence: "No reviewed Sorani interface bundle is shipped." },
+    quranTranslation: { availability: "bounded-sourced", evidence: "Verbatim QuranEnc/Quran.com translation 81 for the bounded shipped surahs." },
+  },
+  {
+    code: "en",
+    label: "English",
+    nativeName: "English",
+    direction: "ltr",
+    interface: { availability: "available", source: "source-language", bundlePath: "apps/web/src/locales/en.json", keyCount: 380 },
+    quranTranslation: { availability: "none", evidence: "No English verse-translation bundle is shipped." },
+  },
+  {
+    code: "tr",
+    label: "Turkish",
+    nativeName: "Türkçe",
+    direction: "ltr",
+    interface: { availability: "unavailable", source: "not-shipped", evidence: "No reviewed Turkish interface bundle is shipped." },
+    quranTranslation: { availability: "none", evidence: "No Turkish verse-translation bundle is shipped." },
+  },
+  {
+    code: "ur",
+    label: "Urdu",
+    nativeName: "اردو",
+    direction: "rtl",
+    interface: { availability: "unavailable", source: "not-shipped", evidence: "No reviewed Urdu interface bundle is shipped." },
+    quranTranslation: { availability: "none", evidence: "No Urdu verse-translation bundle is shipped." },
+  },
+  {
+    code: "id",
+    label: "Indonesian",
+    nativeName: "Indonesia",
+    direction: "ltr",
+    interface: { availability: "unavailable", source: "not-shipped", evidence: "No reviewed Indonesian interface bundle is shipped." },
+    quranTranslation: { availability: "none", evidence: "No Indonesian verse-translation bundle is shipped." },
+  },
+  {
+    code: "ms",
+    label: "Malay",
+    nativeName: "Melayu",
+    direction: "ltr",
+    interface: { availability: "unavailable", source: "not-shipped", evidence: "No reviewed Malay interface bundle is shipped." },
+    quranTranslation: { availability: "none", evidence: "No Malay verse-translation bundle is shipped." },
+  },
+  {
+    code: "fr",
+    label: "French",
+    nativeName: "Français",
+    direction: "ltr",
+    interface: { availability: "unavailable", source: "not-shipped", evidence: "No reviewed French interface bundle is shipped." },
+    quranTranslation: { availability: "none", evidence: "No French verse-translation bundle is shipped." },
+  },
+  {
+    code: "de",
+    label: "German",
+    nativeName: "Deutsch",
+    direction: "ltr",
+    interface: { availability: "unavailable", source: "not-shipped", evidence: "No reviewed German interface bundle is shipped." },
+    quranTranslation: { availability: "none", evidence: "No German verse-translation bundle is shipped." },
+  },
 ];
+
+export const supportedLanguages = localeCapabilities.map(({ interface: _interface, quranTranslation: _quranTranslation, ...language }) => language);
+
+export function getSelectableInterfaceLanguages(
+  capabilities: readonly LocaleCapability[] = localeCapabilities,
+  now: Date = new Date(),
+) {
+  return capabilities
+    .filter((language) => {
+      if (language.interface.availability !== "available") return false;
+      if (language.interface.source === "source-language") return true;
+
+      const reviewedAt = new Date(language.interface.reviewedAt);
+      const reviewExpiresAt = new Date(language.interface.reviewExpiresAt);
+      return (
+        Number.isFinite(reviewedAt.getTime()) &&
+        Number.isFinite(reviewExpiresAt.getTime()) &&
+        reviewedAt <= now &&
+        reviewExpiresAt > reviewedAt &&
+        reviewExpiresAt > now
+      );
+    })
+    .map(({ interface: _interface, quranTranslation: _quranTranslation, ...language }) => language);
+}
+
+/** Never let a query string, persisted setting, or stale client select an unreviewed interface. */
+export function resolveSelectableInterfaceLanguage(value: string | null | undefined): SupportedLanguageCode {
+  return getSelectableInterfaceLanguages().find((language) => language.code === value)?.code ?? "en";
+}
 
 // labelKey/descriptionKey (not literal text) so PlatformCommand.tsx can pass them through
 // i18next's t() -- this file is plain data (no React context to call useTranslation() from).

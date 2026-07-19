@@ -24,6 +24,7 @@ const tenantTables = [
 const coreSchemaPaths = [
   join("infra", "sql", "0001_core_schema.sql"),
   join("infra", "sql", "0005_learner_progress.sql"),
+  join("infra", "sql", "0018_agent_run_learner_id.sql"),
 ];
 const sessionMigrationPath = join("infra", "sql", "0008_session_language.sql");
 const reviewStatusMigrationPaths = [

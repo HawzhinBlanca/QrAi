@@ -1,5 +1,13 @@
 # Quran AI Proof Checklist
 
+> **Current-candidate status (2026-07-19): historical engineering evidence, not
+> release proof.** This checklist predates the readiness-recovery program and
+> its checked items mean only that the named local proof existed when recorded.
+> It does not certify the current candidate, deployment images, production
+> environment, or launch readiness. The authoritative release record is
+> `specs/readiness-recovery-10-10/tasks.md`; it requires fresh external,
+> candidate-bound, independently verified evidence before any ship claim.
+
 ## Local Proof Now
 
 - [x] `pnpm install` completes with workspace packages.
@@ -45,6 +53,6 @@
 - [x] Audio deletion/export smoke tests prove retained local audio blobs and metadata sidecars are exported and deleted for the current local service boundary.
 - [ ] Pilot report covers latency, teacher agreement, learner retention, review-time reduction, model accuracy, and governance incidents.
 
-## Latest Full Smoke Artifact
+## Historical Full Smoke Artifact — Not Current-Candidate Proof
 
-- `out/smoke/2026-07-03T10-29-20-338Z/summary.json` passed `pnpm smoke:all` with trace ID `smoke-trace-8174c703-d1bc-40c7-93b9-9861e08f39fb`.
+- `out/smoke/2026-07-03T10-29-20-338Z/summary.json` passed `pnpm smoke:all` with trace ID `smoke-trace-8174c703-d1bc-40c7-93b9-9861e08f39fb`. It predates the current candidate and lacks the new candidate-bound release evidence, so it is retained for audit only.

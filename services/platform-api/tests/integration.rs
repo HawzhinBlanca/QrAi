@@ -1533,6 +1533,134 @@ async fn privacy_delete_preserves_other_learners_teacher_reviews() {
 
 #[tokio::test]
 #[ignore = "requires live Postgres"]
+async fn privacy_delete_erases_learner_agent_runs() {
+    let mock_ml = spawn_mock_ml_privacy_delete().await;
+    let state = test_state().with_ml_inference_url(mock_ml);
+    let router = platform_router_with_rate_limit(state.clone(), false);
+    let target_learner = format!("learner-privacy-target-ar-{}", next_suffix());
+    let other_learner = format!("learner-privacy-other-ar-{}", next_suffix());
+
+    sqlx::query(
+        "INSERT INTO users (id, tenant_id, display_name, role, language)
+         VALUES ($1, 'hikmah-pilot-erbil', 'Privacy Target Agent Run', 'learner', 'ckb'),
+                ($2, 'hikmah-pilot-erbil', 'Privacy Other Agent Run', 'learner', 'ckb')",
+    )
+    .bind(&target_learner)
+    .bind(&other_learner)
+    .execute(&state.pool)
+    .await
+    .unwrap();
+
+    // Create an agent run for the target learner
+    let target_created = send_json(
+        &router,
+        Method::POST,
+        "/v1/agent-runs",
+        Some("hikmah-pilot-erbil"),
+        Some("ops"),
+        json!({
+            "name": "Target Learner Agent Run",
+            "goal": "target-goal",
+            "status": "queued",
+            "confidence": 0.5,
+            "reviewStatus": "draft",
+            "sources": [],
+            "learnerId": target_learner
+        }),
+    )
+    .await;
+    assert_eq!(target_created.status(), StatusCode::OK);
+    let target_run_body: Value = read_json(target_created).await;
+    let target_run_id = target_run_body["id"].as_str().unwrap().to_string();
+
+    // Create an agent run for the other learner
+    let other_created = send_json(
+        &router,
+        Method::POST,
+        "/v1/agent-runs",
+        Some("hikmah-pilot-erbil"),
+        Some("ops"),
+        json!({
+            "name": "Other Learner Agent Run",
+            "goal": "other-goal",
+            "status": "queued",
+            "confidence": 0.5,
+            "reviewStatus": "draft",
+            "sources": [],
+            "learnerId": other_learner
+        }),
+    )
+    .await;
+    assert_eq!(other_created.status(), StatusCode::OK);
+    let other_run_body: Value = read_json(other_created).await;
+    let other_run_id = other_run_body["id"].as_str().unwrap().to_string();
+
+    // Perform privacy export for target learner and ensure it includes their agent run
+    let exported = send_json(
+        &router,
+        Method::POST,
+        "/v1/privacy/export",
+        Some("hikmah-pilot-erbil"),
+        Some("admin"),
+        json!({ "learnerId": target_learner }),
+    )
+    .await;
+    assert_eq!(exported.status(), StatusCode::OK);
+    let exported_body: Value = read_json(exported).await;
+    let target_run_record_key = format!("agent_run:{target_run_id}");
+    assert!(
+        exported_body["includedRecords"]
+            .as_array()
+            .is_some_and(|records| records.contains(&json!(target_run_record_key))),
+        "export must include the learner's agent run, got {:?}",
+        exported_body["includedRecords"]
+    );
+
+    // Perform privacy delete for target learner
+    let deleted = send_json(
+        &router,
+        Method::POST,
+        "/v1/privacy/delete",
+        Some("hikmah-pilot-erbil"),
+        Some("admin"),
+        json!({ "learnerId": target_learner }),
+    )
+    .await;
+    assert_eq!(deleted.status(), StatusCode::OK);
+    let deleted_body: Value = read_json(deleted).await;
+    assert!(
+        deleted_body["deletedRecords"]
+            .as_array()
+            .is_some_and(|records| records.contains(&json!(target_run_record_key))),
+        "delete must report deleting the learner's agent run, got {:?}",
+        deleted_body["deletedRecords"]
+    );
+
+    // Check DB that target agent run is deleted
+    let target_run_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM agent_runs WHERE id = $1")
+        .bind(&target_run_id)
+        .fetch_one(&state.pool)
+        .await
+        .unwrap();
+    assert_eq!(
+        target_run_count, 0,
+        "target learner agent run should be deleted"
+    );
+
+    // Check DB that other agent run is NOT deleted (same-tenant preservation)
+    let other_run_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM agent_runs WHERE id = $1")
+        .bind(&other_run_id)
+        .fetch_one(&state.pool)
+        .await
+        .unwrap();
+    assert_eq!(
+        other_run_count, 1,
+        "other learner agent run must be preserved"
+    );
+}
+
+#[tokio::test]
+#[ignore = "requires live Postgres"]
 async fn privacy_export_reports_included_records_but_deletes_nothing() {
     let state = test_state();
     let router = platform_router_with_rate_limit(state.clone(), false);
@@ -1922,6 +2050,16 @@ async fn list_tajweed_findings_returns_the_seeded_finding_not_an_empty_list() {
     let session_id = create_test_session_for_learner(&router, &learner_id).await;
     let (finding_id, _review_id) = seed_reviewed_finding(&state.pool, &session_id, "list").await;
 
+    // This endpoint intentionally returns only its highest-priority 200 findings. The integration
+    // database is persistent across local runs, so an ordinary 0.8 fixture can legitimately fall
+    // below that boundary after enough unrelated tests. Rank this test's fixture first instead of
+    // weakening the assertion to merely prove that some historical row was returned.
+    sqlx::query("UPDATE tajweed_findings SET confidence = 1 WHERE id = $1")
+        .bind(&finding_id)
+        .execute(&state.pool)
+        .await
+        .unwrap();
+
     let listed = send_json(
         &router,
         Method::GET,
@@ -1970,7 +2108,8 @@ async fn teacher_of_another_tenant_cannot_read_this_tenants_sessions_findings_or
     .await
     .unwrap();
     let session_id = create_test_session_for_learner(&router, &learner_id).await;
-    let (finding_id, _review_id) = seed_reviewed_finding(&state.pool, &session_id, "xtenant").await;
+    let (_finding_id, _review_id) =
+        seed_reviewed_finding(&state.pool, &session_id, "xtenant").await;
 
     // --- Tenant B: a real, separate institution (institutions is not RLS-scoped) ---
     let tenant_b = format!("tenant-b-teacher-probe-{suffix}");

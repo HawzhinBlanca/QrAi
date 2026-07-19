@@ -49,7 +49,7 @@ jobs:
       - name: Assert no missing SQL migrations in CI list
         run: |
           expected_count=$(ls infra/sql/*.sql | wc -l | tr -d ' ')
-          actual_count=19
+          actual_count=20
           if [ "$expected_count" != "$actual_count" ]; then
             echo "::error::Migration file count mismatch! Expected $actual_count migration files in infra/sql, found $expected_count. Update ci.yml."
             exit 1
@@ -75,6 +75,7 @@ jobs:
             infra/sql/0015_teacher_review_scholar_approval_indexes.sql \
             infra/sql/0016_missing_tenant_indexes.sql \
             infra/sql/0017_eval_runs_index.sql \
+            infra/sql/0018_agent_run_learner_id.sql \
             infra/sql/0019_recitation_and_findings_sort_indexes.sql \
             infra/sql/0020_language_check.sql; do
             echo "Applying $sql..."

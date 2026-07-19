@@ -5,6 +5,45 @@ architectural change. Newest first.
 
 ---
 
+## ADR-0018 — Release evidence is external, candidate-bound, and fail-closed
+**Date:** 2026-07-19 · **Status:** Accepted for engineering implementation
+
+**Context.** The original `scripts/release-manifest.mjs` writes its manifest
+inside the source checkout and then accepts either `HEAD` or `HEAD~1` as the
+candidate. That makes it possible for a stale manifest to appear valid after a
+second commit. It also ignores untracked files and accepts missing container
+image digests. The current manifest demonstrated all of these weaknesses: it
+was bound to an older commit and contains null image digests.
+
+**Decision.** Release evidence version 2 is generated as an external CI/release
+artifact, never as a tracked or untracked file inside the candidate checkout.
+Its verifier SHALL require the exact current candidate SHA, a completely clean
+working tree including untracked files, non-empty digests for every deployable
+service, and matching hashes for the declared candidate files. It SHALL also
+bind a passing build summary, SPDX SBOM, aggregate smoke summary, test summary,
+environment summary, expiry, and an Ed25519 signature to that exact candidate.
+The signer is selected from a trusted-signer policy rather than an arbitrary
+public-key command-line argument; the policy's hash and ID are themselves
+signed into the evidence.
+
+The trusted-signer policy is a release-control input, not candidate-owned
+source. The protected CI/release environment must mount and pin it; supplying
+an arbitrary policy while running the command locally does not create a trusted
+release. Version-1 manifests are historical evidence and cannot certify a new
+release. The evidence artifact is not, by itself, release authorization:
+approval, protected CI wiring, independent challenge, and operational evidence
+remain mandatory follow-up work in the readiness-recovery ledger.
+
+**Consequences.** A release engineer or CI job must provide an external manifest
+path, trusted-signer policy, and candidate-bound build/SBOM/smoke/test/
+environment summaries when generating or verifying a candidate. Existing
+`number-one-release` manifests will deliberately fail verification. A clean,
+reproducible positive path can be proven without a self-referential evidence
+commit, while any developer-local or incomplete evidence is rejected rather
+than softened.
+
+---
+
 ## ADR-0014 — Scholar review and approval of Tajweed rule scope
 **Date:** 2026-07-15 · **Status:** Approved
 **Reviewer:** Sheikh Hisham al-Erbili (mujawwid, Erbil Pilot Advisor)
@@ -34,7 +73,13 @@ Sheikh Hisham al-Erbili reviewed the packet and approved the scope with the foll
 2. We added a visible note in the scholar review guidelines (`docs/SCHOLAR_REVIEW.md` Question A1-1) to ensure the next iteration of the engine (which will implement the two-count mushaddad ghunnah detection) is reviewed and signed off by a qualified scholar before it is enabled.
 3. For general transparency, the learner-facing interface labels all AI-generated tajweed suggestions as *"AI suggestion · not yet reviewed"* and gates them behind the contract's teacher review/approval gates (`contracts` check `canShowLearnerFacingAiOutput`), preventing any unverified feedback from reaching the student.
 
-**Consequences.** The current release candidate remains doctrinally safe and honest. It does not present half-implemented or unverified tajweed feedback to the learner. Implementing and signing off on the mushaddad ghunnah rule is tracked as a post-release enhancement requiring a qualified scholar's verification packet sign-off.
+**Consequences.** At the time of this ADR, the scoped Tajweed behavior did not
+present half-implemented or unverified feedback to the learner. This
+component-level conclusion is not a current release-readiness claim; any new
+candidate still requires the recovery ledger's full source, evaluation, and
+scholar evidence. Implementing and signing off on the mushaddad ghunnah rule
+remains a post-release enhancement requiring a qualified scholar's verification
+packet sign-off.
 
 ---
 
@@ -546,3 +591,42 @@ Quran.com ground truth — mean word-START error ~64-100 ms over Al-Fatihah 1:1-
 - Remaining T3 wiring (separate PRs): ml-inference threads timing into the alignment response ->
   Rust persists non-zero start_ms/end_ms -> web sends audioBase64. Last-word END drifts into
   trailing silence (measure madd separately).
+
+## ADR-0019 — Interface locale capability gates prevent untranslated UI claims
+
+**Status:** Accepted through the 2026-07-19 readiness-recovery plan
+**Deciders:** product owner (approved recovery plan), implementation team
+
+### Context
+
+The web catalog declared Arabic `live` and Sorani `pilot` while
+`apps/web/src/locales/` contained only English. The application correctly fell
+back to English rather than fabricating religious-education copy, but it still
+offered those locales to real users and flipped the document to RTL. That is not
+a usable Arabic or Sorani interface. Separately, the reader has bounded,
+verbatim Sorani verse translations; this is source content, not proof that
+controls, consent, privacy, feedback, and errors are translated.
+
+### Decision
+
+Use the `localeCapabilities` registry as the one policy source for language
+selection. A normal user can select only a locale with a recorded interface
+capability. A source-language bundle records its path and key count; a future
+translated bundle must also record full-key coverage, native reviewer, review
+date, and review expiry. The normal selector and `?lng=` input resolve unavailable locales
+to English. Test and smoke mode may enumerate the catalog only to exercise
+fallback/direction regressions; that exception must not reach user builds.
+
+Until reviewed packs exist, English is the only offered interface. Sorani verse
+material remains a separately bounded, attributed capability and must not be
+marketed as a Sorani UI.
+
+### Consequences
+
+- The product stops misrepresenting an English fallback as live/pilot Arabic or
+  Sorani interface support.
+- A product decision and explicit source/coverage labelling are required before
+  exposing a bounded verse-translation control independently of the interface.
+- The registry is a local truthfulness guard, not R5 proof. Native-language,
+  Quran-content, RTL/accessibility, and candidate-bound review evidence are
+  still required before a non-English interface can return.

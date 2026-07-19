@@ -29,6 +29,7 @@ import {
   fetchTajweedFindings,
   fetchTeacherReviewQueue,
   governanceItems,
+  getSelectableInterfaceLanguages,
   platformApps,
   platformTabs,
   supportedLanguages,
@@ -203,7 +204,7 @@ export function PlatformCommand({
                   (typeof window !== "undefined" && new URLSearchParams(window.location.search).has("smoke"));
                 const offeredLanguages = isTestOrSmoke
                   ? supportedLanguages
-                  : supportedLanguages.filter((l) => l.code === "en");
+                  : getSelectableInterfaceLanguages();
                 return offeredLanguages.map((language) => (
                   <option key={language.code} value={language.code}>
                     {language.nativeName}

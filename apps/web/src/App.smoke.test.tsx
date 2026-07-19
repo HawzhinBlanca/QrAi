@@ -224,6 +224,65 @@ describe("Quran AI app smoke", () => {
     expect(document.body.textContent).not.toContain("Progress saved");
   });
 
+  it("documents the current login-off authorization mismatch before the pilot identity fix", async () => {
+    // P1.1 baseline: the normal login-off app supplies no bearer session. Its progress request
+    // instead carries browser-controlled identity headers, which a secure platform API correctly
+    // rejects. This test intentionally records that failure mode; P1.4 must replace it with a
+    // passing authorized-pilot journey after the identity ADR is approved.
+    localStorage.removeItem("quran-ai-auth");
+    const progressRequests: Array<{ path: string; headers: Headers }> = [];
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const path = String(input);
+        if (path.includes("/v1/learner/progress")) {
+          progressRequests.push({ path, headers: new Headers(init?.headers) });
+          return new Response(JSON.stringify({ error: "bearer session required" }), {
+            status: 401,
+            headers: { "content-type": "application/json" },
+          });
+        }
+        if (path.endsWith("/v1/quran/surahs")) {
+          return new Response(
+            JSON.stringify([
+              { surahNumber: 1, name: "الفاتحة", englishName: "Al-Fatihah", ayahCount: 7, revelationType: "meccan" },
+            ]),
+            { status: 200, headers: { "content-type": "application/json" } },
+          );
+        }
+        if (path.endsWith("/v1/quran/surahs/1")) {
+          return new Response(
+            JSON.stringify({
+              surahNumber: 1,
+              ayahs: [{ id: "1:1", surahNumber: 1, ayahNumber: 1, text: "بِسْمِ اللَّهِ", sourceChecksum: "tanzil:uthmani:v1" }],
+            }),
+            { status: 200, headers: { "content-type": "application/json" } },
+          );
+        }
+        return new Response(JSON.stringify({ error: "not found" }), { status: 404 });
+      }),
+    );
+
+    const root = createRoot(container);
+    await act(async () => {
+      root.render(<App />);
+    });
+
+    await vi.waitFor(() => {
+      expect(progressRequests.some((request) => request.path.endsWith("/v1/learner/progress"))).toBe(true);
+      expect(consoleError).toHaveBeenCalledWith("Failed to fetch learner progress:", expect.any(Error));
+    });
+
+    const requestHeaders = progressRequests.find((request) => request.path.endsWith("/v1/learner/progress"))?.headers;
+    expect(requestHeaders).toBeDefined();
+    expect(requestHeaders?.get("authorization")).toBeNull();
+    expect(requestHeaders?.get("x-tenant-id")).toBe("hikmah-pilot-erbil");
+    expect(requestHeaders?.get("x-user-id")).toBe("learner-1");
+    expect(requestHeaders?.get("x-user-role")).toBe("learner");
+    consoleError.mockRestore();
+  });
+
   it("the skip-to-content link's target is actually focusable, not just scrollable", async () => {
     // Regression test: <main id="main-content"> had no tabindex, so it was NOT a focusable
     // element at all. Activating "Skip to content" would scroll the viewport there (the browser's
@@ -1025,10 +1084,10 @@ describe("Quran AI app smoke", () => {
     expect(document.body.textContent).toContain("Learner Home");
   });
 
-  it("only offers live and pilot languages in production mode", async () => {
+  it("offers only interface-ready locales and rejects an unavailable locale URL input", async () => {
     vi.stubEnv("MODE", "production");
-    const originalHas = URLSearchParams.prototype.has;
-    URLSearchParams.prototype.has = () => false;
+    const originalUrl = window.location.href;
+    window.history.replaceState({}, "", "/?lng=ckb");
 
     try {
       const root = createRoot(container);
@@ -1039,14 +1098,13 @@ describe("Quran AI app smoke", () => {
       const options = Array.from(document.querySelectorAll(".language-button select option"));
       const values = options.map((opt) => opt.getAttribute("value"));
 
-      expect(values).toContain("en");
-      expect(values).toContain("ar");
-      expect(values).toContain("ckb");
-      expect(values).not.toContain("tr");
-      expect(values).not.toContain("de");
+      expect(values).toEqual(["en"]);
+      expect(document.querySelector<HTMLSelectElement>(".language-button select")?.value).toBe("en");
+      expect(document.documentElement.lang).toBe("en");
+      expect(document.documentElement.dir).toBe("ltr");
     } finally {
       vi.unstubAllEnvs();
-      URLSearchParams.prototype.has = originalHas;
+      window.history.replaceState({}, "", originalUrl);
     }
   });
 

@@ -240,6 +240,8 @@
     "ariaLabel": "Tajweed feedback",
     "title": "Tajweed",
     "empty": "Recite to get tajweed feedback (makhraj, madd, ghunnah).",
+    "awaitingReview": "Your Tajweed feedback is awaiting teacher review.",
+    "sources": "Sources",
     "verified": "Verified",
     "aiSuggestion": "AI suggestion · not yet reviewed",
     "verifiedTitle": "Reviewed and verified for learners.",
@@ -405,8 +407,8 @@
         "status": "teacher + scholar gates"
       },
       "languages": {
-        "label": "9 languages",
-        "status": "UI ready, content gated"
+        "label": "1 interface locale",
+        "status": "English interface available; sourced Sorani verses are limited"
       },
       "dataFlywheel": {
         "label": "Data flywheel",

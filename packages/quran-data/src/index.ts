@@ -39,6 +39,10 @@ export type {
   MissingTranslation,
   SurahTranslation,
 } from "./translations";
+export {
+  CKB_BURHAN_MUHAMMAD_BUNDLE_V2,
+  type TranslationBundleProvenance,
+} from "./translation-bundles";
 
 export const CANONICAL_IMPORT_VERSION = "2026-06-24-fatihah-seed-v1";
 
