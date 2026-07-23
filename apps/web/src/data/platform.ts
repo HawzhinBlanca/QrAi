@@ -176,26 +176,6 @@ export const platformTabs = [
   { id: "model-ops", labelKey: "platformCommand.tabs.modelOps", icon: LineChart },
 ] as const;
 
-export const canonicalSources = [
-  {
-    id: "quran-foundation",
-    title: "Quran Foundation API",
-    citation: "Canonical Quran text and metadata source",
-    url: "https://api-docs.quran.foundation/",
-  },
-  {
-    id: "tanzil",
-    title: "Tanzil Quran Text",
-    citation: "Verified Uthmani Quran text reference",
-    url: "https://tanzil.net/docs/",
-  },
-  {
-    id: "tajweed-scholar-board",
-    title: "Quran AI Scholar Board",
-    citation: "Internal reviewed tajweed explanation policy",
-  },
-];
-
 export const governanceItems = [
   { labelKey: "platformCommand.governance.canonicalText.label", statusKey: "platformCommand.governance.canonicalText.status", icon: BookCheck },
   { labelKey: "platformCommand.governance.humanReviewed.label", statusKey: "platformCommand.governance.humanReviewed.status", icon: ShieldCheck },
