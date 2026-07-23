@@ -206,3 +206,101 @@ pub async fn logout(
 
     Ok((resp_headers, Json(json!({ "status": "logged_out" }))))
 }
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MintInvitationRequest {
+    pub learner_id: String,
+    /// Validity window in hours; defaults to 168 (7 days), clamped to [1, 720] so an admin
+    /// cannot mint an effectively immortal invite.
+    pub ttl_hours: Option<i64>,
+}
+
+/// Admin/Ops mint a SINGLE-USE pilot invitation for a learner IN THEIR OWN TENANT (P1.6).
+///
+/// The raw token is returned exactly once — only its SHA-256 hash is stored, so a leaked DB row
+/// cannot be replayed into a session. The learner opens `?invite=<token>`; the web app exchanges
+/// it for a `__Host-qrai-pilot` cookie via `bootstrap`. This is the only way pilot invitations are
+/// issued, closing the "invitation-issuance mechanism not present anywhere" gap from research.md.
+pub async fn mint_invitation(
+    State(state): State<AppState>,
+    method: axum::http::Method,
+    headers: HeaderMap,
+    Json(req): Json<MintInvitationRequest>,
+) -> Result<Json<Value>, ApiError> {
+    let actor = crate::auth::resolve_actor(&method, &headers, &state).await?;
+    actor.require_any(&[ActorRole::Admin, ActorRole::Ops])?;
+
+    let ttl_hours = req.ttl_hours.unwrap_or(168).clamp(1, 720);
+
+    let mut tx = crate::begin_tenant_tx(&state.pool, &actor.tenant_id).await?;
+
+    // The invited user must exist in the caller's tenant (RLS scopes the lookup) and be a learner —
+    // the pilot cookie pins role=learner, so inviting a teacher/admin would silently under-privilege
+    // them and is almost certainly a mistake; reject it explicitly rather than mint a dead invite.
+    let target = sqlx::query("SELECT role FROM users WHERE id = $1 AND tenant_id = $2")
+        .bind(&req.learner_id)
+        .bind(&actor.tenant_id)
+        .fetch_optional(&mut *tx)
+        .await?;
+    let Some(target) = target else {
+        return Err(ApiError::NotFound);
+    };
+    let target_role: String = target.try_get("role")?;
+    if target_role != "learner" {
+        return Err(ApiError::BadRequest(
+            "pilot invitations may only target learner accounts".to_string(),
+        ));
+    }
+
+    // Raw token shown once; store only its hash (mirrors bootstrap's session-token handling).
+    let token = uuid::Uuid::new_v4().to_string();
+    let mut hasher = Sha256::new();
+    hasher.update(token.as_bytes());
+    let token_hash = format!("{:x}", hasher.finalize());
+
+    let invitation_id = next_id("pilot-invitation");
+    let expires_at = Utc::now() + Duration::hours(ttl_hours);
+
+    sqlx::query(
+        "INSERT INTO pilot_invitations (id, tenant_id, learner_id, token_hash, expires_at)
+         VALUES ($1, $2, $3, $4, $5)",
+    )
+    .bind(&invitation_id)
+    .bind(&actor.tenant_id)
+    .bind(&req.learner_id)
+    .bind(&token_hash)
+    .bind(expires_at)
+    .execute(&mut *tx)
+    .await?;
+
+    let audit_id = next_id("audit");
+    sqlx::query(
+        "INSERT INTO audit_events (id, tenant_id, actor_id, action, subject_type, subject_id)
+         VALUES ($1, $2, $3, 'pilot.invitation.minted', 'user', $4)",
+    )
+    .bind(&audit_id)
+    .bind(&actor.tenant_id)
+    .bind(&actor.user_id)
+    .bind(&req.learner_id)
+    .execute(&mut *tx)
+    .await?;
+
+    tx.commit().await?;
+
+    // ponytail: per-request env read on a rare admin endpoint (not an auth decision, just a URL
+    // prefix); move to AppState if invitation minting ever becomes hot. Absent base => caller builds
+    // the URL from the raw token itself, which is the source of truth.
+    let invite_url = std::env::var("PILOT_INVITE_BASE_URL")
+        .ok()
+        .filter(|b| !b.is_empty())
+        .map(|base| format!("{}/?invite={}", base.trim_end_matches('/'), token));
+
+    Ok(Json(json!({
+        "invitationId": invitation_id,
+        "learnerId": req.learner_id,
+        "token": token,
+        "inviteUrl": invite_url,
+        "expiresAt": expires_at.to_rfc3339(),
+    })))
+}

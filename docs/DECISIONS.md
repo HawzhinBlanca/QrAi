@@ -5,6 +5,39 @@ architectural change. Newest first.
 
 ---
 
+## ADR-0019 — Pilot invitations: admin-minted, single-use, hash-stored; the web exchanges them for the `__Host-qrai-pilot` cookie
+**Date:** 2026-07-23 · **Status:** Accepted
+
+**Context.** ADR-0002 disables login for the pilot; the current default identity is a hardcoded
+`learner-1` sent via spoofable `x-user-id`/`x-tenant-id` headers (gated by `ALLOW_HEADER_AUTH`). The
+pilot-identity feature (`specs/pilot-identity-hardening`, #238) added a server-authoritative
+`__Host-qrai-pilot` cookie plus `bootstrap`/`logout`, but `research.md` flagged that the
+"invitation-issuance mechanism is not present anywhere" and the web never consumed the cookie — so
+the boundary existed but was unused (P1.6 open).
+
+**Decision.**
+- **Issuance:** `POST /v1/pilot/invitations` (Admin/Ops, own tenant only) mints a single-use
+  invitation for a learner. The raw token is returned exactly once; only its SHA-256 hash is stored.
+  TTL defaults to 7 days (168h), clamped to [1h, 30d]. Non-learner or cross-tenant targets are rejected.
+- **Redemption:** the learner opens `?invite=<token>`; the web calls `bootstrap` (credentials
+  included) to receive the cookie, stores the returned identity + CSRF token in `lib/pilotSession`,
+  and strips the token from the URL/history.
+- **Requests:** in pilot mode the web sends the cookie (`credentials:"include"`) plus `x-csrf-token`
+  on mutations, and STOPS sending `x-user-id`/`x-tenant-id`. Identity is server-derived from the
+  cookie; request-body fields (e.g. `learnerId`) are non-authoritative.
+- **Additive:** with no invite and no stored session the app keeps the existing default/dev-header
+  path unchanged, so nothing breaks for local dev or the smoke suite.
+
+**Consequences.**
+- Learners get a real, revocable, per-user identity without a login screen (ADR-0002 preserved).
+- To fully close the header-spoofing gap in production the deployment must set `ALLOW_HEADER_AUTH`
+  off and distribute invite links; that flip, the live-browser walkthrough (P1.6 proof), and the
+  security-reviewer sign-off (P1.7) are the remaining pilot-identity steps.
+- Invitation *distribution* (email/SMS/hand-out) is out of scope: the endpoint returns the token and
+  an optional `inviteUrl` (when `PILOT_INVITE_BASE_URL` is set); an operator delivers it.
+
+---
+
 ## ADR-0018 — Release evidence is external, candidate-bound, and fail-closed
 **Date:** 2026-07-19 · **Status:** Accepted for engineering implementation
 

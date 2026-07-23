@@ -1,3 +1,5 @@
+import { isPilotMode } from "./pilotSession";
+
 /**
  * fetch with a hard timeout so a hung/slow backend can never freeze the UI
  * (e.g. the practice "Analyzing…" state waiting on the ML service).
@@ -20,7 +22,10 @@ export async function fetchWithTimeout(
     else init.signal.addEventListener("abort", () => controller.abort(), { once: true });
   }
   try {
-    return await fetch(input, { ...init, signal: controller.signal });
+    // In pilot mode the browser authenticates via the HttpOnly `__Host-qrai-pilot` cookie, so it
+    // must be SENT with every request. An explicit `init.credentials` from the caller wins.
+    const credentials = init.credentials ?? (isPilotMode() ? "include" : undefined);
+    return await fetch(input, { ...init, credentials, signal: controller.signal });
   } finally {
     clearTimeout(timer);
   }

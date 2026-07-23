@@ -3423,3 +3423,373 @@ async fn metrics_endpoint_is_closed_by_default_without_dev_flag_or_token() {
         "metrics must be fail-closed when neither a token nor dev mode is set"
     );
 }
+
+// ============================================================================
+// P1.6 — pilot identity: admin-minted invitations, cookie auth, CSRF/Origin.
+// These exercise the pilot HTTP boundary that previously had only SQL-level
+// (smoke-sql) coverage. All require a live Postgres with migration 0021.
+// ============================================================================
+
+/// Like `send_json` but with an explicit header list and optional body, so a pilot test can set
+/// Cookie / Origin / x-csrf-token directly (send_json only ever sends dev-header identity).
+async fn send_with_headers(
+    router: &axum::Router,
+    method: Method,
+    uri: &str,
+    header_pairs: &[(&str, &str)],
+    body: Option<Value>,
+) -> axum::response::Response {
+    let mut request = Request::builder().method(method).uri(uri);
+    for (k, v) in header_pairs {
+        request = request.header(*k, *v);
+    }
+    let body = match body {
+        Some(b) => Body::from(b.to_string()),
+        None => Body::empty(),
+    };
+    router
+        .clone()
+        .oneshot(request.body(body).unwrap())
+        .await
+        .unwrap()
+}
+
+/// Extract the raw `__Host-qrai-pilot` session token from a bootstrap response's Set-Cookie.
+fn pilot_cookie_from(response: &axum::response::Response) -> Option<String> {
+    for v in response.headers().get_all("set-cookie") {
+        if let Ok(s) = v.to_str()
+            && let Some(rest) = s.strip_prefix("__Host-qrai-pilot=")
+        {
+            let token = rest.split(';').next().unwrap_or("").to_string();
+            if !token.is_empty() {
+                return Some(token);
+            }
+        }
+    }
+    None
+}
+
+async fn mint_pilot_token(router: &axum::Router, learner_id: &str) -> Value {
+    let mint = send_json(
+        router,
+        Method::POST,
+        "/v1/pilot/invitations",
+        Some("hikmah-pilot-erbil"),
+        Some("admin"),
+        json!({ "learnerId": learner_id }),
+    )
+    .await;
+    assert_eq!(
+        mint.status(),
+        StatusCode::OK,
+        "admin should mint an invitation"
+    );
+    read_json(mint).await
+}
+
+const PILOT_ORIGIN: &str = "https://pilot.example";
+
+#[tokio::test]
+#[ignore = "requires live Postgres"]
+async fn pilot_admin_mints_and_learner_bootstraps_and_cookie_authenticates() {
+    let router = platform_router_with_rate_limit(test_state(), false);
+
+    let minted = mint_pilot_token(&router, "learner-1").await;
+    let token = minted["token"]
+        .as_str()
+        .expect("raw token returned once")
+        .to_string();
+    assert!(!token.is_empty());
+
+    // Learner exchanges the invite for a session cookie (Origin required by bootstrap).
+    let boot = send_with_headers(
+        &router,
+        Method::POST,
+        "/v1/pilot/session/bootstrap",
+        &[
+            ("content-type", "application/json"),
+            ("origin", PILOT_ORIGIN),
+        ],
+        Some(json!({ "token": token })),
+    )
+    .await;
+    assert_eq!(
+        boot.status(),
+        StatusCode::OK,
+        "a valid invite should bootstrap a session"
+    );
+    let session_cookie =
+        pilot_cookie_from(&boot).expect("bootstrap must set __Host-qrai-pilot cookie");
+    let boot_body: Value = read_json(boot).await;
+    assert_eq!(boot_body["userId"], "learner-1");
+    assert_eq!(boot_body["tenantId"], "hikmah-pilot-erbil");
+    assert_eq!(
+        boot_body["role"], "learner",
+        "pilot role is server-pinned to learner"
+    );
+    assert!(
+        boot_body["csrfToken"].as_str().is_some(),
+        "bootstrap returns a CSRF token"
+    );
+
+    // The cookie ALONE authenticates a GET — no dev headers, no Bearer. This is the whole point:
+    // identity comes from the server-side session, not a browser-asserted header.
+    let cookie_hdr = format!("__Host-qrai-pilot={session_cookie}");
+    let me = send_with_headers(
+        &router,
+        Method::GET,
+        "/v1/learner/progress",
+        &[("cookie", &cookie_hdr)],
+        None,
+    )
+    .await;
+    assert_eq!(
+        me.status(),
+        StatusCode::OK,
+        "the pilot cookie must authenticate a request"
+    );
+    let prog: Value = read_json(me).await;
+    assert_eq!(
+        prog["learnerId"], "learner-1",
+        "identity is the cookie's learner, not a header"
+    );
+}
+
+#[tokio::test]
+#[ignore = "requires live Postgres"]
+async fn pilot_invitation_is_single_use() {
+    let router = platform_router_with_rate_limit(test_state(), false);
+    let token = mint_pilot_token(&router, "learner-1").await["token"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let hdrs = [
+        ("content-type", "application/json"),
+        ("origin", PILOT_ORIGIN),
+    ];
+    let first = send_with_headers(
+        &router,
+        Method::POST,
+        "/v1/pilot/session/bootstrap",
+        &hdrs,
+        Some(json!({ "token": token })),
+    )
+    .await;
+    assert_eq!(first.status(), StatusCode::OK);
+    let second = send_with_headers(
+        &router,
+        Method::POST,
+        "/v1/pilot/session/bootstrap",
+        &hdrs,
+        Some(json!({ "token": token })),
+    )
+    .await;
+    assert_eq!(
+        second.status(),
+        StatusCode::UNAUTHORIZED,
+        "a consumed invitation must not bootstrap a second session"
+    );
+}
+
+#[tokio::test]
+#[ignore = "requires live Postgres"]
+async fn pilot_bootstrap_rejects_expired_invitation() {
+    let state = test_state();
+    let router = platform_router_with_rate_limit(state.clone(), false);
+    let minted = mint_pilot_token(&router, "learner-1").await;
+    let token = minted["token"].as_str().unwrap().to_string();
+    let invitation_id = minted["invitationId"].as_str().unwrap().to_string();
+
+    // The endpoint clamps ttl >= 1h, so drive expiry directly (connection tenant context is set by
+    // the pool's after_connect hook, matching every other direct-SQL test here).
+    sqlx::query(
+        "UPDATE pilot_invitations SET expires_at = now() - interval '1 hour' WHERE id = $1",
+    )
+    .bind(&invitation_id)
+    .execute(&state.pool)
+    .await
+    .unwrap();
+
+    let boot = send_with_headers(
+        &router,
+        Method::POST,
+        "/v1/pilot/session/bootstrap",
+        &[
+            ("content-type", "application/json"),
+            ("origin", PILOT_ORIGIN),
+        ],
+        Some(json!({ "token": token })),
+    )
+    .await;
+    assert_eq!(
+        boot.status(),
+        StatusCode::UNAUTHORIZED,
+        "an expired invitation must not bootstrap"
+    );
+}
+
+#[tokio::test]
+#[ignore = "requires live Postgres"]
+async fn pilot_non_admin_cannot_mint_invitation() {
+    let router = platform_router_with_rate_limit(test_state(), false);
+    for role in ["learner", "teacher", "scholar"] {
+        let r = send_json(
+            &router,
+            Method::POST,
+            "/v1/pilot/invitations",
+            Some("hikmah-pilot-erbil"),
+            Some(role),
+            json!({ "learnerId": "learner-1" }),
+        )
+        .await;
+        assert_eq!(
+            r.status(),
+            StatusCode::FORBIDDEN,
+            "{role} must not be able to mint pilot invitations"
+        );
+    }
+}
+
+#[tokio::test]
+#[ignore = "requires live Postgres"]
+async fn pilot_mint_rejects_nonexistent_and_non_learner_targets() {
+    let router = platform_router_with_rate_limit(test_state(), false);
+
+    let missing = send_json(
+        &router,
+        Method::POST,
+        "/v1/pilot/invitations",
+        Some("hikmah-pilot-erbil"),
+        Some("admin"),
+        json!({ "learnerId": "no-such-user-xyz" }),
+    )
+    .await;
+    assert_eq!(
+        missing.status(),
+        StatusCode::NOT_FOUND,
+        "unknown learner -> 404"
+    );
+
+    // teacher-1 exists in the seed but is not a learner -> 400.
+    let non_learner = send_json(
+        &router,
+        Method::POST,
+        "/v1/pilot/invitations",
+        Some("hikmah-pilot-erbil"),
+        Some("admin"),
+        json!({ "learnerId": "teacher-1" }),
+    )
+    .await;
+    assert_eq!(
+        non_learner.status(),
+        StatusCode::BAD_REQUEST,
+        "a non-learner target must be rejected"
+    );
+}
+
+#[tokio::test]
+#[ignore = "requires live Postgres"]
+async fn pilot_cookie_mutation_requires_origin_and_csrf() {
+    let router = platform_router_with_rate_limit(test_state(), false);
+    let token = mint_pilot_token(&router, "learner-1").await["token"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let boot = send_with_headers(
+        &router,
+        Method::POST,
+        "/v1/pilot/session/bootstrap",
+        &[
+            ("content-type", "application/json"),
+            ("origin", PILOT_ORIGIN),
+        ],
+        Some(json!({ "token": token })),
+    )
+    .await;
+    let cookie = pilot_cookie_from(&boot).unwrap();
+    let csrf = read_json::<Value>(boot).await["csrfToken"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let cookie_hdr = format!("__Host-qrai-pilot={cookie}");
+    let body = json!({ "quality": 5, "ayahRef": "1:1" });
+
+    // (a) valid Origin, NO csrf -> 401
+    let no_csrf = send_with_headers(
+        &router,
+        Method::POST,
+        "/v1/learner/progress",
+        &[
+            ("content-type", "application/json"),
+            ("origin", PILOT_ORIGIN),
+            ("cookie", &cookie_hdr),
+        ],
+        Some(body.clone()),
+    )
+    .await;
+    assert_eq!(
+        no_csrf.status(),
+        StatusCode::UNAUTHORIZED,
+        "mutation without CSRF is rejected"
+    );
+
+    // (b) valid Origin, WRONG csrf -> 401
+    let bad_csrf = send_with_headers(
+        &router,
+        Method::POST,
+        "/v1/learner/progress",
+        &[
+            ("content-type", "application/json"),
+            ("origin", PILOT_ORIGIN),
+            ("cookie", &cookie_hdr),
+            ("x-csrf-token", "not-the-real-token"),
+        ],
+        Some(body.clone()),
+    )
+    .await;
+    assert_eq!(
+        bad_csrf.status(),
+        StatusCode::UNAUTHORIZED,
+        "mutation with wrong CSRF is rejected"
+    );
+
+    // (c) correct csrf, NO Origin -> 403
+    let no_origin = send_with_headers(
+        &router,
+        Method::POST,
+        "/v1/learner/progress",
+        &[
+            ("content-type", "application/json"),
+            ("cookie", &cookie_hdr),
+            ("x-csrf-token", &csrf),
+        ],
+        Some(body.clone()),
+    )
+    .await;
+    assert_eq!(
+        no_origin.status(),
+        StatusCode::FORBIDDEN,
+        "mutation without Origin is rejected"
+    );
+
+    // (d) correct Origin + CSRF -> accepted
+    let ok = send_with_headers(
+        &router,
+        Method::POST,
+        "/v1/learner/progress",
+        &[
+            ("content-type", "application/json"),
+            ("origin", PILOT_ORIGIN),
+            ("cookie", &cookie_hdr),
+            ("x-csrf-token", &csrf),
+        ],
+        Some(body.clone()),
+    )
+    .await;
+    assert_eq!(
+        ok.status(),
+        StatusCode::OK,
+        "correct Origin + CSRF must be accepted"
+    );
+}
