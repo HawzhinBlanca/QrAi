@@ -109,6 +109,18 @@ jobs:
           (cd services/platform-api && cargo audit)
           (cd services/realtime-gateway && cargo audit)
 
+      # --- Software Bill of Materials (CycloneDX, all languages) for supply-chain review (P0.4/P4.4).
+      #     Non-blocking (it is an artifact, not a gate — the advisory GATES are pnpm/cargo audit
+      #     above); uploaded so a security reviewer (P4.5) has the exact component inventory. ---
+      - name: Generate SBOM (CycloneDX)
+        run: npx -y @cyclonedx/cdxgen@^11 -o sbom.cdx.json . || echo "::warning::SBOM generation had issues (non-blocking)"
+      - name: Upload SBOM
+        uses: actions/upload-artifact@v4
+        with:
+          name: sbom-cyclonedx
+          path: sbom.cdx.json
+          if-no-files-found: warn
+
       # --- The CODYSTEM gate (same script the agent runs locally) ---
       - run: bash scripts/verify.sh
 
