@@ -64,7 +64,7 @@ async fn proxy_ml(
     {
         let mut tx = crate::begin_tenant_tx(&state.pool, &actor.tenant_id).await?;
         let row = sqlx::query(
-            "SELECT c.guardian_approved, c.external_asr_processing, c.audio_retention
+            "SELECT s.learner_id, c.guardian_approved, c.external_asr_processing, c.audio_retention
              FROM recitation_sessions s
              JOIN consent_records c ON c.id = s.consent_record_id
              WHERE s.id = $1 AND s.tenant_id = $2",
@@ -76,6 +76,12 @@ async fn proxy_ml(
         tx.commit().await?;
 
         let row = row.ok_or(ApiError::Forbidden)?;
+        // The session must belong to the caller: a learner may only run analysis against their OWN
+        // session; admin/ops may run against any in-tenant session. Without this, a learner could
+        // pass another in-tenant learner's sessionId and have THAT session's stored consent applied
+        // to their own forwarded audio. Mirrors create_realtime_ticket / persist_session_alignments.
+        let session_learner_id: String = row.try_get("learner_id")?;
+        actor.require_self_or_any(&session_learner_id, &[ActorRole::Admin, ActorRole::Ops])?;
         let guardian_approved: bool = row.try_get("guardian_approved")?;
         let external_asr_processing: bool = row.try_get("external_asr_processing")?;
         let audio_retention: String = row.try_get("audio_retention")?;
