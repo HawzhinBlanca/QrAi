@@ -1,0 +1,12 @@
+# cargo-audit config for platform-api. Read automatically by `cargo audit` run from this dir.
+#
+# RUSTSEC-2023-0071 (rsa 0.9.10 — "Marvin Attack" key-recovery timing sidechannel, medium 5.9):
+#   - No fixed upstream version exists (Solution: "No fixed upgrade is available!").
+#   - rsa is present in Cargo.lock but NOT compiled into our binary: `cargo tree -i rsa` prints
+#     "nothing to print" — it is pulled only by an optional/unused feature path (we use sqlx with
+#     the `postgres` feature only; no MySQL). The vulnerable code is never built or executed, so the
+#     timing sidechannel is unreachable in this service.
+#   Action if this changes: if `cargo tree -i rsa` ever shows rsa in the build graph, REMOVE this
+#   ignore and remediate (drop the feature pulling it, or migrate off rsa) — do not blanket-ignore.
+[advisories]
+ignore = ["RUSTSEC-2023-0071"]

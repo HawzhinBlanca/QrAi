@@ -93,9 +93,21 @@ jobs:
       - name: Seed full Quran
         run: PSQL=psql bash packages/quran-data/scripts/seed-full-quran-to-db.sh
 
-      # --- Run dependency vulnerability scan ---
+      # --- Run dependency vulnerability scan (JS) ---
       - name: Dependency vulnerability scan
         run: pnpm audit
+
+      # --- Rust dependency vulnerability scan (cargo-audit). Prebuilt binary for speed; each crate
+      #     is scanned from its own dir so its .cargo/audit.toml (documented, reachability-analysed
+      #     ignores) is honoured. Fails CI on any NEW advisory. ---
+      - name: Install cargo-audit
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-audit
+      - name: Rust dependency vulnerability scan
+        run: |
+          (cd services/platform-api && cargo audit)
+          (cd services/realtime-gateway && cargo audit)
 
       # --- The CODYSTEM gate (same script the agent runs locally) ---
       - run: bash scripts/verify.sh
