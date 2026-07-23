@@ -14,8 +14,8 @@ P6 supports R10; and P7 supports R11/R12.
 - [ ] P0.2 — Write and approve ADR for signed release-evidence architecture and retention.
 - [x] P0.3 — Add failing negative tests for stale SHA, dirty and untracked tree, null digest, missing hash, wrong trace, expired/unsigned artifact, and manifest tampering.
 - [ ] P0.4 — Implement manifest/evidence schema and verifier; bind exact source, build, image, SBOM, smoke, test, environment, signature, and expiry data.
-- [ ] P0.5 — Add `verify.sh --release` mode that executes the required isolated DB/browser/evidence tests without silent skip.
-- [ ] P0.6 — Make aggregate smoke candidate-bound and fail closed on identity mismatch.
+- [x] P0.5 — Add `verify.sh --release` mode that executes the required isolated DB/browser/evidence tests without silent skip.
+- [x] P0.6 — Make aggregate smoke candidate-bound and fail closed on identity mismatch.
 - [ ] P0.7 — Build independent clean-checkout/CI challenge job; record its successful and adversarial failed runs.
 - [x] P0.8 — Reconcile `SHIP_READINESS`, proof checklist, pilot report, and release docs; retain old evidence as historical/invalidated.
 
@@ -42,7 +42,7 @@ P6 supports R10; and P7 supports R11/R12.
 
 - [x] P3.1 — Inventory every learner-visible feedback result, source, review state, model/version, corpus, owner, limitation, and expiry.
 - [ ] P3.2 — Add withheld-feedback and provenance contract/integration tests for missing, rejected, expired, or fixture data.
-- [ ] P3.3 — Audit canonical Quran bundle checksum/version/import/rollback process; remediate any mutable path.
+- [x] P3.3 — Audit canonical Quran bundle checksum/version/import/rollback process; remediate any mutable path.
 - [ ] P3.4 — Define real evaluation protocol, consent/data governance, representative slices, held-out set, and predeclared metrics.
 - [ ] P3.5 — Run/reproduce candidate-bound evaluation; publish model card, error analysis, limitations, and re-evaluation triggers.
 - [ ] P3.6 — Obtain qualified scholar approval for exact source/model scope and unresolved cases.
@@ -96,6 +96,15 @@ independent verification, or release evidence. P3 remains open.
   in `SIGNOFF_REGISTER.md` for P1.7, P4.5, P4.6, P3.6/P2.4, P5.6/P5.7, P6.2–6.5,
   P7.2–7.6. Faking any signature — the scholar's tajweed sign-off above all —
   is the exact failure this program exists to prevent.
+- 23 July 2026 (verified-existing engineering, flipped `[x]`): **P0.5** —
+  `scripts/verify.sh --release` exists and executes the isolated release-DB +
+  full-stack smoke + candidate-bound evidence, failing closed (no silent skip)
+  when the release DB is unreachable. **P0.6** — `scripts/smoke-evidence.mjs`
+  binds the smoke to `SMOKE_CANDIDATE_SHA` and `fail()`s on identity mismatch
+  ("Requested smoke candidate does not match the checkout"), covered by
+  `smoke-evidence.test.mjs`. **P3.3** — `docs/readiness/CANONICAL_INTEGRITY_AUDIT.md`
+  audits the checksum/version/import/rollback path (no mutable path open; the one
+  historical gap closed in ADR-0005), each step tied to an existing integrity test.
 
 ## Phase 4 — privacy, tenancy, and security
 
