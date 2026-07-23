@@ -5,7 +5,6 @@ use serde::Deserialize;
 use sqlx::Row;
 
 use crate::AppState;
-use crate::auth::actor_from_headers;
 use crate::types::*;
 
 fn empty_sources() -> serde_json::Value {
@@ -35,10 +34,11 @@ pub struct AgentRunRequest {
 /// at least one source, mirroring `canShowLearnerFacingAiOutput` in packages/contracts.
 pub async fn create_agent_run(
     State(state): State<AppState>,
+    method: axum::http::Method,
     headers: HeaderMap,
     Json(req): Json<AgentRunRequest>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
-    let actor = actor_from_headers(&headers, &state.jwt_config)?;
+    let actor = crate::auth::resolve_actor(&method, &headers, &state).await?;
     actor.require_any(&[ActorRole::Scholar, ActorRole::Admin, ActorRole::Ops])?;
 
     let mut tx = crate::begin_tenant_tx(&state.pool, &actor.tenant_id).await?;
@@ -158,9 +158,10 @@ pub async fn create_agent_run(
 
 pub async fn list_agent_runs(
     State(state): State<AppState>,
+    method: axum::http::Method,
     headers: HeaderMap,
 ) -> Result<Json<Vec<serde_json::Value>>, ApiError> {
-    let actor = actor_from_headers(&headers, &state.jwt_config)?;
+    let actor = crate::auth::resolve_actor(&method, &headers, &state).await?;
     actor.require_any(&[
         ActorRole::Teacher,
         ActorRole::Scholar,

@@ -5,7 +5,6 @@ use serde::{Deserialize, Serialize};
 use sqlx::Row;
 
 use crate::AppState;
-use crate::auth::actor_from_headers;
 use crate::types::*;
 
 /// SM-2 spaced repetition algorithm.
@@ -74,10 +73,11 @@ pub struct ProgressQuery {
 /// Real learner progress: aggregates persisted SM-2 state + session history.
 pub async fn get_progress(
     State(state): State<AppState>,
+    method: axum::http::Method,
     headers: HeaderMap,
     Query(query): Query<ProgressQuery>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
-    let actor = actor_from_headers(&headers, &state.jwt_config)?;
+    let actor = crate::auth::resolve_actor(&method, &headers, &state).await?;
     actor.require_any(&[
         ActorRole::Learner,
         ActorRole::Teacher,
@@ -164,10 +164,11 @@ pub async fn get_progress(
 /// (latency_ms is processing latency), so practice minutes cannot be honestly computed.
 pub async fn get_weekly_progress(
     State(state): State<AppState>,
+    method: axum::http::Method,
     headers: HeaderMap,
     Query(query): Query<ProgressQuery>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
-    let actor = actor_from_headers(&headers, &state.jwt_config)?;
+    let actor = crate::auth::resolve_actor(&method, &headers, &state).await?;
     actor.require_any(&[
         ActorRole::Learner,
         ActorRole::Teacher,
@@ -275,6 +276,7 @@ pub struct ProgressUpdate {
 /// Persist an SM-2 review for one ayah (upsert), reading the prior state first.
 pub async fn update_progress(
     State(state): State<AppState>,
+    method: axum::http::Method,
     headers: HeaderMap,
     Json(req): Json<ProgressUpdate>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
@@ -284,7 +286,7 @@ pub async fn update_progress(
     // actor's id to itself -- a tautology that always passed and read as an authz gate without
     // being one. actor_from_headers() already requires a valid, tenant-scoped token, which is the
     // only check this handler needs.
-    let actor = actor_from_headers(&headers, &state.jwt_config)?;
+    let actor = crate::auth::resolve_actor(&method, &headers, &state).await?;
 
     let mut tx = crate::begin_tenant_tx(&state.pool, &actor.tenant_id).await?;
 

@@ -1,8 +1,8 @@
 # P1 Identity Decision Packet — Invited No-Login Pilot
 
-**Status:** Proposed — requires product-owner and security-owner approval before
-runtime implementation.  This document is not an ADR and does not change the
-owner-gated login-off policy in ADR-0002.
+**Status:** Approved by Hawzhin  
+**Approval date:** 2026-07-19  
+**Decision choice:** Bounded invitation-only identity bootstrap design with server-scoped HttpOnly cookies.
 
 ## Decision requested
 

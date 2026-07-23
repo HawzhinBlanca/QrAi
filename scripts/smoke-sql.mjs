@@ -19,12 +19,15 @@ const tenantTables = [
   "privacy_jobs",
   "audit_events",
   "eval_runs",
+  "pilot_invitations",
+  "pilot_sessions",
 ];
 
 const coreSchemaPaths = [
   join("infra", "sql", "0001_core_schema.sql"),
   join("infra", "sql", "0005_learner_progress.sql"),
   join("infra", "sql", "0018_agent_run_learner_id.sql"),
+  join("infra", "sql", "0021_pilot_identity.sql"),
 ];
 const sessionMigrationPath = join("infra", "sql", "0008_session_language.sql");
 const reviewStatusMigrationPaths = [
@@ -35,6 +38,7 @@ const rlsPaths = [
   join("infra", "sql", "0003_tenant_rls.sql"),
   join("infra", "sql", "0009_learner_progress_rls.sql"),
   join("infra", "sql", "0012_superuser_only_rls_bypass.sql"),
+  join("infra", "sql", "0021_pilot_identity.sql"),
 ];
 const coreSchemaRaw = (await Promise.all(coreSchemaPaths.map((path) => readFile(path, "utf8")))).join("\n");
 const sessionMigrationRaw = await readFile(sessionMigrationPath, "utf8");
@@ -43,6 +47,7 @@ const rlsSchemaRaw = (await Promise.all(rlsPaths.map((path) => readFile(path, "u
 const coreSchema = normalizeSql(coreSchemaRaw);
 const reviewStatusSchema = normalizeSql(reviewStatusMigrationRaw);
 const rlsSchema = normalizeSql(rlsSchemaRaw);
+const pilotIdentitySchema = normalizeSql(await readFile(join("infra", "sql", "0021_pilot_identity.sql"), "utf8"));
 const postgresUrl = process.env.POSTGRES_RLS_SMOKE_URL ?? process.env.DATABASE_URL;
 const requireLive = process.env.SQL_SMOKE_REQUIRE_LIVE === "true";
 
@@ -78,6 +83,33 @@ assertIncludes(rlsSchema, "current_setting('app.tenant_id', true)", "current ten
 assertIncludes(rlsSchema, "create or replace function app.is_rls_bypass_enabled()", "RLS bypass helper is missing");
 assertIncludes(rlsSchema, "current_setting('app.bypass_rls', true)", "RLS bypass helper must use app.bypass_rls");
 assertIncludes(rlsSchema, "rolsuper", "RLS bypass helper must ignore app.bypass_rls for non-superuser roles");
+
+// Pilot identity hardening guards (0021): SECURITY DEFINER functions must pin search_path
+// (temp-table shadowing defense), strip PUBLIC execute, guard role grants by existence,
+// and the migration must never carry destructive drops.
+assertRegex(
+  pilotIdentitySchema,
+  /set search_path = public, pg_temp[\s\S]*set search_path = public, pg_temp/,
+  "both pilot definer functions must pin search_path = public, pg_temp",
+);
+assertIncludes(
+  pilotIdentitySchema,
+  "revoke execute on function app.get_pilot_session_by_hash(text) from public;",
+  "pilot session lookup must revoke PUBLIC execute",
+);
+assertIncludes(
+  pilotIdentitySchema,
+  "revoke execute on function app.consume_pilot_invitation_by_hash(text) from public;",
+  "pilot invitation consume must revoke PUBLIC execute",
+);
+assertIncludes(
+  pilotIdentitySchema,
+  "rolname = 'quran_ai_app'",
+  "pilot grants must be guarded by quran_ai_app role existence",
+);
+if (pilotIdentitySchema.includes("drop table") || pilotIdentitySchema.includes("drop function")) {
+  failures.push("0021_pilot_identity.sql must not contain destructive drops");
+}
 assertIncludes(
   reviewStatusSchema,
   "teacher-review-required",
@@ -164,6 +196,8 @@ function buildLiveSmokeSql() {
     privacy_jobs: 1,
     audit_events: 1,
     eval_runs: 1,
+    pilot_invitations: 1,
+    pilot_sessions: 1,
   };
 
   const requiredVisibleChecks = tenantTables
@@ -321,6 +355,14 @@ insert into privacy_jobs (id, tenant_id, learner_id, kind, included_records, del
 insert into eval_runs (id, tenant_id, model_version_id, dataset_version, metrics, word_alignment_f1, tajweed_f1, false_positive_rate, teacher_agreement_rate, unsourced_learner_outputs, passed) values
   ('eval-a', 'tenant-a', 'model-v0.3', 'smoke', '{}', 0.95, 0.85, 0.05, 0.95, 0, true),
   ('eval-b', 'tenant-b', 'model-v0.3', 'smoke', '{}', 0.95, 0.85, 0.05, 0.95, 0, true);
+
+insert into pilot_invitations (id, tenant_id, learner_id, token_hash, expires_at, consumed_at) values
+  ('invite-a', 'tenant-a', 'learner-a', 'hash-invite-a', now() + interval '1 day', null),
+  ('invite-b', 'tenant-b', 'learner-b', 'hash-invite-b', now() + interval '1 day', null);
+
+insert into pilot_sessions (id, tenant_id, learner_id, token_hash, csrf_token, created_at, last_seen_at, idle_expires_at, absolute_expires_at, revoked_at) values
+  ('session-cookie-a', 'tenant-a', 'learner-a', 'hash-session-cookie-a', 'csrf-a', now(), now(), now() + interval '1 day', now() + interval '1 day', null),
+  ('session-cookie-b', 'tenant-b', 'learner-b', 'hash-session-cookie-b', 'csrf-b', now(), now(), now() + interval '1 day', now() + interval '1 day', null);
 
 	${grantRlsRole}
 

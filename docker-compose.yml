@@ -39,6 +39,7 @@ services:
       - ./infra/sql/0018_agent_run_learner_id.sql:/docker-entrypoint-initdb.d/18_agent_run_learner_id.sql:ro
       - ./infra/sql/0019_recitation_and_findings_sort_indexes.sql:/docker-entrypoint-initdb.d/19_recitation_and_findings_sort_indexes.sql:ro
       - ./infra/sql/0020_language_check.sql:/docker-entrypoint-initdb.d/20_language_check.sql:ro
+      - ./infra/sql/0021_pilot_identity.sql:/docker-entrypoint-initdb.d/21_pilot_identity.sql:ro
       - ./infra/sql/rls-app-role.sql:/tmp/rls-app-role.sql:ro
       - ./infra/sql/99_init_app_role.sh:/docker-entrypoint-initdb.d/99_init_app_role.sh:ro
     healthcheck:

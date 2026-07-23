@@ -5,7 +5,6 @@ use sha2::Digest;
 use sqlx::Row;
 
 use crate::AppState;
-use crate::auth::actor_from_headers;
 use crate::types::*;
 
 fn parse_review_status(value: &str) -> Result<ReviewStatus, ApiError> {
@@ -24,10 +23,11 @@ fn parse_review_status(value: &str) -> Result<ReviewStatus, ApiError> {
 
 pub async fn create_session(
     State(state): State<AppState>,
+    method: axum::http::Method,
     headers: HeaderMap,
     Json(req): Json<RecitationSessionRequest>,
 ) -> Result<Json<RecitationSession>, ApiError> {
-    let actor = actor_from_headers(&headers, &state.jwt_config)?;
+    let actor = crate::auth::resolve_actor(&method, &headers, &state).await?;
     actor.require_self_or_any(&req.learner_id, &[ActorRole::Admin, ActorRole::Ops])?;
 
     if !is_supported_language(&req.language) {
@@ -140,10 +140,11 @@ pub async fn create_session(
 
 pub async fn get_session(
     State(state): State<AppState>,
+    method: axum::http::Method,
     headers: HeaderMap,
     Path(id): Path<String>,
 ) -> Result<Json<RecitationSession>, ApiError> {
-    let actor = actor_from_headers(&headers, &state.jwt_config)?;
+    let actor = crate::auth::resolve_actor(&method, &headers, &state).await?;
     actor.require_any(&[
         ActorRole::Learner,
         ActorRole::Teacher,
@@ -228,9 +229,10 @@ pub async fn get_session(
 
 pub async fn list_sessions(
     State(state): State<AppState>,
+    method: axum::http::Method,
     headers: HeaderMap,
 ) -> Result<Json<Vec<serde_json::Value>>, ApiError> {
-    let actor = actor_from_headers(&headers, &state.jwt_config)?;
+    let actor = crate::auth::resolve_actor(&method, &headers, &state).await?;
     actor.require_any(&[ActorRole::Teacher, ActorRole::Admin, ActorRole::Ops])?;
 
     let mut tx = crate::begin_tenant_tx(&state.pool, &actor.tenant_id).await?;
@@ -275,9 +277,10 @@ pub async fn list_sessions(
 /// once tenant session volume exceeds the cap — this endpoint is the un-truncated source. Staff only.
 pub async fn list_active_learners(
     State(state): State<AppState>,
+    method: axum::http::Method,
     headers: HeaderMap,
 ) -> Result<Json<Vec<String>>, ApiError> {
-    let actor = actor_from_headers(&headers, &state.jwt_config)?;
+    let actor = crate::auth::resolve_actor(&method, &headers, &state).await?;
     actor.require_any(&[ActorRole::Teacher, ActorRole::Admin, ActorRole::Ops])?;
 
     let mut tx = crate::begin_tenant_tx(&state.pool, &actor.tenant_id).await?;
@@ -294,10 +297,11 @@ pub async fn list_active_learners(
 
 pub async fn create_realtime_ticket(
     State(state): State<AppState>,
+    method: axum::http::Method,
     headers: HeaderMap,
     Json(req): Json<RealtimeSessionTicketRequest>,
 ) -> Result<Json<RealtimeSessionTicket>, ApiError> {
-    let actor = actor_from_headers(&headers, &state.jwt_config)?;
+    let actor = crate::auth::resolve_actor(&method, &headers, &state).await?;
     actor.require_any(&[ActorRole::Learner, ActorRole::Admin, ActorRole::Ops])?;
 
     let mut tx = crate::begin_tenant_tx(&state.pool, &actor.tenant_id).await?;
@@ -401,10 +405,11 @@ pub async fn create_realtime_ticket(
 /// Joins canonical_words for the Uthmani text. Teacher/Admin/Ops only.
 pub async fn list_session_alignments(
     State(state): State<AppState>,
+    method: axum::http::Method,
     headers: HeaderMap,
     Path(id): Path<String>,
 ) -> Result<Json<Vec<serde_json::Value>>, ApiError> {
-    let actor = actor_from_headers(&headers, &state.jwt_config)?;
+    let actor = crate::auth::resolve_actor(&method, &headers, &state).await?;
     actor.require_any(&[ActorRole::Teacher, ActorRole::Admin, ActorRole::Ops])?;
 
     let mut tx = crate::begin_tenant_tx(&state.pool, &actor.tenant_id).await?;
@@ -474,11 +479,12 @@ pub struct PersistAlignmentsRequest {
 /// unrecognised status is logged, so incomplete feedback is visible instead of a silent gap.
 pub async fn persist_session_alignments(
     State(state): State<AppState>,
+    method: axum::http::Method,
     headers: HeaderMap,
     Path(id): Path<String>,
     Json(req): Json<PersistAlignmentsRequest>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
-    let actor = actor_from_headers(&headers, &state.jwt_config)?;
+    let actor = crate::auth::resolve_actor(&method, &headers, &state).await?;
     let mut tx = crate::begin_tenant_tx(&state.pool, &actor.tenant_id).await?;
 
     // The session must exist in-tenant; only its learner or staff may write its alignment.
@@ -648,10 +654,11 @@ pub async fn persist_session_alignments(
 ///    teacher-review-required is not silently reset by a learner action.
 pub async fn request_teacher_review(
     State(state): State<AppState>,
+    method: axum::http::Method,
     headers: HeaderMap,
     Path(id): Path<String>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
-    let actor = actor_from_headers(&headers, &state.jwt_config)?;
+    let actor = crate::auth::resolve_actor(&method, &headers, &state).await?;
 
     let mut tx = crate::begin_tenant_tx(&state.pool, &actor.tenant_id).await?;
 

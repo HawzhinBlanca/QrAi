@@ -67,7 +67,7 @@ async function runDbCommand(args, stdinContent) {
 async function cleanAndSeedDatabase() {
   await runDbCommand([
     ...databaseConnectionArgs(smokeAdminUrl),
-    "-c", "TRUNCATE recitation_sessions, users, institutions, audit_events, consent_records, realtime_session_tickets, audio_chunks, word_alignments, alignment_runs, tajweed_findings, teacher_reviews, scholar_approvals, agent_runs, eval_runs, privacy_jobs CASCADE;"
+    "-c", "TRUNCATE recitation_sessions, users, institutions, audit_events, consent_records, realtime_session_tickets, audio_chunks, word_alignments, alignment_runs, tajweed_findings, teacher_reviews, scholar_approvals, agent_runs, eval_runs, privacy_jobs, pilot_invitations, pilot_sessions CASCADE;"
   ]);
 
   await new Promise((resolve, reject) => {
