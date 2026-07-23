@@ -3793,3 +3793,53 @@ async fn pilot_cookie_mutation_requires_origin_and_csrf() {
         "correct Origin + CSRF must be accepted"
     );
 }
+
+/// F3 regression: `proxy_ml` must scope the consent-source session to the CALLER, not just the
+/// tenant. A learner passing another in-tenant learner's sessionId (to ride on that session's stored
+/// consent) is Forbidden before any ML forward; the session owner is allowed.
+#[tokio::test]
+#[ignore = "requires live Postgres"]
+async fn ml_proxy_rejects_analysis_against_another_learners_session() {
+    let mock_ml = spawn_mock_upstream_echo("/v1/alignments:predict").await;
+    let state = test_state().with_ml_inference_url(mock_ml);
+    let router = platform_router_with_rate_limit(state, false);
+
+    // learner-1 owns the session (created via admin so the learnerId can be set explicitly).
+    let session_id = create_test_session_for_learner(&router, "learner-1").await;
+
+    // A DIFFERENT in-tenant learner cannot run analysis against it.
+    let foreign = send_with_headers(
+        &router,
+        Method::POST,
+        "/v1/ml/alignments:predict",
+        &[
+            ("content-type", "application/json"),
+            ("x-tenant-id", "hikmah-pilot-erbil"),
+            ("x-user-id", "learner-2"),
+            ("x-user-role", "learner"),
+        ],
+        Some(json!({ "sessionId": session_id, "consent": { "guardianApproved": true } })),
+    )
+    .await;
+    assert_eq!(
+        foreign.status(),
+        StatusCode::FORBIDDEN,
+        "a learner must not analyze another learner's session"
+    );
+
+    // The session OWNER may (the rejection is scoped to identity, not a blanket block).
+    let owner = send_json(
+        &router,
+        Method::POST,
+        "/v1/ml/alignments:predict",
+        Some("hikmah-pilot-erbil"),
+        Some("learner"),
+        json!({ "sessionId": session_id, "consent": { "guardianApproved": true } }),
+    )
+    .await;
+    assert_eq!(
+        owner.status(),
+        StatusCode::OK,
+        "the session owner may run analysis"
+    );
+}

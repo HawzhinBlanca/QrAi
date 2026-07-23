@@ -70,6 +70,21 @@ fn ensure_secure_config() {
              inference service, fronted by the /v1/asr proxy). Set ALLOW_INSECURE_DEFAULTS=1 for local dev only."
         );
     }
+    // CORS_ALLOWED_ORIGINS gates BOTH the pilot Origin allowlist (auth::require_allowed_origin) and
+    // the browser CORS layer. When unset, both silently degrade to permissive — the Origin check
+    // accepts ANY non-empty Origin and CORS falls back to Allow-Origin:*. Every other prod-critical
+    // control here fails closed on a missing value; the pilot Origin check (a CSRF defense-in-depth
+    // layer) must too, or a deploy that forgets this ships a decorative check with no boot-time
+    // signal. The realtime gateway already fail-closes on the same var — this keeps the two services
+    // consistent.
+    let cors_origins = std::env::var("CORS_ALLOWED_ORIGINS").unwrap_or_default();
+    if cors_origins.trim().is_empty() {
+        panic!(
+            "CORS_ALLOWED_ORIGINS must be set to the exact web origin(s) in production \
+             (comma-separated) so the pilot Origin allowlist and browser CORS are enforced rather \
+             than permissive. Set ALLOW_INSECURE_DEFAULTS=1 for local dev only."
+        );
+    }
 }
 
 fn redact_database_url(database_url: &str) -> String {

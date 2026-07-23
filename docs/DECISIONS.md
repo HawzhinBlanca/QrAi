@@ -33,6 +33,11 @@ the boundary existed but was unused (P1.6 open).
 - To fully close the header-spoofing gap in production the deployment must set `ALLOW_HEADER_AUTH`
   off and distribute invite links; that flip, the live-browser walkthrough (P1.6 proof), and the
   security-reviewer sign-off (P1.7) are the remaining pilot-identity steps.
+- `CORS_ALLOWED_ORIGINS` MUST be set to the exact web origin(s) in production. It gates both the
+  pilot Origin allowlist and browser CORS; when empty both degrade to permissive. As of the F1
+  hardening, `platform-api` **fails closed on boot** if it is empty while `ALLOW_INSECURE_DEFAULTS`
+  is off (mirroring the realtime gateway and the JWT/ticket/ML/ASR secret checks), so a misconfig is
+  loud rather than a silently decorative Origin check.
 - Invitation *distribution* (email/SMS/hand-out) is out of scope: the endpoint returns the token and
   an optional `inviteUrl` (when `PILOT_INVITE_BASE_URL` is set); an operator delivers it.
 
