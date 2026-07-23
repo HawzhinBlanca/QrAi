@@ -163,6 +163,7 @@ if [[ "$FAST" != "yes" ]]; then
   # --- 4. Build -------------------------------------------------------------
   run "build" "pnpm --filter @quran-ai/contracts build && pnpm --filter @quran-ai/quran-data build && pnpm --filter @quran-ai/web build"
   run "guard: web production bundle secrets" "node scripts/check-web-bundle-secrets.mjs"
+  run "guard: web security headers (ADR-0010)" "node scripts/check-security-headers.mjs"
 
   if [[ "$RELEASE" == "yes" ]]; then
     # smoke:all drives proof, SQL, browser, API, gateway, ML, and privacy
