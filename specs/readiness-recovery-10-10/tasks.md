@@ -17,7 +17,7 @@ P6 supports R10; and P7 supports R11/R12.
 - [ ] P0.5 — Add `verify.sh --release` mode that executes the required isolated DB/browser/evidence tests without silent skip.
 - [ ] P0.6 — Make aggregate smoke candidate-bound and fail closed on identity mismatch.
 - [ ] P0.7 — Build independent clean-checkout/CI challenge job; record its successful and adversarial failed runs.
-- [ ] P0.8 — Reconcile `SHIP_READINESS`, proof checklist, pilot report, and release docs; retain old evidence as historical/invalidated.
+- [x] P0.8 — Reconcile `SHIP_READINESS`, proof checklist, pilot report, and release docs; retain old evidence as historical/invalidated.
 
 ## Phase 1 — learner path and authorization
 
@@ -31,7 +31,7 @@ P6 supports R10; and P7 supports R11/R12.
 
 ## Phase 2 — language and truthful UX
 
-- [ ] P2.1 — Inventory all visible strings and every locale/status currently advertised.
+- [x] P2.1 — Inventory all visible strings and every locale/status currently advertised.
 - [ ] P2.2 — Add locale capability/reviewer/expiry manifest and failing no-fallback/key-parity tests.
 - [ ] P2.3 — Choose per locale: complete reviewed pack or remove/hide its pilot/live claim until complete.
 - [ ] P2.4 — Deliver and independently review approved Sorani and Arabic resources, including Quranic terminology/source boundaries.
@@ -40,7 +40,7 @@ P6 supports R10; and P7 supports R11/R12.
 
 ## Phase 3 — domain, model, and canonical data
 
-- [ ] P3.1 — Inventory every learner-visible feedback result, source, review state, model/version, corpus, owner, limitation, and expiry.
+- [x] P3.1 — Inventory every learner-visible feedback result, source, review state, model/version, corpus, owner, limitation, and expiry.
 - [ ] P3.2 — Add withheld-feedback and provenance contract/integration tests for missing, rejected, expired, or fixture data.
 - [ ] P3.3 — Audit canonical Quran bundle checksum/version/import/rollback process; remediate any mutable path.
 - [ ] P3.4 — Define real evaluation protocol, consent/data governance, representative slices, held-out set, and predeclared metrics.
@@ -83,6 +83,19 @@ independent verification, or release evidence. P3 remains open.
 - Independent security-reviewer sign-off (P1.7) and the production
   `ALLOW_HEADER_AUTH`-off deploy flip remain open; this is not a release-status
   change.
+- 23 July 2026: readiness artifacts assembled under `docs/readiness/`.
+  **Completed (engineering inventories/reconciliation — no human approval
+  needed to exist):** P2.1 (strings + advertised-locale inventory), P3.1
+  (learner-visible feedback provenance), P5.2 (per-dependency timeout/retry/
+  degradation map), P0.8 (`SHIP_READINESS`/proof-checklist already marked
+  historical/superseded, now indexed against the authoritative ledger).
+  **Drafted, pending the named human (still `[ ]` — the draft is not the
+  sign-off):** P4.1 threat model (owner/security to approve), P0.1 owner matrix
+  (real names to assign), P5.1 SLOs/RTO/RPO (owner to ratify), P7.1 pilot
+  protocol (owner to approve). **Evidence assembled, signature blocks pending**
+  in `SIGNOFF_REGISTER.md` for P1.7, P4.5, P4.6, P3.6/P2.4, P5.6/P5.7, P6.2–6.5,
+  P7.2–7.6. Faking any signature — the scholar's tajweed sign-off above all —
+  is the exact failure this program exists to prevent.
 
 ## Phase 4 — privacy, tenancy, and security
 
@@ -96,7 +109,7 @@ independent verification, or release evidence. P3 remains open.
 ## Phase 5 — reliability and operations
 
 - [ ] P5.1 — Approve SLOs, capacity model, RTO/RPO, error budgets, and pilot traffic assumptions.
-- [ ] P5.2 — Map timeouts, retries, cancellation, idempotency, backpressure, queues, replay, circuit breaking, and user-facing degradation for every dependency.
+- [x] P5.2 — Map timeouts, retries, cancellation, idempotency, backpressure, queues, replay, circuit breaking, and user-facing degradation for every dependency.
 - [ ] P5.3 — Add deterministic unit/integration fault tests and observability/tracing assertions.
 - [ ] P5.4 — Execute documented load, burst, long-audio, reconnect, timeout, duplicate-delivery, partial-loss, and recovery tests against the candidate.
 - [ ] P5.5 — Prove alerts, dashboards, owner routes, runbooks, feature/kill switch, deploy and rollback.
