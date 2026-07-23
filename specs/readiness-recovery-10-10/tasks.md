@@ -26,7 +26,7 @@ P6 supports R10; and P7 supports R11/R12.
 - [x] P1.3 — Map `AuthenticatedApp`, `loadInitialData`, both web header helpers, all API fetch callers, `actor_from_headers`, and all affected API handlers.
 - [x] P1.4 — Implement the approved server-scoped pilot identity/session boundary with no browser-controlled role or tenant trust.
 - [x] P1.5 — Prove production rejects spoofed headers, leaked/expired sessions, bad origin/CSRF requests, privilege escalation, and tenant crossover.
-- [ ] P1.6 — Prove the approved pilot route loads progress, begins practice, handles controlled retry/offline recovery, and has no 401/uncaught browser errors.
+- [x] P1.6 — Prove the approved pilot route loads progress, begins practice, handles controlled retry/offline recovery, and has no 401/uncaught browser errors.
 - [ ] P1.7 — Security reviewer challenges the deployed candidate identity boundary and signs the result.
 
 ## Phase 2 — language and truthful UX
@@ -63,6 +63,26 @@ P6 supports R10; and P7 supports R11/R12.
 
 Neither entry supplies candidate-bound source validation, scholar approval,
 independent verification, or release evidence. P3 remains open.
+
+- 23 July 2026 (P1.6): the pilot learner route was proven end-to-end in a real
+  browser against a fresh isolated stack (dedicated Postgres with all migrations
+  incl. 0021, native platform-api, prod web bundle served same-origin) with
+  `ALLOW_HEADER_AUTH` **off** (production-like). Without an invite, learner
+  endpoints return 401 — a browser-asserted `x-user-id`/`x-tenant-id` carries no
+  authority. Opening an admin-minted `?invite=<token>` bootstraps a
+  `__Host-qrai-pilot` cookie (POST bootstrap 200, token stripped from the URL),
+  after which `GET /v1/learner/progress` and `/weekly` return 200 with real
+  mastery/streak data, Start Practice creates a session
+  (`POST /v1/recitation-sessions` 200), and the reader renders the real
+  Al-Faatiha ayahs — with **no 401 on the learner path** (a pre-bootstrap
+  transient 401 was fixed by holding learner loads until the bootstrap settles)
+  and no uncaught errors on the shipped bundle. Controlled retry/offline recovery
+  is covered by the T13 realtime reconnect tests + `OfflineBanner`. The mint
+  endpoint + 6 pilot HTTP integration tests are green in CI (#239);
+  `bash scripts/verify.sh` passed locally.
+- Independent security-reviewer sign-off (P1.7) and the production
+  `ALLOW_HEADER_AUTH`-off deploy flip remain open; this is not a release-status
+  change.
 
 ## Phase 4 — privacy, tenancy, and security
 

@@ -114,6 +114,15 @@ function AuthenticatedApp({ bypassLogin = false }: { bypassLogin?: boolean }) {
   // Pilot (no-login) identity, restored from a prior bootstrap and refreshed when an invite link
   // is opened. When set, it drives the app's identity via the __Host-qrai-pilot cookie (P1.6).
   const [pilotIdentity, setPilotIdentityState] = useState<PilotIdentity | null>(() => getPilotIdentity());
+  // True only while an `?invite=` bootstrap is in flight, so we DON'T fire learner data loads with the
+  // pre-bootstrap default identity (which 401s under header-auth-off). Cleared when bootstrap settles.
+  const [pilotBootstrapPending, setPilotBootstrapPending] = useState<boolean>(
+    () =>
+      bypassLogin &&
+      typeof window !== "undefined" &&
+      new URLSearchParams(window.location.search).has("invite") &&
+      !getPilotIdentity(),
+  );
 
   // One-shot: if the URL carries an admin-minted `?invite=<token>`, exchange it for a pilot session
   // cookie, then strip the token from the address bar/history. An invalid/expired invite leaves the
@@ -131,6 +140,7 @@ function AuthenticatedApp({ bypassLogin = false }: { bypassLogin?: boolean }) {
       } catch {
         // Invalid/expired invite — stay on the current identity.
       } finally {
+        setPilotBootstrapPending(false);
         params.delete("invite");
         const query = params.toString();
         window.history.replaceState(
@@ -408,7 +418,9 @@ function AuthenticatedApp({ bypassLogin = false }: { bypassLogin?: boolean }) {
         }
       });
 
-    if (effectiveUser) {
+    // Hold learner loads until a pending pilot bootstrap settles, so they never fire with the
+    // pre-bootstrap default identity (which would 401 under header-auth-off).
+    if (effectiveUser && !pilotBootstrapPending) {
       loadWeeklyProgress(effectiveUser.tenantId, effectiveUser.userId, authToken)
         .then(setWeeklyProgress)
         .catch((err) => {
@@ -429,7 +441,7 @@ function AuthenticatedApp({ bypassLogin = false }: { bypassLogin?: boolean }) {
           }
         });
     }
-  }, [authToken, effectiveUser, t]);
+  }, [authToken, effectiveUser, t, pilotBootstrapPending]);
 
   useEffect(() => {
     loadInitialData();
