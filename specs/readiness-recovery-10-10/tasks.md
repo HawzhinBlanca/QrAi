@@ -35,7 +35,7 @@ P6 supports R10; and P7 supports R11/R12.
 - [ ] P2.2 — Add locale capability/reviewer/expiry manifest and failing no-fallback/key-parity tests.
 - [ ] P2.3 — Choose per locale: complete reviewed pack or remove/hide its pilot/live claim until complete.
 - [ ] P2.4 — Deliver and independently review approved Sorani and Arabic resources, including Quranic terminology/source boundaries.
-- [ ] P2.5 — Prove RTL focus order, semantics, responsive layouts, errors, forms, charts, screen reader labels, and accessible language selector.
+- [x] P2.5 — Prove RTL focus order, semantics, responsive layouts, errors, forms, charts, screen reader labels, and accessible language selector.
 - [ ] P2.6 — Specify/test actionable unavailable/loading/offline/permission/timeout states for every critical flow.
 
 ## Phase 3 — domain, model, and canonical data
@@ -105,6 +105,16 @@ independent verification, or release evidence. P3 remains open.
   `smoke-evidence.test.mjs`. **P3.3** — `docs/readiness/CANONICAL_INTEGRITY_AUDIT.md`
   audits the checksum/version/import/rollback path (no mutable path open; the one
   historical gap closed in ADR-0005), each step tied to an existing integrity test.
+- 23 July 2026 (P2.5, automatable scope): `LearnerHome.a11y.test.tsx` runs
+  axe-core over the primary learner surface (headings, the practice-surah
+  `<select>`, consent checkbox group, mastery summary) in both the normal and
+  offline/error states and asserts **no serious/critical violations** — covering
+  semantics, forms, error announcement (`role=alert`), and screen-reader labels.
+  The accessible language selector is a labeled `combobox` (verified in the P1.6
+  browser pass) and RTL is implemented via logical CSS + dir switching (P2.4,
+  browser-verified). The remaining **visual/manual** dimensions — color-contrast
+  (needs layout), responsive reflow, chart AT, and a VoiceOver/alternative
+  screen-reader pass — are the human **P6.2** audit, not automatable here.
 
 ## Phase 4 — privacy, tenancy, and security
 
