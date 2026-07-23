@@ -112,3 +112,26 @@ curl -sk --http1.1 -o /dev/null -w '%{http_code}\n' \
 ```
 A **404** on that last one means `/ws/` was forwarded to the gateway instead of stripped — the
 `proxy_pass` trailing slash is load-bearing.
+
+## Kill-switch — graceful maintenance mode (P5.5)
+
+To take the pilot down **gracefully** (better than `docker compose stop`, which fails healthchecks
+and reads as a crash): put `platform-api` in maintenance mode. Every route except `/health`,
+`/ready`, `/metrics` then returns a clean `503 {"error":"service is in maintenance"}`, so
+orchestrator healthchecks and monitoring keep seeing the process as up-in-maintenance.
+
+**Engage:**
+```bash
+MAINTENANCE_MODE=1 docker compose up -d platform-api      # ~seconds; other services untouched
+curl -s -o /dev/null -w '%{http_code}\n' https://<host>/v1/quran/surahs   # 503
+curl -s -o /dev/null -w '%{http_code}\n' https://<host>/health            # 200 (still live)
+```
+
+**Restore (rollback):**
+```bash
+MAINTENANCE_MODE=0 docker compose up -d platform-api      # or unset it and re-up
+```
+
+Flipping requires the env change + a container restart (read once at startup). If ops ever need a
+no-restart live toggle, upgrade `maintenance_mode` to an `Arc<AtomicBool>` flipped by an
+admin-only endpoint (see the note on `AppState.maintenance_mode` in `services/platform-api/src/lib.rs`).

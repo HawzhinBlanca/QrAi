@@ -3843,3 +3843,39 @@ async fn ml_proxy_rejects_analysis_against_another_learners_session() {
         "the session owner may run analysis"
     );
 }
+
+/// P5.5 kill-switch: with maintenance mode on, normal routes return a clean 503 while liveness stays
+/// up (so orchestrators/monitoring see up-in-maintenance, not crashed). The middleware short-circuits
+/// before any handler, so this needs no live Postgres.
+#[tokio::test]
+async fn maintenance_mode_503s_normal_routes_but_keeps_health_live() {
+    let pool = sqlx::postgres::PgPoolOptions::new()
+        .max_connections(1)
+        .connect_lazy("postgresql://invalid:invalid@127.0.0.1:1/none")
+        .expect("lazy pool");
+    let state =
+        AppState::with_header_auth(pool, "test-jwt-secret", true).with_maintenance_mode(true);
+    let router = platform_router_with_rate_limit(state, false);
+
+    let blocked = send_json(
+        &router,
+        Method::GET,
+        "/v1/quran/surahs",
+        None,
+        None,
+        Value::Null,
+    )
+    .await;
+    assert_eq!(
+        blocked.status(),
+        StatusCode::SERVICE_UNAVAILABLE,
+        "maintenance mode must 503 normal routes (no DB touched)"
+    );
+
+    let health = send_json(&router, Method::GET, "/health", None, None, Value::Null).await;
+    assert_eq!(
+        health.status(),
+        StatusCode::OK,
+        "liveness must stay up during maintenance"
+    );
+}

@@ -39,6 +39,10 @@ pub struct AppState {
     pub metrics_token: Option<String>,
     /// When true (dev only), `/metrics` is served without a token. Read once at startup.
     pub metrics_dev_open: bool,
+    /// Maintenance kill-switch. When true, every route except /health, /ready, /metrics returns a
+    /// clean 503 so ops can gracefully take the pilot down (readiness/monitoring stay live, so it
+    /// reads as "up, in maintenance", not "crashed"). Read once at startup (MAINTENANCE_MODE).
+    pub maintenance_mode: bool,
 }
 
 fn env_or(key: &str, default: &str) -> String {
@@ -82,6 +86,9 @@ impl AppState {
             metrics_dev_open: std::env::var("ALLOW_INSECURE_DEFAULTS")
                 .map(|v| v == "1")
                 .unwrap_or(false),
+            maintenance_mode: std::env::var("MAINTENANCE_MODE")
+                .map(|v| v == "1" || v == "true")
+                .unwrap_or(false),
         }
     }
 
@@ -89,6 +96,12 @@ impl AppState {
     pub fn with_metrics_access(mut self, token: Option<&str>, dev_open: bool) -> Self {
         self.metrics_token = token.map(str::to_owned);
         self.metrics_dev_open = dev_open;
+        self
+    }
+
+    /// Toggle the maintenance kill-switch (tests set it explicitly to avoid process-env races).
+    pub fn with_maintenance_mode(mut self, on: bool) -> Self {
+        self.maintenance_mode = on;
         self
     }
 
@@ -117,6 +130,8 @@ pub fn platform_router(state: AppState) -> Router {
 }
 
 pub fn platform_router_with_rate_limit(state: AppState, rate_limit: bool) -> Router {
+    // Captured before `state` is moved into the router below; drives the maintenance kill-switch layer.
+    let maintenance_mode = state.maintenance_mode;
     // Restrict CORS origins in production via CORS_ALLOWED_ORIGINS (comma-separated).
     // Unset = permissive (dev/pilot, no-login preview).
     let allow_origin = match std::env::var("CORS_ALLOWED_ORIGINS") {
@@ -325,7 +340,34 @@ pub fn platform_router_with_rate_limit(state: AppState, rate_limit: bool) -> Rou
     // browser rejects them — breaking the whole app during any burst of requests. With CORS
     // outermost, it short-circuits preflight OPTIONS (never rate-limited) and every response,
     // including a genuine 429, gets CORS headers the browser can read.
-    rate_limited.layer(cors)
+    //
+    // The maintenance kill-switch sits just INSIDE cors: it short-circuits before rate limiting and
+    // the handlers, but its 503 still passes back out through cors so it carries the browser-readable
+    // Access-Control-Allow-Origin header.
+    rate_limited
+        .layer(axum::middleware::from_fn_with_state(
+            maintenance_mode,
+            maintenance_guard,
+        ))
+        .layer(cors)
+}
+
+/// Maintenance kill-switch middleware. When enabled, every route EXCEPT liveness/readiness/metrics is
+/// refused with a clean 503, so orchestrator healthchecks + monitoring still see the process as
+/// up-in-maintenance rather than crashed. Ops flip it with MAINTENANCE_MODE=1 + a container restart.
+async fn maintenance_guard(
+    axum::extract::State(maintenance): axum::extract::State<bool>,
+    req: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> axum::response::Response {
+    if maintenance && !matches!(req.uri().path(), "/health" | "/ready" | "/metrics") {
+        return (
+            axum::http::StatusCode::SERVICE_UNAVAILABLE,
+            axum::Json(serde_json::json!({ "error": "service is in maintenance" })),
+        )
+            .into_response();
+    }
+    next.run(req).await
 }
 
 async fn health() -> impl IntoResponse {

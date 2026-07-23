@@ -67,6 +67,10 @@ services:
       # pilot Origin allowlist (auth::require_allowed_origin) and browser CORS are ENFORCED, not
       # permissive. Empty default keeps local/staging (ALLOW_INSECURE_DEFAULTS=1) working unchanged.
       CORS_ALLOWED_ORIGINS: "${CORS_ALLOWED_ORIGINS:-}"
+      # Kill-switch: set MAINTENANCE_MODE=1 (then `docker compose up -d platform-api`) to gracefully
+      # take the pilot down — every route except /health, /ready, /metrics returns 503, so healthchecks
+      # and monitoring still see the process up-in-maintenance rather than crashed. Default off.
+      MAINTENANCE_MODE: "${MAINTENANCE_MODE:-0}"
       ML_INFERENCE_URL: "http://ml-inference:8090"
       ASR_INFERENCE_URL: "http://asr-inference:8091"
       # Operational knobs (safe defaults; override per deployment via .env.production):
