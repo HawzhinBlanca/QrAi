@@ -230,6 +230,10 @@ pub fn platform_router_with_rate_limit(state: AppState, rate_limit: bool) -> Rou
             axum::routing::post(handlers::pilot::logout),
         )
         .route(
+            "/v1/pilot/invitations",
+            axum::routing::post(handlers::pilot::mint_invitation),
+        )
+        .route(
             "/v1/learner/progress",
             axum::routing::get(handlers::progress::get_progress),
         )

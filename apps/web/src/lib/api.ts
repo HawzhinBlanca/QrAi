@@ -5,6 +5,7 @@
 import type { ReviewStatus, SourceReference } from "@quran-ai/contracts";
 
 import { fetchWithTimeout } from "./http";
+import { getPilotCsrf, isPilotMode, setPilotIdentity, type PilotIdentity } from "./pilotSession";
 
 // In dev (vite serves on 5173, the API on 8080) an absolute URL is required. In the Docker/prod
 // build, nginx proxies /v1/ to platform-api directly (nginx.conf), so a RELATIVE path is required
@@ -13,6 +14,14 @@ import { fetchWithTimeout } from "./http";
 const API_BASE = import.meta.env.VITE_PLATFORM_API_URL || (import.meta.env.DEV ? "http://127.0.0.1:8080" : "");
 
 function actorHeaders(tenantId: string, userId: string, role: string, authToken?: string): Record<string, string> {
+  // Pilot mode: identity is the __Host-qrai-pilot cookie (sent via credentials:"include"). Never
+  // send x-user-id/x-tenant-id — the server ignores them under the cookie and, in production with
+  // ALLOW_HEADER_AUTH off, they carry no authority at all. Only the CSRF token is needed (on
+  // mutating requests; harmless on GETs).
+  if (isPilotMode()) {
+    const csrf = getPilotCsrf();
+    return csrf ? { "x-csrf-token": csrf } : {};
+  }
   if (authToken) {
     return {
       authorization: `Bearer ${authToken}`,
@@ -23,6 +32,24 @@ function actorHeaders(tenantId: string, userId: string, role: string, authToken?
     "x-user-id": userId,
     "x-user-role": role,
   };
+}
+
+/**
+ * Exchange an admin-minted invite token for a pilot session cookie (P1.6). The response sets the
+ * HttpOnly `__Host-qrai-pilot` cookie (hence credentials:"include") and returns the learner identity
+ * + CSRF token, which we stash in the pilot session module. Throws on an invalid/expired invite.
+ */
+export async function bootstrapPilotSession(token: string): Promise<PilotIdentity> {
+  const response = await fetchWithTimeout(`${API_BASE}/v1/pilot/session/bootstrap`, {
+    method: "POST",
+    credentials: "include",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ token }),
+  });
+  if (!response.ok) throw new Error(`Pilot bootstrap ${response.status}`);
+  const data = (await response.json()) as PilotIdentity;
+  setPilotIdentity(data);
+  return data;
 }
 
 /** Result of a privacy export/delete job (subset of the backend PrivacyJob). */

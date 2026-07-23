@@ -15,6 +15,7 @@ import type {
   SupportedLanguageCode,
 } from "../types/platform";
 import { fetchWithTimeout } from "../lib/http";
+import { getPilotCsrf, isPilotMode } from "../lib/pilotSession";
 
 // Static UI configuration (not mock data — these are app config, not learner data).
 //
@@ -211,6 +212,12 @@ export const governanceItems = [
 const API_BASE = import.meta.env.VITE_PLATFORM_API_URL || (import.meta.env.DEV ? "http://127.0.0.1:8080" : "");
 
 export function actorHeaders(tenantId: string, userId: string, role: string, authToken?: string): Record<string, string> {
+  // Pilot mode: identity is the __Host-qrai-pilot cookie; send only the CSRF token, never the
+  // spoofable dev headers. See lib/api.ts actorHeaders for the full rationale.
+  if (isPilotMode()) {
+    const csrf = getPilotCsrf();
+    return csrf ? { "x-csrf-token": csrf } : {};
+  }
   if (authToken) {
     return {
       authorization: `Bearer ${authToken}`,

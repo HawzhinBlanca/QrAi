@@ -38,7 +38,9 @@ import {
   type TajweedFinding,
   type RecitationConsent,
   type SurahInfo,
+  bootstrapPilotSession,
 } from "./lib/api";
+import { getPilotIdentity, type PilotIdentity } from "./lib/pilotSession";
 import {
   DEFAULT_SURAH,
   practiceRange,
@@ -109,6 +111,40 @@ function AppInner() {
 function AuthenticatedApp({ bypassLogin = false }: { bypassLogin?: boolean }) {
   const { t } = useTranslation();
   const { user, logout } = useAuth();
+  // Pilot (no-login) identity, restored from a prior bootstrap and refreshed when an invite link
+  // is opened. When set, it drives the app's identity via the __Host-qrai-pilot cookie (P1.6).
+  const [pilotIdentity, setPilotIdentityState] = useState<PilotIdentity | null>(() => getPilotIdentity());
+
+  // One-shot: if the URL carries an admin-minted `?invite=<token>`, exchange it for a pilot session
+  // cookie, then strip the token from the address bar/history. An invalid/expired invite leaves the
+  // existing (default/dev) identity in place — additive, never breaks the current no-invite path.
+  useEffect(() => {
+    if (!bypassLogin || typeof window === "undefined") return;
+    const params = new URLSearchParams(window.location.search);
+    const invite = params.get("invite");
+    if (!invite) return;
+    let cancelled = false;
+    void (async () => {
+      try {
+        const identity = await bootstrapPilotSession(invite);
+        if (!cancelled) setPilotIdentityState(identity);
+      } catch {
+        // Invalid/expired invite — stay on the current identity.
+      } finally {
+        params.delete("invite");
+        const query = params.toString();
+        window.history.replaceState(
+          {},
+          "",
+          `${window.location.pathname}${query ? `?${query}` : ""}${window.location.hash}`,
+        );
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [bypassLogin]);
+
   // Login-disabled mode (default): use a default learner so the app runs without a
   // login step. Swapped for the real authenticated user once VITE_REQUIRE_LOGIN=1.
   // Memoized so the reference is stable — it's a dependency of the data-loading effect,
@@ -116,6 +152,18 @@ function AuthenticatedApp({ bypassLogin = false }: { bypassLogin?: boolean }) {
   const effectiveUser = useMemo(
     () => {
       if (bypassLogin) {
+        // A live pilot session wins: identity comes from the invite the learner was actually given,
+        // authenticated server-side by the cookie (token stays empty so actorHeaders uses cookie+CSRF).
+        if (pilotIdentity) {
+          return {
+            userId: pilotIdentity.userId,
+            tenantId: pilotIdentity.tenantId,
+            role: pilotIdentity.role,
+            displayName: pilotIdentity.displayName,
+            token: "",
+          };
+        }
+
         const isTestEnv = import.meta.env.MODE === "test";
         const defaultRole = isTestEnv ? "admin" : "learner";
         const defaultDisplayName = isTestEnv ? "Admin" : "Learner";
@@ -134,7 +182,7 @@ function AuthenticatedApp({ bypassLogin = false }: { bypassLogin?: boolean }) {
       }
       return user;
     },
-    [bypassLogin, user],
+    [bypassLogin, user, pilotIdentity],
   );
   const authToken = effectiveUser?.token || undefined;
   const [activeLanguage, setActiveLanguage] = useState<SupportedLanguageCode>(() => {
