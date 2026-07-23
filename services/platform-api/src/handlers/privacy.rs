@@ -4,7 +4,6 @@ use axum::http::HeaderMap;
 use sqlx::Row;
 
 use crate::AppState;
-use crate::auth::actor_from_headers;
 use crate::types::*;
 
 /// Erase the learner's recorded audio from the ML inference service (right-to-erasure). The DB
@@ -67,27 +66,30 @@ async fn erase_ml_audio(
 
 pub async fn create_privacy_export(
     State(state): State<AppState>,
+    method: axum::http::Method,
     headers: HeaderMap,
     Json(req): Json<PrivacyJobRequest>,
 ) -> Result<Json<PrivacyJob>, ApiError> {
-    create_privacy_job(state, headers, req, PrivacyJobKind::Export).await
+    create_privacy_job(state, method, headers, req, PrivacyJobKind::Export).await
 }
 
 pub async fn create_privacy_delete(
     State(state): State<AppState>,
+    method: axum::http::Method,
     headers: HeaderMap,
     Json(req): Json<PrivacyJobRequest>,
 ) -> Result<Json<PrivacyJob>, ApiError> {
-    create_privacy_job(state, headers, req, PrivacyJobKind::Delete).await
+    create_privacy_job(state, method, headers, req, PrivacyJobKind::Delete).await
 }
 
 async fn create_privacy_job(
     state: AppState,
+    method: axum::http::Method,
     headers: HeaderMap,
     req: PrivacyJobRequest,
     kind: PrivacyJobKind,
 ) -> Result<Json<PrivacyJob>, ApiError> {
-    let actor = actor_from_headers(&headers, &state.jwt_config)?;
+    let actor = crate::auth::resolve_actor(&method, &headers, &state).await?;
     actor.require_self_or_any(&req.learner_id, &[ActorRole::Admin, ActorRole::Ops])?;
     let trace_id = crate::auth::extract_trace_id(&headers);
 
@@ -163,9 +165,41 @@ async fn create_privacy_job(
         })
         .collect();
 
+    let pilot_session_ids: Vec<String> =
+        sqlx::query("SELECT id FROM pilot_sessions WHERE tenant_id = $1 AND learner_id = $2")
+            .bind(&actor.tenant_id)
+            .bind(&req.learner_id)
+            .fetch_all(&mut *tx)
+            .await?
+            .into_iter()
+            .map(|r| {
+                format!(
+                    "pilot_session:{}",
+                    r.try_get::<String, _>("id").unwrap_or_default()
+                )
+            })
+            .collect();
+
+    let pilot_invitation_ids: Vec<String> =
+        sqlx::query("SELECT id FROM pilot_invitations WHERE tenant_id = $1 AND learner_id = $2")
+            .bind(&actor.tenant_id)
+            .bind(&req.learner_id)
+            .fetch_all(&mut *tx)
+            .await?
+            .into_iter()
+            .map(|r| {
+                format!(
+                    "pilot_invitation:{}",
+                    r.try_get::<String, _>("id").unwrap_or_default()
+                )
+            })
+            .collect();
+
     let mut included_ids = session_ids.clone();
     included_ids.extend(progress_ids);
     included_ids.extend(agent_run_ids);
+    included_ids.extend(pilot_session_ids);
+    included_ids.extend(pilot_invitation_ids);
 
     let deleted_ids = if kind == PrivacyJobKind::Delete {
         included_ids.clone()
@@ -302,6 +336,18 @@ async fn create_privacy_job(
             .await?;
 
         sqlx::query("DELETE FROM consent_records WHERE tenant_id = $1 AND user_id = $2")
+            .bind(&actor.tenant_id)
+            .bind(&req.learner_id)
+            .execute(&mut *tx)
+            .await?;
+
+        sqlx::query("DELETE FROM pilot_sessions WHERE tenant_id = $1 AND learner_id = $2")
+            .bind(&actor.tenant_id)
+            .bind(&req.learner_id)
+            .execute(&mut *tx)
+            .await?;
+
+        sqlx::query("DELETE FROM pilot_invitations WHERE tenant_id = $1 AND learner_id = $2")
             .bind(&actor.tenant_id)
             .bind(&req.learner_id)
             .execute(&mut *tx)

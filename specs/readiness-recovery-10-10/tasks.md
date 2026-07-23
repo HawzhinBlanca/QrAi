@@ -21,11 +21,11 @@ P6 supports R10; and P7 supports R11/R12.
 
 ## Phase 1 — learner path and authorization
 
-- [ ] P1.1 — Reproduce and retain the default-browser learner `Progress API 401` test before any fix.
-- [ ] P1.2 — Complete identity-mode ADR/threat model; owner selects bounded login-off pilot architecture.
-- [ ] P1.3 — Map `AuthenticatedApp`, `loadInitialData`, both web header helpers, all API fetch callers, `actor_from_headers`, and all affected API handlers.
-- [ ] P1.4 — Implement the approved server-scoped pilot identity/session boundary with no browser-controlled role or tenant trust.
-- [ ] P1.5 — Prove production rejects spoofed headers, leaked/expired sessions, bad origin/CSRF requests, privilege escalation, and tenant crossover.
+- [x] P1.1 — Reproduce and retain the default-browser learner `Progress API 401` test before any fix.
+- [x] P1.2 — Complete identity-mode ADR/threat model; owner selects bounded login-off pilot architecture.
+- [x] P1.3 — Map `AuthenticatedApp`, `loadInitialData`, both web header helpers, all API fetch callers, `actor_from_headers`, and all affected API handlers.
+- [x] P1.4 — Implement the approved server-scoped pilot identity/session boundary with no browser-controlled role or tenant trust.
+- [x] P1.5 — Prove production rejects spoofed headers, leaked/expired sessions, bad origin/CSRF requests, privilege escalation, and tenant crossover.
 - [ ] P1.6 — Prove the approved pilot route loads progress, begins practice, handles controlled retry/offline recovery, and has no 401/uncaught browser errors.
 - [ ] P1.7 — Security reviewer challenges the deployed candidate identity boundary and signs the result.
 

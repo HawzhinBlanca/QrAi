@@ -1,10 +1,9 @@
 use axum::Json;
 use axum::extract::State;
-use axum::http::HeaderMap;
+use axum::http::{HeaderMap, Method};
 use sqlx::Row;
 
 use crate::AppState;
-use crate::auth::actor_from_headers;
 use crate::types::*;
 
 /// Proxy a prediction request to the internal ML service.
@@ -19,12 +18,13 @@ use crate::types::*;
 /// to the browser.
 async fn proxy_ml(
     state: &AppState,
+    method: &Method,
     headers: &HeaderMap,
     label: &str,
     path: &str,
     mut body: serde_json::Value,
 ) -> Result<Json<serde_json::Value>, ApiError> {
-    let actor = actor_from_headers(headers, &state.jwt_config)?;
+    let actor = crate::auth::resolve_actor(method, headers, state).await?;
 
     let obj = body
         .as_object_mut()
@@ -119,11 +119,13 @@ async fn proxy_ml(
 /// Proxy alignment prediction through the platform API so the ML API key stays server-side.
 pub async fn proxy_predict_alignment(
     State(state): State<AppState>,
+    method: Method,
     headers: HeaderMap,
     Json(body): Json<serde_json::Value>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
     proxy_ml(
         &state,
+        &method,
         &headers,
         "alignment",
         "/v1/alignments:predict",
@@ -135,11 +137,13 @@ pub async fn proxy_predict_alignment(
 /// Proxy tajweed prediction through the platform API so the ML API key stays server-side.
 pub async fn proxy_predict_tajweed(
     State(state): State<AppState>,
+    method: Method,
     headers: HeaderMap,
     Json(body): Json<serde_json::Value>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
     proxy_ml(
         &state,
+        &method,
         &headers,
         "tajweed",
         "/v1/tajweed-findings:predict",
@@ -160,20 +164,38 @@ pub async fn proxy_predict_tajweed(
 /// internal ASR URL / connection details) is logged server-side only.
 pub async fn proxy_asr_transcribe(
     State(state): State<AppState>,
+    method: Method,
     headers: HeaderMap,
     Json(body): Json<serde_json::Value>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
-    proxy_asr(&state, &headers, "/v1/transcribe", "transcribe", body).await
+    proxy_asr(
+        &state,
+        &method,
+        &headers,
+        "/v1/transcribe",
+        "transcribe",
+        body,
+    )
+    .await
 }
 
 /// Proxy forced alignment (T3) to the internal ASR service — audio + canonical transcript in,
 /// per-word timestamps out. Same auth + server-side key control as transcribe; not tenant-scoped.
 pub async fn proxy_asr_force_align(
     State(state): State<AppState>,
+    method: Method,
     headers: HeaderMap,
     Json(body): Json<serde_json::Value>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
-    proxy_asr(&state, &headers, "/v1/force-align", "force-align", body).await
+    proxy_asr(
+        &state,
+        &method,
+        &headers,
+        "/v1/force-align",
+        "force-align",
+        body,
+    )
+    .await
 }
 
 /// Shared ASR forward: authenticate the caller, forward `body` to `{asr_inference_url}{path}` with
@@ -182,12 +204,13 @@ pub async fn proxy_asr_force_align(
 /// timestamps and perform no tenant writes), so authentication alone is the control.
 async fn proxy_asr(
     state: &AppState,
+    method: &Method,
     headers: &HeaderMap,
     path: &str,
     label: &str,
     body: serde_json::Value,
 ) -> Result<Json<serde_json::Value>, ApiError> {
-    actor_from_headers(headers, &state.jwt_config)?;
+    crate::auth::resolve_actor(method, headers, state).await?;
 
     let response = state
         .http_client

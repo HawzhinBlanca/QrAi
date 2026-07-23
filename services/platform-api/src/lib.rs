@@ -222,6 +222,14 @@ pub fn platform_router_with_rate_limit(state: AppState, rate_limit: bool) -> Rou
             axum::routing::get(handlers::audit::list_audit_events),
         )
         .route(
+            "/v1/pilot/session/bootstrap",
+            axum::routing::post(handlers::pilot::bootstrap),
+        )
+        .route(
+            "/v1/pilot/session/logout",
+            axum::routing::post(handlers::pilot::logout),
+        )
+        .route(
             "/v1/learner/progress",
             axum::routing::get(handlers::progress::get_progress),
         )
