@@ -1,0 +1,21 @@
+# Prometheus scrape config for QrAi platform-api (P5.5).
+# Requires Prometheus >= 2.53 for `http_headers` (the /metrics endpoint is token-gated).
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+rule_files:
+  - alerts.yml
+
+scrape_configs:
+  - job_name: platform-api
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["platform-api:8080"]
+    # /metrics requires the METRICS_TOKEN as `x-metrics-token` (fail-closed unless
+    # ALLOW_INSECURE_DEFAULTS=1). Prometheus does NOT expand env vars in its config, so the operator
+    # substitutes the real token here (e.g. `envsubst < prometheus.yml` at deploy, or a secret mount).
+    http_headers:
+      x-metrics-token:
+        secrets:
+          - "REPLACE_WITH_METRICS_TOKEN"

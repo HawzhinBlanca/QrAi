@@ -5,6 +5,29 @@ architectural change. Newest first.
 
 ---
 
+## ADR-0020 — Open learner self-registration is retained for the pilot (F2)
+**Date:** 2026-07-24 · **Status:** Accepted (owner decision)
+
+**Context.** The 2026-07-23 adversarial audit flagged F2: `POST /v1/auth/register` allows
+unauthenticated self-registration for `role == learner` and returns a learner Bearer JWT for the
+(hardcoded) pilot tenant, coexisting with the admin-minted invitation path (ADR-0019). It bypasses
+"invitation-only" and permits account/spam creation (rate-limited only).
+
+**Decision.** Keep open learner self-registration for the pilot. The owner accepts it as a valid
+entry path alongside invitations.
+
+**Why it is bounded (residual risk accepted).** The minted JWT is `learner`-scoped only; every
+handler enforces `require_self_or_any` + RLS, so a self-registered account sees only its own (empty)
+rows — no cross-tenant/cross-user access (audit: no IDOR). Elevated-role registration stays gated
+(an authenticated Admin/Ops caller + tenant match, `user.rs`). Abuse is limited to spam account
+creation, mitigated only by the Governor rate limiter.
+
+**Consequences.** "Invitation-only" is a soft convention, not a hard gate, during the pilot. If spam
+becomes a problem, gate `register` (learner role) behind an `ALLOW_OPEN_REGISTRATION` flag or require
+an invitation — a small, localized change. Revisit before any wider launch.
+
+---
+
 ## ADR-0019 — Pilot invitations: admin-minted, single-use, hash-stored; the web exchanges them for the `__Host-qrai-pilot` cookie
 **Date:** 2026-07-23 · **Status:** Accepted
 
