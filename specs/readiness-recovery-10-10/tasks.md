@@ -115,6 +115,16 @@ independent verification, or release evidence. P3 remains open.
   browser-verified). The remaining **visual/manual** dimensions — color-contrast
   (needs layout), responsive reflow, chart AT, and a VoiceOver/alternative
   screen-reader pass — are the human **P6.2** audit, not automatable here.
+- 24 July 2026 (F2 + P5.5 artifacts): owner decided **F2 = keep open learner
+  self-registration** (ADR-0020; residual spam risk accepted, rate-limited only).
+  **P5.5 monitoring artifacts delivered** under `monitoring/` — Prometheus scrape
+  (`prometheus.yml`), alert rules mapped to the SLO proposals (`alerts.yml`), a
+  Grafana dashboard (`grafana-dashboard.json`), and a one-command
+  `docker-compose.monitoring.yml` (compose config validated) — all against the
+  existing `/metrics`. Combined with the kill-switch (P5.5, done+tested) and the
+  `STAGING_RUNBOOK.md` rollback/kill-switch runbook, the P5.5 **engineering** is
+  in place. P5.5 stays `[ ]` because "prove ... alerts/dashboards" live + wiring
+  alert routing to a receiver + on-call sign-off are the SRE tasks (**P5.7**).
 
 ## Phase 4 — privacy, tenancy, and security
 
