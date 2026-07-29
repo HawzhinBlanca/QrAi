@@ -1130,6 +1130,25 @@ button:disabled {
   line-height: inherit;
 }
 
+/* Non-recited mushaf annotation (waqf/sajdah/hizb). Rendered as a <span>, not a scored button:
+   visible because a waqf sign is recitation guidance a reciter needs, but never a status target.
+   `display: inline` overrides nothing here — the reset below just removes the affordances that
+   would imply it is tappable or gradeable. See specs/canonical-corpus-marks/plan.md. */
+.word-token.waqf-mark {
+  cursor: default;
+  min-height: 0;
+  padding: 0 2px;
+  border-color: transparent;
+  background: transparent;
+  color: rgba(21, 20, 17, 0.66);
+}
+
+/* A mark must not pick up hover/selected/active affordances from the shared .word-token rules. */
+.word-token.waqf-mark:hover {
+  border-color: transparent;
+  background: transparent;
+}
+
 .word-token:hover,
 .word-token.is-selected {
   border-color: rgba(8, 125, 100, 0.32);

@@ -21,58 +21,162 @@
     "cases": [
       {
         "name": "approved: teacher-reviewed, high confidence, sourced",
-        "input": { "confidence": 0.91, "reviewStatus": "teacher-reviewed", "sources": [{ "id": "scholar-board", "title": "Scholar Board", "citation": "Approved tajweed note" }] },
+        "input": {
+          "confidence": 0.91,
+          "reviewStatus": "teacher-reviewed",
+          "sources": [
+            {
+              "id": "scholar-board",
+              "title": "Scholar Board",
+              "citation": "Approved tajweed note"
+            }
+          ]
+        },
         "expected": true
       },
       {
         "name": "approved: scholar-approved also clears the gate",
-        "input": { "confidence": 0.9, "reviewStatus": "scholar-approved", "sources": [{ "id": "scholar-board", "title": "Scholar Board", "citation": "Approved tajweed note" }] },
+        "input": {
+          "confidence": 0.9,
+          "reviewStatus": "scholar-approved",
+          "sources": [
+            {
+              "id": "scholar-board",
+              "title": "Scholar Board",
+              "citation": "Approved tajweed note"
+            }
+          ]
+        },
         "expected": true
       },
       {
         "name": "blocked: no sources",
-        "input": { "confidence": 0.91, "reviewStatus": "teacher-reviewed", "sources": [] },
+        "input": {
+          "confidence": 0.91,
+          "reviewStatus": "teacher-reviewed",
+          "sources": []
+        },
         "expected": false
       },
       {
         "name": "blocked: draft status",
-        "input": { "confidence": 0.91, "reviewStatus": "draft", "sources": [{ "id": "scholar-board", "title": "Scholar Board", "citation": "Approved tajweed note" }] },
+        "input": {
+          "confidence": 0.91,
+          "reviewStatus": "draft",
+          "sources": [
+            {
+              "id": "scholar-board",
+              "title": "Scholar Board",
+              "citation": "Approved tajweed note"
+            }
+          ]
+        },
         "expected": false
       },
       {
         "name": "blocked: teacher-review-required (queued, not yet reviewed)",
-        "input": { "confidence": 0.91, "reviewStatus": "teacher-review-required", "sources": [{ "id": "scholar-board", "title": "Scholar Board", "citation": "Approved tajweed note" }] },
+        "input": {
+          "confidence": 0.91,
+          "reviewStatus": "teacher-review-required",
+          "sources": [
+            {
+              "id": "scholar-board",
+              "title": "Scholar Board",
+              "citation": "Approved tajweed note"
+            }
+          ]
+        },
         "expected": false
       },
       {
         "name": "blocked: ai-suggested",
-        "input": { "confidence": 0.99, "reviewStatus": "ai-suggested", "sources": [{ "id": "scholar-board", "title": "Scholar Board", "citation": "Approved tajweed note" }] },
+        "input": {
+          "confidence": 0.99,
+          "reviewStatus": "ai-suggested",
+          "sources": [
+            {
+              "id": "scholar-board",
+              "title": "Scholar Board",
+              "citation": "Approved tajweed note"
+            }
+          ]
+        },
         "expected": false
       },
       {
         "name": "blocked: confidence well below threshold",
-        "input": { "confidence": 0.78, "reviewStatus": "teacher-reviewed", "sources": [{ "id": "scholar-board", "title": "Scholar Board", "citation": "Approved tajweed note" }] },
+        "input": {
+          "confidence": 0.78,
+          "reviewStatus": "teacher-reviewed",
+          "sources": [
+            {
+              "id": "scholar-board",
+              "title": "Scholar Board",
+              "citation": "Approved tajweed note"
+            }
+          ]
+        },
         "expected": false
       },
       {
         "name": "boundary: confidence exactly 0.82 passes (>= not >)",
-        "input": { "confidence": 0.82, "reviewStatus": "teacher-reviewed", "sources": [{ "id": "scholar-board", "title": "Scholar Board", "citation": "Approved tajweed note" }] },
+        "input": {
+          "confidence": 0.82,
+          "reviewStatus": "teacher-reviewed",
+          "sources": [
+            {
+              "id": "scholar-board",
+              "title": "Scholar Board",
+              "citation": "Approved tajweed note"
+            }
+          ]
+        },
         "expected": true
       },
       {
         "name": "boundary: confidence 0.81 fails",
-        "input": { "confidence": 0.81, "reviewStatus": "teacher-reviewed", "sources": [{ "id": "scholar-board", "title": "Scholar Board", "citation": "Approved tajweed note" }] },
+        "input": {
+          "confidence": 0.81,
+          "reviewStatus": "teacher-reviewed",
+          "sources": [
+            {
+              "id": "scholar-board",
+              "title": "Scholar Board",
+              "citation": "Approved tajweed note"
+            }
+          ]
+        },
         "expected": false
       },
       {
         "name": "FAILS CLOSED: unrecognized reviewStatus must block, never pass",
         "$comment": "THE most important case in this corpus. reviewStatus arrives from an HTTP JSON body with no server-side schema enforcement, so a typo or a future upstream status lands here as an unknown string. An allowlist returns false; a denylist of known-bad statuses would return TRUE and leak unreviewed output to a learner. A port using a language enum (Dart, Rust) may reject or coerce this value instead of evaluating it -- that port is wrong even if its own tests pass.",
-        "input": { "confidence": 0.99, "reviewStatus": "under-review", "sources": [{ "id": "scholar-board", "title": "Scholar Board", "citation": "Approved tajweed note" }] },
+        "input": {
+          "confidence": 0.99,
+          "reviewStatus": "under-review",
+          "sources": [
+            {
+              "id": "scholar-board",
+              "title": "Scholar Board",
+              "citation": "Approved tajweed note"
+            }
+          ]
+        },
         "expected": false
       },
       {
         "name": "FAILS CLOSED: empty-string reviewStatus",
-        "input": { "confidence": 0.99, "reviewStatus": "", "sources": [{ "id": "scholar-board", "title": "Scholar Board", "citation": "Approved tajweed note" }] },
+        "input": {
+          "confidence": 0.99,
+          "reviewStatus": "",
+          "sources": [
+            {
+              "id": "scholar-board",
+              "title": "Scholar Board",
+              "citation": "Approved tajweed note"
+            }
+          ]
+        },
         "expected": false
       }
     ]
@@ -80,9 +184,21 @@
   "mustDiscardAudio": {
     "$comment": "Retention gate. Only the literal 'discard' mode forces destruction.",
     "cases": [
-      { "name": "discard mode destroys audio", "input": "discard", "expected": true },
-      { "name": "teacher-review retains", "input": "teacher-review", "expected": false },
-      { "name": "training-opt-in retains", "input": "training-opt-in", "expected": false }
+      {
+        "name": "discard mode destroys audio",
+        "input": "discard",
+        "expected": true
+      },
+      {
+        "name": "teacher-review retains",
+        "input": "teacher-review",
+        "expected": false
+      },
+      {
+        "name": "training-opt-in retains",
+        "input": "training-opt-in",
+        "expected": false
+      }
     ]
   },
   "canUseExternalAsr": {
@@ -90,22 +206,50 @@
     "cases": [
       {
         "name": "both flags true: permitted",
-        "input": { "recordingConsent": true, "audioRetention": "discard", "anonymizedLearning": true, "externalAsrProcessing": true, "guardianApproved": true, "consentVersion": "pilot-v1" },
+        "input": {
+          "recordingConsent": true,
+          "audioRetention": "discard",
+          "anonymizedLearning": true,
+          "externalAsrProcessing": true,
+          "guardianApproved": true,
+          "consentVersion": "pilot-v1"
+        },
         "expected": true
       },
       {
         "name": "externalAsrProcessing false: blocked",
-        "input": { "recordingConsent": true, "audioRetention": "discard", "anonymizedLearning": true, "externalAsrProcessing": false, "guardianApproved": true, "consentVersion": "pilot-v1" },
+        "input": {
+          "recordingConsent": true,
+          "audioRetention": "discard",
+          "anonymizedLearning": true,
+          "externalAsrProcessing": false,
+          "guardianApproved": true,
+          "consentVersion": "pilot-v1"
+        },
         "expected": false
       },
       {
         "name": "guardianApproved false: blocked",
-        "input": { "recordingConsent": true, "audioRetention": "discard", "anonymizedLearning": true, "externalAsrProcessing": true, "guardianApproved": false, "consentVersion": "pilot-v1" },
+        "input": {
+          "recordingConsent": true,
+          "audioRetention": "discard",
+          "anonymizedLearning": true,
+          "externalAsrProcessing": true,
+          "guardianApproved": false,
+          "consentVersion": "pilot-v1"
+        },
         "expected": false
       },
       {
         "name": "both false: blocked (pins the AND, not an OR)",
-        "input": { "recordingConsent": true, "audioRetention": "discard", "anonymizedLearning": true, "externalAsrProcessing": false, "guardianApproved": false, "consentVersion": "pilot-v1" },
+        "input": {
+          "recordingConsent": true,
+          "audioRetention": "discard",
+          "anonymizedLearning": true,
+          "externalAsrProcessing": false,
+          "guardianApproved": false,
+          "consentVersion": "pilot-v1"
+        },
         "expected": false
       }
     ]
@@ -115,32 +259,86 @@
     "cases": [
       {
         "name": "all thresholds met",
-        "input": { "modelVersion": "model-v1", "datasetVersion": "fatihah-juz-amma-reviewed-v1", "wordAlignmentF1": 0.91, "tajweedF1": 0.84, "falsePositiveRate": 0.06, "teacherAgreementRate": 0.92, "unsourcedLearnerOutputs": 0, "passed": true },
+        "input": {
+          "modelVersion": "model-v1",
+          "datasetVersion": "fatihah-juz-amma-reviewed-v1",
+          "wordAlignmentF1": 0.91,
+          "tajweedF1": 0.84,
+          "falsePositiveRate": 0.06,
+          "teacherAgreementRate": 0.92,
+          "unsourcedLearnerOutputs": 0,
+          "passed": true
+        },
         "expected": true
       },
       {
         "name": "wordAlignmentF1 below 0.90",
-        "input": { "modelVersion": "model-v1", "datasetVersion": "fatihah-juz-amma-reviewed-v1", "wordAlignmentF1": 0.89, "tajweedF1": 0.84, "falsePositiveRate": 0.06, "teacherAgreementRate": 0.92, "unsourcedLearnerOutputs": 0, "passed": true },
+        "input": {
+          "modelVersion": "model-v1",
+          "datasetVersion": "fatihah-juz-amma-reviewed-v1",
+          "wordAlignmentF1": 0.89,
+          "tajweedF1": 0.84,
+          "falsePositiveRate": 0.06,
+          "teacherAgreementRate": 0.92,
+          "unsourcedLearnerOutputs": 0,
+          "passed": true
+        },
         "expected": false
       },
       {
         "name": "falsePositiveRate above 0.08",
-        "input": { "modelVersion": "model-v1", "datasetVersion": "fatihah-juz-amma-reviewed-v1", "wordAlignmentF1": 0.91, "tajweedF1": 0.84, "falsePositiveRate": 0.081, "teacherAgreementRate": 0.92, "unsourcedLearnerOutputs": 0, "passed": true },
+        "input": {
+          "modelVersion": "model-v1",
+          "datasetVersion": "fatihah-juz-amma-reviewed-v1",
+          "wordAlignmentF1": 0.91,
+          "tajweedF1": 0.84,
+          "falsePositiveRate": 0.081,
+          "teacherAgreementRate": 0.92,
+          "unsourcedLearnerOutputs": 0,
+          "passed": true
+        },
         "expected": false
       },
       {
         "name": "teacherAgreementRate below 0.90",
-        "input": { "modelVersion": "model-v1", "datasetVersion": "fatihah-juz-amma-reviewed-v1", "wordAlignmentF1": 0.91, "tajweedF1": 0.84, "falsePositiveRate": 0.06, "teacherAgreementRate": 0.89, "unsourcedLearnerOutputs": 0, "passed": true },
+        "input": {
+          "modelVersion": "model-v1",
+          "datasetVersion": "fatihah-juz-amma-reviewed-v1",
+          "wordAlignmentF1": 0.91,
+          "tajweedF1": 0.84,
+          "falsePositiveRate": 0.06,
+          "teacherAgreementRate": 0.89,
+          "unsourcedLearnerOutputs": 0,
+          "passed": true
+        },
         "expected": false
       },
       {
         "name": "any unsourced learner output is disqualifying",
-        "input": { "modelVersion": "model-v1", "datasetVersion": "fatihah-juz-amma-reviewed-v1", "wordAlignmentF1": 0.91, "tajweedF1": 0.84, "falsePositiveRate": 0.06, "teacherAgreementRate": 0.92, "unsourcedLearnerOutputs": 1, "passed": true },
+        "input": {
+          "modelVersion": "model-v1",
+          "datasetVersion": "fatihah-juz-amma-reviewed-v1",
+          "wordAlignmentF1": 0.91,
+          "tajweedF1": 0.84,
+          "falsePositiveRate": 0.06,
+          "teacherAgreementRate": 0.92,
+          "unsourcedLearnerOutputs": 1,
+          "passed": true
+        },
         "expected": false
       },
       {
         "name": "passed flag false overrides all metrics",
-        "input": { "modelVersion": "model-v1", "datasetVersion": "fatihah-juz-amma-reviewed-v1", "wordAlignmentF1": 0.91, "tajweedF1": 0.84, "falsePositiveRate": 0.06, "teacherAgreementRate": 0.92, "unsourcedLearnerOutputs": 0, "passed": false },
+        "input": {
+          "modelVersion": "model-v1",
+          "datasetVersion": "fatihah-juz-amma-reviewed-v1",
+          "wordAlignmentF1": 0.91,
+          "tajweedF1": 0.84,
+          "falsePositiveRate": 0.06,
+          "teacherAgreementRate": 0.92,
+          "unsourcedLearnerOutputs": 0,
+          "passed": false
+        },
         "expected": false
       }
     ]
@@ -148,9 +346,150 @@
   "sha256Hex": {
     "$comment": "Byte-level cross-language anchor. UTF-8 is the ONLY correct byte source: Dart's String.codeUnits is UTF-16 and Java/Kotlin's default charset is platform-dependent -- both produce a different digest for the Arabic vector below while agreeing with TS on the ASCII ones. That is why an Arabic case is mandatory here, not optional.",
     "cases": [
-      { "name": "empty string", "input": "", "expected": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855" },
-      { "name": "ascii", "input": "abc", "expected": "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad" },
-      { "name": "arabic with diacritics (UTF-8, NOT UTF-16)", "input": "بِسْمِ", "expected": "1c562fd4a7951a03c69ed9f9a10f9423120f439d4fea482d35f3a5c6062dc006", "$note": "A UTF-16 byte source yields 4595330cb3470c17227f05845841b9b7c670a71870d7c53813e5a806ebc79881 for this same string -- verified, not assumed. That is why an Arabic vector is mandatory: the two ASCII cases above pass under BOTH encodings, so they cannot catch a Dart port using String.codeUnits." }
+      {
+        "name": "empty string",
+        "input": "",
+        "expected": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      {
+        "name": "ascii",
+        "input": "abc",
+        "expected": "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+      },
+      {
+        "name": "arabic with diacritics (UTF-8, NOT UTF-16)",
+        "input": "بِسْمِ",
+        "expected": "1c562fd4a7951a03c69ed9f9a10f9423120f439d4fea482d35f3a5c6062dc006",
+        "$note": "A UTF-16 byte source yields 4595330cb3470c17227f05845841b9b7c670a71870d7c53813e5a806ebc79881 for this same string -- verified, not assumed. That is why an Arabic vector is mandatory: the two ASCII cases above pass under BOTH encodings, so they cannot catch a Dart port using String.codeUnits."
+      }
+    ]
+  },
+  "isNonRecitedMark": {
+    "$comment": "T1 — mushaf annotation vs recited word. inputCodepoints (not literal characters) because these marks are INVISIBLE in an editor and in a diff: a literal-character class in forced_align.py merged two ranges, deleted every Arabic letter, and passed review (PR #258). AGENTS.md makes escapes a hard boundary. A Dart/Node port builds the string from the codepoints and must agree.",
+    "cases": [
+      {
+        "name": "U+06D6 waqf sad-lam-alef",
+        "inputCodepoints": [
+          1750
+        ],
+        "expected": true
+      },
+      {
+        "name": "U+06D7 waqf qaf-lam-alef",
+        "inputCodepoints": [
+          1751
+        ],
+        "expected": true
+      },
+      {
+        "name": "U+06D8 compulsory pause",
+        "inputCodepoints": [
+          1752
+        ],
+        "expected": true
+      },
+      {
+        "name": "U+06D9 do not pause",
+        "inputCodepoints": [
+          1753
+        ],
+        "expected": true
+      },
+      {
+        "name": "U+06DA waqf jeem",
+        "inputCodepoints": [
+          1754
+        ],
+        "expected": true
+      },
+      {
+        "name": "U+06DB three dots",
+        "inputCodepoints": [
+          1755
+        ],
+        "expected": true
+      },
+      {
+        "name": "U+06DC small high seen",
+        "inputCodepoints": [
+          1756
+        ],
+        "expected": true
+      },
+      {
+        "name": "U+06DD end of ayah",
+        "inputCodepoints": [
+          1757
+        ],
+        "expected": true
+      },
+      {
+        "name": "U+06DE start of rub el hizb",
+        "inputCodepoints": [
+          1758
+        ],
+        "expected": true
+      },
+      {
+        "name": "U+06E9 place of sajdah",
+        "inputCodepoints": [
+          1769
+        ],
+        "expected": true
+      },
+      {
+        "name": "real word bismi — must stay scored",
+        "inputCodepoints": [
+          1576,
+          1616,
+          1587,
+          1618,
+          1605,
+          1616
+        ],
+        "expected": false
+      },
+      {
+        "name": "word CARRYING a mark is still a word (the dangerous loose rule would drop it)",
+        "inputCodepoints": [
+          1576,
+          1616,
+          1587,
+          1618,
+          1605,
+          1616,
+          1754
+        ],
+        "expected": false
+      },
+      {
+        "name": "empty string",
+        "inputCodepoints": [],
+        "expected": false
+      },
+      {
+        "name": "whitespace only cannot be a mark",
+        "inputCodepoints": [
+          32
+        ],
+        "expected": false
+      },
+      {
+        "name": "whitespace-padded mark is a mark",
+        "inputCodepoints": [
+          32,
+          1754,
+          32
+        ],
+        "expected": true
+      },
+      {
+        "name": "word-internal combining mark U+06EC is not standalone annotation",
+        "inputCodepoints": [
+          1772
+        ],
+        "expected": false
+      }
     ]
   }
 }

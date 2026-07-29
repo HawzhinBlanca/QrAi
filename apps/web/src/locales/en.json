@@ -158,7 +158,8 @@
     "statusNeedsWork": "Needs improvement",
     "statusMissed": "Missed",
     "translationToggle": "Translation",
-    "translationSource": "Translation: {{source}}"
+    "translationSource": "Translation: {{source}}",
+    "waqfMarkAriaLabel": "Pause mark — recitation guidance, not recited"
   },
   "surahPicker": {
     "label": "Practice surah",

@@ -2,6 +2,38 @@
  * Quran-Constrained Alignment Engine
  */
 
+/**
+ * Mushaf ANNOTATION codepoints — waqf (pause) signs, end-of-ayah, rub-el-hizb, sajdah. These are not
+ * recited, so they must never be scored.
+ *
+ * DUPLICATED from `isNonRecitedMark` in packages/contracts/src/index.ts, deliberately and with a
+ * pinned test: services/ml-inference is NOT a pnpm workspace member (no package.json), so it cannot
+ * import @quran-ai/contracts. `marks-parity.test.mjs` reads the shared fixture corpus at
+ * packages/contracts/fixtures/canonical-gates.json and asserts this implementation agrees with it
+ * case for case — so the two copies cannot drift silently. That fixture exists for exactly this.
+ *
+ * Escapes, never literal characters: a literal-character Arabic class in forced_align.py merged two
+ * ranges, deleted every Arabic letter, and passed review (PR #258). AGENTS.md hard boundary.
+ */
+const NON_RECITED_MARKS = new Set([
+  0x06d6, 0x06d7, 0x06d8, 0x06d9, 0x06da, 0x06db, 0x06dc, 0x06dd, 0x06de, 0x06e9,
+]);
+
+export function isNonRecitedMark(text) {
+  if (typeof text !== "string" || text.length === 0) return false;
+  let sawMark = false;
+  for (const char of text) {
+    const cp = char.codePointAt(0);
+    if (NON_RECITED_MARKS.has(cp)) {
+      sawMark = true;
+      continue;
+    }
+    if (/\s/u.test(char)) continue;
+    return false;
+  }
+  return sawMark;
+}
+
 export function normalizeArabic(text) {
   return text
     .replace(/[\u0610-\u061A\u064B-\u065F\u0670\u06D6-\u06ED\u0640]/g, "")
@@ -57,6 +89,16 @@ export function similarity(a, b) {
 // hesitation fillers — and then scored correctly-recited words as "missed" or matched them to the wrong
 // neighbour. A global alignment follows the actual recited stream and survives insertions/deletions/repeats.
 export function alignWords(canonicalWords, recognizedWords) {
+  // Non-recited mushaf marks (waqf/sajdah/hizb) are excluded from the alignment ENTIRELY rather than
+  // aligned and then filtered. 4,578 of the corpus's 82,456 word tokens are such marks. Feeding one
+  // into the DP asks the aligner to find audio for a silent symbol, which distorts that token's span
+  // AND its neighbours' (the same reasoning the caller already applies to "missed" words). Excluding
+  // them up front means no matched/misread/missed status is ever produced for a mark, so a bad status
+  // cannot leak downstream. Marks stay in the corpus and stay displayed — see
+  // specs/canonical-corpus-marks/plan.md.
+  const recitedWords = canonicalWords.filter((w) => !isNonRecitedMark(w.text));
+  canonicalWords = recitedWords;
+
   const matchThreshold = 0.85;
   const reviewThreshold = 0.65;
   // Gap penalty. Aligning a pair scores its similarity; skipping BOTH a canonical and a recognized word

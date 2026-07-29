@@ -1,5 +1,6 @@
 import { useEffect, useRef } from "react";
 import { useTranslation } from "react-i18next";
+import { isNonRecitedMark } from "@quran-ai/contracts";
 import type { QuranVerse } from "../data/quran";
 
 interface QuranReaderProps {
@@ -71,7 +72,28 @@ export function QuranReader({ activeWordId, onSelectWord, selectedWordId, verses
             {/* word.text is canonical Quran text (Uthmani script) -- never translated, per
                 AGENTS.md's canonical-text invariant. Only the status label is translated. */}
             <div className="arabic-line" dir="rtl" lang="ar">
-              {verse.words.map((word) => (
+              {verse.words.map((word) =>
+                // Non-recited mushaf annotation (waqf/sajdah/hizb): rendered, but NOT scored and NOT
+                // interactive. 4,578 of the corpus's 82,456 tokens are these symbols. As scored
+                // buttons they got a status class, a tap target, and a screen-reader announcement
+                // like "sajdah sign, Missed" — telling a learner they failed to recite a symbol that
+                // must never be recited.
+                //
+                // They are deliberately still VISIBLE: waqf signs tell a reciter where they may,
+                // must, or must not pause, which is recitation guidance a learner needs. The fix
+                // separates display from scoring rather than deleting the marks. The aria-label
+                // announces that guidance instead of hiding it, so a blind reciter is not silently
+                // deprived of it. See specs/canonical-corpus-marks/plan.md.
+                isNonRecitedMark(word.text) ? (
+                  <span
+                    aria-label={t("quranReader.waqfMarkAriaLabel")}
+                    className="word-token waqf-mark"
+                    key={word.id}
+                    role="note"
+                  >
+                    {word.text}
+                  </span>
+                ) : (
                 <button
                   aria-label={t("quranReader.wordAriaLabel", { text: word.text, status: t(statusLabelKeys[word.status]) })}
                   className={[
@@ -90,7 +112,8 @@ export function QuranReader({ activeWordId, onSelectWord, selectedWordId, verses
                 >
                   {word.text}
                 </button>
-              ))}
+                ),
+              )}
             </div>
             {/* Sorani translation — verbatim licensed text (QuranEnc: no modification). Shown only
                 when enabled AND present for this ayah; a missing ayah renders nothing (honest). */}
