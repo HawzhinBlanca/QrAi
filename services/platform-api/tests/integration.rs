@@ -3879,3 +3879,111 @@ async fn maintenance_mode_503s_normal_routes_but_keeps_health_live() {
         "liveness must stay up during maintenance"
     );
 }
+
+/// MIG2a — RLS as a BACKSTOP, not just as a barrier against a hostile tenant.
+///
+/// `adversarial_sql_isolation_prevents_cross_tenant_access` proves RLS blocks a caller who is
+/// *pretending to be another tenant*. It does not prove the case that actually matters for a
+/// backend rewrite: a handler that **forgets to set a tenant context at all**.
+///
+/// Today every handler goes through `begin_tenant_tx`, so nothing exercises the omission. That is
+/// precisely the bug a Node port introduces — a stray `pool.query()` issued outside the reserved
+/// transaction runs on a pooled connection where `app.tenant_id` was never set. `plan.md` §2.2
+/// leans on "Postgres fails closed" to make that survivable; this test is what turns that sentence
+/// into evidence.
+///
+/// It also pins the *direction* of the failure. `app.current_tenant_id()` returns NULL when unset,
+/// and `tenant_id = NULL` is never true, so an unscoped read must yield **zero rows** — never the
+/// whole table. A future migration that "helpfully" rewrote the policy with a
+/// `current_setting(...) IS NULL OR ...` escape hatch would flip this to fail-open and silently
+/// expose every tenant; this test fails loudly if that ever happens.
+#[tokio::test]
+#[ignore = "requires live Postgres"]
+async fn rls_backstops_a_query_that_forgets_its_tenant_context() {
+    // A pool with NO after_connect tenant pinning — this is the shape of a forgotten context, and
+    // it mirrors production, where pooled connections carry no session default at all.
+    let pool = sqlx::postgres::PgPoolOptions::new()
+        .max_connections(1)
+        .connect_lazy(
+            &std::env::var("DATABASE_URL")
+                .unwrap_or_else(|_| "postgresql://hawzhin@localhost:5432/quran_ai".to_owned()),
+        )
+        .expect("failed to create unscoped pool");
+
+    let mut tx = pool.begin().await.unwrap();
+
+    // Drop to the production app role: CI's default DATABASE_URL is a superuser, and superusers
+    // bypass RLS unconditionally, so without this the test would pass for the wrong reason.
+    sqlx::query("SET LOCAL ROLE quran_ai_app")
+        .execute(&mut *tx)
+        .await
+        .expect("quran_ai_app role must exist — apply infra/sql/rls-app-role.sql");
+
+    // Sanity gate: prove the tenant GUC really is unset, so a zero-row result below can only be
+    // RLS doing its job — not an empty table or a stale context from a recycled connection.
+    let ctx: Option<String> = sqlx::query_scalar("SELECT current_setting('app.tenant_id', true)")
+        .fetch_one(&mut *tx)
+        .await
+        .unwrap();
+    assert!(
+        ctx.as_deref().unwrap_or("").is_empty(),
+        "tenant context must be UNSET for this test to mean anything, got {ctx:?}"
+    );
+
+    // The rows exist — proven from a context that can see them (below). An unscoped read must
+    // still return zero.
+    let unscoped: i64 = sqlx::query_scalar("SELECT count(*) FROM users")
+        .fetch_one(&mut *tx)
+        .await
+        .expect("an unscoped SELECT must be permitted, just empty — not an error");
+    assert_eq!(
+        unscoped, 0,
+        "RLS must fail CLOSED for a query with no tenant context; returning rows here means a \
+         forgotten begin_tenant_tx would leak across tenants"
+    );
+
+    // An unscoped INSERT must be rejected by WITH CHECK rather than silently landing in a row no
+    // tenant can read back. Wrapped in a SAVEPOINT: the rejection aborts the surrounding
+    // transaction (Postgres 25P02), which would otherwise make the control query below
+    // unrunnable and the whole test a false negative.
+    sqlx::query("SAVEPOINT mig2a_insert_probe")
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    let res = sqlx::query(
+        "INSERT INTO users (id, tenant_id, display_name, role, language)
+         VALUES ('mig2a-unscoped-user', 'hikmah-pilot-erbil', 'Unscoped', 'learner', 'ckb')",
+    )
+    .execute(&mut *tx)
+    .await;
+    assert!(
+        res.is_err(),
+        "RLS must block an INSERT issued with no tenant context"
+    );
+    let err = res.unwrap_err().to_string();
+    assert!(
+        err.contains("violates row-level security policy") || err.contains("42501"),
+        "expected an RLS violation, got: {err}"
+    );
+    sqlx::query("ROLLBACK TO SAVEPOINT mig2a_insert_probe")
+        .execute(&mut *tx)
+        .await
+        .expect("savepoint rollback must restore a usable transaction");
+
+    // Control: with the context set, the same read sees rows. Without this, a zero-row result
+    // above could just mean the table was empty and the test would prove nothing.
+    sqlx::query("SELECT set_config('app.tenant_id', 'hikmah-pilot-erbil', true)")
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    let scoped: i64 = sqlx::query_scalar("SELECT count(*) FROM users")
+        .fetch_one(&mut *tx)
+        .await
+        .unwrap();
+    assert!(
+        scoped > 0,
+        "control failed: the seeded tenant must have users, otherwise the zero above is meaningless"
+    );
+
+    tx.rollback().await.unwrap();
+}
