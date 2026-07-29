@@ -194,8 +194,3 @@ export async function loadWeeklyProgress(tenantId: string, userId?: string, auth
   }
 }
 
-// Similar verses — static reference data (not API-backed, but real Quranic text)
-export const similarVerses: SimilarVerse[] = [
-  { reference: "Al-Baqarah 2:6", arabic: "إِنَّ الَّذِينَ كَفَرُوا", reason: "Similar opening rhythm" },
-  { reference: "An-Nisa 4:69", arabic: "صِرَاطَ الَّذِينَ أَنْعَمَ اللَّهُ عَلَيْهِم", reason: "Same phrase family" },
-];
