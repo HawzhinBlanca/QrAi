@@ -10,9 +10,11 @@ use tower_http::trace::TraceLayer;
 
 pub mod auth;
 pub mod handlers;
+pub mod metrics;
 pub mod types;
 
 use auth::JwtConfig;
+use metrics::Metrics;
 
 pub const REALTIME_TICKET_TTL_SECONDS: u64 = 300;
 
@@ -31,6 +33,16 @@ pub struct AppState {
     pub ml_api_key: String,
     pub asr_inference_url: String,
     pub asr_api_key: String,
+    /// Request metrics (counts + latency histogram), rendered as Prometheus text at `/metrics`.
+    pub metrics: Arc<Metrics>,
+    /// When set, `/metrics` requires `x-metrics-token` to match this value. Read once at startup.
+    pub metrics_token: Option<String>,
+    /// When true (dev only), `/metrics` is served without a token. Read once at startup.
+    pub metrics_dev_open: bool,
+    /// Maintenance kill-switch. When true, every route except /health, /ready, /metrics returns a
+    /// clean 503 so ops can gracefully take the pilot down (readiness/monitoring stay live, so it
+    /// reads as "up, in maintenance", not "crashed"). Read once at startup (MAINTENANCE_MODE).
+    pub maintenance_mode: bool,
 }
 
 fn env_or(key: &str, default: &str) -> String {
@@ -67,7 +79,30 @@ impl AppState {
             ml_api_key: env_or("ML_API_KEY", "smoke-ml-api-key"),
             asr_inference_url: env_or("ASR_INFERENCE_URL", "http://127.0.0.1:8091"),
             asr_api_key: env_or("ASR_API_KEY", "smoke-asr-api-key"),
+            metrics: Arc::new(Metrics::new()),
+            metrics_token: std::env::var("METRICS_TOKEN")
+                .ok()
+                .filter(|s| !s.is_empty()),
+            metrics_dev_open: std::env::var("ALLOW_INSECURE_DEFAULTS")
+                .map(|v| v == "1")
+                .unwrap_or(false),
+            maintenance_mode: std::env::var("MAINTENANCE_MODE")
+                .map(|v| v == "1" || v == "true")
+                .unwrap_or(false),
         }
+    }
+
+    /// Override `/metrics` access for tests (avoids process-env races in the parallel test suite).
+    pub fn with_metrics_access(mut self, token: Option<&str>, dev_open: bool) -> Self {
+        self.metrics_token = token.map(str::to_owned);
+        self.metrics_dev_open = dev_open;
+        self
+    }
+
+    /// Toggle the maintenance kill-switch (tests set it explicitly to avoid process-env races).
+    pub fn with_maintenance_mode(mut self, on: bool) -> Self {
+        self.maintenance_mode = on;
+        self
     }
 
     /// Point the ML inference endpoint at a specific URL (tests use a mock server so the audio
@@ -95,6 +130,8 @@ pub fn platform_router(state: AppState) -> Router {
 }
 
 pub fn platform_router_with_rate_limit(state: AppState, rate_limit: bool) -> Router {
+    // Captured before `state` is moved into the router below; drives the maintenance kill-switch layer.
+    let maintenance_mode = state.maintenance_mode;
     // Restrict CORS origins in production via CORS_ALLOWED_ORIGINS (comma-separated).
     // Unset = permissive (dev/pilot, no-login preview).
     let allow_origin = match std::env::var("CORS_ALLOWED_ORIGINS") {
@@ -113,6 +150,7 @@ pub fn platform_router_with_rate_limit(state: AppState, rate_limit: bool) -> Rou
     let base_router = Router::new()
         .route("/health", axum::routing::get(health))
         .route("/ready", axum::routing::get(ready))
+        .route("/metrics", axum::routing::get(metrics_endpoint))
         .route(
             "/v1/auth/token",
             axum::routing::post(handlers::auth::issue_token),
@@ -199,6 +237,18 @@ pub fn platform_router_with_rate_limit(state: AppState, rate_limit: bool) -> Rou
             axum::routing::get(handlers::audit::list_audit_events),
         )
         .route(
+            "/v1/pilot/session/bootstrap",
+            axum::routing::post(handlers::pilot::bootstrap),
+        )
+        .route(
+            "/v1/pilot/session/logout",
+            axum::routing::post(handlers::pilot::logout),
+        )
+        .route(
+            "/v1/pilot/invitations",
+            axum::routing::post(handlers::pilot::mint_invitation),
+        )
+        .route(
             "/v1/learner/progress",
             axum::routing::get(handlers::progress::get_progress),
         )
@@ -227,6 +277,20 @@ pub fn platform_router_with_rate_limit(state: AppState, rate_limit: bool) -> Rou
             axum::routing::post(handlers::ml_proxy::proxy_asr_transcribe)
                 .layer(DefaultBodyLimit::max(16 * 1024 * 1024)),
         )
+        // Forced alignment (T3): audio + canonical transcript → per-word timestamps. Same auth +
+        // server-side ASR key + 16 MB audio limit as transcribe; the browser never reaches the ASR
+        // service directly.
+        .route(
+            "/v1/asr/force-align",
+            axum::routing::post(handlers::ml_proxy::proxy_asr_force_align)
+                .layer(DefaultBodyLimit::max(16 * 1024 * 1024)),
+        )
+        // Record request counts + latency for every route (matched-path labels keep cardinality
+        // bounded). Applied inside TraceLayer so it wraps the actual handlers.
+        .layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            track_metrics,
+        ))
         .layer(TraceLayer::new_for_http())
         .with_state(state);
 
@@ -276,7 +340,34 @@ pub fn platform_router_with_rate_limit(state: AppState, rate_limit: bool) -> Rou
     // browser rejects them — breaking the whole app during any burst of requests. With CORS
     // outermost, it short-circuits preflight OPTIONS (never rate-limited) and every response,
     // including a genuine 429, gets CORS headers the browser can read.
-    rate_limited.layer(cors)
+    //
+    // The maintenance kill-switch sits just INSIDE cors: it short-circuits before rate limiting and
+    // the handlers, but its 503 still passes back out through cors so it carries the browser-readable
+    // Access-Control-Allow-Origin header.
+    rate_limited
+        .layer(axum::middleware::from_fn_with_state(
+            maintenance_mode,
+            maintenance_guard,
+        ))
+        .layer(cors)
+}
+
+/// Maintenance kill-switch middleware. When enabled, every route EXCEPT liveness/readiness/metrics is
+/// refused with a clean 503, so orchestrator healthchecks + monitoring still see the process as
+/// up-in-maintenance rather than crashed. Ops flip it with MAINTENANCE_MODE=1 + a container restart.
+async fn maintenance_guard(
+    axum::extract::State(maintenance): axum::extract::State<bool>,
+    req: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> axum::response::Response {
+    if maintenance && !matches!(req.uri().path(), "/health" | "/ready" | "/metrics") {
+        return (
+            axum::http::StatusCode::SERVICE_UNAVAILABLE,
+            axum::Json(serde_json::json!({ "error": "service is in maintenance" })),
+        )
+            .into_response();
+    }
+    next.run(req).await
 }
 
 async fn health() -> impl IntoResponse {
@@ -291,6 +382,62 @@ async fn ready(axum::extract::State(state): axum::extract::State<AppState>) -> i
     match sqlx::query("SELECT 1").execute(&state.pool).await {
         Ok(_) => (axum::http::StatusCode::OK, "ready"),
         Err(_) => (axum::http::StatusCode::SERVICE_UNAVAILABLE, "not ready"),
+    }
+}
+
+/// Records request count + latency for every routed request (matched-path label keeps cardinality
+/// bounded — `/v1/…/{id}/…` collapses to one series regardless of the id).
+async fn track_metrics(
+    axum::extract::State(state): axum::extract::State<AppState>,
+    request: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> axum::response::Response {
+    let method = request.method().as_str().to_owned();
+    let path = request
+        .extensions()
+        .get::<axum::extract::MatchedPath>()
+        .map(|m| m.as_str().to_owned())
+        .unwrap_or_else(|| "<unmatched>".to_owned());
+    let start = std::time::Instant::now();
+    let response = next.run(request).await;
+    let latency_ms = start.elapsed().as_millis() as u64;
+    state
+        .metrics
+        .record(&method, &path, response.status().as_u16(), latency_ms);
+    response
+}
+
+/// Prometheus scrape endpoint. Access is fail-closed in production: it serves metrics only when the
+/// request presents `x-metrics-token` matching the `METRICS_TOKEN` env var. In dev
+/// (`ALLOW_INSECURE_DEFAULTS=1`) with no token configured it is open. Otherwise it 404s — hiding the
+/// endpoint's existence — so metrics are never public by default (the audit flagged the gateway's
+/// /metrics as publicly exposed; this API must not repeat that).
+async fn metrics_endpoint(
+    axum::extract::State(state): axum::extract::State<AppState>,
+    headers: axum::http::HeaderMap,
+) -> axum::response::Response {
+    if !metrics_access_allowed(&state, &headers) {
+        return axum::http::StatusCode::NOT_FOUND.into_response();
+    }
+    (
+        [(
+            axum::http::header::CONTENT_TYPE,
+            "text/plain; version=0.0.4; charset=utf-8",
+        )],
+        state.metrics.render(),
+    )
+        .into_response()
+}
+
+fn metrics_access_allowed(state: &AppState, headers: &axum::http::HeaderMap) -> bool {
+    match &state.metrics_token {
+        Some(token) => headers
+            .get("x-metrics-token")
+            .and_then(|v| v.to_str().ok())
+            .map(|v| v == token)
+            .unwrap_or(false),
+        // No token configured: allow only in explicit dev mode, otherwise fail closed.
+        None => state.metrics_dev_open,
     }
 }
 

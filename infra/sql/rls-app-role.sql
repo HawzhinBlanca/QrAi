@@ -40,6 +40,20 @@ grant usage on schema app to quran_ai_app;
 grant execute on function app.current_tenant_id() to quran_ai_app;
 grant execute on function app.is_rls_bypass_enabled() to quran_ai_app;
 
+-- Pilot identity definer functions (0021_pilot_identity.sql). Guarded because this file
+-- also runs in orders where 0021 is not applied yet (compose initdb runs it last, but a
+-- fresh environment may provision the role before newer migrations exist). 0021 carries
+-- the mirror-image guard (grant if the ROLE exists), so every apply order converges.
+do $$
+begin
+  if to_regprocedure('app.get_pilot_session_by_hash(text)') is not null then
+    grant execute on function app.get_pilot_session_by_hash(text) to quran_ai_app;
+  end if;
+  if to_regprocedure('app.consume_pilot_invitation_by_hash(text)') is not null then
+    grant execute on function app.consume_pilot_invitation_by_hash(text) to quran_ai_app;
+  end if;
+end $$;
+
 -- CRUD on all application tables (RLS still filters rows by tenant at query time).
 grant select, insert, update, delete on all tables in schema public to quran_ai_app;
 alter default privileges in schema public

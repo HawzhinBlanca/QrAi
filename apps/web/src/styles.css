@@ -1140,6 +1140,60 @@ button:disabled {
   box-shadow: 0 10px 0 -7px var(--emerald);
 }
 
+/* Follow-along: the word currently being recited in the reference audio. A crisp amber pill that
+   lights each word as playback crosses it — distinct from selection (emerald) and status colors. */
+.word-token.is-reciting {
+  background: rgba(214, 154, 31, 0.24);
+  border-color: rgba(214, 154, 31, 0.6);
+  color: #151411;
+  transition:
+    background 90ms linear,
+    border-color 90ms linear;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .word-token.is-reciting {
+    transition: none;
+  }
+}
+
+.reader-attribution {
+  margin: 8px 4px 0;
+  font-size: 0.72rem;
+  color: #6b6a66;
+  line-height: 1.4;
+}
+
+/* Sorani translation line under each ayah's Arabic. */
+.verse-translation {
+  margin: 6px 0 2px;
+  padding-inline-start: 34px; /* clear the verse-number gutter */
+  color: #4a4843;
+  font-size: 0.95rem;
+  line-height: 1.7;
+}
+
+.reader-controls {
+  display: flex;
+  justify-content: flex-end;
+  margin-bottom: 6px;
+}
+
+.translation-toggle {
+  padding: 4px 12px;
+  border: 1px solid rgba(8, 125, 100, 0.32);
+  border-radius: 999px;
+  background: transparent;
+  color: #087d64;
+  font: inherit;
+  font-size: 0.8rem;
+  cursor: pointer;
+}
+
+.translation-toggle.is-on {
+  background: rgba(8, 125, 100, 0.12);
+}
+
 .word-token.status-mistake {
   border-color: rgba(200, 63, 76, 0.28);
   background: rgba(200, 63, 76, 0.12);
@@ -2588,9 +2642,8 @@ button:disabled {
 
   .sidebar {
     position: fixed;
-    right: 0;
+    inset-inline: 0;
     bottom: 0;
-    left: 0;
     z-index: 20;
     flex-direction: column;
     align-items: center;
@@ -3023,6 +3076,27 @@ button:disabled {
 .tajweed-review.verified {
   background: #dcefe0;
   color: #2f6b45;
+}
+.tajweed-sources {
+  margin-top: 10px;
+  color: #5b5340;
+  font-size: 12px;
+  line-height: 1.45;
+}
+.tajweed-sources ul {
+  display: grid;
+  gap: 3px;
+  margin: 4px 0 0;
+  padding-left: 18px;
+}
+.tajweed-sources li {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+.tajweed-sources li span:last-child::before {
+  content: "—";
+  margin-right: 4px;
 }
 .panel-empty {
   font-size: 13px;

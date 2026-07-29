@@ -19,12 +19,22 @@ DB_USER="${DB_USER:-hawzhin}"
 DB_NAME="${DB_NAME:-quran_ai}"
 PACKAGE_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 
+if [[ -n "${DATABASE_URL:-}" ]]; then
+  # A release smoke run supplies an isolated database as one connection URL.
+  # Keep it opaque in logs: URLs may contain credentials.
+  DB_ARGS=(--dbname "$DATABASE_URL")
+  DATABASE_LABEL="DATABASE_URL (redacted)"
+else
+  DB_ARGS=(-h "$DB_HOST" -U "$DB_USER" -d "$DB_NAME")
+  DATABASE_LABEL="$DB_HOST/$DB_NAME"
+fi
+
 echo "=== Seeding full Quran to Postgres ==="
-echo "Database: $DB_HOST/$DB_NAME"
+echo "Database: $DATABASE_LABEL"
 echo ""
 
 # Create seed institution and users
-$PSQL -h "$DB_HOST" -U "$DB_USER" -d "$DB_NAME" <<'SQL'
+$PSQL "${DB_ARGS[@]}" <<'SQL'
 INSERT INTO institutions (id, name, region) VALUES
   ('hikmah-pilot-erbil', 'Hikmah Quran Academy', 'Erbil, Kurdistan')
 ON CONFLICT (id) DO NOTHING;
@@ -62,7 +72,7 @@ echo ""
 # throws "unbound variable" on the second read (a real bash quirk, not a typo): the act of reading
 # one index appears to disturb the array's state before the next read.
 if (cd "$PACKAGE_DIR" && pnpm exec jiti scripts/write-full-quran-sql-seed.mjs) \
-  | $PSQL -h "$DB_HOST" -U "$DB_USER" -d "$DB_NAME" -q 2>&1 | grep -v "^INSERT"; then
+  | $PSQL "${DB_ARGS[@]}" -q 2>&1 | grep -v "^INSERT"; then
   :
 fi
 PIPE_STATUS=("${PIPESTATUS[@]}")
@@ -80,7 +90,7 @@ echo "=== Verifying counts ==="
 # printed the counts for a human to eyeball; now it actually fails the script if seeding produced
 # the wrong number of ayahs or surahs, the same "don't trust the caller" pattern already applied to
 # validateCanonicalImportBundle in packages/quran-data/src/index.ts.
-COUNTS="$($PSQL -h "$DB_HOST" -U "$DB_USER" -d "$DB_NAME" -t -A -F' ' -c "SELECT (SELECT count(*) FROM canonical_ayahs), (SELECT count(DISTINCT surah_number) FROM canonical_ayahs), (SELECT count(*) FROM canonical_words);")"
+COUNTS="$($PSQL "${DB_ARGS[@]}" -t -A -F' ' -c "SELECT (SELECT count(*) FROM canonical_ayahs), (SELECT count(DISTINCT surah_number) FROM canonical_ayahs), (SELECT count(*) FROM canonical_words);")"
 AYAH_COUNT="$(echo "$COUNTS" | cut -d' ' -f1)"
 SURAH_COUNT="$(echo "$COUNTS" | cut -d' ' -f2)"
 WORD_COUNT="$(echo "$COUNTS" | cut -d' ' -f3)"

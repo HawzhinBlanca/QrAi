@@ -5,7 +5,6 @@ use serde::Deserialize;
 use sqlx::Row;
 
 use crate::AppState;
-use crate::auth::actor_from_headers;
 use crate::types::*;
 
 fn empty_sources() -> serde_json::Value {
@@ -26,6 +25,8 @@ pub struct AgentRunRequest {
     pub last_event: String,
     #[serde(default)]
     pub finding_id: Option<String>,
+    #[serde(default)]
+    pub learner_id: Option<String>,
 }
 
 /// Record an agent run (written by the supervised agents service). Ops/Admin/Scholar
@@ -33,10 +34,11 @@ pub struct AgentRunRequest {
 /// at least one source, mirroring `canShowLearnerFacingAiOutput` in packages/contracts.
 pub async fn create_agent_run(
     State(state): State<AppState>,
+    method: axum::http::Method,
     headers: HeaderMap,
     Json(req): Json<AgentRunRequest>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
-    let actor = actor_from_headers(&headers, &state.jwt_config)?;
+    let actor = crate::auth::resolve_actor(&method, &headers, &state).await?;
     actor.require_any(&[ActorRole::Scholar, ActorRole::Admin, ActorRole::Ops])?;
 
     let mut tx = crate::begin_tenant_tx(&state.pool, &actor.tenant_id).await?;
@@ -122,8 +124,8 @@ pub async fn create_agent_run(
 
     sqlx::query(
         "INSERT INTO agent_runs
-            (id, tenant_id, name, goal, status, confidence, review_status, source_refs, trace, audit_event_id)
-         VALUES ($1, $2, $3, $4, $5, $6::float8::numeric, $7, $8, $9, $10)",
+            (id, tenant_id, name, goal, status, confidence, review_status, source_refs, trace, audit_event_id, learner_id)
+         VALUES ($1, $2, $3, $4, $5, $6::float8::numeric, $7, $8, $9, $10, $11)",
     )
     .bind(&run_id)
     .bind(&actor.tenant_id)
@@ -135,6 +137,7 @@ pub async fn create_agent_run(
     .bind(&req.sources)
     .bind(&trace)
     .bind(&audit_id)
+    .bind(&req.learner_id)
     .execute(&mut *tx)
     .await?;
 
@@ -149,14 +152,16 @@ pub async fn create_agent_run(
         "reviewStatus": req.review_status,
         "sources": req.sources,
         "lastEvent": req.last_event,
+        "learnerId": req.learner_id,
     })))
 }
 
 pub async fn list_agent_runs(
     State(state): State<AppState>,
+    method: axum::http::Method,
     headers: HeaderMap,
 ) -> Result<Json<Vec<serde_json::Value>>, ApiError> {
-    let actor = actor_from_headers(&headers, &state.jwt_config)?;
+    let actor = crate::auth::resolve_actor(&method, &headers, &state).await?;
     actor.require_any(&[
         ActorRole::Teacher,
         ActorRole::Scholar,
@@ -167,7 +172,7 @@ pub async fn list_agent_runs(
     let mut tx = crate::begin_tenant_tx(&state.pool, &actor.tenant_id).await?;
 
     let rows = sqlx::query(
-        "SELECT id, name, goal, status, confidence::float8 AS confidence, review_status, source_refs, trace
+        "SELECT id, name, goal, status, confidence::float8 AS confidence, review_status, source_refs, trace, learner_id
          FROM agent_runs WHERE tenant_id = $1 ORDER BY created_at DESC LIMIT 50",
     )
     .bind(&actor.tenant_id)
@@ -189,6 +194,7 @@ pub async fn list_agent_runs(
             // the agents service can dedup — skip findings that already have a run — instead of
             // re-recording every finding on every batch tick. null for cohort-level runs.
             let finding_id = trace.get("finding_id").and_then(|v| v.as_str());
+            let learner_id: Option<String> = r.try_get("learner_id").ok();
             serde_json::json!({
                 "id": r.try_get::<String, _>("id").unwrap_or_default(),
                 "name": r.try_get::<String, _>("name").unwrap_or_default(),
@@ -199,6 +205,7 @@ pub async fn list_agent_runs(
                 "sources": sources,
                 "lastEvent": last_event,
                 "findingId": finding_id,
+                "learnerId": learner_id,
             })
         })
         .collect();

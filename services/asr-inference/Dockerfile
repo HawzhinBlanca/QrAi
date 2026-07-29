@@ -21,6 +21,9 @@ USER appuser
 # cannot load in this image; see the ASR_MODEL comment in docker-compose.yml for why, and what's
 # needed to switch.
 RUN python -c "import whisper; whisper.load_model('base')"
-COPY --chown=appuser:appuser services/asr-inference/server.py ./
+# Copy every runtime module (not just server.py): server.py imports audio_guards at module load, and
+# imports forced_align lazily for /v1/force-align — omitting either breaks boot or the endpoint. The
+# test module is intentionally left out of the image.
+COPY --chown=appuser:appuser services/asr-inference/server.py services/asr-inference/forced_align.py services/asr-inference/audio_guards.py ./
 EXPOSE 8091
 CMD ["python", "server.py"]

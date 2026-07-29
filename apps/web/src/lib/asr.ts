@@ -72,12 +72,17 @@ export function startAsr(options: StartAsrOptions): AsrController | null {
   };
 
   recognition.addEventListener("result", (event: Event) => {
-    const results = (
-      event as unknown as {
-        results: ArrayLike<ArrayLike<{ transcript: string; confidence: number }> & { isFinal?: boolean }>;
-      }
-    ).results;
-    for (let i = 0; i < results.length; i++) {
+    const evt = event as unknown as {
+      results: ArrayLike<ArrayLike<{ transcript: string; confidence: number }> & { isFinal?: boolean }>;
+      resultIndex?: number;
+    };
+    const results = evt.results;
+    // `results` is CUMULATIVE (every result so far this session), and `resultIndex` is the lowest
+    // index that CHANGED in this event. Iterate from resultIndex, not 0 — otherwise every already-
+    // finalized result is re-emitted on every subsequent event, so a consumer that appends per
+    // onResult (App.tsx) accumulates each segment N times and re-fires alignment for it N times.
+    const startIndex = evt.resultIndex ?? 0;
+    for (let i = startIndex; i < results.length; i++) {
       const result = results[i];
       const alternative = result[0];
       if (alternative) {

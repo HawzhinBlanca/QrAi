@@ -1,7 +1,13 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 
-import { authHeaders, buildConsentPayload, canStartRecording, parseRecognizedText } from "./session.ts";
+import {
+  audioFormatFromUri,
+  authHeaders,
+  buildConsentPayload,
+  canStartRecording,
+  parseRecognizedText,
+} from "./session.ts";
 
 describe("mobile session helpers", () => {
   describe("authHeaders", () => {
@@ -40,6 +46,22 @@ describe("mobile session helpers", () => {
       assert.deepEqual(parseRecognizedText(undefined), []);
       assert.deepEqual(parseRecognizedText(""), []);
       assert.deepEqual(parseRecognizedText("   "), []);
+    });
+  });
+
+  describe("audioFormatFromUri", () => {
+    it("reports m4a for the native HIGH_QUALITY recording (both ios and android write .m4a)", () => {
+      assert.equal(audioFormatFromUri("file:///data/user/0/app/cache/Audio/rec-123.m4a"), "m4a");
+    });
+    it("reports webm for a web recording", () => {
+      assert.equal(audioFormatFromUri("blob:http://localhost/abc-def.webm"), "webm");
+    });
+    it("ignores query strings when reading the extension", () => {
+      assert.equal(audioFormatFromUri("file:///tmp/rec.wav?ts=1699999999"), "wav");
+    });
+    it("falls back to m4a for an unknown or missing extension", () => {
+      assert.equal(audioFormatFromUri("file:///tmp/recording"), "m4a");
+      assert.equal(audioFormatFromUri("file:///tmp/rec.aiff"), "m4a");
     });
   });
 

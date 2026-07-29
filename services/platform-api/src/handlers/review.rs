@@ -4,15 +4,15 @@ use axum::http::HeaderMap;
 use sqlx::Row;
 
 use crate::AppState;
-use crate::auth::actor_from_headers;
 use crate::types::*;
 
 pub async fn create_teacher_review(
     State(state): State<AppState>,
+    method: axum::http::Method,
     headers: HeaderMap,
     Json(req): Json<TeacherReviewRequest>,
 ) -> Result<Json<TeacherReview>, ApiError> {
-    let actor = actor_from_headers(&headers, &state.jwt_config)?;
+    let actor = crate::auth::resolve_actor(&method, &headers, &state).await?;
     actor.require_any(&[ActorRole::Teacher, ActorRole::Admin, ActorRole::Ops])?;
 
     let mut tx = crate::begin_tenant_tx(&state.pool, &actor.tenant_id).await?;
@@ -84,16 +84,17 @@ pub async fn create_teacher_review(
 
 pub async fn list_teacher_review_queue(
     State(state): State<AppState>,
+    method: axum::http::Method,
     headers: HeaderMap,
 ) -> Result<Json<Vec<TeacherReview>>, ApiError> {
-    let actor = actor_from_headers(&headers, &state.jwt_config)?;
+    let actor = crate::auth::resolve_actor(&method, &headers, &state).await?;
     actor.require_any(&[ActorRole::Teacher, ActorRole::Admin, ActorRole::Ops])?;
 
     let mut tx = crate::begin_tenant_tx(&state.pool, &actor.tenant_id).await?;
 
     let rows = sqlx::query(
         "SELECT id, tenant_id, finding_id, teacher_id, decision, note, audit_event_id
-         FROM teacher_reviews WHERE tenant_id = $1 ORDER BY created_at DESC",
+         FROM teacher_reviews WHERE tenant_id = $1 ORDER BY created_at DESC, id LIMIT 200",
     )
     .bind(&actor.tenant_id)
     .fetch_all(&mut *tx)
@@ -128,10 +129,11 @@ pub async fn list_teacher_review_queue(
 
 pub async fn create_scholar_approval(
     State(state): State<AppState>,
+    method: axum::http::Method,
     headers: HeaderMap,
     Json(req): Json<ScholarApprovalRequest>,
 ) -> Result<Json<ScholarApproval>, ApiError> {
-    let actor = actor_from_headers(&headers, &state.jwt_config)?;
+    let actor = crate::auth::resolve_actor(&method, &headers, &state).await?;
     actor.require_any(&[ActorRole::Scholar, ActorRole::Admin, ActorRole::Ops])?;
 
     let mut tx = crate::begin_tenant_tx(&state.pool, &actor.tenant_id).await?;
@@ -203,9 +205,10 @@ pub async fn create_scholar_approval(
 
 pub async fn list_scholar_approvals(
     State(state): State<AppState>,
+    method: axum::http::Method,
     headers: HeaderMap,
 ) -> Result<Json<Vec<serde_json::Value>>, ApiError> {
-    let actor = actor_from_headers(&headers, &state.jwt_config)?;
+    let actor = crate::auth::resolve_actor(&method, &headers, &state).await?;
     actor.require_any(&[
         ActorRole::Scholar,
         ActorRole::Teacher,
@@ -217,7 +220,7 @@ pub async fn list_scholar_approvals(
 
     let rows = sqlx::query(
         "SELECT id, topic, reviewer_id, status, risk, source_refs
-         FROM scholar_approvals WHERE tenant_id = $1 ORDER BY created_at DESC",
+         FROM scholar_approvals WHERE tenant_id = $1 ORDER BY created_at DESC, id LIMIT 200",
     )
     .bind(&actor.tenant_id)
     .fetch_all(&mut *tx)
@@ -249,9 +252,10 @@ pub async fn list_scholar_approvals(
 /// Teacher/Scholar/Admin/Ops only.
 pub async fn list_tajweed_findings(
     State(state): State<AppState>,
+    method: axum::http::Method,
     headers: HeaderMap,
 ) -> Result<Json<Vec<serde_json::Value>>, ApiError> {
-    let actor = actor_from_headers(&headers, &state.jwt_config)?;
+    let actor = crate::auth::resolve_actor(&method, &headers, &state).await?;
     actor.require_any(&[
         ActorRole::Teacher,
         ActorRole::Scholar,
@@ -267,7 +271,12 @@ pub async fn list_tajweed_findings(
          FROM tajweed_findings tf
          JOIN word_alignments wa ON wa.id = tf.alignment_id
          WHERE tf.tenant_id = $1
-         ORDER BY tf.confidence DESC",
+         -- tf.id breaks ties: confidence is NOT unique (findings routinely share 0.9), so with the
+         -- LIMIT below Postgres would drop an ARBITRARY subset of the tied rows at the cutoff and
+         -- return a different set run to run. Verified: with 205 findings and LIMIT 200, a seeded
+         -- finding appeared or vanished depending on tie ordering. Any ORDER BY feeding a LIMIT
+         -- needs a unique tiebreaker to be reproducible (and to paginate correctly later).
+         ORDER BY tf.confidence DESC, tf.id LIMIT 200",
     )
     .bind(&actor.tenant_id)
     .fetch_all(&mut *tx)

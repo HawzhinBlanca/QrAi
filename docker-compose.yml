@@ -17,7 +17,7 @@ services:
       # Internal-only service: bind to loopback so it is reachable on the host (debugging, psql,
       # migrations) but NOT from other machines. Only platform-api (8080), the realtime gateway
       # (8081), and the web app are meant to be exposed off-host; postgres/ml/asr stay private.
-      - "127.0.0.1:5432:5432"
+      - "127.0.0.1:5433:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
       - ./infra/sql/0001_core_schema.sql:/docker-entrypoint-initdb.d/01_schema.sql:ro
@@ -36,6 +36,12 @@ services:
       - ./infra/sql/0015_teacher_review_scholar_approval_indexes.sql:/docker-entrypoint-initdb.d/15_teacher_review_scholar_approval_indexes.sql:ro
       - ./infra/sql/0016_missing_tenant_indexes.sql:/docker-entrypoint-initdb.d/16_missing_tenant_indexes.sql:ro
       - ./infra/sql/0017_eval_runs_index.sql:/docker-entrypoint-initdb.d/17_eval_runs_index.sql:ro
+      - ./infra/sql/0018_agent_run_learner_id.sql:/docker-entrypoint-initdb.d/18_agent_run_learner_id.sql:ro
+      - ./infra/sql/0019_recitation_and_findings_sort_indexes.sql:/docker-entrypoint-initdb.d/19_recitation_and_findings_sort_indexes.sql:ro
+      - ./infra/sql/0020_language_check.sql:/docker-entrypoint-initdb.d/20_language_check.sql:ro
+      - ./infra/sql/0021_pilot_identity.sql:/docker-entrypoint-initdb.d/21_pilot_identity.sql:ro
+      - ./infra/sql/rls-app-role.sql:/tmp/rls-app-role.sql:ro
+      - ./infra/sql/99_init_app_role.sh:/docker-entrypoint-initdb.d/99_init_app_role.sh:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U hawzhin -d quran_ai"]
       interval: 5s
@@ -49,13 +55,22 @@ services:
       context: .
       dockerfile: services/platform-api/Dockerfile
     environment:
-      DATABASE_URL: "postgresql://hawzhin:${POSTGRES_PASSWORD}@postgres:5432/quran_ai"
+      DATABASE_URL: "postgresql://quran_ai_app:${POSTGRES_PASSWORD}@postgres:5432/quran_ai"
       JWT_SECRET: "${JWT_SECRET:?JWT_SECRET is required in production}"
       REALTIME_GATEWAY_TICKET_SECRET: "${REALTIME_GATEWAY_TICKET_SECRET:?REALTIME_GATEWAY_TICKET_SECRET is required in production}"
       PLATFORM_API_BIND: "0.0.0.0:8080"
       ML_API_KEY: "${ML_API_KEY:?ML_API_KEY is required}"
       ASR_API_KEY: "${ASR_API_KEY:?ASR_API_KEY is required}"
       ALLOW_INSECURE_DEFAULTS: "${ALLOW_INSECURE_DEFAULTS:-0}"
+      # Exact web origin(s), comma-separated (e.g. https://app.example.org). REQUIRED in production
+      # (ALLOW_INSECURE_DEFAULTS unset/0): platform-api fails closed on boot if this is empty, so the
+      # pilot Origin allowlist (auth::require_allowed_origin) and browser CORS are ENFORCED, not
+      # permissive. Empty default keeps local/staging (ALLOW_INSECURE_DEFAULTS=1) working unchanged.
+      CORS_ALLOWED_ORIGINS: "${CORS_ALLOWED_ORIGINS:-}"
+      # Kill-switch: set MAINTENANCE_MODE=1 (then `docker compose up -d platform-api`) to gracefully
+      # take the pilot down — every route except /health, /ready, /metrics returns 503, so healthchecks
+      # and monitoring still see the process up-in-maintenance rather than crashed. Default off.
+      MAINTENANCE_MODE: "${MAINTENANCE_MODE:-0}"
       ML_INFERENCE_URL: "http://ml-inference:8090"
       ASR_INFERENCE_URL: "http://asr-inference:8091"
       # Operational knobs (safe defaults; override per deployment via .env.production):
@@ -108,6 +123,7 @@ services:
       context: .
       dockerfile: services/ml-inference/Dockerfile
     environment:
+      ML_INFERENCE_HOST: "0.0.0.0"
       ML_INFERENCE_PORT: "8090"
       ASR_SERVICE_URL: "http://asr-inference:8091"
       ASR_API_KEY: "${ASR_API_KEY:?ASR_API_KEY is required}"
@@ -135,6 +151,7 @@ services:
       context: .
       dockerfile: services/asr-inference/Dockerfile
     environment:
+      ASR_HOST: "0.0.0.0"
       ASR_PORT: "8091"
       # NOTE: this pins the service to generic openai-whisper "base", NOT the specialized
       # Quran-fine-tuned model (tarteel-ai/whisper-base-ar-quran) that server.py defaults to and
@@ -168,9 +185,17 @@ services:
     build:
       context: .
       dockerfile: apps/web/Dockerfile
-    environment:
-      VITE_PLATFORM_API_URL: "http://localhost:8080"
-      VITE_REALTIME_GATEWAY_URL: "ws://localhost:8081"
+      # Vite inlines VITE_* at BUILD time. These were previously under `environment:` — runtime env
+      # on an nginx container serving a pre-built bundle, i.e. inert: the image ignored them and
+      # used the code defaults. Declared here as build args so what is written is what ships.
+      #
+      # Values chosen to MATCH the behaviour that was actually shipping, not the inert declarations:
+      #   - API "" -> relative /v1/, proxied by nginx on this origin (the old "http://localhost:8080"
+      #     never took effect; baking it would newly bypass the proxy and need CORS).
+      #   - gateway ws://localhost:8081 -> the direct port this stack publishes.
+      args:
+        VITE_PLATFORM_API_URL: ""
+        VITE_REALTIME_GATEWAY_URL: "ws://localhost:8081"
     ports:
       - "5173:8080"
     depends_on:
@@ -184,7 +209,7 @@ services:
       # nginx-unprivileged:alpine does not include curl (only the four backend service images do)
       # — wget is available in Alpine by default. See services/ml-inference/Dockerfile's identical
       # curl-availability issue for the sibling bug this mirrors on the backend side.
-      test: ["CMD", "wget", "-q", "--spider", "http://localhost:8080/"]
+      test: ["CMD", "wget", "-q", "--spider", "http://127.0.0.1:8080/"]
       interval: 10s
       timeout: 5s
       retries: 3

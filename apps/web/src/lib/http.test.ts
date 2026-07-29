@@ -1,9 +1,12 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
+import { bootstrapPilotSession } from "./api";
 import { fetchWithTimeout } from "./http";
+import { isPilotMode, setPilotIdentity } from "./pilotSession";
 
 afterEach(() => {
   vi.unstubAllGlobals();
+  setPilotIdentity(null);
 });
 
 describe("fetchWithTimeout", () => {
@@ -117,5 +120,82 @@ describe("fetchWithTimeout", () => {
     callerController.abort();
 
     await expect(promise).rejects.toMatchObject({ name: "AbortError" });
+  });
+});
+
+describe("fetchWithTimeout credentials (pilot cookie auth)", () => {
+  function captureCredentials(): { get: () => RequestCredentials | undefined } {
+    let seen: RequestCredentials | undefined;
+    const fetchMock = vi.fn(async (_input: RequestInfo | URL, init: RequestInit = {}) => {
+      seen = init.credentials;
+      return new Response("ok");
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    return { get: () => seen };
+  }
+
+  it("does NOT send credentials when not in pilot mode (dev-header / bearer path)", async () => {
+    const cap = captureCredentials();
+    await fetchWithTimeout("https://api.test/v1/x", {}, 1000);
+    // Undefined => browser default (same-origin); the HttpOnly cookie is not force-sent.
+    expect(cap.get()).toBeUndefined();
+  });
+
+  it("sends credentials:'include' in pilot mode so the __Host-qrai-pilot cookie rides along", async () => {
+    setPilotIdentity({
+      userId: "learner-1",
+      tenantId: "hikmah-pilot-erbil",
+      displayName: "L",
+      role: "learner",
+      csrfToken: "csrf-x",
+    });
+    const cap = captureCredentials();
+    await fetchWithTimeout("https://api.test/v1/learner/progress", {}, 1000);
+    expect(cap.get()).toBe("include");
+  });
+
+  it("lets an explicit caller credentials value win over the pilot default", async () => {
+    setPilotIdentity({
+      userId: "learner-1",
+      tenantId: "hikmah-pilot-erbil",
+      displayName: "L",
+      role: "learner",
+      csrfToken: "csrf-x",
+    });
+    const cap = captureCredentials();
+    await fetchWithTimeout("https://api.test/v1/x", { credentials: "omit" }, 1000);
+    expect(cap.get()).toBe("omit");
+  });
+});
+
+describe("bootstrapPilotSession (invite redemption fault path)", () => {
+  it("throws and does NOT establish a pilot session on a non-2xx response (bad/expired invite)", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => new Response("no", { status: 401 })));
+    await expect(bootstrapPilotSession("bad-or-expired-token")).rejects.toThrow(/401/);
+    // A failed redemption must never leave the app falsely authenticated.
+    expect(isPilotMode()).toBe(false);
+  });
+
+  it("establishes the pilot session on a successful redemption", async () => {
+    const body = {
+      userId: "learner-9",
+      tenantId: "hikmah-pilot-erbil",
+      displayName: "Nine",
+      role: "learner",
+      csrfToken: "csrf-9",
+    };
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(
+        async () =>
+          new Response(JSON.stringify(body), {
+            status: 200,
+            headers: { "content-type": "application/json" },
+          }),
+      ),
+    );
+    const identity = await bootstrapPilotSession("good-token");
+    expect(identity.userId).toBe("learner-9");
+    expect(isPilotMode()).toBe(true);
   });
 });

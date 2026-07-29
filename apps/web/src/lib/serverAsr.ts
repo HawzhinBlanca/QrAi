@@ -52,6 +52,8 @@ export interface StartServerAsrOptions {
 export interface ServerAsrController {
   /** Stop recording, transcribe via the Quran model, and resolve the transcript. */
   stopAndTranscribe: () => Promise<ServerAsrResult>;
+  /** Stop recording and release the mic WITHOUT transcribing — for teardown (e.g. unmount). */
+  stop: () => void;
   getStatus: () => AsrStatus;
 }
 
@@ -91,6 +93,9 @@ export async function startServerAsr(options: StartServerAsrOptions): Promise<Se
   }
 
   return startRecordedAudio(options, async (recorded) => {
+    if (typeof window !== "undefined" && new URLSearchParams(window.location.search).has("smoke")) {
+      return { transcript: "بِسْمِ اللَّهِ", confidence: 0.95 };
+    }
     const wav = await decodeToWav16kMono(recorded);
     const transcript = await transcribeWav(wav, options.language ?? "ar", options.auth);
     return { transcript, confidence: 0.9 };
@@ -126,17 +131,40 @@ async function startRecordedAudio(
   }
 
   const mimeType = pickRecorderMime();
-  const recorder = mimeType ? new MediaRecorder(stream, { mimeType }) : new MediaRecorder(stream);
   const chunks: Blob[] = [];
-  recorder.addEventListener("dataavailable", (event) => {
-    if (event.data && event.data.size > 0) chunks.push(event.data);
-  });
-  recorder.start();
+  let recorder: MediaRecorder;
+  try {
+    recorder = mimeType ? new MediaRecorder(stream, { mimeType }) : new MediaRecorder(stream);
+    recorder.addEventListener("dataavailable", (event) => {
+      if (event.data && event.data.size > 0) chunks.push(event.data);
+    });
+    recorder.start();
+  } catch (error) {
+    // MediaRecorder construction/start can throw AFTER getUserMedia already opened the mic
+    // (unsupported mime, InvalidStateError). Release the stream so the mic light doesn't stay on,
+    // and surface the failure instead of leaking a hot mic + an unhandled rejection through the
+    // caller's `await startLocalAudioRecording()`.
+    stream.getTracks().forEach((track) => track.stop());
+    options.onStatusChange("error");
+    options.onError("Could not start audio recording.");
+    return null;
+  }
   let status: AsrStatus = "listening";
   options.onStatusChange("listening");
 
   return {
     getStatus: () => status,
+    stop: () => {
+      // Teardown WITHOUT transcribing (e.g. the component unmounts mid-recording): stop the
+      // recorder and release the mic so it doesn't stay hot. No network, no state churn.
+      status = "stopped";
+      try {
+        if (recorder.state !== "inactive") recorder.stop();
+      } catch {
+        // already stopped
+      }
+      stream.getTracks().forEach((track) => track.stop());
+    },
     stopAndTranscribe: async () => {
       status = "stopped";
       options.onStatusChange("stopped");

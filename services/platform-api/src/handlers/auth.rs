@@ -8,6 +8,7 @@ use crate::types::*;
 
 pub async fn issue_token(
     State(state): State<AppState>,
+    method: axum::http::Method,
     headers: HeaderMap,
     Json(req): Json<TokenRequest>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
@@ -15,7 +16,7 @@ pub async fn issue_token(
     // anyone who knows a (user_id, tenant_id, role) tuple could forge a session for any
     // user, bypassing login entirely. Require an authenticated admin/ops caller, scoped
     // to their own tenant.
-    let caller = crate::auth::actor_from_headers(&headers, &state.jwt_config)?;
+    let caller = crate::auth::resolve_actor(&method, &headers, &state).await?;
     caller.require_any(&[ActorRole::Admin, ActorRole::Ops])?;
     if caller.tenant_id != req.tenant_id {
         return Err(ApiError::Forbidden);

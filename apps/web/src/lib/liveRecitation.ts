@@ -1,5 +1,12 @@
 import type { WordAlignment } from "../types/platform";
 
+import {
+  DEFAULT_RECONNECT_POLICY,
+  planReconnect,
+  pushBoundedDropOldest,
+  type ReconnectPolicy,
+} from "./reconnect";
+
 export type MicCaptureStatus = "idle" | "requesting-permission" | "recording" | "stopped" | "denied" | "unsupported" | "error";
 
 export interface BrowserAudioChunk {
@@ -23,7 +30,17 @@ export interface LiveAlignmentEvent {
   alignments: WordAlignment[];
 }
 
-export type GatewayUploadStatus = "idle" | "connecting" | "connected" | "unavailable" | "error" | "closed";
+export type GatewayUploadStatus =
+  | "idle"
+  | "connecting"
+  | "connected"
+  /** Dropped; waiting out a jittered backoff before re-ticketing and retrying. Audio is buffered. */
+  | "reconnecting"
+  | "unavailable"
+  | "error"
+  | "closed"
+  /** Gave up reconnecting — the caller should finalize this recitation as a batch upload. */
+  | "degraded";
 
 export interface GatewayAudioAck {
   kind: "audio.ack";
@@ -41,13 +58,26 @@ export interface GatewayUploader {
 
 export interface GatewayUploadEnvironment {
   WebSocket?: typeof WebSocket;
+  /** Injected so reconnect backoff is deterministic (and instant) under test. */
+  setTimeout?: (fn: () => void, ms: number) => unknown;
+  random?: () => number;
 }
 
 export interface StartGatewayUploadOptions {
-  url: string;
+  /**
+   * Mints a FRESH ticketed `ws://…?ticket=…` URL. Called for the first connect AND for every
+   * reconnect: gateway tickets are single-use, so replaying the original URL is rejected as a
+   * replay. This is a factory, not a string, for exactly that reason.
+   */
+  getUrl: () => Promise<string>;
   onStatusChange: (status: GatewayUploadStatus) => void;
   onAck: (ack: GatewayAudioAck) => void;
   onError: (message: string) => void;
+  /** Running total of chunks dropped from the bounded buffer, so the UI can say so honestly. */
+  onBufferDrop?: (totalDropped: number) => void;
+  policy?: ReconnectPolicy;
+  /** Chunks held while disconnected. Each is ~480 ms, so 125 ≈ 60 s of audio. */
+  maxBufferedChunks?: number;
 }
 
 export interface MicCaptureController {
@@ -132,37 +162,108 @@ export function startGatewayAudioUpload(
     return null;
   }
 
-  options.onStatusChange("connecting");
-  const socket = new environment.WebSocket!(options.url);
+  const WS = environment.WebSocket!;
+  const schedule = environment.setTimeout ?? ((fn: () => void, ms: number) => setTimeout(fn, ms));
+  const random = environment.random ?? Math.random;
+  const policy = options.policy ?? DEFAULT_RECONNECT_POLICY;
+  const maxBuffered = options.maxBufferedChunks ?? 125;
 
-  socket.binaryType = "arraybuffer";
-  socket.onopen = () => options.onStatusChange("connected");
-  socket.onclose = () => options.onStatusChange("closed");
-  socket.onerror = () => {
-    options.onStatusChange("error");
-    options.onError("Realtime gateway connection failed.");
+  let socket: WebSocket | null = null;
+  let closedByCaller = false;
+  let attempt = 0;
+  let totalDropped = 0;
+  const buffered: BrowserAudioChunk[] = [];
+
+  /** Drain everything captured during the outage, oldest-first, once we're live again. */
+  const flush = () => {
+    while (buffered.length > 0 && socket?.readyState === WS.OPEN) {
+      const chunk = buffered.shift();
+      if (chunk?.blob) socket.send(chunk.blob);
+    }
   };
-  socket.onmessage = (event) => {
-    if (typeof event.data !== "string") {
+
+  const retry = () => {
+    attempt += 1;
+    const decision = planReconnect(attempt, policy, random);
+    if (decision.action === "give-up") {
+      // Honest degrade: stop pretending a live session exists. The caller finalizes as batch.
+      options.onStatusChange("degraded");
+      options.onError("Live connection lost. Finishing this recitation without live feedback.");
       return;
     }
-
-    const ack = parseGatewayAudioAck(event.data);
-    if (ack) {
-      options.onAck(ack);
-    }
+    options.onStatusChange("reconnecting");
+    schedule(() => {
+      if (!closedByCaller) void open();
+    }, decision.delayMs);
   };
+
+  const open = async () => {
+    options.onStatusChange(attempt === 0 ? "connecting" : "reconnecting");
+    let url: string;
+    try {
+      url = await options.getUrl(); // fresh single-use ticket, every attempt
+    } catch {
+      options.onError("Could not obtain a realtime ticket.");
+      retry();
+      return;
+    }
+    if (closedByCaller) return;
+
+    const next = new WS(url);
+    socket = next;
+    next.binaryType = "arraybuffer";
+    next.onopen = () => {
+      attempt = 0; // a healthy connection resets the backoff ladder
+      options.onStatusChange("connected");
+      flush();
+    };
+    next.onclose = () => {
+      if (closedByCaller) {
+        options.onStatusChange("closed");
+        return;
+      }
+      // Unexpected drop (Wi-Fi blip, gateway restart, rejected ticket): back off and re-ticket.
+      retry();
+    };
+    next.onerror = () => {
+      // Report, but don't retry here — onclose always follows and owns the backoff, so retrying in
+      // both would double-count attempts and halve the effective backoff.
+      options.onError("Realtime gateway connection failed.");
+    };
+    next.onmessage = (event) => {
+      if (typeof event.data !== "string") {
+        return;
+      }
+
+      const ack = parseGatewayAudioAck(event.data);
+      if (ack) {
+        options.onAck(ack);
+      }
+    };
+  };
+
+  void open();
 
   return {
     sendChunk: (chunk) => {
-      if (socket.readyState !== environment.WebSocket!.OPEN || !chunk.blob) {
-        return false;
+      if (socket?.readyState === WS.OPEN && chunk.blob) {
+        socket.send(chunk.blob);
+        return true;
       }
-
-      socket.send(chunk.blob);
-      return true;
+      // Disconnected, or the first ticket is still in flight: buffer instead of dropping the
+      // learner's recitation on the floor (the old code silently discarded it).
+      const dropped = pushBoundedDropOldest(buffered, chunk, maxBuffered);
+      if (dropped > 0) {
+        totalDropped += dropped;
+        options.onBufferDrop?.(totalDropped);
+      }
+      return false;
     },
-    close: () => socket.close(),
+    close: () => {
+      closedByCaller = true;
+      socket?.close();
+      options.onStatusChange("closed");
+    },
   };
 }
 

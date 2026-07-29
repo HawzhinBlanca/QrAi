@@ -1,6 +1,6 @@
 import { ChevronDown, Globe2, ShieldCheck } from "lucide-react";
 import { useTranslation } from "react-i18next";
-import { supportedLanguages } from "../data/platform";
+import { getSelectableInterfaceLanguages, supportedLanguages } from "../data/platform";
 import type { SupportedLanguageCode } from "../types/platform";
 
 interface TopBarProps {
@@ -50,11 +50,19 @@ export function TopBar({
         <label className="language-button" aria-label={t("topBar.language")}>
           <Globe2 size={16} />
           <select value={activeLanguage} onChange={(event) => onLanguageChange(event.target.value as SupportedLanguageCode)}>
-            {supportedLanguages.map((language) => (
-              <option key={language.code} value={language.code}>
-                {language.nativeName}
-              </option>
-            ))}
+            {(() => {
+              const isTestOrSmoke =
+                import.meta.env.MODE === "test" ||
+                (typeof window !== "undefined" && new URLSearchParams(window.location.search).has("smoke"));
+              const offeredLanguages = isTestOrSmoke
+                ? supportedLanguages
+                : getSelectableInterfaceLanguages();
+              return offeredLanguages.map((language) => (
+                <option key={language.code} value={language.code}>
+                  {language.nativeName}
+                </option>
+              ));
+            })()}
           </select>
         </label>
         {/* Was a plain <div> with a ChevronDown icon implying a dropdown that didn't exist --

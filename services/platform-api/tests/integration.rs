@@ -9,6 +9,14 @@ use quran_ai_platform_api::{AppState, platform_router_with_rate_limit};
 fn test_state() -> AppState {
     let pool = sqlx::postgres::PgPoolOptions::new()
         .max_connections(2)
+        .after_connect(|conn, _meta| {
+            Box::pin(async move {
+                sqlx::query("SET app.tenant_id = 'hikmah-pilot-erbil'")
+                    .execute(conn)
+                    .await?;
+                Ok(())
+            })
+        })
         .connect_lazy(
             &std::env::var("DATABASE_URL")
                 .unwrap_or_else(|_| "postgresql://hawzhin@localhost:5432/quran_ai".to_owned()),
@@ -367,6 +375,87 @@ async fn registers_then_logs_in_a_new_user() {
     )
     .await;
     assert_eq!(missing.status(), StatusCode::UNAUTHORIZED);
+}
+
+/// Security regression: an admin/ops may create elevated-role users (teacher/scholar/admin/ops)
+/// only within THEIR OWN tenant. The registration tx is scoped to the client-supplied req.tenant_id,
+/// so RLS's `with check (tenant_id = app.current_tenant_id())` is satisfied for whatever tenant the
+/// caller names — role alone is not enough. Before the fix, a tenant-A admin could POST
+/// {tenantId:"B", role:"admin", password:...} and mint an attacker-controlled admin in tenant B,
+/// then log in for full cross-tenant takeover. Assert the cross-tenant attempt is Forbidden while a
+/// same-tenant elevated registration still succeeds.
+#[tokio::test]
+#[ignore = "requires live Postgres"]
+async fn register_cannot_create_elevated_user_in_another_tenant() {
+    let state = test_state();
+    let router = platform_router_with_rate_limit(state.clone(), false);
+
+    // A second, real tenant must EXIST so the target-tenant existence check passes and we reach the
+    // authorization check (otherwise a nonexistent tenant would 404 and mask the 403 we're proving).
+    let victim_tenant = format!("tenant-cross-register-victim-{}", next_suffix());
+    sqlx::query("INSERT INTO institutions (id, name, region) VALUES ($1, 'Victim Tenant', 'test') ON CONFLICT (id) DO NOTHING")
+        .bind(&victim_tenant)
+        .execute(&state.pool)
+        .await
+        .unwrap();
+
+    // Admin of hikmah-pilot-erbil tries to create an ADMIN in the victim tenant -> Forbidden.
+    let cross = send_json(
+        &router,
+        Method::POST,
+        "/v1/auth/register",
+        Some("hikmah-pilot-erbil"),
+        Some("admin"),
+        json!({
+            "tenantId": victim_tenant,
+            "displayName": "Injected Admin",
+            "role": "admin",
+            "language": "en",
+            "password": "AttackerSet1234"
+        }),
+    )
+    .await;
+    assert_eq!(
+        cross.status(),
+        StatusCode::FORBIDDEN,
+        "an admin must not create an elevated-role user in another tenant"
+    );
+
+    // Sanity: no user was written into the victim tenant.
+    let leaked: Option<(i64,)> =
+        sqlx::query_as("SELECT count(*) FROM users WHERE tenant_id = $1 AND role = 'admin'")
+            .bind(&victim_tenant)
+            .fetch_optional(&state.pool)
+            .await
+            .unwrap();
+    assert_eq!(
+        leaked.map(|c| c.0),
+        Some(0),
+        "no admin leaked into victim tenant"
+    );
+
+    // Regression: the legitimate same-tenant path still works — an admin CAN create a teacher in
+    // their own tenant.
+    let same_tenant = send_json(
+        &router,
+        Method::POST,
+        "/v1/auth/register",
+        Some("hikmah-pilot-erbil"),
+        Some("admin"),
+        json!({
+            "tenantId": "hikmah-pilot-erbil",
+            "displayName": "Legit Teacher",
+            "role": "teacher",
+            "language": "ckb",
+            "password": "LegitTeach1234"
+        }),
+    )
+    .await;
+    assert_eq!(
+        same_tenant.status(),
+        StatusCode::OK,
+        "an admin must still be able to create an elevated-role user in their own tenant"
+    );
 }
 
 /// Security/data-integrity regression: registration's email-uniqueness check is SELECT-then-INSERT,
@@ -1268,6 +1357,7 @@ async fn teacher_review_author_is_actor_and_realignment_cascades() {
         StatusCode::OK,
         "re-record must not FK-violate"
     );
+    let rerecord_body: Value = read_json(rerecord).await;
     let gone: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM tajweed_findings WHERE id = $1")
         .bind(&finding_id)
         .fetch_one(&state.pool)
@@ -1276,6 +1366,24 @@ async fn teacher_review_author_is_actor_and_realignment_cascades() {
     assert_eq!(
         gone, 0,
         "stale finding should be cascaded away on re-record"
+    );
+
+    // (3) The cascade above just destroyed a TEACHER's review on behalf of a LEARNER (the session
+    // owner). Whether that policy is right is a separate product decision — but it must never be
+    // INVISIBLE: the persist audit event must record what it actually erased.
+    let audit_event_id = rerecord_body["auditEventId"].as_str().unwrap().to_owned();
+    let meta: Value = sqlx::query_scalar("SELECT metadata FROM audit_events WHERE id = $1")
+        .bind(&audit_event_id)
+        .fetch_one(&state.pool)
+        .await
+        .unwrap();
+    assert_eq!(
+        meta["deletedTeacherReviews"], 1,
+        "the erased teacher review must be visible in the persist audit metadata"
+    );
+    assert_eq!(
+        meta["deletedTajweedFindings"], 1,
+        "the erased tajweed finding must be visible in the persist audit metadata"
     );
 }
 
@@ -1420,6 +1528,134 @@ async fn privacy_delete_preserves_other_learners_teacher_reviews() {
     assert_eq!(
         other_session_count, 1,
         "privacy delete must preserve other learners' sessions"
+    );
+}
+
+#[tokio::test]
+#[ignore = "requires live Postgres"]
+async fn privacy_delete_erases_learner_agent_runs() {
+    let mock_ml = spawn_mock_ml_privacy_delete().await;
+    let state = test_state().with_ml_inference_url(mock_ml);
+    let router = platform_router_with_rate_limit(state.clone(), false);
+    let target_learner = format!("learner-privacy-target-ar-{}", next_suffix());
+    let other_learner = format!("learner-privacy-other-ar-{}", next_suffix());
+
+    sqlx::query(
+        "INSERT INTO users (id, tenant_id, display_name, role, language)
+         VALUES ($1, 'hikmah-pilot-erbil', 'Privacy Target Agent Run', 'learner', 'ckb'),
+                ($2, 'hikmah-pilot-erbil', 'Privacy Other Agent Run', 'learner', 'ckb')",
+    )
+    .bind(&target_learner)
+    .bind(&other_learner)
+    .execute(&state.pool)
+    .await
+    .unwrap();
+
+    // Create an agent run for the target learner
+    let target_created = send_json(
+        &router,
+        Method::POST,
+        "/v1/agent-runs",
+        Some("hikmah-pilot-erbil"),
+        Some("ops"),
+        json!({
+            "name": "Target Learner Agent Run",
+            "goal": "target-goal",
+            "status": "queued",
+            "confidence": 0.5,
+            "reviewStatus": "draft",
+            "sources": [],
+            "learnerId": target_learner
+        }),
+    )
+    .await;
+    assert_eq!(target_created.status(), StatusCode::OK);
+    let target_run_body: Value = read_json(target_created).await;
+    let target_run_id = target_run_body["id"].as_str().unwrap().to_string();
+
+    // Create an agent run for the other learner
+    let other_created = send_json(
+        &router,
+        Method::POST,
+        "/v1/agent-runs",
+        Some("hikmah-pilot-erbil"),
+        Some("ops"),
+        json!({
+            "name": "Other Learner Agent Run",
+            "goal": "other-goal",
+            "status": "queued",
+            "confidence": 0.5,
+            "reviewStatus": "draft",
+            "sources": [],
+            "learnerId": other_learner
+        }),
+    )
+    .await;
+    assert_eq!(other_created.status(), StatusCode::OK);
+    let other_run_body: Value = read_json(other_created).await;
+    let other_run_id = other_run_body["id"].as_str().unwrap().to_string();
+
+    // Perform privacy export for target learner and ensure it includes their agent run
+    let exported = send_json(
+        &router,
+        Method::POST,
+        "/v1/privacy/export",
+        Some("hikmah-pilot-erbil"),
+        Some("admin"),
+        json!({ "learnerId": target_learner }),
+    )
+    .await;
+    assert_eq!(exported.status(), StatusCode::OK);
+    let exported_body: Value = read_json(exported).await;
+    let target_run_record_key = format!("agent_run:{target_run_id}");
+    assert!(
+        exported_body["includedRecords"]
+            .as_array()
+            .is_some_and(|records| records.contains(&json!(target_run_record_key))),
+        "export must include the learner's agent run, got {:?}",
+        exported_body["includedRecords"]
+    );
+
+    // Perform privacy delete for target learner
+    let deleted = send_json(
+        &router,
+        Method::POST,
+        "/v1/privacy/delete",
+        Some("hikmah-pilot-erbil"),
+        Some("admin"),
+        json!({ "learnerId": target_learner }),
+    )
+    .await;
+    assert_eq!(deleted.status(), StatusCode::OK);
+    let deleted_body: Value = read_json(deleted).await;
+    assert!(
+        deleted_body["deletedRecords"]
+            .as_array()
+            .is_some_and(|records| records.contains(&json!(target_run_record_key))),
+        "delete must report deleting the learner's agent run, got {:?}",
+        deleted_body["deletedRecords"]
+    );
+
+    // Check DB that target agent run is deleted
+    let target_run_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM agent_runs WHERE id = $1")
+        .bind(&target_run_id)
+        .fetch_one(&state.pool)
+        .await
+        .unwrap();
+    assert_eq!(
+        target_run_count, 0,
+        "target learner agent run should be deleted"
+    );
+
+    // Check DB that other agent run is NOT deleted (same-tenant preservation)
+    let other_run_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM agent_runs WHERE id = $1")
+        .bind(&other_run_id)
+        .fetch_one(&state.pool)
+        .await
+        .unwrap();
+    assert_eq!(
+        other_run_count, 1,
+        "other learner agent run must be preserved"
     );
 }
 
@@ -1814,6 +2050,16 @@ async fn list_tajweed_findings_returns_the_seeded_finding_not_an_empty_list() {
     let session_id = create_test_session_for_learner(&router, &learner_id).await;
     let (finding_id, _review_id) = seed_reviewed_finding(&state.pool, &session_id, "list").await;
 
+    // This endpoint intentionally returns only its highest-priority 200 findings. The integration
+    // database is persistent across local runs, so an ordinary 0.8 fixture can legitimately fall
+    // below that boundary after enough unrelated tests. Rank this test's fixture first instead of
+    // weakening the assertion to merely prove that some historical row was returned.
+    sqlx::query("UPDATE tajweed_findings SET confidence = 1 WHERE id = $1")
+        .bind(&finding_id)
+        .execute(&state.pool)
+        .await
+        .unwrap();
+
     let listed = send_json(
         &router,
         Method::GET,
@@ -1828,6 +2074,160 @@ async fn list_tajweed_findings_returns_the_seeded_finding_not_an_empty_list() {
     assert!(
         findings.iter().any(|f| f["id"] == json!(finding_id)),
         "expected to find seeded finding {finding_id} in {findings:?}"
+    );
+}
+
+/// T18 proof #2 — the teacher cockpit's cross-tenant isolation.
+///
+/// The existing `adversarial_api_isolation_prevents_cross_tenant_read` does NOT cover this: it
+/// sends a LEARNER actor at /v1/learner/progress, so `require_self_or_any` rejects it on the ROLE
+/// check before tenant scoping is ever reached — it proves learner-vs-learner authz and passes even
+/// if tenant isolation were broken. The hostile actor here is a TEACHER of tenant B, who passes
+/// every role check, so the ONLY thing that can stop them is tenant scoping — which is what the
+/// teacher cockpit actually relies on.
+///
+/// Covers the three endpoints TeacherSurface reads: the session, its alignments, and the findings
+/// list. Each assertion has a same-tenant CONTROL, because "empty" would otherwise be
+/// indistinguishable from "the endpoint is broken" — a test that passes for the wrong reason is
+/// exactly what this replaces.
+#[tokio::test]
+#[ignore = "requires live Postgres"]
+async fn teacher_of_another_tenant_cannot_read_this_tenants_sessions_findings_or_alignments() {
+    let state = test_state();
+    let router = platform_router_with_rate_limit(state.clone(), false);
+    let suffix = next_suffix();
+
+    // --- Tenant A: a real learner with a real session + finding (what a teacher would review) ---
+    let learner_id = format!("learner-xtenant-{suffix}");
+    sqlx::query(
+        "INSERT INTO users (id, tenant_id, display_name, role, language)
+         VALUES ($1, 'hikmah-pilot-erbil', 'Cross-tenant Probe Learner', 'learner', 'ckb')",
+    )
+    .bind(&learner_id)
+    .execute(&state.pool)
+    .await
+    .unwrap();
+    let session_id = create_test_session_for_learner(&router, &learner_id).await;
+    let (_finding_id, _review_id) =
+        seed_reviewed_finding(&state.pool, &session_id, "xtenant").await;
+
+    // --- Tenant B: a real, separate institution (institutions is not RLS-scoped) ---
+    let tenant_b = format!("tenant-b-teacher-probe-{suffix}");
+    sqlx::query(
+        "INSERT INTO institutions (id, name, region) VALUES ($1, 'Rival Madrasa', 'test')
+         ON CONFLICT (id) DO NOTHING",
+    )
+    .bind(&tenant_b)
+    .execute(&state.pool)
+    .await
+    .unwrap();
+
+    // --- CONTROL: tenant A's own teacher CAN see all three. Without this, the assertions below
+    //     would also pass if the endpoints simply returned nothing. ---
+    let own = send_json(
+        &router,
+        Method::GET,
+        &format!("/v1/recitation-sessions/{session_id}"),
+        Some("hikmah-pilot-erbil"),
+        Some("teacher"),
+        Value::Null,
+    )
+    .await;
+    assert_eq!(
+        own.status(),
+        StatusCode::OK,
+        "control: in-tenant teacher reads the session"
+    );
+
+    let own_alignments = send_json(
+        &router,
+        Method::GET,
+        &format!("/v1/recitation-sessions/{session_id}/alignments"),
+        Some("hikmah-pilot-erbil"),
+        Some("teacher"),
+        Value::Null,
+    )
+    .await;
+    assert_eq!(own_alignments.status(), StatusCode::OK);
+    let own_align_list: Vec<Value> = read_json(own_alignments).await;
+    assert!(
+        !own_align_list.is_empty(),
+        "control: the session HAS alignments in its own tenant — otherwise 'empty for tenant B' below would prove nothing"
+    );
+
+    let own_findings = send_json(
+        &router,
+        Method::GET,
+        "/v1/tajweed-findings",
+        Some("hikmah-pilot-erbil"),
+        Some("teacher"),
+        Value::Null,
+    )
+    .await;
+    assert_eq!(own_findings.status(), StatusCode::OK);
+    let own_list: Vec<Value> = read_json(own_findings).await;
+    // Assert NON-EMPTY rather than "contains finding_id": the list is capped at LIMIT 200 and the
+    // shared dev DB already holds >200 findings for this tenant, so whether one specific row
+    // survives the cutoff is not something this isolation test should depend on. Non-empty is
+    // deterministic and is all the control needs to prove — the endpoint returns data in-tenant,
+    // which is what makes "empty for tenant B" below meaningful.
+    assert!(
+        !own_list.is_empty(),
+        "control: the findings endpoint returns data for its own tenant"
+    );
+
+    // --- The actual isolation checks: a TEACHER of tenant B (passes every role gate) ---
+    let stolen_session = send_json(
+        &router,
+        Method::GET,
+        &format!("/v1/recitation-sessions/{session_id}"),
+        Some(&tenant_b),
+        Some("teacher"),
+        Value::Null,
+    )
+    .await;
+    assert_eq!(
+        stolen_session.status(),
+        StatusCode::NOT_FOUND,
+        "a teacher of another tenant must not read this tenant's session"
+    );
+
+    // Alignments answer 200 with an EMPTY list rather than 404: the query filters
+    // `wa.tenant_id = $2` bound to the ACTOR's tenant, so tenant B simply matches no rows. That is
+    // the "empty" outcome T18's proof allows — what matters is that none of the learner's recitation
+    // crosses the boundary, which the non-empty control above makes meaningful.
+    let stolen_alignments = send_json(
+        &router,
+        Method::GET,
+        &format!("/v1/recitation-sessions/{session_id}/alignments"),
+        Some(&tenant_b),
+        Some("teacher"),
+        Value::Null,
+    )
+    .await;
+    assert_eq!(stolen_alignments.status(), StatusCode::OK);
+    let stolen_align_list: Vec<Value> = read_json(stolen_alignments).await;
+    assert!(
+        stolen_align_list.is_empty(),
+        "the learner's recitation leaked to another tenant's teacher: {stolen_align_list:?}"
+    );
+
+    let stolen_findings = send_json(
+        &router,
+        Method::GET,
+        "/v1/tajweed-findings",
+        Some(&tenant_b),
+        Some("teacher"),
+        Value::Null,
+    )
+    .await;
+    assert_eq!(stolen_findings.status(), StatusCode::OK);
+    let stolen_list: Vec<Value> = read_json(stolen_findings).await;
+    // Stronger than "doesn't contain finding_id": tenant B owns NO findings, so its queue must be
+    // entirely empty. Paired with the non-empty control above, that is unambiguous isolation.
+    assert!(
+        stolen_list.is_empty(),
+        "tenant A's findings leaked into tenant B's teacher queue: {stolen_list:?}"
     );
 }
 
@@ -1870,6 +2270,108 @@ async fn spawn_mock_upstream_200(path: &'static str, body: serde_json::Value) ->
     format!("http://{addr}")
 }
 
+// Echoes the request body back as a 200 — lets a test read exactly what the proxy FORWARDED,
+// which is how the server-authoritative-consent overwrite is verified end to end.
+async fn spawn_mock_upstream_echo(path: &'static str) -> String {
+    let app = axum::Router::new().route(
+        path,
+        axum::routing::post(
+            |axum::Json(body): axum::Json<serde_json::Value>| async move { axum::Json(body) },
+        ),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+    format!("http://{addr}")
+}
+
+#[tokio::test]
+#[ignore = "requires live Postgres"]
+async fn ml_proxy_refuses_analysis_for_a_session_that_does_not_exist() {
+    // Fails closed BEFORE any upstream forward — no mock ML needed.
+    let router = platform_router_with_rate_limit(test_state(), false);
+    let response = send_json(
+        &router,
+        Method::POST,
+        "/v1/ml/alignments:predict",
+        Some("hikmah-pilot-erbil"),
+        Some("learner"),
+        json!({ "sessionId": "session-does-not-exist-xyz", "consent": { "guardianApproved": true } }),
+    )
+    .await;
+    assert_eq!(
+        response.status(),
+        StatusCode::FORBIDDEN,
+        "analysis against a nonexistent/foreign session must be refused, not forwarded"
+    );
+}
+
+#[tokio::test]
+#[ignore = "requires live Postgres"]
+async fn ml_proxy_overwrites_client_consent_with_the_stored_session_consent() {
+    let mock_ml = spawn_mock_upstream_echo("/v1/alignments:predict").await;
+    let state = test_state().with_ml_inference_url(mock_ml);
+    let router = platform_router_with_rate_limit(state, false);
+
+    // Create a session whose STORED consent withholds guardian approval and external ASR.
+    let created = send_json(
+        &router,
+        Method::POST,
+        "/v1/recitation-sessions",
+        Some("hikmah-pilot-erbil"),
+        Some("learner"),
+        json!({
+            "learnerId": "learner-1",
+            "quranRef": { "surahNumber": 1, "ayahStart": 1, "ayahEnd": 7, "display": "Al-Fatihah 1:1-7" },
+            "sourceChecksum": "fnv1a32:consent-test",
+            "modelVersion": "model-v0.3",
+            "language": "ckb",
+            "mode": "guided-recite",
+            "practicePlanId": "fatihah-mastery-v1",
+            "consent": { "audioRetention": "discard", "anonymizedLearning": true, "externalAsrProcessing": false, "guardianApproved": false, "consentVersion": "pilot-v1" }
+        }),
+    )
+    .await;
+    assert_eq!(created.status(), StatusCode::OK);
+    let created_body: Value = read_json(created).await;
+    let session_id = created_body["id"].as_str().unwrap().to_string();
+
+    // The client LIES on the analysis request, claiming full consent it never stored.
+    let response = send_json(
+        &router,
+        Method::POST,
+        "/v1/ml/alignments:predict",
+        Some("hikmah-pilot-erbil"),
+        Some("learner"),
+        json!({
+            "sessionId": session_id,
+            "consent": { "guardianApproved": true, "externalAsrProcessing": true, "audioRetention": "training-opt-in" }
+        }),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+
+    // The echo mock returns exactly what the proxy forwarded: the STORED consent must have won.
+    let forwarded: Value = read_json(response).await;
+    assert_eq!(
+        forwarded["consent"]["guardianApproved"],
+        json!(false),
+        "stored guardian approval must override the client's claim"
+    );
+    assert_eq!(
+        forwarded["consent"]["externalAsrProcessing"],
+        json!(false),
+        "stored external-ASR consent must override the client's claim"
+    );
+    assert_eq!(
+        forwarded["consent"]["audioRetention"],
+        json!("discard"),
+        "stored audio retention must override the client's claim"
+    );
+}
+
 #[tokio::test]
 #[ignore = "requires live Postgres"]
 async fn ml_proxy_passes_through_a_successful_upstream_response() {
@@ -1897,6 +2399,51 @@ async fn ml_proxy_passes_through_a_successful_upstream_response() {
 
 #[tokio::test]
 #[ignore = "requires live Postgres"]
+async fn ml_proxy_allows_approved_model_version() {
+    let mock_ml = spawn_mock_upstream_200(
+        "/v1/alignments:predict",
+        json!({"alignments": [], "modelVersion": "ml-aligner-v0.2"}),
+    )
+    .await;
+    let state = test_state().with_ml_inference_url(mock_ml);
+    let router = platform_router_with_rate_limit(state, false);
+
+    let response = send_json(
+        &router,
+        Method::POST,
+        "/v1/ml/alignments:predict",
+        Some("hikmah-pilot-erbil"),
+        Some("learner"),
+        json!({"modelVersion": "ml-aligner-v0.2"}),
+    )
+    .await;
+
+    assert_eq!(response.status(), StatusCode::OK);
+}
+
+#[tokio::test]
+#[ignore = "requires live Postgres"]
+async fn ml_proxy_rejects_unapproved_model_version() {
+    let state = test_state();
+    let router = platform_router_with_rate_limit(state, false);
+
+    let response = send_json(
+        &router,
+        Method::POST,
+        "/v1/ml/alignments:predict",
+        Some("hikmah-pilot-erbil"),
+        Some("learner"),
+        json!({"modelVersion": "neural-tajweed-v1"}),
+    )
+    .await;
+
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let body: Value = read_json(response).await;
+    assert!(body["error"].as_str().unwrap().contains("not approved"));
+}
+
+#[tokio::test]
+#[ignore = "requires live Postgres"]
 async fn asr_transcribe_proxy_passes_through_a_successful_upstream_response() {
     let mock_asr = spawn_mock_upstream_200("/v1/transcribe", json!({"text": "بِسْمِ اللَّهِ"})).await;
     let state = test_state().with_asr_inference_url(mock_asr);
@@ -1914,6 +2461,44 @@ async fn asr_transcribe_proxy_passes_through_a_successful_upstream_response() {
     assert_eq!(response.status(), StatusCode::OK);
     let body: Value = read_json(response).await;
     assert_eq!(body["text"], "بِسْمِ اللَّهِ");
+}
+
+#[tokio::test]
+#[ignore = "requires live Postgres"]
+async fn asr_force_align_proxy_forwards_and_requires_auth() {
+    let mock_asr = spawn_mock_upstream_200(
+        "/v1/force-align",
+        json!({"words": [{"word": "بِسْمِ", "start": 0.06, "end": 0.61, "score": 0.9}], "duration": 0.61}),
+    )
+    .await;
+    let state = test_state().with_asr_inference_url(mock_asr);
+    let router = platform_router_with_rate_limit(state, false);
+
+    // Unauthenticated -> 401 (never reaches the ASR service).
+    let unauth = send_json(
+        &router,
+        Method::POST,
+        "/v1/asr/force-align",
+        None,
+        None,
+        json!({}),
+    )
+    .await;
+    assert_eq!(unauth.status(), StatusCode::UNAUTHORIZED);
+
+    // Authenticated -> forwarded, response passed through.
+    let ok = send_json(
+        &router,
+        Method::POST,
+        "/v1/asr/force-align",
+        Some("hikmah-pilot-erbil"),
+        Some("learner"),
+        json!({ "audioBase64": "AAAA", "transcript": "بِسْمِ" }),
+    )
+    .await;
+    assert_eq!(ok.status(), StatusCode::OK);
+    let body: Value = read_json(ok).await;
+    assert_eq!(body["words"][0]["word"], "بِسْمِ");
 }
 
 #[tokio::test]
@@ -2503,4 +3088,902 @@ fn next_suffix() -> String {
         .map(|d| d.as_nanos())
         .unwrap_or(0);
     format!("{}-{}", nanos, N.fetch_add(1, Ordering::Relaxed))
+}
+
+// --- Adversarial Cross-Tenant RLS & Security Tests ---
+
+#[tokio::test]
+#[ignore = "requires live Postgres"]
+async fn adversarial_sql_isolation_prevents_cross_tenant_access() {
+    // Deliberately NOT test_state(): its pool pins every connection's SESSION tenant to
+    // 'hikmah-pilot-erbil' (after_connect), so the old shape — `SET LOCAL app.tenant_id =
+    // 'tenant-b'` layered on top — FAILED OPEN whenever the LOCAL scope didn't take effect as
+    // assumed (observed as a CI flake: the "hostile" read ran as the victim tenant and saw its
+    // rows). A dedicated single-connection pool pinned session-level to tenant-b has no fallback
+    // identity to fail open into, and mirrors production more honestly: production pools have no
+    // session default at all (current_setting is NULL -> RLS yields zero rows, fail closed).
+    let pool = sqlx::postgres::PgPoolOptions::new()
+        .max_connections(1)
+        .after_connect(|conn, _meta| {
+            Box::pin(async move {
+                sqlx::query("SET app.tenant_id = 'tenant-b'")
+                    .execute(conn)
+                    .await?;
+                Ok(())
+            })
+        })
+        .connect_lazy(
+            &std::env::var("DATABASE_URL")
+                .unwrap_or_else(|_| "postgresql://hawzhin@localhost:5432/quran_ai".to_owned()),
+        )
+        .expect("failed to create tenant-b pool");
+
+    let mut tx = pool.begin().await.unwrap();
+
+    // Drop to the production app role for the probes. CI's DATABASE_URL connects as the
+    // container SUPERUSER, and superusers bypass row-level security unconditionally (FORCE or
+    // not) — under that identity this test can never pass, which surfaced the day verify.sh's
+    // 2s psql probe first succeeded on a CI runner and the DB-gated suite actually ran there.
+    // quran_ai_app exists in every environment that applies infra/sql/rls-app-role.sql (CI does;
+    // local staging already connects as it, where SET ROLE to self is a no-op). LOCAL scope
+    // reverts the role at tx end.
+    sqlx::query("SET LOCAL ROLE quran_ai_app")
+        .execute(&mut *tx)
+        .await
+        .expect("quran_ai_app role must exist — apply infra/sql/rls-app-role.sql");
+
+    // Sanity gate: prove the hostile identity is in effect BEFORE probing, so any future
+    // scoping surprise fails loudly here instead of as a mysterious row-count assertion.
+    let ctx: String = sqlx::query_scalar("SELECT current_setting('app.tenant_id', true)")
+        .fetch_one(&mut *tx)
+        .await
+        .unwrap();
+    assert_eq!(
+        ctx, "tenant-b",
+        "hostile tenant context must be active before the RLS probes"
+    );
+
+    // 1. Trying to read Tenant A's seeded users must yield zero rows
+    let user_count: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM users WHERE tenant_id = 'hikmah-pilot-erbil'")
+            .fetch_one(&mut *tx)
+            .await
+            .unwrap();
+    assert_eq!(
+        user_count, 0,
+        "Hostile SQL read must return 0 rows for other tenant"
+    );
+
+    // 2. Trying to insert a user for Tenant A must violate RLS WITH CHECK policy
+    let res = sqlx::query(
+        "INSERT INTO users (id, tenant_id, display_name, role, language)
+         VALUES ('adversarial-user', 'hikmah-pilot-erbil', 'Adversarial', 'learner', 'ckb')",
+    )
+    .execute(&mut *tx)
+    .await;
+
+    assert!(res.is_err(), "RLS must block inserts for another tenant");
+    let err_msg = res.unwrap_err().to_string();
+    assert!(
+        err_msg.contains("violates row-level security policy") || err_msg.contains("42501"),
+        "Error must be RLS violation, got: {}",
+        err_msg
+    );
+    tx.rollback().await.unwrap();
+}
+
+#[tokio::test]
+#[ignore = "requires live Postgres"]
+async fn adversarial_api_isolation_prevents_cross_tenant_read() {
+    let state = test_state();
+    let router = platform_router_with_rate_limit(state.clone(), false);
+    let learner_id = format!("learner-a-{}", next_suffix());
+
+    // Setup Tenant A user
+    sqlx::query(
+        "INSERT INTO users (id, tenant_id, display_name, role, language)
+         VALUES ($1, 'hikmah-pilot-erbil', 'Tenant A Learner', 'learner', 'ckb')",
+    )
+    .bind(&learner_id)
+    .execute(&state.pool)
+    .await
+    .unwrap();
+
+    // Hostile Tenant B attempts to read Tenant A's progress
+    let response = send_json(
+        &router,
+        Method::GET,
+        &format!("/v1/learner/progress?learnerId={}", learner_id),
+        Some("other-tenant"),
+        Some("learner"),
+        Value::Null,
+    )
+    .await;
+
+    // Should be Forbidden or Unauthorized because Tenant B actor cannot see Tenant A's data
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
+}
+
+#[tokio::test]
+#[ignore = "requires live Postgres"]
+async fn adversarial_api_isolation_prevents_cross_tenant_write() {
+    let state = test_state();
+    let router = platform_router_with_rate_limit(state.clone(), false);
+    let learner_id = format!("learner-a-{}", next_suffix());
+
+    // Setup Tenant A user
+    sqlx::query(
+        "INSERT INTO users (id, tenant_id, display_name, role, language)
+         VALUES ($1, 'hikmah-pilot-erbil', 'Tenant A Learner', 'learner', 'ckb')",
+    )
+    .bind(&learner_id)
+    .execute(&state.pool)
+    .await
+    .unwrap();
+
+    // Hostile Tenant B attempts to create a session for Tenant A's user
+    let response = send_json(
+        &router,
+        Method::POST,
+        "/v1/recitation-sessions",
+        Some("other-tenant"),
+        Some("learner"),
+        json!({
+            "learnerId": learner_id,
+            "quranRef": {"surahNumber": 1, "ayahStart": 1, "ayahEnd": 7, "display": "Al-Fatihah 1:1-7"},
+            "sourceChecksum": "fnv1a32:adversarial-write",
+            "modelVersion": "model-v0.3",
+            "language": "ckb",
+            "mode": "guided-recite",
+            "practicePlanId": "fatihah-mastery-v1",
+            "consent": {"audioRetention": "discard", "anonymizedLearning": true, "externalAsrProcessing": false, "guardianApproved": true, "consentVersion": "pilot-v1"}
+        }),
+    )
+    .await;
+
+    // The request should fail with FORBIDDEN since the actor is a learner trying to create a session for another user
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
+}
+
+#[tokio::test]
+#[ignore = "requires live Postgres"]
+async fn adversarial_api_isolation_prevents_cross_tenant_delete() {
+    let state = test_state();
+    let router = platform_router_with_rate_limit(state.clone(), false);
+    let learner_id = format!("learner-a-{}", next_suffix());
+
+    // Setup Tenant A user
+    sqlx::query(
+        "INSERT INTO users (id, tenant_id, display_name, role, language)
+         VALUES ($1, 'hikmah-pilot-erbil', 'Tenant A Learner', 'learner', 'ckb')",
+    )
+    .bind(&learner_id)
+    .execute(&state.pool)
+    .await
+    .unwrap();
+
+    // Hostile Tenant B attempts to delete Tenant A's user
+    let response = send_json(
+        &router,
+        Method::POST,
+        "/v1/privacy/delete",
+        Some("other-tenant"),
+        Some("learner"),
+        json!({
+            "learnerId": learner_id,
+            "kind": "delete"
+        }),
+    )
+    .await;
+
+    // Should fail with FORBIDDEN since Tenant B cannot manage Tenant A's user privacy
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
+}
+
+#[tokio::test]
+async fn test_platform_api_cors_origin_validation() {
+    use std::sync::Mutex;
+    static CORS_LOCK: Mutex<()> = Mutex::new(());
+    let _guard = CORS_LOCK.lock().unwrap();
+
+    // 1. Setup environment allowed origin
+    unsafe {
+        std::env::set_var("CORS_ALLOWED_ORIGINS", "https://allowed.example.com");
+    }
+
+    let state = test_state();
+    let router = platform_router_with_rate_limit(state, false);
+
+    // 2. Disallowed origin request
+    let disallowed_req = Request::builder()
+        .method(Method::GET)
+        .uri("/health")
+        .header("origin", "https://disallowed.example.com")
+        .body(Body::empty())
+        .unwrap();
+
+    let res = router.clone().oneshot(disallowed_req).await.unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+    assert!(
+        res.headers().get("access-control-allow-origin").is_none(),
+        "CORS header must be absent for disallowed origins"
+    );
+
+    // 3. Allowed origin request
+    let allowed_req = Request::builder()
+        .method(Method::GET)
+        .uri("/health")
+        .header("origin", "https://allowed.example.com")
+        .body(Body::empty())
+        .unwrap();
+
+    let res = router.oneshot(allowed_req).await.unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+    assert_eq!(
+        res.headers()
+            .get("access-control-allow-origin")
+            .unwrap()
+            .to_str()
+            .unwrap(),
+        "https://allowed.example.com",
+        "CORS header must be present and match allowed origin"
+    );
+
+    // Clean up
+    unsafe {
+        std::env::remove_var("CORS_ALLOWED_ORIGINS");
+    }
+}
+
+// --- /metrics endpoint (T15 observability) ---
+
+#[tokio::test]
+async fn metrics_endpoint_serves_prometheus_and_counts_requests() {
+    // Dev-open (no token). No DB needed: /health and /metrics never touch the pool.
+    let state = test_state().with_metrics_access(None, true);
+    let router = platform_router_with_rate_limit(state, false);
+
+    // Generate some traffic so there is something to report.
+    for _ in 0..3 {
+        let r = send_json(&router, Method::GET, "/health", None, None, Value::Null).await;
+        assert_eq!(r.status(), StatusCode::OK);
+    }
+
+    let response = send_json(&router, Method::GET, "/metrics", None, None, Value::Null).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = String::from_utf8(
+        axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap()
+            .to_vec(),
+    )
+    .unwrap();
+    assert!(
+        body.contains("http_requests_total{method=\"GET\",path=\"/health\",status=\"200\"} 3"),
+        "expected 3 counted /health hits, got:\n{body}"
+    );
+    assert!(body.contains("http_request_duration_ms_count"));
+    assert!(body.contains("http_request_duration_ms_bucket{le=\"+Inf\"}"));
+}
+
+#[tokio::test]
+async fn metrics_endpoint_requires_a_token_when_one_is_configured() {
+    let state = test_state().with_metrics_access(Some("scrape-secret"), false);
+    let router = platform_router_with_rate_limit(state, false);
+
+    // No token -> 404 (hides existence).
+    let no_token = send_json(&router, Method::GET, "/metrics", None, None, Value::Null).await;
+    assert_eq!(no_token.status(), StatusCode::NOT_FOUND);
+
+    // Wrong token -> 404.
+    let wrong = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::GET)
+                .uri("/metrics")
+                .header("x-metrics-token", "nope")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(wrong.status(), StatusCode::NOT_FOUND);
+
+    // Correct token -> 200 with Prometheus content type.
+    let ok = router
+        .oneshot(
+            Request::builder()
+                .method(Method::GET)
+                .uri("/metrics")
+                .header("x-metrics-token", "scrape-secret")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(ok.status(), StatusCode::OK);
+    let ct = ok
+        .headers()
+        .get(axum::http::header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or_default()
+        .to_owned();
+    assert!(ct.starts_with("text/plain"), "content type was {ct}");
+}
+
+#[tokio::test]
+async fn metrics_endpoint_is_closed_by_default_without_dev_flag_or_token() {
+    let state = test_state().with_metrics_access(None, false);
+    let router = platform_router_with_rate_limit(state, false);
+    let response = send_json(&router, Method::GET, "/metrics", None, None, Value::Null).await;
+    assert_eq!(
+        response.status(),
+        StatusCode::NOT_FOUND,
+        "metrics must be fail-closed when neither a token nor dev mode is set"
+    );
+}
+
+// ============================================================================
+// P1.6 — pilot identity: admin-minted invitations, cookie auth, CSRF/Origin.
+// These exercise the pilot HTTP boundary that previously had only SQL-level
+// (smoke-sql) coverage. All require a live Postgres with migration 0021.
+// ============================================================================
+
+/// Like `send_json` but with an explicit header list and optional body, so a pilot test can set
+/// Cookie / Origin / x-csrf-token directly (send_json only ever sends dev-header identity).
+async fn send_with_headers(
+    router: &axum::Router,
+    method: Method,
+    uri: &str,
+    header_pairs: &[(&str, &str)],
+    body: Option<Value>,
+) -> axum::response::Response {
+    let mut request = Request::builder().method(method).uri(uri);
+    for (k, v) in header_pairs {
+        request = request.header(*k, *v);
+    }
+    let body = match body {
+        Some(b) => Body::from(b.to_string()),
+        None => Body::empty(),
+    };
+    router
+        .clone()
+        .oneshot(request.body(body).unwrap())
+        .await
+        .unwrap()
+}
+
+/// Extract the raw `__Host-qrai-pilot` session token from a bootstrap response's Set-Cookie.
+fn pilot_cookie_from(response: &axum::response::Response) -> Option<String> {
+    for v in response.headers().get_all("set-cookie") {
+        if let Ok(s) = v.to_str()
+            && let Some(rest) = s.strip_prefix("__Host-qrai-pilot=")
+        {
+            let token = rest.split(';').next().unwrap_or("").to_string();
+            if !token.is_empty() {
+                return Some(token);
+            }
+        }
+    }
+    None
+}
+
+async fn mint_pilot_token(router: &axum::Router, learner_id: &str) -> Value {
+    let mint = send_json(
+        router,
+        Method::POST,
+        "/v1/pilot/invitations",
+        Some("hikmah-pilot-erbil"),
+        Some("admin"),
+        json!({ "learnerId": learner_id }),
+    )
+    .await;
+    assert_eq!(
+        mint.status(),
+        StatusCode::OK,
+        "admin should mint an invitation"
+    );
+    read_json(mint).await
+}
+
+const PILOT_ORIGIN: &str = "https://pilot.example";
+
+#[tokio::test]
+#[ignore = "requires live Postgres"]
+async fn pilot_admin_mints_and_learner_bootstraps_and_cookie_authenticates() {
+    let router = platform_router_with_rate_limit(test_state(), false);
+
+    let minted = mint_pilot_token(&router, "learner-1").await;
+    let token = minted["token"]
+        .as_str()
+        .expect("raw token returned once")
+        .to_string();
+    assert!(!token.is_empty());
+
+    // Learner exchanges the invite for a session cookie (Origin required by bootstrap).
+    let boot = send_with_headers(
+        &router,
+        Method::POST,
+        "/v1/pilot/session/bootstrap",
+        &[
+            ("content-type", "application/json"),
+            ("origin", PILOT_ORIGIN),
+        ],
+        Some(json!({ "token": token })),
+    )
+    .await;
+    assert_eq!(
+        boot.status(),
+        StatusCode::OK,
+        "a valid invite should bootstrap a session"
+    );
+    let session_cookie =
+        pilot_cookie_from(&boot).expect("bootstrap must set __Host-qrai-pilot cookie");
+    let boot_body: Value = read_json(boot).await;
+    assert_eq!(boot_body["userId"], "learner-1");
+    assert_eq!(boot_body["tenantId"], "hikmah-pilot-erbil");
+    assert_eq!(
+        boot_body["role"], "learner",
+        "pilot role is server-pinned to learner"
+    );
+    assert!(
+        boot_body["csrfToken"].as_str().is_some(),
+        "bootstrap returns a CSRF token"
+    );
+
+    // The cookie ALONE authenticates a GET — no dev headers, no Bearer. This is the whole point:
+    // identity comes from the server-side session, not a browser-asserted header.
+    let cookie_hdr = format!("__Host-qrai-pilot={session_cookie}");
+    let me = send_with_headers(
+        &router,
+        Method::GET,
+        "/v1/learner/progress",
+        &[("cookie", &cookie_hdr)],
+        None,
+    )
+    .await;
+    assert_eq!(
+        me.status(),
+        StatusCode::OK,
+        "the pilot cookie must authenticate a request"
+    );
+    let prog: Value = read_json(me).await;
+    assert_eq!(
+        prog["learnerId"], "learner-1",
+        "identity is the cookie's learner, not a header"
+    );
+}
+
+#[tokio::test]
+#[ignore = "requires live Postgres"]
+async fn pilot_invitation_is_single_use() {
+    let router = platform_router_with_rate_limit(test_state(), false);
+    let token = mint_pilot_token(&router, "learner-1").await["token"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let hdrs = [
+        ("content-type", "application/json"),
+        ("origin", PILOT_ORIGIN),
+    ];
+    let first = send_with_headers(
+        &router,
+        Method::POST,
+        "/v1/pilot/session/bootstrap",
+        &hdrs,
+        Some(json!({ "token": token })),
+    )
+    .await;
+    assert_eq!(first.status(), StatusCode::OK);
+    let second = send_with_headers(
+        &router,
+        Method::POST,
+        "/v1/pilot/session/bootstrap",
+        &hdrs,
+        Some(json!({ "token": token })),
+    )
+    .await;
+    assert_eq!(
+        second.status(),
+        StatusCode::UNAUTHORIZED,
+        "a consumed invitation must not bootstrap a second session"
+    );
+}
+
+#[tokio::test]
+#[ignore = "requires live Postgres"]
+async fn pilot_bootstrap_rejects_expired_invitation() {
+    let state = test_state();
+    let router = platform_router_with_rate_limit(state.clone(), false);
+    let minted = mint_pilot_token(&router, "learner-1").await;
+    let token = minted["token"].as_str().unwrap().to_string();
+    let invitation_id = minted["invitationId"].as_str().unwrap().to_string();
+
+    // The endpoint clamps ttl >= 1h, so drive expiry directly (connection tenant context is set by
+    // the pool's after_connect hook, matching every other direct-SQL test here).
+    sqlx::query(
+        "UPDATE pilot_invitations SET expires_at = now() - interval '1 hour' WHERE id = $1",
+    )
+    .bind(&invitation_id)
+    .execute(&state.pool)
+    .await
+    .unwrap();
+
+    let boot = send_with_headers(
+        &router,
+        Method::POST,
+        "/v1/pilot/session/bootstrap",
+        &[
+            ("content-type", "application/json"),
+            ("origin", PILOT_ORIGIN),
+        ],
+        Some(json!({ "token": token })),
+    )
+    .await;
+    assert_eq!(
+        boot.status(),
+        StatusCode::UNAUTHORIZED,
+        "an expired invitation must not bootstrap"
+    );
+}
+
+#[tokio::test]
+#[ignore = "requires live Postgres"]
+async fn pilot_non_admin_cannot_mint_invitation() {
+    let router = platform_router_with_rate_limit(test_state(), false);
+    for role in ["learner", "teacher", "scholar"] {
+        let r = send_json(
+            &router,
+            Method::POST,
+            "/v1/pilot/invitations",
+            Some("hikmah-pilot-erbil"),
+            Some(role),
+            json!({ "learnerId": "learner-1" }),
+        )
+        .await;
+        assert_eq!(
+            r.status(),
+            StatusCode::FORBIDDEN,
+            "{role} must not be able to mint pilot invitations"
+        );
+    }
+}
+
+#[tokio::test]
+#[ignore = "requires live Postgres"]
+async fn pilot_mint_rejects_nonexistent_and_non_learner_targets() {
+    let router = platform_router_with_rate_limit(test_state(), false);
+
+    let missing = send_json(
+        &router,
+        Method::POST,
+        "/v1/pilot/invitations",
+        Some("hikmah-pilot-erbil"),
+        Some("admin"),
+        json!({ "learnerId": "no-such-user-xyz" }),
+    )
+    .await;
+    assert_eq!(
+        missing.status(),
+        StatusCode::NOT_FOUND,
+        "unknown learner -> 404"
+    );
+
+    // teacher-1 exists in the seed but is not a learner -> 400.
+    let non_learner = send_json(
+        &router,
+        Method::POST,
+        "/v1/pilot/invitations",
+        Some("hikmah-pilot-erbil"),
+        Some("admin"),
+        json!({ "learnerId": "teacher-1" }),
+    )
+    .await;
+    assert_eq!(
+        non_learner.status(),
+        StatusCode::BAD_REQUEST,
+        "a non-learner target must be rejected"
+    );
+}
+
+#[tokio::test]
+#[ignore = "requires live Postgres"]
+async fn pilot_cookie_mutation_requires_origin_and_csrf() {
+    let router = platform_router_with_rate_limit(test_state(), false);
+    let token = mint_pilot_token(&router, "learner-1").await["token"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let boot = send_with_headers(
+        &router,
+        Method::POST,
+        "/v1/pilot/session/bootstrap",
+        &[
+            ("content-type", "application/json"),
+            ("origin", PILOT_ORIGIN),
+        ],
+        Some(json!({ "token": token })),
+    )
+    .await;
+    let cookie = pilot_cookie_from(&boot).unwrap();
+    let csrf = read_json::<Value>(boot).await["csrfToken"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let cookie_hdr = format!("__Host-qrai-pilot={cookie}");
+    let body = json!({ "quality": 5, "ayahRef": "1:1" });
+
+    // (a) valid Origin, NO csrf -> 401
+    let no_csrf = send_with_headers(
+        &router,
+        Method::POST,
+        "/v1/learner/progress",
+        &[
+            ("content-type", "application/json"),
+            ("origin", PILOT_ORIGIN),
+            ("cookie", &cookie_hdr),
+        ],
+        Some(body.clone()),
+    )
+    .await;
+    assert_eq!(
+        no_csrf.status(),
+        StatusCode::UNAUTHORIZED,
+        "mutation without CSRF is rejected"
+    );
+
+    // (b) valid Origin, WRONG csrf -> 401
+    let bad_csrf = send_with_headers(
+        &router,
+        Method::POST,
+        "/v1/learner/progress",
+        &[
+            ("content-type", "application/json"),
+            ("origin", PILOT_ORIGIN),
+            ("cookie", &cookie_hdr),
+            ("x-csrf-token", "not-the-real-token"),
+        ],
+        Some(body.clone()),
+    )
+    .await;
+    assert_eq!(
+        bad_csrf.status(),
+        StatusCode::UNAUTHORIZED,
+        "mutation with wrong CSRF is rejected"
+    );
+
+    // (c) correct csrf, NO Origin -> 403
+    let no_origin = send_with_headers(
+        &router,
+        Method::POST,
+        "/v1/learner/progress",
+        &[
+            ("content-type", "application/json"),
+            ("cookie", &cookie_hdr),
+            ("x-csrf-token", &csrf),
+        ],
+        Some(body.clone()),
+    )
+    .await;
+    assert_eq!(
+        no_origin.status(),
+        StatusCode::FORBIDDEN,
+        "mutation without Origin is rejected"
+    );
+
+    // (d) correct Origin + CSRF -> accepted
+    let ok = send_with_headers(
+        &router,
+        Method::POST,
+        "/v1/learner/progress",
+        &[
+            ("content-type", "application/json"),
+            ("origin", PILOT_ORIGIN),
+            ("cookie", &cookie_hdr),
+            ("x-csrf-token", &csrf),
+        ],
+        Some(body.clone()),
+    )
+    .await;
+    assert_eq!(
+        ok.status(),
+        StatusCode::OK,
+        "correct Origin + CSRF must be accepted"
+    );
+}
+
+/// F3 regression: `proxy_ml` must scope the consent-source session to the CALLER, not just the
+/// tenant. A learner passing another in-tenant learner's sessionId (to ride on that session's stored
+/// consent) is Forbidden before any ML forward; the session owner is allowed.
+#[tokio::test]
+#[ignore = "requires live Postgres"]
+async fn ml_proxy_rejects_analysis_against_another_learners_session() {
+    let mock_ml = spawn_mock_upstream_echo("/v1/alignments:predict").await;
+    let state = test_state().with_ml_inference_url(mock_ml);
+    let router = platform_router_with_rate_limit(state, false);
+
+    // learner-1 owns the session (created via admin so the learnerId can be set explicitly).
+    let session_id = create_test_session_for_learner(&router, "learner-1").await;
+
+    // A DIFFERENT in-tenant learner cannot run analysis against it.
+    let foreign = send_with_headers(
+        &router,
+        Method::POST,
+        "/v1/ml/alignments:predict",
+        &[
+            ("content-type", "application/json"),
+            ("x-tenant-id", "hikmah-pilot-erbil"),
+            ("x-user-id", "learner-2"),
+            ("x-user-role", "learner"),
+        ],
+        Some(json!({ "sessionId": session_id, "consent": { "guardianApproved": true } })),
+    )
+    .await;
+    assert_eq!(
+        foreign.status(),
+        StatusCode::FORBIDDEN,
+        "a learner must not analyze another learner's session"
+    );
+
+    // The session OWNER may (the rejection is scoped to identity, not a blanket block).
+    let owner = send_json(
+        &router,
+        Method::POST,
+        "/v1/ml/alignments:predict",
+        Some("hikmah-pilot-erbil"),
+        Some("learner"),
+        json!({ "sessionId": session_id, "consent": { "guardianApproved": true } }),
+    )
+    .await;
+    assert_eq!(
+        owner.status(),
+        StatusCode::OK,
+        "the session owner may run analysis"
+    );
+}
+
+/// P5.5 kill-switch: with maintenance mode on, normal routes return a clean 503 while liveness stays
+/// up (so orchestrators/monitoring see up-in-maintenance, not crashed). The middleware short-circuits
+/// before any handler, so this needs no live Postgres.
+#[tokio::test]
+async fn maintenance_mode_503s_normal_routes_but_keeps_health_live() {
+    let pool = sqlx::postgres::PgPoolOptions::new()
+        .max_connections(1)
+        .connect_lazy("postgresql://invalid:invalid@127.0.0.1:1/none")
+        .expect("lazy pool");
+    let state =
+        AppState::with_header_auth(pool, "test-jwt-secret", true).with_maintenance_mode(true);
+    let router = platform_router_with_rate_limit(state, false);
+
+    let blocked = send_json(
+        &router,
+        Method::GET,
+        "/v1/quran/surahs",
+        None,
+        None,
+        Value::Null,
+    )
+    .await;
+    assert_eq!(
+        blocked.status(),
+        StatusCode::SERVICE_UNAVAILABLE,
+        "maintenance mode must 503 normal routes (no DB touched)"
+    );
+
+    let health = send_json(&router, Method::GET, "/health", None, None, Value::Null).await;
+    assert_eq!(
+        health.status(),
+        StatusCode::OK,
+        "liveness must stay up during maintenance"
+    );
+}
+
+/// MIG2a — RLS as a BACKSTOP, not just as a barrier against a hostile tenant.
+///
+/// `adversarial_sql_isolation_prevents_cross_tenant_access` proves RLS blocks a caller who is
+/// *pretending to be another tenant*. It does not prove the case that actually matters for a
+/// backend rewrite: a handler that **forgets to set a tenant context at all**.
+///
+/// Today every handler goes through `begin_tenant_tx`, so nothing exercises the omission. That is
+/// precisely the bug a Node port introduces — a stray `pool.query()` issued outside the reserved
+/// transaction runs on a pooled connection where `app.tenant_id` was never set. `plan.md` §2.2
+/// leans on "Postgres fails closed" to make that survivable; this test is what turns that sentence
+/// into evidence.
+///
+/// It also pins the *direction* of the failure. `app.current_tenant_id()` returns NULL when unset,
+/// and `tenant_id = NULL` is never true, so an unscoped read must yield **zero rows** — never the
+/// whole table. A future migration that "helpfully" rewrote the policy with a
+/// `current_setting(...) IS NULL OR ...` escape hatch would flip this to fail-open and silently
+/// expose every tenant; this test fails loudly if that ever happens.
+#[tokio::test]
+#[ignore = "requires live Postgres"]
+async fn rls_backstops_a_query_that_forgets_its_tenant_context() {
+    // A pool with NO after_connect tenant pinning — this is the shape of a forgotten context, and
+    // it mirrors production, where pooled connections carry no session default at all.
+    let pool = sqlx::postgres::PgPoolOptions::new()
+        .max_connections(1)
+        .connect_lazy(
+            &std::env::var("DATABASE_URL")
+                .unwrap_or_else(|_| "postgresql://hawzhin@localhost:5432/quran_ai".to_owned()),
+        )
+        .expect("failed to create unscoped pool");
+
+    let mut tx = pool.begin().await.unwrap();
+
+    // Drop to the production app role: CI's default DATABASE_URL is a superuser, and superusers
+    // bypass RLS unconditionally, so without this the test would pass for the wrong reason.
+    sqlx::query("SET LOCAL ROLE quran_ai_app")
+        .execute(&mut *tx)
+        .await
+        .expect("quran_ai_app role must exist — apply infra/sql/rls-app-role.sql");
+
+    // Sanity gate: prove the tenant GUC really is unset, so a zero-row result below can only be
+    // RLS doing its job — not an empty table or a stale context from a recycled connection.
+    let ctx: Option<String> = sqlx::query_scalar("SELECT current_setting('app.tenant_id', true)")
+        .fetch_one(&mut *tx)
+        .await
+        .unwrap();
+    assert!(
+        ctx.as_deref().unwrap_or("").is_empty(),
+        "tenant context must be UNSET for this test to mean anything, got {ctx:?}"
+    );
+
+    // The rows exist — proven from a context that can see them (below). An unscoped read must
+    // still return zero.
+    let unscoped: i64 = sqlx::query_scalar("SELECT count(*) FROM users")
+        .fetch_one(&mut *tx)
+        .await
+        .expect("an unscoped SELECT must be permitted, just empty — not an error");
+    assert_eq!(
+        unscoped, 0,
+        "RLS must fail CLOSED for a query with no tenant context; returning rows here means a \
+         forgotten begin_tenant_tx would leak across tenants"
+    );
+
+    // An unscoped INSERT must be rejected by WITH CHECK rather than silently landing in a row no
+    // tenant can read back. Wrapped in a SAVEPOINT: the rejection aborts the surrounding
+    // transaction (Postgres 25P02), which would otherwise make the control query below
+    // unrunnable and the whole test a false negative.
+    sqlx::query("SAVEPOINT mig2a_insert_probe")
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    let res = sqlx::query(
+        "INSERT INTO users (id, tenant_id, display_name, role, language)
+         VALUES ('mig2a-unscoped-user', 'hikmah-pilot-erbil', 'Unscoped', 'learner', 'ckb')",
+    )
+    .execute(&mut *tx)
+    .await;
+    assert!(
+        res.is_err(),
+        "RLS must block an INSERT issued with no tenant context"
+    );
+    let err = res.unwrap_err().to_string();
+    assert!(
+        err.contains("violates row-level security policy") || err.contains("42501"),
+        "expected an RLS violation, got: {err}"
+    );
+    sqlx::query("ROLLBACK TO SAVEPOINT mig2a_insert_probe")
+        .execute(&mut *tx)
+        .await
+        .expect("savepoint rollback must restore a usable transaction");
+
+    // Control: with the context set, the same read sees rows. Without this, a zero-row result
+    // above could just mean the table was empty and the test would prove nothing.
+    sqlx::query("SELECT set_config('app.tenant_id', 'hikmah-pilot-erbil', true)")
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    let scoped: i64 = sqlx::query_scalar("SELECT count(*) FROM users")
+        .fetch_one(&mut *tx)
+        .await
+        .unwrap();
+    assert!(
+        scoped > 0,
+        "control failed: the seeded tenant must have users, otherwise the zero above is meaningless"
+    );
+
+    tx.rollback().await.unwrap();
 }

@@ -3,6 +3,7 @@ pub mod audit;
 pub mod auth;
 pub mod eval;
 pub mod ml_proxy;
+pub mod pilot;
 pub mod privacy;
 pub mod progress;
 pub mod quran;

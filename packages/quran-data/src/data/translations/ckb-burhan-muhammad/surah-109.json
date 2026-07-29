@@ -1,0 +1,38 @@
+{
+  "surah": 109,
+  "slug": "ckb-burhan-muhammad",
+  "translationId": 81,
+  "translator": "Burhan Muhammad-Amin",
+  "language": "ckb",
+  "source": "api.quran.com v4 translation 81",
+  "publisher": "QuranEnc.com",
+  "license": "See docs/DATA_LICENSES.md#ckb-sorani-translation",
+  "fetchedAt": "2026-07-15",
+  "ayahs": [
+    {
+      "ayah": 1,
+      "text": "(ئه‌ی محمد (صلی الله علیه وسلم) بڵێ: ئه‌ی کۆمه‌ڵی بێ باوه‌ڕ و خوانه‌ناسان."
+    },
+    {
+      "ayah": 2,
+      "text": "من هه‌رگیز ئه‌و شتانه‌ی که ئێوه ده‌یپه‌رستن نایپه‌رستم (چونکه من خواپه‌رستم)."
+    },
+    {
+      "ayah": 3,
+      "text": "ئێوه‌ش دیاره ئه‌وه‌ی من ده‌یپه‌رستم نای په‌رستن (چونکه بت په‌رستن)."
+    },
+    {
+      "ayah": 4,
+      "text": "ئه‌وه‌ی ئێوه په‌رستوتانه من هیچ کات نایپه‌رستم."
+    },
+    {
+      "ayah": 5,
+      "text": "ئێوه‌ش، ئه‌و زاته‌ی من ده‌یپه‌رستم نای په‌رستن."
+    },
+    {
+      "ayah": 6,
+      "text": "که‌واته دینی خۆتان بۆ خۆتان و دینی خۆم بۆ خۆم."
+    }
+  ],
+  "missingAyahs": []
+}

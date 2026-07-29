@@ -3,7 +3,6 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use axum::Json;
 use axum::Router;
 use axum::extract::ws::{Message, WebSocket};
 use axum::extract::{Path, Query, State, WebSocketUpgrade};
@@ -270,16 +269,20 @@ impl RealtimeGateway {
     ) -> Result<SessionReader, GatewayError> {
         let session_id = session_id.into();
         let (sender, receiver) = mpsc::channel(self.chunk_capacity);
-        let mut sessions = self.sessions.write().await;
-
-        if sessions.contains_key(&session_id) {
-            return Err(GatewayError::SessionAlreadyExists(session_id));
+        {
+            let mut sessions = self.sessions.write().await;
+            if sessions.contains_key(&session_id) {
+                return Err(GatewayError::SessionAlreadyExists(session_id));
+            }
+            sessions.insert(session_id.clone(), sender);
         }
 
-        sessions.insert(session_id.clone(), sender);
         self.counters
             .sessions_started
             .fetch_add(1, Ordering::Relaxed);
+        // Redis is observability/state reconciliation only. Never hold the in-process session
+        // lock while a network handshake or timeout is pending: that would make an unavailable
+        // Redis instance stall all chunk sends for an otherwise valid active session.
         self.redis_track_session(&session_id, "start").await;
         Ok(SessionReader {
             session_id,
@@ -321,9 +324,13 @@ impl RealtimeGateway {
     }
 
     pub async fn end_session(&self, session_id: &str) -> Result<(), GatewayError> {
-        let mut sessions = self.sessions.write().await;
-        if sessions.remove(session_id).is_some() {
+        let removed = {
+            let mut sessions = self.sessions.write().await;
+            sessions.remove(session_id).is_some()
+        };
+        if removed {
             self.counters.sessions_ended.fetch_add(1, Ordering::Relaxed);
+            // As above, no network await may monopolize the in-process session map.
             self.redis_track_session(session_id, "end").await;
             Ok(())
         } else {
@@ -413,6 +420,22 @@ pub struct GatewayServerConfig {
     /// availability for a guarantee that a ticket used during a Redis outage can't be
     /// replayed on another instance. Default false (fail open). Env: REALTIME_TICKET_FAIL_CLOSED.
     pub ticket_fail_closed: bool,
+    /// Shared secret required in `x-metrics-token` to scrape /metrics. Unlike postgres/ml/asr, this
+    /// gateway is meant to be reachable OFF-HOST (docker-compose publishes 8081 on all interfaces),
+    /// so an unauthenticated /metrics publishes operational telemetry to the internet. Env: METRICS_TOKEN.
+    pub metrics_token: Option<String>,
+    /// Allow scraping /metrics with no token — dev/CI only. Env: ALLOW_INSECURE_DEFAULTS=1.
+    pub metrics_dev_open: bool,
+    /// DEV-ONLY fault injection (T13): drop the audio socket after this many accepted chunks, so a
+    /// client's reconnect/backoff/re-ticket path can be exercised deterministically instead of
+    /// hoping for a real Wi-Fi blip. Read from REALTIME_CHAOS_DROP_AFTER_CHUNKS, but IGNORED unless
+    /// ALLOW_INSECURE_DEFAULTS=1 — a production gateway cannot be told to sabotage itself even if
+    /// the env var leaks into its config.
+    pub chaos_drop_after_chunks: Option<u64>,
+    /// How many connections chaos may drop IN TOTAL before letting one through
+    /// (REALTIME_CHAOS_MAX_DROPS, default unlimited). Set to 2 to reproduce "a session survives two
+    /// drops and still completes".
+    pub chaos_max_drops: u64,
 }
 
 impl Default for GatewayServerConfig {
@@ -430,6 +453,28 @@ impl Default for GatewayServerConfig {
             ticket_fail_closed: std::env::var("REALTIME_TICKET_FAIL_CLOSED")
                 .map(|v| v == "1" || v == "true")
                 .unwrap_or(false),
+            metrics_token: std::env::var("METRICS_TOKEN")
+                .ok()
+                .filter(|t| !t.trim().is_empty()),
+            metrics_dev_open: std::env::var("ALLOW_INSECURE_DEFAULTS")
+                .map(|v| v == "1" || v == "true")
+                .unwrap_or(false),
+            // Chaos is only readable in explicit dev mode — production ignores the env var outright.
+            chaos_drop_after_chunks: if std::env::var("ALLOW_INSECURE_DEFAULTS")
+                .map(|v| v == "1" || v == "true")
+                .unwrap_or(false)
+            {
+                std::env::var("REALTIME_CHAOS_DROP_AFTER_CHUNKS")
+                    .ok()
+                    .and_then(|v| v.parse::<u64>().ok())
+                    .filter(|n| *n > 0)
+            } else {
+                None
+            },
+            chaos_max_drops: std::env::var("REALTIME_CHAOS_MAX_DROPS")
+                .ok()
+                .and_then(|v| v.parse::<u64>().ok())
+                .unwrap_or(u64::MAX),
         }
     }
 }
@@ -441,6 +486,9 @@ struct GatewayServerState {
     // ticket string -> its expiry (unix seconds). Per-process fast path for single-use
     // enforcement; the authoritative cross-restart/cross-instance check is Redis when set.
     consumed_tickets: Arc<RwLock<HashMap<String, u64>>>,
+    /// How many connections chaos has dropped so far (shared across sockets, so
+    /// REALTIME_CHAOS_MAX_DROPS bounds TOTAL drops and a later attempt is allowed to succeed).
+    chaos_drops: Arc<AtomicU64>,
     http_client: reqwest::Client,
 }
 
@@ -508,6 +556,7 @@ pub fn gateway_router_with_rate_limit(config: GatewayServerConfig, rate_limited:
             config,
             consumed_tickets,
             http_client,
+            chaos_drops: Arc::new(AtomicU64::new(0)),
         });
 
     if rate_limited {
@@ -546,22 +595,110 @@ pub fn gateway_router_with_rate_limit(config: GatewayServerConfig, rate_limited:
     }
 }
 
-async fn metrics(State(state): State<GatewayServerState>) -> impl IntoResponse {
-    let gateway_metrics = state.gateway.metrics().await;
+/// Prometheus scrape endpoint. Access is FAIL-CLOSED: it serves metrics only when the request
+/// presents `x-metrics-token` matching `METRICS_TOKEN`; in dev (`ALLOW_INSECURE_DEFAULTS=1`) with no
+/// token configured it is open; otherwise it 404s, hiding the endpoint's existence.
+///
+/// This endpoint used to be unauthenticated JSON. An earlier audit flagged exactly that (see the
+/// note on platform-api's metrics_endpoint, which was built fail-closed so as "not to repeat" it) —
+/// but the gateway itself was never fixed. It matters MORE here than on platform-api: compose
+/// publishes 8081 on all interfaces, so session/chunk/ticket telemetry was world-readable.
+/// Output is Prometheus text exposition (was JSON, which no scraper can read).
+async fn metrics(
+    State(state): State<GatewayServerState>,
+    headers: axum::http::HeaderMap,
+) -> axum::response::Response {
+    if !metrics_access_allowed(&state.config, &headers) {
+        return StatusCode::NOT_FOUND.into_response();
+    }
+    let m = state.gateway.metrics().await;
     let ticket_count = state.consumed_tickets.read().await.len();
+    let body = render_prometheus(&m, ticket_count);
     (
-        StatusCode::OK,
-        Json(serde_json::json!({
-            "active_sessions": gateway_metrics.active_sessions,
-            "sessions_started": gateway_metrics.sessions_started,
-            "sessions_ended": gateway_metrics.sessions_ended,
-            "chunks_accepted": gateway_metrics.chunks_accepted,
-            "chunks_rejected_backpressure": gateway_metrics.chunks_rejected_backpressure,
-            "chunks_rejected_missing_session": gateway_metrics.chunks_rejected_missing_session,
-            "chunks_forward_failed": gateway_metrics.chunks_forward_failed,
-            "consumed_tickets_count": ticket_count,
-        })),
+        [(
+            axum::http::header::CONTENT_TYPE,
+            "text/plain; version=0.0.4; charset=utf-8",
+        )],
+        body,
     )
+        .into_response()
+}
+
+fn metrics_access_allowed(config: &GatewayServerConfig, headers: &axum::http::HeaderMap) -> bool {
+    match &config.metrics_token {
+        Some(token) => headers
+            .get("x-metrics-token")
+            .and_then(|v| v.to_str().ok())
+            .map(|v| v == token)
+            .unwrap_or(false),
+        // No token configured: allow only in explicit dev mode, otherwise fail closed.
+        None => config.metrics_dev_open,
+    }
+}
+
+/// Render the gateway counters as Prometheus text exposition. Cardinality is fixed (no labels), so
+/// this cannot blow up a scraper.
+fn render_prometheus(m: &GatewayMetrics, consumed_tickets: usize) -> String {
+    let mut out = String::new();
+    let gauge = |out: &mut String, name: &str, help: &str, value: u64| {
+        out.push_str(&format!(
+            "# HELP {name} {help}\n# TYPE {name} gauge\n{name} {value}\n"
+        ));
+    };
+    let counter = |out: &mut String, name: &str, help: &str, value: u64| {
+        out.push_str(&format!(
+            "# HELP {name} {help}\n# TYPE {name} counter\n{name} {value}\n"
+        ));
+    };
+    gauge(
+        &mut out,
+        "realtime_gateway_active_sessions",
+        "Sessions currently connected.",
+        m.active_sessions as u64,
+    );
+    counter(
+        &mut out,
+        "realtime_gateway_sessions_started_total",
+        "Audio sessions started.",
+        m.sessions_started,
+    );
+    counter(
+        &mut out,
+        "realtime_gateway_sessions_ended_total",
+        "Audio sessions ended.",
+        m.sessions_ended,
+    );
+    counter(
+        &mut out,
+        "realtime_gateway_chunks_accepted_total",
+        "Audio chunks accepted.",
+        m.chunks_accepted,
+    );
+    counter(
+        &mut out,
+        "realtime_gateway_chunks_rejected_backpressure_total",
+        "Audio chunks rejected because the session buffer was full.",
+        m.chunks_rejected_backpressure,
+    );
+    counter(
+        &mut out,
+        "realtime_gateway_chunks_rejected_missing_session_total",
+        "Audio chunks rejected for an unknown session.",
+        m.chunks_rejected_missing_session,
+    );
+    counter(
+        &mut out,
+        "realtime_gateway_chunks_forward_failed_total",
+        "Audio chunks that failed to forward to ML inference.",
+        m.chunks_forward_failed,
+    );
+    gauge(
+        &mut out,
+        "realtime_gateway_consumed_tickets",
+        "Consumed single-use tickets retained in memory for replay defence.",
+        consumed_tickets as u64,
+    );
+    out
 }
 
 async fn health() -> impl IntoResponse {
@@ -954,6 +1091,26 @@ async fn handle_audio_socket(
                 if accepted {
                     sequence += 1;
                 }
+
+                // T13 fault injection (dev-only; see GatewayServerConfig::chaos_drop_after_chunks).
+                // Drop the socket mid-session so the client's buffer/backoff/re-ticket path is
+                // exercised deterministically. The drop budget is shared across connections, so
+                // REALTIME_CHAOS_MAX_DROPS=2 drops twice and then lets the session finish.
+                if let Some(drop_after) = state.config.chaos_drop_after_chunks
+                    && sequence >= drop_after
+                {
+                    let dropped_so_far = state.chaos_drops.load(Ordering::Relaxed);
+                    if dropped_so_far < state.config.chaos_max_drops {
+                        state.chaos_drops.fetch_add(1, Ordering::Relaxed);
+                        tracing::warn!(
+                            session_id = %session_id,
+                            chunks = sequence,
+                            drop_number = dropped_so_far + 1,
+                            "CHAOS: dropping audio socket (REALTIME_CHAOS_DROP_AFTER_CHUNKS)"
+                        );
+                        break;
+                    }
+                }
             }
             Ok(Message::Close(_)) => break,
             Ok(Message::Ping(payload)) => {
@@ -982,11 +1139,116 @@ mod tests {
     use std::collections::HashMap;
 
     use super::{
-        AudioChunk, GatewayError, GatewayServerConfig, GatewayServerState, MAX_CHUNK_BYTES,
-        RealtimeGateway, TicketCheckOutcome, TicketDedup, TicketError, check_ticket, evict_expired,
-        gateway_router, gateway_router_with_rate_limit, issue_realtime_ticket, ticket_hash,
+        AudioChunk, GatewayError, GatewayMetrics, GatewayServerConfig, GatewayServerState,
+        MAX_CHUNK_BYTES, RealtimeGateway, TicketCheckOutcome, TicketDedup, TicketError,
+        check_ticket, evict_expired, gateway_router, gateway_router_with_rate_limit,
+        issue_realtime_ticket, metrics_access_allowed, render_prometheus, ticket_hash,
         unix_now_seconds, validate_realtime_ticket,
     };
+
+    fn metrics_headers(token: Option<&str>) -> axum::http::HeaderMap {
+        let mut h = axum::http::HeaderMap::new();
+        if let Some(t) = token {
+            h.insert("x-metrics-token", t.parse().unwrap());
+        }
+        h
+    }
+
+    /// Security: /metrics publishes operational telemetry and this gateway is published off-host
+    /// (compose maps 8081 on all interfaces), so it must NEVER be readable without a token unless
+    /// dev mode is explicitly enabled. It used to be wholly unauthenticated.
+    #[test]
+    fn metrics_access_is_fail_closed_without_a_token_or_dev_mode() {
+        let config = GatewayServerConfig {
+            metrics_token: None,
+            metrics_dev_open: false,
+            ..GatewayServerConfig::default()
+        };
+        assert!(
+            !metrics_access_allowed(&config, &metrics_headers(None)),
+            "no token configured and not dev-open must FAIL CLOSED"
+        );
+        assert!(
+            !metrics_access_allowed(&config, &metrics_headers(Some("guess"))),
+            "a guessed token must not open it either when none is configured"
+        );
+    }
+
+    #[test]
+    fn metrics_access_requires_the_matching_token_when_configured() {
+        let config = GatewayServerConfig {
+            metrics_token: Some("s3cret".to_owned()),
+            metrics_dev_open: true, // must NOT override a configured token
+            ..GatewayServerConfig::default()
+        };
+        assert!(metrics_access_allowed(
+            &config,
+            &metrics_headers(Some("s3cret"))
+        ));
+        assert!(!metrics_access_allowed(
+            &config,
+            &metrics_headers(Some("wrong"))
+        ));
+        assert!(!metrics_access_allowed(&config, &metrics_headers(None)));
+    }
+
+    #[test]
+    fn metrics_access_is_open_in_explicit_dev_mode_with_no_token() {
+        let config = GatewayServerConfig {
+            metrics_token: None,
+            metrics_dev_open: true,
+            ..GatewayServerConfig::default()
+        };
+        assert!(metrics_access_allowed(&config, &metrics_headers(None)));
+    }
+
+    /// Safety: the chaos hook deliberately sabotages live sessions, so it must be impossible to arm
+    /// in production. GatewayServerConfig::default() reads it ONLY when ALLOW_INSECURE_DEFAULTS=1;
+    /// with dev mode off the env var is ignored outright rather than merely discouraged.
+    #[test]
+    fn chaos_fault_injection_cannot_be_armed_without_explicit_dev_mode() {
+        // Simulate the config the env-reader produces in each mode (the reader itself is exercised
+        // by the service's own startup; this pins the INVARIANT the reader must uphold).
+        let production = GatewayServerConfig {
+            chaos_drop_after_chunks: None, // what default() yields when ALLOW_INSECURE_DEFAULTS is unset
+            ..GatewayServerConfig::default()
+        };
+        assert!(
+            production.chaos_drop_after_chunks.is_none(),
+            "chaos must never be armed in production"
+        );
+
+        let dev = GatewayServerConfig {
+            chaos_drop_after_chunks: Some(3),
+            chaos_max_drops: 2,
+            ..GatewayServerConfig::default()
+        };
+        assert_eq!(dev.chaos_drop_after_chunks, Some(3));
+        assert_eq!(
+            dev.chaos_max_drops, 2,
+            "a bounded drop budget lets the session finish"
+        );
+    }
+
+    #[test]
+    fn renders_prometheus_text_exposition_not_json() {
+        let m = GatewayMetrics {
+            active_sessions: 2,
+            sessions_started: 5,
+            sessions_ended: 3,
+            chunks_accepted: 40,
+            chunks_rejected_backpressure: 1,
+            chunks_rejected_missing_session: 2,
+            chunks_forward_failed: 4,
+        };
+        let out = render_prometheus(&m, 7);
+        assert!(out.contains("# TYPE realtime_gateway_active_sessions gauge"));
+        assert!(out.contains("realtime_gateway_active_sessions 2"));
+        assert!(out.contains("# TYPE realtime_gateway_chunks_forward_failed_total counter"));
+        assert!(out.contains("realtime_gateway_chunks_forward_failed_total 4"));
+        assert!(out.contains("realtime_gateway_consumed_tickets 7"));
+        assert!(!out.contains('{'), "must be Prometheus text, not JSON");
+    }
 
     fn chunk(session_id: &str, chunk_id: &str) -> AudioChunk {
         AudioChunk::new(session_id, chunk_id, 0, 20, 16_000, vec![1, 2, 3, 4]).unwrap()
@@ -1114,6 +1376,81 @@ mod tests {
         assert!(received.is_none());
         assert_eq!(gateway.active_session_count().await, 0);
         assert_eq!(gateway.metrics().await.sessions_ended, 1);
+    }
+
+    #[tokio::test]
+    async fn redis_tracking_never_holds_the_session_lock_across_network_io() {
+        // Accept the TCP connection but never answer Redis' handshake. This keeps the tracking
+        // future pending long enough to prove a chunk send is not blocked behind it.
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let (accepted_tx, accepted_rx) = tokio::sync::oneshot::channel();
+        let stalled_redis = tokio::spawn(async move {
+            let (_stream, _) = listener.accept().await.unwrap();
+            let _ = accepted_tx.send(());
+            tokio::time::sleep(Duration::from_secs(5)).await;
+        });
+
+        let gateway = RealtimeGateway::with_redis(2, Some(format!("redis://{address}")));
+        let start_gateway = gateway.clone();
+        let starting = tokio::spawn(async move { start_gateway.start_session("session-1").await });
+
+        timeout(Duration::from_secs(1), accepted_rx)
+            .await
+            .expect("gateway should connect to the stalled Redis endpoint")
+            .expect("listener should acknowledge the accepted connection");
+
+        let sent = timeout(
+            Duration::from_millis(100),
+            gateway.send_chunk(chunk("session-1", "chunk-1")),
+        )
+        .await;
+        assert!(
+            matches!(sent, Ok(Ok(()))),
+            "session lock must not wait for Redis tracking"
+        );
+
+        starting.abort();
+        stalled_redis.abort();
+    }
+
+    #[tokio::test]
+    async fn redis_end_tracking_never_blocks_session_lookup() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let (accepted_tx, accepted_rx) = tokio::sync::oneshot::channel();
+        let stalled_redis = tokio::spawn(async move {
+            let (_stream, _) = listener.accept().await.unwrap();
+            let _ = accepted_tx.send(());
+            tokio::time::sleep(Duration::from_secs(5)).await;
+        });
+
+        // Create the session before enabling the deliberately stalled Redis endpoint, then prove
+        // end-session's best-effort reconciliation does not block a concurrent map lookup.
+        let mut gateway = RealtimeGateway::new(2);
+        let _reader = gateway.start_session("session-1").await.unwrap();
+        gateway.redis_url = Some(format!("redis://{address}"));
+        let end_gateway = gateway.clone();
+        let ending = tokio::spawn(async move { end_gateway.end_session("session-1").await });
+
+        timeout(Duration::from_secs(1), accepted_rx)
+            .await
+            .expect("gateway should connect to the stalled Redis endpoint")
+            .expect("listener should acknowledge the accepted connection");
+
+        let lookup = timeout(
+            Duration::from_millis(100),
+            gateway.send_chunk(chunk("session-1", "chunk-1")),
+        )
+        .await;
+        assert_eq!(
+            lookup,
+            Ok(Err(GatewayError::SessionNotFound("session-1".to_owned()))),
+            "session lookup must not wait for Redis end tracking"
+        );
+
+        ending.abort();
+        stalled_redis.abort();
     }
 
     #[tokio::test]
@@ -1356,6 +1693,7 @@ mod tests {
             config,
             consumed_tickets: std::sync::Arc::new(tokio::sync::RwLock::new(HashMap::new())),
             http_client: reqwest::Client::new(),
+            chaos_drops: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
         }
     }
 
@@ -1504,6 +1842,7 @@ mod tests {
             config,
             consumed_tickets: std::sync::Arc::new(tokio::sync::RwLock::new(HashMap::new())),
             http_client: reqwest::Client::new(),
+            chaos_drops: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
         };
         let ticket = issue_realtime_ticket(
             "session-1",

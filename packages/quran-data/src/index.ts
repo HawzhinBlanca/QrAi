@@ -24,6 +24,26 @@ export type {
 } from "./full-quran";
 import type { FullQuranSurah } from "./full-quran";
 
+// Word-level audio-segment timings for reference recitations (server-only loader; the web app
+// imports the JSON directly via its bundler). Types are safe to export everywhere.
+export type {
+  WordTiming,
+  AyahTimings,
+  ExcludedAyah,
+  SurahTimings,
+} from "./word-timings";
+
+// Licensed ayah translations (server-only loader; the web app imports the JSON via its bundler).
+export type {
+  AyahTranslation,
+  MissingTranslation,
+  SurahTranslation,
+} from "./translations";
+export {
+  CKB_BURHAN_MUHAMMAD_BUNDLE_V2,
+  type TranslationBundleProvenance,
+} from "./translation-bundles";
+
 export const CANONICAL_IMPORT_VERSION = "2026-06-24-fatihah-seed-v1";
 
 export const CANONICAL_SOURCE_MANIFESTS: CanonicalSourceManifest[] = [

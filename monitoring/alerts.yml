@@ -1,0 +1,51 @@
+# Prometheus alert rules for QrAi platform-api (P5.5), mapped to the proposed SLOs in
+# docs/readiness/OPERATIONS.md. Thresholds are engineering proposals — the owner/SRE ratify them
+# (P5.1) and SRE signs the live validation (P5.7). Metrics come from services/platform-api/src/metrics.rs:
+#   http_requests_total{method,path,status}   (counter)
+#   http_request_duration_ms_bucket{le} + _sum + _count   (GLOBAL histogram — not per-path)
+groups:
+  - name: qrai-platform-api
+    rules:
+      - alert: PlatformApiDown
+        expr: up{job="platform-api"} == 0
+        for: 2m
+        labels: { severity: page }
+        annotations:
+          summary: "platform-api is unreachable by Prometheus"
+          runbook: "docs/STAGING_RUNBOOK.md — check container health / DB; consider kill-switch + rollback"
+
+      - alert: HighErrorRate
+        # 5xx rate over 1% of traffic = error-budget burn (SLO: 99% success/day).
+        expr: |
+          sum(rate(http_requests_total{status=~"5.."}[5m]))
+            / clamp_min(sum(rate(http_requests_total[5m])), 1) > 0.01
+        for: 5m
+        labels: { severity: page }
+        annotations:
+          summary: "5xx error rate > 1% for 5m (error-budget burn)"
+
+      - alert: HighAuthFailureRate
+        # Sustained 401s can indicate spoofing / brute-force / a broken deploy (ALLOW_HEADER_AUTH).
+        expr: sum(rate(http_requests_total{status="401"}[5m])) > 5
+        for: 10m
+        labels: { severity: ticket }
+        annotations:
+          summary: "Elevated 401 rate — investigate spoofing/brute-force or a misconfigured auth flag"
+
+      - alert: HighLatencyP95
+        # Global p95 (the histogram is not path-labelled). SLO proposal: p95 < 500ms for light routes;
+        # analysis routes are slower, so treat this as a global smell, not a hard per-route SLO.
+        expr: |
+          histogram_quantile(0.95, sum(rate(http_request_duration_ms_bucket[5m])) by (le)) > 1000
+        for: 10m
+        labels: { severity: ticket }
+        annotations:
+          summary: "Global p95 request latency > 1000ms for 10m"
+
+      - alert: NoTrafficReceived
+        # A live pilot should see requests; prolonged silence often means the web can't reach the API.
+        expr: sum(rate(http_requests_total[10m])) == 0
+        for: 15m
+        labels: { severity: ticket }
+        annotations:
+          summary: "No requests to platform-api for 15m — check the web→API path / DNS / TLS"

@@ -1,0 +1,99 @@
+{
+  "surah": 103,
+  "reciter": "alafasy",
+  "reciterName": "Mishary Rashid al-Afasy",
+  "source": "api.quran.com v4 recitation 7",
+  "audioBase": "https://verses.quran.com/",
+  "license": "See docs/DATA_LICENSES.md#quran-com-word-segments-audio",
+  "ayahs": [
+    {
+      "ayah": 1,
+      "audioUrl": "Alafasy/mp3/103001.mp3",
+      "words": [
+        {
+          "wordId": "103:1:5",
+          "startMs": 30,
+          "endMs": 1230
+        }
+      ]
+    },
+    {
+      "ayah": 2,
+      "audioUrl": "Alafasy/mp3/103002.mp3",
+      "words": [
+        {
+          "wordId": "103:2:1",
+          "startMs": 30,
+          "endMs": 1260
+        },
+        {
+          "wordId": "103:2:2",
+          "startMs": 1270,
+          "endMs": 3830
+        },
+        {
+          "wordId": "103:2:3",
+          "startMs": 3840,
+          "endMs": 4430
+        },
+        {
+          "wordId": "103:2:4",
+          "startMs": 4440,
+          "endMs": 4900
+        }
+      ]
+    },
+    {
+      "ayah": 3,
+      "audioUrl": "Alafasy/mp3/103003.mp3",
+      "words": [
+        {
+          "wordId": "103:3:1",
+          "startMs": 50,
+          "endMs": 600
+        },
+        {
+          "wordId": "103:3:2",
+          "startMs": 610,
+          "endMs": 1750
+        },
+        {
+          "wordId": "103:3:3",
+          "startMs": 1760,
+          "endMs": 2910
+        },
+        {
+          "wordId": "103:3:4",
+          "startMs": 2920,
+          "endMs": 3740
+        },
+        {
+          "wordId": "103:3:5",
+          "startMs": 3750,
+          "endMs": 5330
+        },
+        {
+          "wordId": "103:3:6",
+          "startMs": 5340,
+          "endMs": 6610
+        },
+        {
+          "wordId": "103:3:7",
+          "startMs": 6620,
+          "endMs": 7700
+        },
+        {
+          "wordId": "103:3:8",
+          "startMs": 7710,
+          "endMs": 9060
+        },
+        {
+          "wordId": "103:3:9",
+          "startMs": 9070,
+          "endMs": 10080
+        }
+      ]
+    }
+  ],
+  "excludedAyahs": []
+}

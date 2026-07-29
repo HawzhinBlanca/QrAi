@@ -35,6 +35,23 @@ export function parseRecognizedText(text: unknown): string[] {
     .filter(Boolean);
 }
 
+/** Audio container formats the platform-api ASR proxy accepts (mirrors the server whitelist). */
+const ALLOWED_AUDIO_FORMATS = ["m4a", "webm", "wav", "mp3"];
+
+/**
+ * The audio container format to report to the ASR proxy, derived from the ACTUAL recording URI
+ * rather than a hardcoded platform guess. expo-av's HIGH_QUALITY preset writes `.m4a` on BOTH ios
+ * and android (only its web preset is webm), so the old `Platform.OS === "ios" ? "m4a" : "webm"`
+ * mislabeled every Android recording as webm — which worked only because the server's ffmpeg
+ * content-sniffs, and would break the moment any decoder trusted the extension. Deriving from the
+ * real file extension keeps the label tied to the bytes; unknown/absent extensions fall back to
+ * m4a (what the native HIGH_QUALITY preset actually produces).
+ */
+export function audioFormatFromUri(uri: string): string {
+  const ext = uri.split("?")[0].split(".").pop()?.toLowerCase();
+  return ext && ALLOWED_AUDIO_FORMATS.includes(ext) ? ext : "m4a";
+}
+
 export interface MobileConsent {
   recordingConsent: boolean;
   audioRetention: "discard";

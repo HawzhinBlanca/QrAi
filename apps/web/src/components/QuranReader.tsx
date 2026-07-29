@@ -9,6 +9,19 @@ interface QuranReaderProps {
   onSelectWord: (wordId: string) => void;
   /** Local ayah (verseNumber) currently playing in the Listen step, or null. */
   playingVerseNumber?: number | null;
+  /** Canonical id (`surah:ayah:index`) of the word currently being recited in the reference audio,
+   *  for word-level follow-along. null when no timing data exists (verse-level highlight only). */
+  recitingWordId?: string | null;
+  /** Reciter/source attribution shown when the matched reference audio is in use (licensing). */
+  recitationAttribution?: string | null;
+  /** Local ayah number → verbatim translation text (empty map when none). */
+  translationByAyah?: Map<number, string>;
+  /** Translator/publisher attribution shown when translations are visible (licensing). */
+  translationAttribution?: string | null;
+  /** Whether the translation lines are shown. */
+  showTranslation?: boolean;
+  /** Toggle translation visibility. When omitted, the toggle control is hidden. */
+  onToggleTranslation?: () => void;
   /** True while the surah's verses are being (re)fetched — marks the reader aria-busy and dims it
    *  so a slow/switched surah reads as loading, not frozen (P2.9). */
   isLoading?: boolean;
@@ -21,7 +34,7 @@ const statusLabelKeys = {
   missed: "quranReader.statusMissed",
 };
 
-export function QuranReader({ activeWordId, onSelectWord, selectedWordId, verses, playingVerseNumber = null, isLoading = false }: QuranReaderProps) {
+export function QuranReader({ activeWordId, onSelectWord, selectedWordId, verses, playingVerseNumber = null, recitingWordId = null, recitationAttribution = null, translationByAyah, translationAttribution = null, showTranslation = false, onToggleTranslation, isLoading = false }: QuranReaderProps) {
   const { t } = useTranslation();
   const frameRef = useRef<HTMLDivElement | null>(null);
 
@@ -34,6 +47,18 @@ export function QuranReader({ activeWordId, onSelectWord, selectedWordId, verses
 
   return (
     <section className="reader-panel" aria-label={t("quranReader.ariaLabel")} aria-busy={isLoading}>
+      {onToggleTranslation && (translationByAyah?.size ?? 0) > 0 && (
+        <div className="reader-controls">
+          <button
+            type="button"
+            className={showTranslation ? "translation-toggle is-on" : "translation-toggle"}
+            aria-pressed={showTranslation}
+            onClick={onToggleTranslation}
+          >
+            {t("quranReader.translationToggle")}
+          </button>
+        </div>
+      )}
       <div className={isLoading ? "reader-frame is-loading" : "reader-frame"} ref={frameRef}>
         {verses.map((verse) => (
           <div
@@ -54,9 +79,11 @@ export function QuranReader({ activeWordId, onSelectWord, selectedWordId, verses
                     `status-${word.status}`,
                     activeWordId === word.id ? "is-active" : "",
                     selectedWordId === word.id ? "is-selected" : "",
+                    recitingWordId === word.id ? "is-reciting" : "",
                   ]
                     .filter(Boolean)
                     .join(" ")}
+                  data-reciting={recitingWordId === word.id ? "true" : undefined}
                   key={word.id}
                   onClick={() => onSelectWord(word.id)}
                   type="button"
@@ -65,6 +92,13 @@ export function QuranReader({ activeWordId, onSelectWord, selectedWordId, verses
                 </button>
               ))}
             </div>
+            {/* Sorani translation — verbatim licensed text (QuranEnc: no modification). Shown only
+                when enabled AND present for this ayah; a missing ayah renders nothing (honest). */}
+            {showTranslation && translationByAyah?.get(verse.verseNumber) && (
+              <p className="verse-translation" dir="rtl" lang="ckb">
+                {translationByAyah.get(verse.verseNumber)}
+              </p>
+            )}
           </div>
         ))}
       </div>
@@ -75,6 +109,13 @@ export function QuranReader({ activeWordId, onSelectWord, selectedWordId, verses
         <span><i className="dot mistake" /> {t("quranReader.statusMistake")}</span>
         <span><i className="dot missed" /> {t("quranReader.statusMissed")}</span>
       </div>
+
+      {recitationAttribution && (
+        <p className="reader-attribution">{recitationAttribution}</p>
+      )}
+      {showTranslation && translationAttribution && (translationByAyah?.size ?? 0) > 0 && (
+        <p className="reader-attribution">{t("quranReader.translationSource", { source: translationAttribution })}</p>
+      )}
     </section>
   );
 }

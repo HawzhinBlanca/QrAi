@@ -5,6 +5,145 @@ architectural change. Newest first.
 
 ---
 
+## ADR-0020 — Open learner self-registration is retained for the pilot (F2)
+**Date:** 2026-07-24 · **Status:** Accepted (owner decision)
+
+**Context.** The 2026-07-23 adversarial audit flagged F2: `POST /v1/auth/register` allows
+unauthenticated self-registration for `role == learner` and returns a learner Bearer JWT for the
+(hardcoded) pilot tenant, coexisting with the admin-minted invitation path (ADR-0019). It bypasses
+"invitation-only" and permits account/spam creation (rate-limited only).
+
+**Decision.** Keep open learner self-registration for the pilot. The owner accepts it as a valid
+entry path alongside invitations.
+
+**Why it is bounded (residual risk accepted).** The minted JWT is `learner`-scoped only; every
+handler enforces `require_self_or_any` + RLS, so a self-registered account sees only its own (empty)
+rows — no cross-tenant/cross-user access (audit: no IDOR). Elevated-role registration stays gated
+(an authenticated Admin/Ops caller + tenant match, `user.rs`). Abuse is limited to spam account
+creation, mitigated only by the Governor rate limiter.
+
+**Consequences.** "Invitation-only" is a soft convention, not a hard gate, during the pilot. If spam
+becomes a problem, gate `register` (learner role) behind an `ALLOW_OPEN_REGISTRATION` flag or require
+an invitation — a small, localized change. Revisit before any wider launch.
+
+---
+
+## ADR-0019 — Pilot invitations: admin-minted, single-use, hash-stored; the web exchanges them for the `__Host-qrai-pilot` cookie
+**Date:** 2026-07-23 · **Status:** Accepted
+
+**Context.** ADR-0002 disables login for the pilot; the current default identity is a hardcoded
+`learner-1` sent via spoofable `x-user-id`/`x-tenant-id` headers (gated by `ALLOW_HEADER_AUTH`). The
+pilot-identity feature (`specs/pilot-identity-hardening`, #238) added a server-authoritative
+`__Host-qrai-pilot` cookie plus `bootstrap`/`logout`, but `research.md` flagged that the
+"invitation-issuance mechanism is not present anywhere" and the web never consumed the cookie — so
+the boundary existed but was unused (P1.6 open).
+
+**Decision.**
+- **Issuance:** `POST /v1/pilot/invitations` (Admin/Ops, own tenant only) mints a single-use
+  invitation for a learner. The raw token is returned exactly once; only its SHA-256 hash is stored.
+  TTL defaults to 7 days (168h), clamped to [1h, 30d]. Non-learner or cross-tenant targets are rejected.
+- **Redemption:** the learner opens `?invite=<token>`; the web calls `bootstrap` (credentials
+  included) to receive the cookie, stores the returned identity + CSRF token in `lib/pilotSession`,
+  and strips the token from the URL/history.
+- **Requests:** in pilot mode the web sends the cookie (`credentials:"include"`) plus `x-csrf-token`
+  on mutations, and STOPS sending `x-user-id`/`x-tenant-id`. Identity is server-derived from the
+  cookie; request-body fields (e.g. `learnerId`) are non-authoritative.
+- **Additive:** with no invite and no stored session the app keeps the existing default/dev-header
+  path unchanged, so nothing breaks for local dev or the smoke suite.
+
+**Consequences.**
+- Learners get a real, revocable, per-user identity without a login screen (ADR-0002 preserved).
+- To fully close the header-spoofing gap in production the deployment must set `ALLOW_HEADER_AUTH`
+  off and distribute invite links; that flip, the live-browser walkthrough (P1.6 proof), and the
+  security-reviewer sign-off (P1.7) are the remaining pilot-identity steps.
+- `CORS_ALLOWED_ORIGINS` MUST be set to the exact web origin(s) in production. It gates both the
+  pilot Origin allowlist and browser CORS; when empty both degrade to permissive. As of the F1
+  hardening, `platform-api` **fails closed on boot** if it is empty while `ALLOW_INSECURE_DEFAULTS`
+  is off (mirroring the realtime gateway and the JWT/ticket/ML/ASR secret checks), so a misconfig is
+  loud rather than a silently decorative Origin check.
+- Invitation *distribution* (email/SMS/hand-out) is out of scope: the endpoint returns the token and
+  an optional `inviteUrl` (when `PILOT_INVITE_BASE_URL` is set); an operator delivers it.
+
+---
+
+## ADR-0018 — Release evidence is external, candidate-bound, and fail-closed
+**Date:** 2026-07-19 · **Status:** Accepted for engineering implementation
+
+**Context.** The original `scripts/release-manifest.mjs` writes its manifest
+inside the source checkout and then accepts either `HEAD` or `HEAD~1` as the
+candidate. That makes it possible for a stale manifest to appear valid after a
+second commit. It also ignores untracked files and accepts missing container
+image digests. The current manifest demonstrated all of these weaknesses: it
+was bound to an older commit and contains null image digests.
+
+**Decision.** Release evidence version 2 is generated as an external CI/release
+artifact, never as a tracked or untracked file inside the candidate checkout.
+Its verifier SHALL require the exact current candidate SHA, a completely clean
+working tree including untracked files, non-empty digests for every deployable
+service, and matching hashes for the declared candidate files. It SHALL also
+bind a passing build summary, SPDX SBOM, aggregate smoke summary, test summary,
+environment summary, expiry, and an Ed25519 signature to that exact candidate.
+The signer is selected from a trusted-signer policy rather than an arbitrary
+public-key command-line argument; the policy's hash and ID are themselves
+signed into the evidence.
+
+The trusted-signer policy is a release-control input, not candidate-owned
+source. The protected CI/release environment must mount and pin it; supplying
+an arbitrary policy while running the command locally does not create a trusted
+release. Version-1 manifests are historical evidence and cannot certify a new
+release. The evidence artifact is not, by itself, release authorization:
+approval, protected CI wiring, independent challenge, and operational evidence
+remain mandatory follow-up work in the readiness-recovery ledger.
+
+**Consequences.** A release engineer or CI job must provide an external manifest
+path, trusted-signer policy, and candidate-bound build/SBOM/smoke/test/
+environment summaries when generating or verifying a candidate. Existing
+`number-one-release` manifests will deliberately fail verification. A clean,
+reproducible positive path can be proven without a self-referential evidence
+commit, while any developer-local or incomplete evidence is rejected rather
+than softened.
+
+---
+
+## ADR-0014 — Scholar review and approval of Tajweed rule scope
+**Date:** 2026-07-15 · **Status:** Approved
+**Reviewer:** Sheikh Hisham al-Erbili (mujawwid, Erbil Pilot Advisor)
+
+**Context.** As required by Phase 1 Task 1.1, the rule-based Tajweed engine must be signed off by a qualified scholar before release. The scholar review packet (`docs/SCHOLAR_REVIEW.md`) lists the per-word and inter-word rules, simplifying constraints, and open questions.
+
+**Decision.**
+Sheikh Hisham al-Erbili reviewed the packet and approved the scope with the following responses to the six questions:
+1. **A1 — detection correctness:** The sites where the Madd Tabii, Madd Maleki, Qalqalah, Tafkhim, Shaddah, Idgham, Iqlab, and Ikhfa rules fire are doctrinally correct for Hafs an Asim.
+2. **A1 — acceptable simplifications:** Yes, the simplifications (e.g., Madd types not distinguished, Tafkhim on presence without rā' or Allah's lām, Idgham not split) are acceptable for a practice-assist tool under the condition that all outputs are teacher-reviewed and labeled provisional.
+3. **A1-1 — mushaddad ghunnah:** Approved to be withheld from this release (per ADR-0013) to ensure no incorrect claims are made.
+4. **A1-2 — ghayn in tafkhim:** Approved to omit `غ` for the current version; its omission is acceptable for practice assistance.
+5. **A3 — labelling:** Yes, "AI suggestion · not yet reviewed" combined with teacher-gating is a sufficient and honest frame.
+6. **Withhold list:** Only mushaddad ghunnah is withheld, which is already correctly handled by not generating it.
+
+**Consequences.** The Tajweed engine's rule scope is officially signed off and cleared. No additional code changes are needed to modify the active rule list for this release.
+
+---
+
+## ADR-0013 — Explicit release gating of the mushaddad ghunnah Tajweed engine limitation
+**Date:** 2026-07-15 · **Status:** Accepted (withheld, with explicit warning)
+
+**Context.** The rule-based tajweed engine (`services/ml-inference/tajweed.js`) handles natural madd, dagger alif, coarse ghunnah, and qalqalah. However, it does not currently implement nūn/mīm mushaddad ghunnah (obligatory nasalisation on نّ/مّ, e.g. in `إِنَّ`, `ثُمَّ`), which is marked as a `TODO` in `services/ml-inference/tajweed.test.mjs`. In a religious-education and Quran-learning product, shipping an AI/rule-based engine that silently ignores this rule or conflates it with simple shaddah without scholar sign-off poses a doctrinal correctness risk.
+
+**Decision.**
+1. We explicitly **withhold** mushaddad ghunnah from the active rule-detection set for the current release. The engine will continue to flag simple consonant doubling (`shaddah`) without incorrectly claiming it has graded the obligatory ghunnah nasalisation.
+2. We added a visible note in the scholar review guidelines (`docs/SCHOLAR_REVIEW.md` Question A1-1) to ensure the next iteration of the engine (which will implement the two-count mushaddad ghunnah detection) is reviewed and signed off by a qualified scholar before it is enabled.
+3. For general transparency, the learner-facing interface labels all AI-generated tajweed suggestions as *"AI suggestion · not yet reviewed"* and gates them behind the contract's teacher review/approval gates (`contracts` check `canShowLearnerFacingAiOutput`), preventing any unverified feedback from reaching the student.
+
+**Consequences.** At the time of this ADR, the scoped Tajweed behavior did not
+present half-implemented or unverified feedback to the learner. This
+component-level conclusion is not a current release-readiness claim; any new
+candidate still requires the recovery ledger's full source, evaluation, and
+scholar evidence. Implementing and signing off on the mushaddad ghunnah rule
+remains a post-release enhancement requiring a qualified scholar's verification
+packet sign-off.
+
+---
+
 ## ADR-0012 — i18next/react-i18next for web i18n; content ships English-only
 **Date:** 2026-07-08 · **Status:** Accepted
 
@@ -416,3 +555,139 @@ version; this ADR is the source of truth for that decision until the service is 
 production, at which point the upgrade above is mandatory, not optional. `services/asr-inference`
 does not import `transformers` at all in its current Dockerfile build (see the same
 `docker-compose.yml` comment thread) so is unaffected regardless.
+
+## ADR-0015 — Word-level audio timings via Quran.com v4, deterministically mapped to canonical words
+
+**Status:** Accepted · **Date:** 2026-07-15 · **Deciders:** owner (data provenance)
+
+### Context
+Real-time word-by-word follow-along (Tarteel's signature feature) needs per-word audio timings.
+None existed in the repo; `persistSessionAlignments` shipped `startMs:0/endMs:0`. Inventing
+millisecond timings is fabrication and forbidden. Real, matched timing data is available openly.
+
+### Decision
+Ingest word-level segment timings from **api.quran.com v4** (`verses/by_key/{key}?audio=7`,
+Al-Afasy) as static, checksummed JSON in `packages/quran-data`. The audio master is Quran.com's own
+(`verses.quran.com`), so timings and playback audio are matched by construction — no cross-master
+drift. Playback for timed surahs moves from the islamic.network CDN to the Quran.com master.
+
+Our canonical word segmentation does **not** match Quran.com's for two DETERMINISTIC reasons:
+(1) our ayah 1 of a basmala surah prepends the 4 basmala words; (2) our text tokenizes standalone
+waqf marks (e.g. ۛ) as separate words. The ingest normalizes both away and then **requires exact
+count parity** before mapping segment→canonical word id; any ayah that still doesn't match, or that
+carries a degenerate source segment (`end<=start`, observed at 2:164/2:249), is **excluded and
+logged**, never truncated or guessed. Basmala/waqf tokens simply carry no timing.
+
+### Options considered
+- **A. Quran.com v4 API + strict alignment (chosen).** Open data, matched master, deterministic
+  mapping, verified against canonical text. Coverage 340/344 pilot ayahs (99%).
+- **B. Graft QUL timings onto the existing islamic.network audio.** Rejected: different masters →
+  systematic drift; timings measured against one encode don't hold on another.
+- **C. Adopt Quran.com word keys as our canonical segmentation.** The proper long-term fix (audit's
+  data-layer recommendation) but a larger migration; deferred. This ADR maps onto our existing ids.
+
+### Consequences
+- Easier: follow-along highlight (T2), and any future per-word audio evidence.
+- Harder / follow-ups: ayah-1 basmala words and standalone waqf marks are intentionally un-timed
+  (won't highlight); the 4 excluded pilot ayahs need Quran.com word-key adoption (option C) to
+  recover. Commercial launch must confirm the specific reciter resource's license on QUL
+  (see docs/DATA_LICENSES.md#quran-com-word-segments-audio).
+
+## ADR-0016 — Sorani (Kurdish) ayah translations via Quran.com/QuranEnc, rendered verbatim
+
+**Status:** Accepted · **Date:** 2026-07-15 · **Deciders:** owner (content provenance)
+
+### Context
+The app's default language is Central Kurdish (Sorani, `ckb`) but it shipped ZERO translated verse
+content — a Kurdistan learner read an English UI over Arabic they may not understand. This is the
+core of the "#1 for Kurdish speakers" strategy (ROAD_TO_1 T4). Fabricating Quran translation is
+forbidden; a licensed Sorani translation exists as open data.
+
+### Decision
+Ingest translation id 81 (**Burhan Muhammad-Amin / Tafsiri Asan**, the default Kurdish on
+Quran.com, from the QuranEnc ecosystem) from api.quran.com v4 as static JSON in packages/quran-data,
+and display it under each ayah in the reader (RTL, `lang="ckb"`), toggleable, default-on when the
+app language is `ckb`. Text is stored and rendered **verbatim** — QuranEnc's license forbids any
+modification. Ayahs the source has no entry for (e.g. 108:3, which Quran.com 404s) are recorded as
+missing and render nothing — never invented.
+
+### Options considered
+- **A. Quran.com v4 id 81 (chosen).** Live, licensed, the region's default reading, 339/340 pilot
+  ayahs. Attribution + verbatim storage satisfy the license.
+- **B. QuranEnc bulk JSON dumps.** Same underlying text; heavier ingest, no per-ayah API. A valid
+  alternate if the API is unavailable.
+- **C. Machine translation.** Rejected outright — fabrication of religious content.
+
+### Consequences
+- Easier: Kurdish learners get meaning; sets the pattern for Arabic/other translations (add a slug).
+- Follow-ups (docs/DATA_LICENSES.md#ckb-sorani-translation): confirm the QuranEnc **version string**
+  and schedule periodic re-fetch (the license's continuing-update duty); Quran.com's API exposes no
+  version field, so `fetchedAt` is only a drift anchor. Native-speaker review of the *UI strings*
+  (ckb bundle) remains T5 — this ADR covers verse translations only.
+
+## ADR-0017 — /v1/force-align is a real CTC forced aligner (T3), replacing Whisper-prompt bias
+
+**Status:** Accepted · **Date:** 2026-07-16 · **Deciders:** owner (new model dependency)
+
+### Context
+`/v1/force-align` was dead code that used Whisper's `initial_prompt` to *bias* decoding — it did not
+guarantee word-for-word correspondence with the canonical text, so it could not produce trustworthy
+per-word timestamps (T3). The learner path still persisted `startMs:0/endMs:0`.
+
+### Decision
+Reimplement `/v1/force-align` as true CTC forced alignment: `torchaudio.functional.forced_align`
+against an **Apache-2.0** Arabic model (`jonatasgrosman/wav2vec2-large-xlsr-53-arabic`, overridable
+via `FORCE_ALIGN_MODEL`) on the diacritic-stripped canonical characters, so response word *i* IS
+transcript word *i*. Logic lives in `services/asr-inference/forced_align.py`; the alignment model
+loads lazily on first call (separate from the ASR model) so the service boots unchanged.
+
+Validated: `forced_align_arabic.py` imports the exact shipped `align_words` and checks it against
+Quran.com ground truth — mean word-START error ~64-100 ms over Al-Fatihah 1:1-1:3 -> PASS.
+
+### Consequences
+- New dependency: **`transformers`** (Apache-2.0), NOT yet in `requirements.lock.txt` — the endpoint
+  lazy-imports it and returns 500 if absent (other endpoints unaffected). Before deploying force-
+  align, regenerate the lock per its header (add `transformers`) and re-run pip-audit. Until then
+  the aligner runs from the service venv (where it was validated).
+- Remaining T3 wiring (separate PRs): ml-inference threads timing into the alignment response ->
+  Rust persists non-zero start_ms/end_ms -> web sends audioBase64. Last-word END drifts into
+  trailing silence (measure madd separately).
+
+## ADR-0019 — Interface locale capability gates prevent untranslated UI claims
+
+**Status:** Accepted through the 2026-07-19 readiness-recovery plan
+**Deciders:** product owner (approved recovery plan), implementation team
+
+### Context
+
+The web catalog declared Arabic `live` and Sorani `pilot` while
+`apps/web/src/locales/` contained only English. The application correctly fell
+back to English rather than fabricating religious-education copy, but it still
+offered those locales to real users and flipped the document to RTL. That is not
+a usable Arabic or Sorani interface. Separately, the reader has bounded,
+verbatim Sorani verse translations; this is source content, not proof that
+controls, consent, privacy, feedback, and errors are translated.
+
+### Decision
+
+Use the `localeCapabilities` registry as the one policy source for language
+selection. A normal user can select only a locale with a recorded interface
+capability. A source-language bundle records its path and key count; a future
+translated bundle must also record full-key coverage, native reviewer, review
+date, and review expiry. The normal selector and `?lng=` input resolve unavailable locales
+to English. Test and smoke mode may enumerate the catalog only to exercise
+fallback/direction regressions; that exception must not reach user builds.
+
+Until reviewed packs exist, English is the only offered interface. Sorani verse
+material remains a separately bounded, attributed capability and must not be
+marketed as a Sorani UI.
+
+### Consequences
+
+- The product stops misrepresenting an English fallback as live/pilot Arabic or
+  Sorani interface support.
+- A product decision and explicit source/coverage labelling are required before
+  exposing a bounded verse-translation control independently of the interface.
+- The registry is a local truthfulness guard, not R5 proof. Native-language,
+  Quran-content, RTL/accessibility, and candidate-bound review evidence are
+  still required before a non-English interface can return.

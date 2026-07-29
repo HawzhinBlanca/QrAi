@@ -1,5 +1,14 @@
 # QrAi — Ship-Readiness Runbook
 
+> **Historical runbook — superseded for release decisions on 2026-07-19.** Its
+> prior done/turnkey claims are not current-candidate proof: the prior release
+> manifest was stale and had null image digests, and the retained aggregate
+> smoke did not bind to the candidate. Do not use this document to declare the
+> app engineering-ship-ready or launch-ready. Use
+> `specs/readiness-recovery-10-10/tasks.md` and its candidate-bound evidence
+> requirements instead; this document remains as historical implementation
+> context only.
+
 The single source of truth for what stands between the current build and a **10/10 production
 launch**. Each item is either **done (in code, CI-verified)**, **turnkey (config/steps ready — a
 human runs them)**, or **needs a human/external decision that no code can supply**.
@@ -203,6 +212,7 @@ sifat output on pilot data.
 - **Housekeeping**: close PR #58 as superseded by PR #123; enable branch protection on `main`
   (required checks: `verify`, `build`) so the gates are mandatory, not conventional.
 
-Everything else is done in code and CI-verified on `main`. **QrAi is engineering-ship-ready; it
-is not launch-ready until the five items above (plus the four small protected-file edits in item 6)
-are executed by a human.**
+Historical conclusion, now invalidated: earlier work described the app as
+engineering-ship-ready. That conclusion must not be applied to any new
+candidate until the readiness-recovery ledger is fully evidenced and
+independently verified.

@@ -27,10 +27,25 @@ const navItems = [
 interface SidebarProps {
   activeSection: string;
   onSectionChange: (section: string) => void;
+  userRole?: string;
 }
 
-export function Sidebar({ activeSection, onSectionChange }: SidebarProps) {
+export function Sidebar({ activeSection, onSectionChange, userRole }: SidebarProps) {
   const { t } = useTranslation();
+
+  const filteredNavItems = navItems.filter((item) => {
+    if (userRole === "learner") {
+      return item.id === "learner" || item.id === "settings";
+    }
+    if (userRole === "teacher") {
+      return item.id === "teacher" || item.id === "learner" || item.id === "settings";
+    }
+    if (userRole === "scholar") {
+      return item.id === "scholar" || item.id === "learner" || item.id === "settings";
+    }
+    return true;
+  });
+
   return (
     <aside className="sidebar" aria-label="Primary navigation">
       <div className="brand">
@@ -39,7 +54,7 @@ export function Sidebar({ activeSection, onSectionChange }: SidebarProps) {
       </div>
 
       <nav className="nav-list">
-        {navItems.map((item) => {
+        {filteredNavItems.map((item) => {
           const Icon = item.icon;
           return (
             <button

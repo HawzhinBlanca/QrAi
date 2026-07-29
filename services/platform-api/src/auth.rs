@@ -1,8 +1,11 @@
-use axum::http::HeaderMap;
+use axum::http::{HeaderMap, Method};
 use chrono::{Duration, Utc};
 use jsonwebtoken::{DecodingKey, EncodingKey, Header, Validation, decode, encode};
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
+use sqlx::Row;
 
+use crate::AppState;
 use crate::types::{Actor, ActorRole, ApiError};
 
 const JWT_ALGORITHM: jsonwebtoken::Algorithm = jsonwebtoken::Algorithm::HS256;
@@ -23,6 +26,10 @@ pub struct JwtConfig {
     /// When true, spoofable x-tenant-id/x-user-id/x-user-role headers are accepted as a
     /// fallback identity (dev/CI only). Read once at startup from ALLOW_HEADER_AUTH.
     pub allow_header_auth: bool,
+    /// Exact-match Origin allowlist for pilot-session mutating requests, read once at
+    /// startup from CORS_ALLOWED_ORIGINS (same source as the CORS layer). None = unset
+    /// (dev): any non-empty Origin passes, mirroring the permissive dev CORS behavior.
+    pub pilot_allowed_origins: Option<Vec<String>>,
 }
 
 impl JwtConfig {
@@ -30,7 +37,16 @@ impl JwtConfig {
         let allow_header_auth = std::env::var("ALLOW_HEADER_AUTH")
             .map(|v| v == "1" || v == "true")
             .unwrap_or(false);
-        Self::with_header_auth(secret, allow_header_auth)
+        let pilot_allowed_origins = std::env::var("CORS_ALLOWED_ORIGINS")
+            .ok()
+            .map(|v| {
+                v.split(',')
+                    .map(|s| s.trim().trim_end_matches('/').to_string())
+                    .filter(|s| !s.is_empty())
+                    .collect::<Vec<_>>()
+            })
+            .filter(|v| !v.is_empty());
+        Self::with_header_auth(secret, allow_header_auth).with_pilot_origins(pilot_allowed_origins)
     }
 
     /// Explicit-toggle constructor (used by tests / embedders that must not depend on
@@ -41,7 +57,15 @@ impl JwtConfig {
             decoding_key: DecodingKey::from_secret(secret.as_bytes()),
             token_ttl_hours: 24,
             allow_header_auth,
+            pilot_allowed_origins: None,
         }
+    }
+
+    /// Explicit origin-allowlist constructor (tests / embedders). Production goes
+    /// through `new`, which reads CORS_ALLOWED_ORIGINS.
+    pub fn with_pilot_origins(mut self, origins: Option<Vec<String>>) -> Self {
+        self.pilot_allowed_origins = origins;
+        self
     }
 
     pub fn issue_token(
@@ -103,6 +127,146 @@ pub fn actor_from_headers(headers: &HeaderMap, jwt: &JwtConfig) -> Result<Actor,
         user_id,
         role,
     })
+}
+
+/// Resolves an Actor from Bearer token, Pilot cookie, or development headers.
+pub async fn resolve_actor(
+    method: &Method,
+    headers: &HeaderMap,
+    state: &AppState,
+) -> Result<Actor, ApiError> {
+    // 1. Try Bearer Token first
+    if let Some(auth_header) = headers.get("authorization")
+        && let Ok(auth_str) = auth_header.to_str()
+        && let Some(token) = auth_str.strip_prefix("Bearer ")
+    {
+        let claims = state.jwt_config.validate_token(token)?;
+        let role = ActorRole::parse_role(&claims.role).ok_or(ApiError::Unauthorized)?;
+        return Ok(Actor {
+            tenant_id: claims.tenant_id,
+            user_id: claims.sub,
+            role,
+        });
+    }
+
+    // 2. Try Pilot Session Cookie
+    if let Some(cookie_header) = headers.get("cookie")
+        && let Ok(cookie_str) = cookie_header.to_str()
+    {
+        let mut session_token = None;
+        for cookie in cookie_str.split(';') {
+            let cookie = cookie.trim();
+            if let Some(val) = cookie.strip_prefix("__Host-qrai-pilot=") {
+                session_token = Some(val.to_string());
+                break;
+            }
+        }
+
+        if let Some(token) = session_token {
+            let mut hasher = Sha256::new();
+            hasher.update(token.as_bytes());
+            let token_hash = format!("{:x}", hasher.finalize());
+
+            // Look up session from DB using SECURITY DEFINER function to bypass initial RLS
+            let row = sqlx::query("SELECT id, tenant_id, learner_id, csrf_token, idle_expires_at, absolute_expires_at FROM app.get_pilot_session_by_hash($1)")
+                .bind(&token_hash)
+                .fetch_optional(&state.pool)
+                .await?;
+
+            if let Some(row) = row {
+                let session_id: String = row.try_get("id")?;
+                let tenant_id: String = row.try_get("tenant_id")?;
+                let learner_id: String = row.try_get("learner_id")?;
+                let csrf_token: String = row.try_get("csrf_token")?;
+                let idle_expires_at: chrono::DateTime<Utc> = row.try_get("idle_expires_at")?;
+                let absolute_expires_at: chrono::DateTime<Utc> =
+                    row.try_get("absolute_expires_at")?;
+
+                let now = Utc::now();
+                if now > idle_expires_at || now > absolute_expires_at {
+                    return Err(ApiError::Unauthorized);
+                }
+
+                // If state-changing, enforce Origin and CSRF checks
+                if method == Method::POST
+                    || method == Method::PUT
+                    || method == Method::DELETE
+                    || method == Method::PATCH
+                {
+                    require_allowed_origin(headers, &state.jwt_config.pilot_allowed_origins)?;
+
+                    // CSRF check. Compare SHA-256 digests, not raw strings: digest
+                    // comparison timing reveals nothing about the token itself.
+                    if let Some(csrf_header) = headers.get("x-csrf-token") {
+                        let csrf_val = csrf_header
+                            .to_str()
+                            .map_err(|_| ApiError::BadRequest("Invalid CSRF header".to_string()))?;
+                        if Sha256::digest(csrf_val.as_bytes())
+                            != Sha256::digest(csrf_token.as_bytes())
+                        {
+                            return Err(ApiError::Unauthorized);
+                        }
+                    } else {
+                        return Err(ApiError::Unauthorized);
+                    }
+                }
+
+                // Roll the idle expiry
+                let new_idle = now + Duration::hours(8);
+                sqlx::query("UPDATE pilot_sessions SET last_seen_at = now(), idle_expires_at = $1 WHERE id = $2")
+                    .bind(new_idle)
+                    .bind(&session_id)
+                    .execute(&state.pool)
+                    .await?;
+
+                return Ok(Actor {
+                    tenant_id,
+                    user_id: learner_id,
+                    role: ActorRole::Learner,
+                });
+            }
+        }
+    }
+
+    // 3. Fallback: Header-based identity (only if allowed in dev/CI)
+    if state.jwt_config.allow_header_auth
+        && let Ok(tenant_id) = extract_header(headers, "x-tenant-id")
+        && let Ok(user_id) = extract_header(headers, "x-user-id")
+        && let Ok(role_str) = extract_header(headers, "x-user-role")
+        && let Some(role) = ActorRole::parse_role(&role_str)
+    {
+        return Ok(Actor {
+            tenant_id,
+            user_id,
+            role,
+        });
+    }
+
+    Err(ApiError::Unauthorized)
+}
+
+/// Enforces the pilot Origin policy: the header must be present and non-empty; when an
+/// allowlist is configured (CORS_ALLOWED_ORIGINS in production) it must be an exact
+/// member. Shared by the auth middleware path and the bootstrap handler.
+pub fn require_allowed_origin(
+    headers: &HeaderMap,
+    allowed: &Option<Vec<String>>,
+) -> Result<(), ApiError> {
+    let Some(origin_header) = headers.get("origin") else {
+        return Err(ApiError::Forbidden);
+    };
+    let origin = origin_header
+        .to_str()
+        .map_err(|_| ApiError::BadRequest("Invalid origin header".to_string()))?;
+    if origin.is_empty() {
+        return Err(ApiError::Forbidden);
+    }
+    if let Some(allowed) = allowed
+        && !allowed.iter().any(|a| a == origin)
+    {
+        return Err(ApiError::Forbidden);
+    }
+    Ok(())
 }
 
 fn extract_header(headers: &HeaderMap, name: &str) -> Result<String, ApiError> {

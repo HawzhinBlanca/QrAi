@@ -1,0 +1,124 @@
+{
+  "surah": 110,
+  "reciter": "alafasy",
+  "reciterName": "Mishary Rashid al-Afasy",
+  "source": "api.quran.com v4 recitation 7",
+  "audioBase": "https://verses.quran.com/",
+  "license": "See docs/DATA_LICENSES.md#quran-com-word-segments-audio",
+  "ayahs": [
+    {
+      "ayah": 1,
+      "audioUrl": "Alafasy/mp3/110001.mp3",
+      "words": [
+        {
+          "wordId": "110:1:5",
+          "startMs": 200,
+          "endMs": 680
+        },
+        {
+          "wordId": "110:1:6",
+          "startMs": 690,
+          "endMs": 3590
+        },
+        {
+          "wordId": "110:1:7",
+          "startMs": 3600,
+          "endMs": 4210
+        },
+        {
+          "wordId": "110:1:8",
+          "startMs": 4220,
+          "endMs": 5140
+        },
+        {
+          "wordId": "110:1:9",
+          "startMs": 5150,
+          "endMs": 6210
+        }
+      ]
+    },
+    {
+      "ayah": 2,
+      "audioUrl": "Alafasy/mp3/110002.mp3",
+      "words": [
+        {
+          "wordId": "110:2:1",
+          "startMs": 30,
+          "endMs": 1070
+        },
+        {
+          "wordId": "110:2:2",
+          "startMs": 1080,
+          "endMs": 2620
+        },
+        {
+          "wordId": "110:2:3",
+          "startMs": 2630,
+          "endMs": 3870
+        },
+        {
+          "wordId": "110:2:4",
+          "startMs": 3880,
+          "endMs": 4330
+        },
+        {
+          "wordId": "110:2:5",
+          "startMs": 4340,
+          "endMs": 5080
+        },
+        {
+          "wordId": "110:2:6",
+          "startMs": 5090,
+          "endMs": 5920
+        },
+        {
+          "wordId": "110:2:7",
+          "startMs": 5930,
+          "endMs": 7430
+        }
+      ]
+    },
+    {
+      "ayah": 3,
+      "audioUrl": "Alafasy/mp3/110003.mp3",
+      "words": [
+        {
+          "wordId": "110:3:1",
+          "startMs": 30,
+          "endMs": 1010
+        },
+        {
+          "wordId": "110:3:2",
+          "startMs": 1020,
+          "endMs": 1790
+        },
+        {
+          "wordId": "110:3:3",
+          "startMs": 1800,
+          "endMs": 2730
+        },
+        {
+          "wordId": "110:3:4",
+          "startMs": 2740,
+          "endMs": 4570
+        },
+        {
+          "wordId": "110:3:6",
+          "startMs": 4580,
+          "endMs": 6350
+        },
+        {
+          "wordId": "110:3:7",
+          "startMs": 6360,
+          "endMs": 7070
+        },
+        {
+          "wordId": "110:3:8",
+          "startMs": 7080,
+          "endMs": 8750
+        }
+      ]
+    }
+  ],
+  "excludedAyahs": []
+}

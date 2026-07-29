@@ -153,6 +153,27 @@ test("runTajweedExplainerBatch skips findings that already have an agent run (de
   );
 });
 
+test("runTajweedExplainerBatch skips findings with no id (can't be deduped → would re-run forever)", async () => {
+  // An id-less finding can never be recorded in the dedup set, so if it were processed it would be
+  // re-explained and re-recorded on EVERY tick — unbounded agent_runs growth. It must be skipped.
+  const findings = [
+    { rule: "Makhraj of ع", confidence: 0.84, sources: [] }, // no id
+    { id: "f2", rule: "Tafkhim of ص", confidence: 0.79, sources: [] },
+  ];
+  const written = [];
+  const summary = await runTajweedExplainerBatch({
+    fetchFindings: async () => findings,
+    fetchExisting: async () => [],
+    record: async (run) => {
+      written.push(run);
+      return { id: `run-${written.length}`, ...run };
+    },
+  });
+  assert.equal(summary.created, 1, "only the id-bearing finding is recorded");
+  assert.equal(summary.skipped, 1, "the id-less finding is skipped, not processed");
+  assert.deepEqual(written.map((r) => r.findingId), ["f2"]);
+});
+
 // --- Mistake Pattern Summarizer ---------------------------------------------
 
 test("summarizePatterns ranks recurring rules by frequency", () => {

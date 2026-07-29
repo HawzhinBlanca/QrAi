@@ -21,6 +21,7 @@ import os
 import re
 import json
 import base64
+import subprocess
 import tempfile
 import threading
 import time
@@ -37,6 +38,8 @@ import uvicorn
 from fastapi import Depends, FastAPI, Header, HTTPException, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
+
+from audio_guards import MAX_AUDIO_SECONDS, enforce_max_duration
 
 # API-key gate. The browser must NOT reach this service directly — it is fronted by the platform-api
 # /v1/asr/* proxy, which holds ASR_API_KEY server-side (like ML_API_KEY for ml-inference). ml-inference
@@ -363,6 +366,8 @@ async def transcribe(req: TranscribeRequest):
         tmp_path = tmp.name
 
     try:
+        # Reject over-long audio before running the (CPU-bound, potentially multi-minute) model.
+        enforce_max_duration(tmp_path)
         if asr_pipe is not None:
             # HF Quran ASR — this checkpoint is fine-tuned for Arabic Quran, so a plain
             # call returns diacritized Quran text. (Word-level timing comes from the
@@ -413,8 +418,13 @@ async def transcribe(req: TranscribeRequest):
             latencyMs=latency_ms,
         )
 
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Transcription failed: {str(e)}")
+    except HTTPException:
+        raise
+    except Exception:
+        # Log the real error server-side; return a generic message so internal detail (tensor
+        # shapes, ffmpeg command lines, temp paths) never crosses the trust boundary.
+        logger.exception("transcription failed")
+        raise HTTPException(status_code=500, detail="transcription failed")
     finally:
         os.unlink(tmp_path)
 
@@ -422,18 +432,16 @@ async def transcribe(req: TranscribeRequest):
 @app.post(
     "/v1/force-align",
     response_model=ForceAlignResponse,
-    dependencies=[Depends(require_rate_limit), Depends(require_asr_key), Depends(require_loaded_model)],
+    dependencies=[Depends(require_rate_limit), Depends(require_asr_key)],
 )
 async def force_align(req: ForceAlignRequest):
-    """Transcribe audio with Whisper word timestamps, using `req.transcript` as a decoding
-    bias (Whisper's `initial_prompt`) rather than a true forced/constrained alignment. This
-    is NOT presented as a guarantee that the returned words match the canonical transcript —
-    `initial_prompt` only nudges Whisper's own decoding toward text resembling it; Whisper can
-    still decode different words entirely (e.g. on a genuine misreading), and this endpoint does
-    not compare or reconcile its output against `req.transcript` at all. A real constrained
-    alignment (e.g. a CTC/Viterbi-based forced aligner) would guarantee word-for-word
-    correspondence; this does not. (Currently unreached in the live product — no caller of
-    /v1/force-align exists elsewhere in this repo.)
+    """TRUE CTC forced alignment (T3): aligns the audio to `req.transcript`'s words and returns a
+    per-word [start, end] in seconds + a confidence. Unlike the old Whisper-`initial_prompt` version
+    (which only biased decoding and did NOT guarantee word correspondence), this uses
+    `torchaudio.functional.forced_align` against an Apache-2.0 Arabic CTC model on the diacritic-
+    stripped canonical characters — so word i of the response IS word i of the transcript. Validated
+    to ~64ms word-start MAE vs Quran.com ground truth (see forced_align_arabic.py). The alignment
+    model is separate from the ASR model and loads lazily on first call.
     """
     start = time.time()
 
@@ -442,70 +450,72 @@ async def force_align(req: ForceAlignRequest):
     if not req.transcript:
         raise HTTPException(status_code=400, detail="transcript is required")
 
-    if model is None:
-        raise HTTPException(
-            status_code=501,
-            detail="Force alignment is not supported with the Hugging Face pipeline model. "
-            "Please configure ASR_MODEL to a standard Whisper model size (e.g., 'base') to enable force-alignment."
-        )
+    words = req.transcript.split()
+    if not words:
+        raise HTTPException(status_code=400, detail="transcript has no words")
 
     audio_bytes = decode_audio_b64(req.audioBase64)
     suffix = safe_audio_suffix(req.audioFormat)
 
-    with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
-        tmp.write(audio_bytes)
-        tmp_path = tmp.name
+    with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp_in:
+        tmp_in.write(audio_bytes)
+        in_path = tmp_in.name
+    wav_path = in_path + ".16k.wav"
 
     try:
-        # Use Whisper transcription with word timestamps as force alignment.
-        # Whisper's cross-attention provides word-level alignment against the audio.
-        # Run off the event loop: real, potentially multi-second CPU-bound inference --
-        # running it inline would block every other concurrent request to this process,
-        # including /health, for the full duration.
-        result = await asyncio.to_thread(
-            whisper.transcribe,
-            model,
-            tmp_path,
-            language=req.language,
-            word_timestamps=True,
-            initial_prompt=req.transcript,  # bias toward canonical text
-            verbose=False,
-        )
+        # Reject over-long audio up front (metadata probe, no decode) so a decompression bomb never
+        # reaches the single full-waveform CTC forward pass below.
+        enforce_max_duration(in_path)
 
-        # Build aligned words from Whisper's own word segments (see the docstring above: these
-        # are Whisper's own decoded words, not reconciled against req.transcript in any way).
-        aligned_words = []
+        # Decode/resample to 16kHz mono via ffmpeg (the aligner model's expected input), then align
+        # off the event loop — CTC inference is CPU-bound and would otherwise block /health etc.
+        def _run() -> tuple[list, float]:
+            subprocess.run(
+                # `-t` bounds the decode to just past the duration cap: even when the container
+                # duration was unknown (ffprobe returned 0, so enforce_max_duration let it through),
+                # ffmpeg cannot expand an arbitrarily long input into an unbounded waveform.
+                ["ffmpeg", "-y", "-i", in_path, "-ar", "16000", "-ac", "1",
+                 "-t", str(int(MAX_AUDIO_SECONDS) + 1), "-f", "wav", wav_path],
+                check=True, capture_output=True,
+            )
+            data, sr = sf.read(wav_path, dtype="float32")
+            # Backstop for the unknown-duration case: if the (now decode-bounded) audio is still over
+            # the cap, the original was too long — reject rather than align a silently truncated clip.
+            if len(data) / sr > MAX_AUDIO_SECONDS:
+                raise HTTPException(status_code=413, detail=f"audio too long; max {int(MAX_AUDIO_SECONDS)}s")
+            waveform = torch.from_numpy(data).unsqueeze(0)
+            from forced_align import align_words
 
-        if "segments" in result:
-            for segment in result["segments"]:
-                if "words" in segment:
-                    for w in segment["words"]:
-                        word_text = w.get("word", "").strip()
-                        if word_text:
-                            aligned_words.append(AlignedWord(
-                                word=word_text,
-                                start=round(w.get("start", 0.0), 3),
-                                end=round(w.get("end", 0.0), 3),
-                                score=round(w.get("probability", 0.0), 3),
-                            ))
+            spans = align_words(waveform, words)
+            return spans, len(data) / sr
 
-        duration = 0.0
-        if result.get("segments"):
-            duration = round(result["segments"][-1].get("end", 0.0), 3)
+        spans, duration = await asyncio.to_thread(_run)
 
-        latency_ms = max(1, int((time.time() - start) * 1000))
-
+        aligned_words = [
+            AlignedWord(word=words[i], start=round(s / 1000, 3), end=round(e / 1000, 3), score=sc)
+            for i, (s, e, sc) in enumerate(spans)
+        ]
         return ForceAlignResponse(
             words=aligned_words,
-            duration=duration,
-            modelVersion=f"whisper-{MODEL_NAME}-force-align",
-            latencyMs=latency_ms,
+            duration=round(duration, 3),
+            modelVersion=f"ctc-forced-align:{os.environ.get('FORCE_ALIGN_MODEL', 'wav2vec2-xlsr-53-arabic')}",
+            latencyMs=max(1, int((time.time() - start) * 1000)),
         )
-
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Force alignment failed: {str(e)}")
+    except HTTPException:
+        raise
+    except ValueError:
+        # align_words raises ValueError when the transcript needs more CTC tokens than the audio has
+        # emission frames (transcript longer than the audio supports) — a client input problem, 400.
+        raise HTTPException(status_code=400, detail="transcript is longer than the audio supports")
+    except Exception:
+        logger.exception("force alignment failed")
+        raise HTTPException(status_code=500, detail="force alignment failed")
     finally:
-        os.unlink(tmp_path)
+        for p in (in_path, wav_path):
+            try:
+                os.unlink(p)
+            except OSError:
+                pass
 
 
 def _analyze_tajweed_words_sync(tmp_path: str, words: list[dict]) -> list["TajweedWordFinding"]:
@@ -713,8 +723,9 @@ async def analyze_tajweed(req: TajweedAnalysisRequest):
         )
     except HTTPException:
         raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Tajweed analysis failed: {str(e)}")
+    except Exception:
+        logger.exception("tajweed analysis failed")
+        raise HTTPException(status_code=500, detail="tajweed analysis failed")
     finally:
         os.unlink(tmp_path)
 

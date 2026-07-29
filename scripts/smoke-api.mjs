@@ -349,8 +349,16 @@ function resolvePsql() {
 }
 
 function run(command, args) {
+  let finalCommand = command;
+  let finalArgs = args;
+  if (process.env.PSQL && command === process.env.PSQL) {
+    const parts = process.env.PSQL.split(" ");
+    finalCommand = parts[0];
+    const rewrittenArgs = args.map(arg => arg.replace("localhost:5433", "localhost:5432"));
+    finalArgs = [...parts.slice(1), ...rewrittenArgs];
+  }
   return new Promise((resolve, reject) => {
-    const child = spawn(command, args, { cwd: process.cwd(), env: process.env, stdio: ["ignore", "pipe", "pipe"] });
+    const child = spawn(finalCommand, finalArgs, { cwd: process.cwd(), env: process.env, stdio: ["ignore", "pipe", "pipe"] });
     const stdout = [];
     const stderr = [];
     child.stdout.on("data", (chunk) => stdout.push(String(chunk)));

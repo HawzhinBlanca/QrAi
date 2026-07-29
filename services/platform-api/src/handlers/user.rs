@@ -6,7 +6,6 @@ use serde_json::json;
 use sqlx::Row;
 
 use crate::AppState;
-use crate::auth::actor_from_headers;
 use crate::types::*;
 
 #[derive(Debug, Deserialize)]
@@ -22,6 +21,7 @@ pub struct RegisterRequest {
 
 pub async fn register(
     State(state): State<AppState>,
+    method: axum::http::Method,
     headers: HeaderMap,
     Json(req): Json<RegisterRequest>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
@@ -44,8 +44,17 @@ pub async fn register(
     // this prevents anyone from self-registering as admin (privilege escalation).
     let role = ActorRole::parse_role(&req.role).ok_or(ApiError::Forbidden)?;
     if role != ActorRole::Learner {
-        let caller = actor_from_headers(&headers, &state.jwt_config)?;
+        let caller = crate::auth::resolve_actor(&method, &headers, &state).await?;
         caller.require_any(&[ActorRole::Admin, ActorRole::Ops])?;
+        // An admin/ops may create elevated-role users only WITHIN THEIR OWN TENANT. The tx above is
+        // scoped to the client-supplied req.tenant_id, so RLS's `with check (tenant_id =
+        // app.current_tenant_id())` is satisfied for ANY tenant the caller names — role alone is not
+        // enough. Without this a tenant-A admin could POST {tenantId:"B", role:"admin", password:...}
+        // and mint an attacker-controlled admin in tenant B, then log in for full cross-tenant
+        // takeover. Mirrors the tenant-match issue_token already enforces (handlers/auth.rs).
+        if caller.tenant_id != req.tenant_id {
+            return Err(ApiError::Forbidden);
+        }
     }
 
     if !is_supported_language(&req.language) {

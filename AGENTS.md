@@ -65,6 +65,16 @@ SKIPS those DB tests when no DB is reachable — it never fakes them. CI runs th
 - Never run: `rm -rf`, `git push --force`, `git reset --hard` on shared branches, `curl|sh`.
 - Never commit secrets. Never disable a failing test, weaken an assertion, or use
   `--no-verify` to get past the gate.
+- **Never call `.normalize()` on canonical Qur'an text**, or on any string derived from it. The
+  shipped corpus is intentionally NOT in NFC — 5,771 of 6,236 ayahs change under `normalize("NFC")`,
+  which reorders shadda (U+0651) after its vowel. `services/asr-inference/server.py` depends on the
+  raw ordering to detect ghunnah, and every canonical checksum is computed over the shipped bytes,
+  so normalizing silently breaks tajweed detection AND checksum verification with no error. Pinned
+  by `packages/quran-data/fixtures/nfc-vectors.json` + `tests/nfc-invariant.test.ts`. This applies
+  to every runtime that touches the text (TS, Python, Rust, and any future Node/Dart port).
+- **Write Arabic character classes as `\u` escapes, never literal characters.** Combining marks are
+  invisible in an editor and in a diff; a literal-character regex in `forced_align.py` merged two
+  ranges, deleted every Arabic letter, and passed review (PR #258).
 
 ## Context hygiene
 - Keep your context window under ~50%. Use subagents for searches/log-reading and keep only

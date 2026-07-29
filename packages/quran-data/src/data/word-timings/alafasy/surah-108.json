@@ -1,0 +1,79 @@
+{
+  "surah": 108,
+  "reciter": "alafasy",
+  "reciterName": "Mishary Rashid al-Afasy",
+  "source": "api.quran.com v4 recitation 7",
+  "audioBase": "https://verses.quran.com/",
+  "license": "See docs/DATA_LICENSES.md#quran-com-word-segments-audio",
+  "ayahs": [
+    {
+      "ayah": 1,
+      "audioUrl": "Alafasy/mp3/108001.mp3",
+      "words": [
+        {
+          "wordId": "108:1:5",
+          "startMs": 150,
+          "endMs": 2120
+        },
+        {
+          "wordId": "108:1:6",
+          "startMs": 2130,
+          "endMs": 4970
+        },
+        {
+          "wordId": "108:1:7",
+          "startMs": 4980,
+          "endMs": 5900
+        }
+      ]
+    },
+    {
+      "ayah": 2,
+      "audioUrl": "Alafasy/mp3/108002.mp3",
+      "words": [
+        {
+          "wordId": "108:2:1",
+          "startMs": 30,
+          "endMs": 910
+        },
+        {
+          "wordId": "108:2:2",
+          "startMs": 920,
+          "endMs": 1970
+        },
+        {
+          "wordId": "108:2:3",
+          "startMs": 1980,
+          "endMs": 2790
+        }
+      ]
+    },
+    {
+      "ayah": 3,
+      "audioUrl": "Alafasy/mp3/108003.mp3",
+      "words": [
+        {
+          "wordId": "108:3:1",
+          "startMs": 30,
+          "endMs": 1660
+        },
+        {
+          "wordId": "108:3:2",
+          "startMs": 1670,
+          "endMs": 2750
+        },
+        {
+          "wordId": "108:3:3",
+          "startMs": 2760,
+          "endMs": 3220
+        },
+        {
+          "wordId": "108:3:4",
+          "startMs": 3230,
+          "endMs": 4250
+        }
+      ]
+    }
+  ],
+  "excludedAyahs": []
+}

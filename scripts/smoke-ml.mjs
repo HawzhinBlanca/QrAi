@@ -99,7 +99,8 @@ try {
   assert(denied.externalAsr.called === false, "external ASR stub was called without consent");
   assert(denied.reviewStatus === "teacher-review-required", "non-consented local fallback should require teacher review");
 
-  const audit = await getJson("/v1/audit-events?tenantId=tenant-smoke");
+  const allAudits = await getJson("/v1/audit-events?tenantId=tenant-smoke");
+  const audit = allAudits.filter((event) => event.traceId === smokeTraceId);
   assert(audit.some((event) => event.action === "privacy.external-asr.called"), "missing external ASR call audit event");
   assert(audit.some((event) => event.action === "privacy.external-asr.denied"), "missing external ASR denial audit event");
   assert(

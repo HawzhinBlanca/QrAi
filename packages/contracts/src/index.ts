@@ -94,6 +94,8 @@ export const CORE_TABLES = [
   "realtime_session_tickets",
   "privacy_jobs",
   "alignment_runs",
+  "pilot_invitations",
+  "pilot_sessions",
 ] as const;
 
 export const PROOF_GATES = [

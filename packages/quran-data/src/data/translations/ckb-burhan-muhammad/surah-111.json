@@ -1,0 +1,34 @@
+{
+  "surah": 111,
+  "slug": "ckb-burhan-muhammad",
+  "translationId": 81,
+  "translator": "Burhan Muhammad-Amin",
+  "language": "ckb",
+  "source": "api.quran.com v4 translation 81",
+  "publisher": "QuranEnc.com",
+  "license": "See docs/DATA_LICENSES.md#ckb-sorani-translation",
+  "fetchedAt": "2026-07-15",
+  "ayahs": [
+    {
+      "ayah": 1,
+      "text": "ده‌سته‌کانی بشکێت ئه‌بو له‌هه‌بو ڕسوا بێت، ئاشکرایه که هه‌ر ڕاسوایش ده‌بێت و‎ (له‌ناو ده‌چێت)."
+    },
+    {
+      "ayah": 2,
+      "text": "ماڵ و دارای و ئه‌و شتانه‌ی که به ده‌ستی هێناوه‌، فریای نه‌که‌وت."
+    },
+    {
+      "ayah": 3,
+      "text": "له ئاینده‌دا ده‌خرێته ناو ئاگرێکی بڵێسه‌داره‌وه‌."
+    },
+    {
+      "ayah": 4,
+      "text": "هه‌روه‌ها ژنه‌که‌شی که هه‌میشه هه‌ڵگری کۆڵه داره و (ئازاری پێغه‌مبه‌ر ده‌دات)."
+    },
+    {
+      "ayah": 5,
+      "text": "هه‌میشه گوریسێکی چنراو له پوشی خورما له گه‌ردنیایه‌تی (له قیامه‌تیش دا زنجیری ئاسن ده‌کرێته گه‌ردنی)."
+    }
+  ],
+  "missingAyahs": []
+}

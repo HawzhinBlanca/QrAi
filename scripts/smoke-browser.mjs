@@ -132,6 +132,7 @@ try {
   const summary = { appUrl, traceId: smokeTraceId, results };
   await writeFile(join(artifactDir, "summary.json"), JSON.stringify(summary, null, 2));
   console.log(JSON.stringify(summary));
+  process.exit(0);
 } finally {
   web?.stop();
 }

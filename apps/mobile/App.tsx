@@ -20,11 +20,11 @@ import {
   StyleSheet,
   Switch,
   Alert,
-  Platform,
 } from "react-native";
 import { Audio } from "expo-av";
 
 import {
+  audioFormatFromUri,
   authHeaders as buildAuthHeaders,
   buildConsentPayload,
   canStartRecording,
@@ -39,6 +39,11 @@ import {
 // Without this override a physical device or a staging/prod build could only ever reach its own
 // loopback interface, never the actual API host.
 const API_BASE = process.env.EXPO_PUBLIC_PLATFORM_API_URL || "http://127.0.0.1:8080";
+
+// One practice session covers the first N ayahs of the selected surah. Single source of truth so the
+// reader shows exactly what gets graded — showing the whole surah (286 ayahs for Al-Baqara) while
+// only ayahs 1..N are aligned would grade far less than the learner sees.
+const PRACTICE_AYAH_COUNT = 7;
 
 interface User {
   userId: string;
@@ -62,10 +67,31 @@ interface AlignmentResult {
   confidence: number;
 }
 
+interface Ayah {
+  ayahNumber: number;
+  id: string;
+  text: string;
+}
+
+// Login disabled by default (pilot/demo): open straight into the app as a default learner, mirroring
+// apps/web's VITE_REQUIRE_LOGIN bypass. The LoginScreen component is kept below, just not reached —
+// re-enable the login screen with EXPO_PUBLIC_REQUIRE_LOGIN=1. The default learner carries no token,
+// so API calls use the platform API's header-auth identity (ALLOW_HEADER_AUTH), same as the web bypass.
+const LOGIN_ENABLED = process.env.EXPO_PUBLIC_REQUIRE_LOGIN === "1";
+const DEFAULT_LEARNER: User = {
+  userId: "learner-1",
+  tenantId: "hikmah-pilot-erbil",
+  role: "learner",
+  displayName: "Learner",
+  token: "",
+};
+
 export default function App() {
-  const [user, setUser] = useState<User | null>(null);
+  const [user, setUser] = useState<User | null>(LOGIN_ENABLED ? null : DEFAULT_LEARNER);
   const [surahs, setSurahs] = useState<Surah[]>([]);
   const [selectedSurah, setSelectedSurah] = useState<number>(1);
+  const [verses, setVerses] = useState<Ayah[]>([]);
+  const [versesLoading, setVersesLoading] = useState(false);
   const [alignments, setAlignments] = useState<AlignmentResult[]>([]);
   const [recording, setRecording] = useState(false);
   const [loading, setLoading] = useState(false);
@@ -125,6 +151,25 @@ export default function App() {
       });
     return () => controller.abort();
   }, [user]);
+
+  // === Load the selected surah's ayahs so the learner can SEE the text to recite ===
+  // Same stale-response/abort guard as the surah-list fetch above: switching surah quickly must
+  // never let an earlier response overwrite the current selection's verses.
+  useEffect(() => {
+    if (!user) return;
+    const controller = new AbortController();
+    setVersesLoading(true);
+    fetch(`${API_BASE}/v1/quran/surahs/${selectedSurah}`, { signal: controller.signal })
+      .then((r) => r.json())
+      .then((d) => setVerses(Array.isArray(d?.ayahs) ? d.ayahs : []))
+      .catch((e) => {
+        if (e instanceof Error && e.name === "AbortError") return;
+        setError("Failed to load verses");
+        setVerses([]);
+      })
+      .finally(() => setVersesLoading(false));
+    return () => controller.abort();
+  }, [user, selectedSurah]);
 
   // === Audio Recording ===
   const startRecording = useCallback(async () => {
@@ -222,7 +267,9 @@ export default function App() {
         reader.readAsDataURL(blob);
       });
 
-      const audioFormat = Platform.OS === "ios" ? "m4a" : "webm";
+      // Derive the format from the recording expo-av actually wrote (HIGH_QUALITY = .m4a on both
+      // ios and android), not a platform guess — see audioFormatFromUri.
+      const audioFormat = audioFormatFromUri(uri);
       const headers = { "content-type": "application/json", ...authHeaders() };
 
       // 1) Transcribe via the platform API's ASR proxy (server-side ASR key; audio never hits ASR directly).
@@ -239,9 +286,9 @@ export default function App() {
       // ayahEnd must never exceed the selected surah's real ayah count — the ML service's
       // getCanonicalWords only validates ayahStart against it, so an out-of-range ayahEnd (e.g. 7
       // for Surah 97 Al-Qadr, which has 5 ayahs) used to silently align a shorter range with no
-      // error. Cap at 7 to match the practice-session length used elsewhere in this app.
-      const selectedSurahAyahCount = surahs.find((s) => s.surahNumber === selectedSurah)?.ayahCount ?? 7;
-      const ayahEnd = Math.min(selectedSurahAyahCount, 7);
+      // error. Cap at PRACTICE_AYAH_COUNT to match the practice-session length used elsewhere in this app.
+      const selectedSurahAyahCount = surahs.find((s) => s.surahNumber === selectedSurah)?.ayahCount ?? PRACTICE_AYAH_COUNT;
+      const ayahEnd = Math.min(selectedSurahAyahCount, PRACTICE_AYAH_COUNT);
       const alignResp = await fetch(`${API_BASE}/v1/ml/alignments:predict`, {
         method: "POST",
         headers,
@@ -288,7 +335,9 @@ export default function App() {
         <Text style={styles.label}>Surah:</Text>
         <FlatList
           horizontal
-          data={surahs.slice(0, 10)}
+          // ponytail: all 114 surahs, horizontal scroll. A searchable/grid picker is the upgrade
+          // when scrolling to the later surahs feels long — the FlatList already virtualizes.
+          data={surahs}
           keyExtractor={(item) => String(item.surahNumber)}
           renderItem={({ item }) => (
             <TouchableOpacity
@@ -299,6 +348,25 @@ export default function App() {
             </TouchableOpacity>
           )}
         />
+      </View>
+
+      {/* Verses to recite — the learner must SEE the canonical Arabic before reciting it.
+          Uthmani text straight from the platform API; never translated or altered. */}
+      <View style={styles.readerSection}>
+        {versesLoading ? (
+          <Text style={styles.readerLoading}>Loading verses…</Text>
+        ) : (
+          <FlatList
+            data={verses.slice(0, PRACTICE_AYAH_COUNT)}
+            keyExtractor={(item) => item.id}
+            renderItem={({ item }) => (
+              <View style={styles.verseLine}>
+                <Text style={styles.verseNumber}>{item.ayahNumber}</Text>
+                <Text style={styles.verseArabic}>{item.text}</Text>
+              </View>
+            )}
+          />
+        )}
       </View>
 
       {/* Consent — recording is blocked until the first toggle is on */}
@@ -356,12 +424,24 @@ function LoginScreen({
   onLogin,
   error,
 }: {
-  onLogin: (userId: string, tenantId: string, password: string) => void;
+  onLogin: (userId: string, tenantId: string, password: string) => void | Promise<void>;
   error: string | null;
 }) {
   const [userId, setUserId] = useState("learner-1");
   const [tenantId, setTenantId] = useState("hikmah-pilot-erbil");
   const [password, setPassword] = useState("");
+  // Give the tap visible feedback and block a double-submit while the login request is in flight —
+  // otherwise Sign In looks inert on a slow network and invites a second, racing submission.
+  const [submitting, setSubmitting] = useState(false);
+  const submit = async () => {
+    if (submitting) return;
+    setSubmitting(true);
+    try {
+      await onLogin(userId, tenantId, password);
+    } finally {
+      setSubmitting(false);
+    }
+  };
   return (
     <View style={styles.container}>
       <Text style={styles.title}>Quran AI</Text>
@@ -376,8 +456,12 @@ function LoginScreen({
         secureTextEntry
         autoCapitalize="none"
       />
-      <TouchableOpacity style={styles.recordButton} onPress={() => onLogin(userId, tenantId, password)}>
-        <Text style={styles.recordButtonText}>Sign In</Text>
+      <TouchableOpacity
+        style={[styles.recordButton, submitting && styles.recordButtonDisabled]}
+        onPress={submit}
+        disabled={submitting}
+      >
+        <Text style={styles.recordButtonText}>{submitting ? "Signing in…" : "Sign In"}</Text>
       </TouchableOpacity>
       {error && <Text style={styles.error}>{error}</Text>}
     </View>
@@ -393,6 +477,11 @@ const styles = StyleSheet.create({
   surahChip: { padding: 10, backgroundColor: "#2a2a4e", borderRadius: 8, marginRight: 8 },
   surahChipActive: { backgroundColor: "#4a90d9" },
   surahChipText: { color: "#e0e0e0", fontSize: 14 },
+  readerSection: { flex: 1, marginBottom: 16 },
+  readerLoading: { color: "#888", fontSize: 14, textAlign: "center", paddingVertical: 20 },
+  verseLine: { flexDirection: "row-reverse", alignItems: "flex-start", backgroundColor: "#22223c", borderRadius: 8, padding: 12, marginBottom: 8 },
+  verseNumber: { color: "#4a90d9", fontSize: 13, fontWeight: "bold", marginLeft: 10, minWidth: 22, textAlign: "center" },
+  verseArabic: { color: "#e8e8f0", fontSize: 22, lineHeight: 40, flex: 1, textAlign: "right", writingDirection: "rtl" },
   consentRow: { flexDirection: "row", alignItems: "center", marginBottom: 10 },
   consentText: { color: "#cfcfe0", fontSize: 13, flex: 1, marginLeft: 10 },
   recordButton: { backgroundColor: "#4a90d9", padding: 20, borderRadius: 12, alignItems: "center", marginVertical: 20 },

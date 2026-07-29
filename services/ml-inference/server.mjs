@@ -409,6 +409,13 @@ async function predictAlignment(requestBody) {
   const consentExternalAsr = consent.externalAsrProcessing ?? false;
   const asrAllowed = externalAsrRequested && consentExternalAsr && guardianApproved;
   const childProfile = requestBody.profileKind === "child";
+  // The SINGLE authority for whether this request may send audio to the ASR service. Used both to
+  // decide the audit event below AND to gate the actual transcribe call, so the two can never
+  // diverge (they used to: the transcribe fired on `audioBase64` presence alone, so a child-profile
+  // request with guardianApproved=false was audited "external-asr.denied" yet still shipped the
+  // child's audio to Whisper). `asrAllowed` already requires guardianApproved, so the child clause
+  // is belt-and-suspenders.
+  const asrActuallyAllowed = asrAllowed && (!childProfile || guardianApproved);
 
   let externalAsr;
   if (asrAllowed && !childProfile) {
@@ -450,7 +457,6 @@ async function predictAlignment(requestBody) {
 
   if (fixtureCase && USE_GOLDEN_FIXTURES) {
     // Return golden fixture alignment data
-    const asrActuallyAllowed = asrAllowed && (!childProfile || guardianApproved);
     confidence = asrActuallyAllowed ? fixtureCase.alignment.confidence : fixtureCase.alignment.fallbackConfidence;
     reviewStatus = !asrActuallyAllowed
       ? "teacher-review-required"
@@ -479,8 +485,11 @@ async function predictAlignment(requestBody) {
     // Get recognized text: either from ASR (audio), from requestBody, or perfect recitation
     let recognizedWords;
     let asrResult = null;
-    if (requestBody.audioBase64) {
-      // Real acoustic ASR: send audio to Whisper service
+    if (requestBody.audioBase64 && asrActuallyAllowed) {
+      // Real acoustic ASR: send audio to Whisper service — ONLY when consent (and, for a child
+      // profile, guardian approval) actually permits it. Without this gate the audio was sent
+      // regardless of the consent decision recorded above. When not allowed, we fall through to the
+      // recognizedText / canonical path below and the audio is never processed.
       asrResult = await transcribeAudio(requestBody.audioBase64, requestBody.audioFormat ?? "webm", "ar");
       recognizedWords = asrResult.words.map((w) => w.word);
     } else if (requestBody.recognizedText && Array.isArray(requestBody.recognizedText)) {

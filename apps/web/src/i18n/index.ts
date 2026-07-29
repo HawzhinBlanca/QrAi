@@ -3,7 +3,7 @@ import { initReactI18next } from "react-i18next";
 
 import en from "../locales/en.json";
 
-// SUPPORTED_LANGUAGE_CODES (packages/contracts) lists 9 languages in the language picker, but
+// SUPPORTED_LANGUAGE_CODES (packages/contracts) catalogs 9 languages, but
 // real translated content exists ONLY for English so far — the others are placeholders. This is
 // deliberate, not an oversight: shipping AI-guessed Kurdish Sorani / Arabic / Urdu / Turkish /
 // Indonesian / Malay / French / German UI text for a religious-education product without

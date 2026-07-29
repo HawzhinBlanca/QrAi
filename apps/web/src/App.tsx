@@ -1,4 +1,4 @@
-import { Suspense, lazy, useEffect, useMemo, useRef, useState } from "react";
+import { Suspense, lazy, useEffect, useMemo, useRef, useState, useCallback } from "react";
 import { motion } from "motion/react";
 import { Send } from "lucide-react";
 import { useTranslation } from "react-i18next";
@@ -12,26 +12,35 @@ import { LearnerHome } from "./components/LearnerHome";
 import { PracticeFlow } from "./components/PracticeFlow";
 import { Sidebar } from "./components/Sidebar";
 import { TopBar } from "./components/TopBar";
+import { TeacherSurface } from "./components/TeacherSurface";
 import { ErrorBoundary } from "./components/ErrorBoundary";
 import { OfflineBanner } from "./components/OfflineBanner";
 const LoginScreen = lazy(() => import("./components/LoginScreen").then(m => ({ default: m.LoginScreen })));
 import { AuthProvider, useAuth } from "./lib/auth";
 import { startAsr, splitTranscript, isAsrSupported, type AsrController } from "./lib/asr";
-import { startLocalAudioRecording, startServerAsr, isServerAsrSupported, type ServerAsrController } from "./lib/serverAsr";
+import { startLocalAudioRecording, startServerAsr, isServerAsrSupported, blobToBase64, type ServerAsrController } from "./lib/serverAsr";
 import { canRecordRecitation, canUseExternalSpeechFallback } from "./lib/consent";
 import { startMicVisualizer, type MicVisualizerStop } from "./lib/micVisualizer";
+import { getSurahTimings, getAyahTimings, ayahAudioUrl, recitingWordIdAt } from "./lib/wordTimings";
+import { getSurahTranslation, translationByAyah } from "./lib/translations";
+import type { SurahTimings } from "@quran-ai/quran-data";
 import {
   predictAlignment,
   predictTajweed,
   createRecitationSession,
   persistSessionAlignments,
+  forceAlign,
+  buildTimingsByWordId,
+  type WordTimingMs,
   requestTeacherReview,
   fetchSurahList,
   type AlignmentResult,
   type TajweedFinding,
   type RecitationConsent,
   type SurahInfo,
+  bootstrapPilotSession,
 } from "./lib/api";
+import { getPilotIdentity, type PilotIdentity } from "./lib/pilotSession";
 import {
   DEFAULT_SURAH,
   practiceRange,
@@ -42,6 +51,7 @@ import {
 import {
   fetchMemorizationPlan,
   fetchLearnerProgress,
+  resolveSelectableInterfaceLanguage,
   updateLearnerProgress,
   supportedLanguages,
   type MemorizationPlan,
@@ -101,19 +111,97 @@ function AppInner() {
 function AuthenticatedApp({ bypassLogin = false }: { bypassLogin?: boolean }) {
   const { t } = useTranslation();
   const { user, logout } = useAuth();
+  // Pilot (no-login) identity, restored from a prior bootstrap and refreshed when an invite link
+  // is opened. When set, it drives the app's identity via the __Host-qrai-pilot cookie (P1.6).
+  const [pilotIdentity, setPilotIdentityState] = useState<PilotIdentity | null>(() => getPilotIdentity());
+  // True only while an `?invite=` bootstrap is in flight, so we DON'T fire learner data loads with the
+  // pre-bootstrap default identity (which 401s under header-auth-off). Cleared when bootstrap settles.
+  const [pilotBootstrapPending, setPilotBootstrapPending] = useState<boolean>(
+    () =>
+      bypassLogin &&
+      typeof window !== "undefined" &&
+      new URLSearchParams(window.location.search).has("invite") &&
+      !getPilotIdentity(),
+  );
+
+  // One-shot: if the URL carries an admin-minted `?invite=<token>`, exchange it for a pilot session
+  // cookie, then strip the token from the address bar/history. An invalid/expired invite leaves the
+  // existing (default/dev) identity in place — additive, never breaks the current no-invite path.
+  useEffect(() => {
+    if (!bypassLogin || typeof window === "undefined") return;
+    const params = new URLSearchParams(window.location.search);
+    const invite = params.get("invite");
+    if (!invite) return;
+    let cancelled = false;
+    void (async () => {
+      try {
+        const identity = await bootstrapPilotSession(invite);
+        if (!cancelled) setPilotIdentityState(identity);
+      } catch {
+        // Invalid/expired invite — stay on the current identity.
+      } finally {
+        setPilotBootstrapPending(false);
+        params.delete("invite");
+        const query = params.toString();
+        window.history.replaceState(
+          {},
+          "",
+          `${window.location.pathname}${query ? `?${query}` : ""}${window.location.hash}`,
+        );
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [bypassLogin]);
+
   // Login-disabled mode (default): use a default learner so the app runs without a
   // login step. Swapped for the real authenticated user once VITE_REQUIRE_LOGIN=1.
   // Memoized so the reference is stable — it's a dependency of the data-loading effect,
   // and a fresh object each render would loop it.
   const effectiveUser = useMemo(
-    () =>
-      bypassLogin
-        ? { userId: "learner-1", tenantId: "hikmah-pilot-erbil", role: "learner", displayName: "Learner", token: "" }
-        : user,
-    [bypassLogin, user],
+    () => {
+      if (bypassLogin) {
+        // A live pilot session wins: identity comes from the invite the learner was actually given,
+        // authenticated server-side by the cookie (token stays empty so actorHeaders uses cookie+CSRF).
+        if (pilotIdentity) {
+          return {
+            userId: pilotIdentity.userId,
+            tenantId: pilotIdentity.tenantId,
+            role: pilotIdentity.role,
+            displayName: pilotIdentity.displayName,
+            token: "",
+          };
+        }
+
+        const isTestEnv = import.meta.env.MODE === "test";
+        const defaultRole = isTestEnv ? "admin" : "learner";
+        const defaultDisplayName = isTestEnv ? "Admin" : "Learner";
+
+        if (typeof window !== "undefined") {
+          const params = new URLSearchParams(window.location.search);
+          const smokeMode = params.get("smokeMode");
+          if (smokeMode === "teacher") {
+            return { userId: "teacher-1", tenantId: "hikmah-pilot-erbil", role: "teacher", displayName: "Teacher", token: "" };
+          }
+          if (smokeMode === "admin") {
+            return { userId: "admin-1", tenantId: "hikmah-pilot-erbil", role: "admin", displayName: "Admin", token: "" };
+          }
+        }
+        return { userId: "learner-1", tenantId: "hikmah-pilot-erbil", role: defaultRole, displayName: defaultDisplayName, token: "" };
+      }
+      return user;
+    },
+    [bypassLogin, user, pilotIdentity],
   );
   const authToken = effectiveUser?.token || undefined;
-  const [activeLanguage, setActiveLanguage] = useState<SupportedLanguageCode>("ckb");
+  const [activeLanguage, setActiveLanguage] = useState<SupportedLanguageCode>(() => {
+    if (typeof window !== "undefined") {
+      const paramLng = new URLSearchParams(window.location.search).get("lng");
+      if (paramLng) return resolveSelectableInterfaceLanguage(paramLng);
+    }
+    return "en";
+  });
   const [activeTab, setActiveTab] = useState("recitation");
   const [activeSection, setActiveSection] = useState<AppSection>(getInitialSection);
   const [practiceMode, setPracticeMode] = useState<PracticeMode>(getInitialPracticeMode);
@@ -157,6 +245,7 @@ function AuthenticatedApp({ bypassLogin = false }: { bypassLogin?: boolean }) {
     consentVersion: "pilot-consent-v1",
   });
   const [apiError, setApiError] = useState<string | null>(null);
+  const [platformOffline, setPlatformOffline] = useState(false);
   // True while the reader verses for a surah are being (re)fetched, so the reader can show an
   // aria-busy loading affordance instead of looking frozen on a slow/switched surah (P2.9).
   const [isLoadingVerses, setIsLoadingVerses] = useState(false);
@@ -187,6 +276,21 @@ function AuthenticatedApp({ bypassLogin = false }: { bypassLogin?: boolean }) {
   // Local ayah number of the reference recitation currently playing (or paused), so the reader can
   // highlight and scroll to the verse the learner is hearing — audio-text sync for the Listen step.
   const [playingAyah, setPlayingAyah] = useState<number | null>(null);
+  // Word-level follow-along (T2): the canonical word id (`surah:ayah:index`) currently being recited
+  // in the reference audio, or null. Driven by the matched word timings; null for surahs with no
+  // timing data (graceful verse-level fallback). Held in a ref too so the audio `timeupdate` handler
+  // reads the latest timings without being re-bound every render.
+  const [recitingWordId, setRecitingWordId] = useState<string | null>(null);
+  const surahTimingsRef = useRef<SurahTimings | null>(null);
+  // Reciter/source attribution shown whenever the matched (Quran.com) reference audio is in use —
+  // a licensing requirement (see docs/DATA_LICENSES.md#quran-com-word-segments-audio). null when the
+  // surah has no timing data and the fallback CDN audio is used.
+  const [recitationAttribution, setRecitationAttribution] = useState<string | null>(null);
+  // Sorani translation (T4): per-ayah verbatim text for the reader, its attribution, and whether it
+  // is shown. Default on for Kurdish learners (the whole point of the translation), toggleable.
+  const [translationMap, setTranslationMap] = useState<Map<number, string>>(new Map());
+  const [translationAttribution, setTranslationAttribution] = useState<string | null>(null);
+  const [showTranslation, setShowTranslation] = useState<boolean>(activeLanguage === "ckb");
   // The learner's own recorded recitation, kept for playback.
   const [recordedAudioUrl, setRecordedAudioUrl] = useState<string>("");
   const recordingAudioRef = useRef<HTMLAudioElement | null>(null);
@@ -205,6 +309,42 @@ function AuthenticatedApp({ bypassLogin = false }: { bypassLogin?: boolean }) {
       if (recordedAudioUrl) URL.revokeObjectURL(recordedAudioUrl);
     };
   }, [recordedAudioUrl]);
+
+  // Release ALL live media on unmount: stop the mic (server ASR recorder + mic visualizer's
+  // AudioContext + Web Speech) and pause any playing audio. With login disabled AuthenticatedApp
+  // rarely unmounts, but if it does (e.g. logout when VITE_REQUIRE_LOGIN=1) a hot mic or a running
+  // AudioContext must not linger — a privacy issue. Reads refs directly so it needs no deps.
+  useEffect(() => {
+    return () => {
+      try {
+        visualizerStopRef.current?.();
+      } catch {
+        // visualizer already stopped
+      }
+      serverAsrRef.current?.stop();
+      asrRef.current?.stop();
+      audioRef.current?.pause();
+      recordingAudioRef.current?.pause();
+    };
+  }, []);
+
+  // Role-gated section redirection to prevent URL/state-based bypass
+  useEffect(() => {
+    const role = effectiveUser?.role;
+    if (role === "learner") {
+      if (activeSection !== "learner" && activeSection !== "settings") {
+        setActiveSection("learner");
+      }
+    } else if (role === "teacher") {
+      if (activeSection !== "teacher" && activeSection !== "learner" && activeSection !== "settings") {
+        setActiveSection("teacher");
+      }
+    } else if (role === "scholar") {
+      if (activeSection !== "scholar" && activeSection !== "learner" && activeSection !== "settings") {
+        setActiveSection("scholar");
+      }
+    }
+  }, [effectiveUser?.role, activeSection]);
 
   // Auto-dismiss the inline consent prompt the instant consent becomes sufficient, so the learner
   // can tap Record and go — no separate "done" step, no navigating back to Learner Home.
@@ -231,6 +371,14 @@ function AuthenticatedApp({ bypassLogin = false }: { bypassLogin?: boolean }) {
     document.documentElement.lang = activeLanguage;
   }, [activeLanguage]);
 
+  // Default the verse translation ON for Kurdish (ckb) and off otherwise WHENEVER the UI language
+  // changes — otherwise the useState initializer only honored ?lng=ckb at first load, so a learner
+  // who picked Kurdish from the TopBar dropdown saw the Arabic-only reader with no Sorani line. A
+  // manual toggle afterward is respected until the next language change (deps: [activeLanguage]).
+  useEffect(() => {
+    setShowTranslation(activeLanguage === "ckb");
+  }, [activeLanguage]);
+
   const activeStepIndex = Math.max(0, practiceSteps.findIndex((step) => step.id === practiceMode));
   const isLearnerHome = activeSection === "learner" && practiceMode === "home";
   const pageTitle =
@@ -242,35 +390,104 @@ function AuthenticatedApp({ bypassLogin = false }: { bypassLogin?: boolean }) {
         ? t("app.titleSettings")
         : t("app.titleInternal");
 
-  // Load the full surah list once so the learner can pick any of the 114 surahs. On
-  // failure the picker stays on the default surah (still fully usable).
-  useEffect(() => {
-    void fetchSurahList()
+  const loadInitialData = useCallback(() => {
+    setApiError(null);
+    setPlatformOffline(false);
+
+    const isTestOrSmoke =
+      import.meta.env.MODE === "test" ||
+      (typeof window !== "undefined" && new URLSearchParams(window.location.search).has("smoke"));
+
+    fetchSurahList()
       .then((list) => {
-        if (list.length === 0) return;
+        if (list.length === 0) {
+          if (!isTestOrSmoke) {
+            setPlatformOffline(true);
+            setApiError(t("app.errors.platformApiUnreachable"));
+          }
+          return;
+        }
         setSurahList(list);
-        // Keep the selection's metadata in sync with the API record (same surah number).
         setSelectedSurah((current) => list.find((s) => s.surahNumber === current.surahNumber) ?? current);
       })
-      .catch(() => {});
-  }, []);
+      .catch((err) => {
+        console.error("Failed to fetch surah list:", err);
+        if (!isTestOrSmoke) {
+          setPlatformOffline(true);
+          setApiError(t("app.errors.platformApiUnreachable"));
+        }
+      });
+
+    // Hold learner loads until a pending pilot bootstrap settles, so they never fire with the
+    // pre-bootstrap default identity (which would 401 under header-auth-off).
+    if (effectiveUser && !pilotBootstrapPending) {
+      loadWeeklyProgress(effectiveUser.tenantId, effectiveUser.userId, authToken)
+        .then(setWeeklyProgress)
+        .catch((err) => {
+          console.error("Failed to fetch weekly progress:", err);
+        });
+      fetchMemorizationPlan(effectiveUser.tenantId, effectiveUser.userId, authToken)
+        .then(setMemorizationPlan)
+        .catch((err) => {
+          console.error("Failed to fetch memorization plan:", err);
+        });
+      fetchLearnerProgress(effectiveUser.tenantId, effectiveUser.userId, authToken)
+        .then(setProgress)
+        .catch((err) => {
+          console.error("Failed to fetch learner progress:", err);
+          if (!isTestOrSmoke) {
+            setPlatformOffline(true);
+            setApiError(t("app.errors.platformApiUnreachable"));
+          }
+        });
+    }
+  }, [authToken, effectiveUser, t, pilotBootstrapPending]);
+
+  useEffect(() => {
+    loadInitialData();
+  }, [loadInitialData]);
 
   // (Re)load the reader verses whenever the selected surah changes (and on first mount).
   useEffect(() => {
     void refreshQuranVerses(selectedSurah.surahNumber);
   }, [selectedSurah.surahNumber]);
 
+  // Load word-level timings for the selected surah so the Listen step can follow along word-by-word.
+  // Stored in a ref (read by the audio timeupdate handler); the stale-surah guard prevents a slow
+  // load for a previous surah from winning after the learner has switched.
   useEffect(() => {
-    if (effectiveUser) {
-      void loadWeeklyProgress(effectiveUser.tenantId, effectiveUser.userId, authToken).then(setWeeklyProgress).catch(() => {});
-      void fetchMemorizationPlan(effectiveUser.tenantId, effectiveUser.userId, authToken)
-        .then(setMemorizationPlan)
-        .catch(() => {});
-      void fetchLearnerProgress(effectiveUser.tenantId, effectiveUser.userId, authToken)
-        .then(setProgress)
-        .catch(() => {});
-    }
-  }, [authToken, effectiveUser]);
+    let current = true;
+    surahTimingsRef.current = null;
+    setRecitationAttribution(null);
+    void getSurahTimings(selectedSurah.surahNumber).then((tm) => {
+      if (!current) return;
+      surahTimingsRef.current = tm;
+      setRecitationAttribution(
+        tm ? `Recitation: ${tm.reciterName}. Audio & word timings via Quran.com (Quran Foundation).` : null,
+      );
+    });
+    return () => {
+      current = false;
+    };
+  }, [selectedSurah.surahNumber]);
+
+  // Load the Sorani translation for the selected surah (T4). Verbatim per-ayah text + attribution;
+  // stale-surah guard as above.
+  useEffect(() => {
+    let current = true;
+    setTranslationMap(new Map());
+    setTranslationAttribution(null);
+    void getSurahTranslation(selectedSurah.surahNumber).then((tr) => {
+      if (!current) return;
+      setTranslationMap(translationByAyah(tr));
+      setTranslationAttribution(
+        tr ? `${tr.translator} (Tafsiri Asan) — via ${tr.publisher}` : null,
+      );
+    });
+    return () => {
+      current = false;
+    };
+  }, [selectedSurah.surahNumber]);
 
   useEffect(() => {
     if (!isBrowserSmokeEnabled()) {
@@ -293,6 +510,7 @@ function AuthenticatedApp({ bypassLogin = false }: { bypassLogin?: boolean }) {
         hasMicUnavailable: bodyText.includes("Microphone unavailable on this device."),
         micState,
         captureStateWidth: document.querySelector(".capture-state")?.getBoundingClientRect().width ?? null,
+        sessionId,
       });
     };
 
@@ -365,7 +583,7 @@ function AuthenticatedApp({ bypassLogin = false }: { bypassLogin?: boolean }) {
         consent,
       })
         .then((session) => setSessionId(session.id))
-        .catch(() => setSessionId(""));
+        .catch(() => setSessionId(`practice-offline-${Date.now()}`));
     }
   }
 
@@ -474,7 +692,7 @@ function AuthenticatedApp({ bypassLogin = false }: { bypassLogin?: boolean }) {
   // action just switched the local UI step and displayed "Sent to teacher." — nothing was sent.
   async function sendToTeacher() {
     setPracticeMode("drill");
-    if (!sessionId || !effectiveUser) {
+    if (!sessionId || !effectiveUser || recitationEvents.length === 0) {
       // No analyzed session exists (e.g. the learner never recorded, or analysis is offline) —
       // there is nothing a teacher could receive. Say so instead of pretending.
       setTeacherSendState("nothing-to-send");
@@ -512,7 +730,7 @@ function AuthenticatedApp({ bypassLogin = false }: { bypassLogin?: boolean }) {
     }
   }
 
-  async function runAlignmentAndTajweed(transcript: string) {
+  async function runAlignmentAndTajweed(transcript: string, audioBlob?: Blob | null) {
     if (!effectiveUser || !transcript.trim()) return;
     if (isLoading) return; // an alignment is already in flight — don't pile up requests
     setApiError(null);
@@ -535,6 +753,34 @@ function AuthenticatedApp({ bypassLogin = false }: { bypassLogin?: boolean }) {
       setQuranVerses((prev) => updateVersesWithAlignment(prev, alignment.alignments));
       setRecitationEvents(buildRecitationEvents(alignment.alignments));
 
+      // Real per-word timings via forced alignment (T3). Best-effort and fully optional: if the audio
+      // is unavailable or the aligner isn't reachable, timingsByWordId stays undefined and the persist
+      // below writes 0/0 exactly as before — the learner's practice never depends on it.
+      let timingsByWordId: Map<string, WordTimingMs> | undefined;
+      // Only words the learner ACTUALLY RECITED: exclude "extra" (spoken but not canonical) AND
+      // "missed" (canonical but not spoken). Feeding a missed word into the aligner asks it to place
+      // a word that isn't in the audio, distorting that word's span and every neighbor's.
+      const recitedAligned = alignment.alignments.filter(
+        (a) => a.status !== "extra" && a.status !== "missed",
+      );
+      if (audioBlob && recitedAligned.length > 0) {
+        try {
+          const audioBase64 = await blobToBase64(audioBlob);
+          const aligned = await forceAlign({
+            tenantId: effectiveUser.tenantId,
+            userId: effectiveUser.userId,
+            authToken,
+            audioBase64,
+            audioFormat: (audioBlob.type.split("/")[1] || "webm").split(";")[0],
+            transcript: recitedAligned.map((a) => a.canonicalText).join(" "),
+          });
+          // Positional map, but only when counts line up — otherwise bail to 0/0 (see helper).
+          timingsByWordId = buildTimingsByWordId(recitedAligned, aligned);
+        } catch {
+          timingsByWordId = undefined; // best-effort: fall back to 0/0
+        }
+      }
+
       // Persist the real alignment to this session so it appears in the Command console
       // (only for a real persisted session — not the `practice-<ts>` offline fallback).
       // Best-effort: a failure here must not disrupt the learner's practice.
@@ -545,6 +791,7 @@ function AuthenticatedApp({ bypassLogin = false }: { bypassLogin?: boolean }) {
           authToken,
           sessionId,
           alignments: alignment.alignments,
+          timingsByWordId,
         }).catch(() => {});
       }
 
@@ -602,7 +849,9 @@ function AuthenticatedApp({ bypassLogin = false }: { bypassLogin?: boolean }) {
           } else if (result.error) {
             setApiError(t("app.errors.recitationSavedOffline"));
           } else if (result.transcript.trim()) {
-            await runAlignmentAndTajweed(result.transcript);
+            setIsLoading(false);
+            // Pass the recorded audio so forced alignment can compute real per-word timings (T3).
+            await runAlignmentAndTajweed(result.transcript, result.audioBlob);
           } else {
             setApiError(t("app.errors.noClearSpeech"));
           }
@@ -706,8 +955,10 @@ function AuthenticatedApp({ bypassLogin = false }: { bypassLogin?: boolean }) {
         const controller = startAsr({
           language: "ar-SA",
           onResult: (result) => {
-            setAsrTranscript((prev) => prev + " " + result.transcript);
+            // Append + align only FINAL segments. Interim results fire repeatedly for the same
+            // segment as it's revised, so appending them would duplicate the transcript.
             if (result.isFinal) {
+              setAsrTranscript((prev) => (prev ? prev + " " : "") + result.transcript);
               void runAlignmentAndTajweed(result.transcript);
             }
           },
@@ -749,6 +1000,7 @@ function AuthenticatedApp({ bypassLogin = false }: { bypassLogin?: boolean }) {
     }
     setIsPlaying(false);
     setPlayingAyah(null);
+    setRecitingWordId(null);
   }
 
   // "Listen": play the selected surah's practice passage sequentially from the Al Quran
@@ -784,10 +1036,28 @@ function AuthenticatedApp({ bypassLogin = false }: { bypassLogin?: boolean }) {
         stopPlayback();
         return;
       }
-      setPlayingAyah(ayah - offset); // local ayah number for the reader highlight
-      const audio = new Audio(`https://cdn.islamic.network/quran/audio/128/ar.alafasy/${ayah}.mp3`);
+      const localAyah = ayah - offset;
+      setPlayingAyah(localAyah); // local ayah number for the reader highlight
+      setRecitingWordId(null);
+
+      // Prefer the reciter master that our word timings were measured against (Quran.com), so the
+      // word-level follow-along is accurate. Falls back to the per-ayah islamic.network CDN (global
+      // numbering) when this surah has no timing data — verse-level highlight only, no drift risk.
+      const timings = surahTimingsRef.current;
+      const ayahTimings = getAyahTimings(timings, localAyah);
+      const matchedUrl = ayahAudioUrl(timings, ayahTimings);
+      const audio = new Audio(
+        matchedUrl ?? `https://cdn.islamic.network/quran/audio/128/ar.alafasy/${ayah}.mp3`,
+      );
       audioRef.current = audio;
       audio.onended = () => playAyah(ayah + 1);
+      // Follow-along: advance the highlighted word as playback crosses each word's segment. Only
+      // wired when this ayah has timings; `timeupdate` fires ~4x/s, which reads smooth for recitation.
+      if (ayahTimings) {
+        audio.ontimeupdate = () => {
+          setRecitingWordId(recitingWordIdAt(ayahTimings, audio.currentTime * 1000));
+        };
+      }
       audio.onerror = () => {
         setApiError(t("app.errors.recitationAudioLoadFailed"));
         stopPlayback();
@@ -841,7 +1111,7 @@ function AuthenticatedApp({ bypassLogin = false }: { bypassLogin?: boolean }) {
     <div className="app-shell">
       <a href="#main-content" className="skip-link">Skip to content</a>
       <OfflineBanner />
-      <Sidebar activeSection={activeSection} onSectionChange={(section) => setActiveSection(section as AppSection)} />
+      <Sidebar activeSection={activeSection} onSectionChange={(section) => setActiveSection(section as AppSection)} userRole={effectiveUser?.role} />
       {/* tabindex={-1} makes this programmatically focusable (without adding it to the normal
           Tab order) so the "Skip to content" link above actually moves keyboard focus here —
           a plain <main> with no tabindex is not focusable at all, so activating the skip link
@@ -865,7 +1135,7 @@ function AuthenticatedApp({ bypassLogin = false }: { bypassLogin?: boolean }) {
         >
           {activeSection === "learner" ? (
             practiceMode === "home" ? (
-              <LearnerHome onStartPractice={startPractice} onCheckMic={checkMicPermission} micState={micState} memorizationPlan={memorizationPlan} progress={progress} consent={consent} onConsentChange={setConsent} surahList={surahList} selectedSurah={selectedSurah} onSelectSurah={setSelectedSurah} apiError={apiError} />
+              <LearnerHome onStartPractice={startPractice} onCheckMic={checkMicPermission} micState={micState} memorizationPlan={memorizationPlan} progress={progress} consent={consent} onConsentChange={setConsent} surahList={surahList} selectedSurah={selectedSurah} onSelectSurah={setSelectedSurah} apiError={apiError} platformOffline={platformOffline} onRetry={loadInitialData} />
             ) : (
               <PracticeFlow
                 activeStepIndex={activeStepIndex}
@@ -894,6 +1164,12 @@ function AuthenticatedApp({ bypassLogin = false }: { bypassLogin?: boolean }) {
                 surahTitle={surahLabel(selectedSurah)}
                 quranVerses={quranVerses}
                 playingAyah={playingAyah}
+                recitingWordId={recitingWordId}
+                recitationAttribution={recitationAttribution}
+                translationByAyah={translationMap}
+                translationAttribution={translationAttribution}
+                showTranslation={showTranslation}
+                onToggleTranslation={() => setShowTranslation((v) => !v)}
                 isLoadingVerses={isLoadingVerses}
                 recitationEvents={recitationEvents}
                 alignmentResults={alignmentResults}
@@ -910,6 +1186,11 @@ function AuthenticatedApp({ bypassLogin = false }: { bypassLogin?: boolean }) {
             <PrivacySettings
               tenantId={effectiveUser?.tenantId ?? "hikmah-pilot-erbil"}
               userId={effectiveUser?.userId ?? "learner-1"}
+              authToken={authToken}
+            />
+          ) : activeSection === "teacher" ? (
+            <TeacherSurface
+              tenantId={effectiveUser?.tenantId ?? "hikmah-pilot-erbil"}
               authToken={authToken}
             />
           ) : (
@@ -953,6 +1234,7 @@ interface LayoutSmokeReport {
   // scrollWidth/clientWidth can't catch that regression. captureStateWidth lets a smoke case
   // assert a minimum legible width directly. null when the Internal Command console isn't open.
   captureStateWidth: number | null;
+  sessionId: string | null;
 }
 
 function getInitialSection(): AppSection {
@@ -963,6 +1245,9 @@ function getInitialSection(): AppSection {
   const smokeMode = new URLSearchParams(window.location.search).get("smokeMode");
   if (smokeMode === "admin") {
     return "admin";
+  }
+  if (smokeMode === "teacher") {
+    return "teacher";
   }
 
   return "learner";
@@ -1019,6 +1304,7 @@ function LayoutSmokeProbe({ report }: { report: LayoutSmokeReport }) {
       data-mode={report.mode}
       data-scroll-width={report.scrollWidth}
       data-capture-state-width={report.captureStateWidth ?? ""}
+      data-session-id={report.sessionId ?? ""}
       hidden
       id="browser-smoke-report"
     >

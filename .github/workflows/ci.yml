@@ -33,6 +33,11 @@ jobs:
       - uses: pnpm/action-setup@v4          # version from package.json "packageManager"
       - uses: actions/setup-node@v4
         with: { node-version: "22", cache: "pnpm" }
+      # MIG5: verify.sh runs the asr-inference plain-interpreter suites (eval metrics + the Arabic
+      # diacritic regression from PR #258). numpy only — no torch, no model download.
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.11" }
+      - run: python3 -m pip install --quiet "numpy>=2"
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy, rustfmt
@@ -44,6 +49,16 @@ jobs:
 
       # --- Bootstrap ---
       - run: pnpm install --frozen-lockfile
+
+      # --- Assert no missing SQL migrations in CI list ---
+      - name: Assert no missing SQL migrations in CI list
+        run: |
+          expected_count=$(ls infra/sql/*.sql | wc -l | tr -d ' ')
+          actual_count=21
+          if [ "$expected_count" != "$actual_count" ]; then
+            echo "::error::Migration file count mismatch! Expected $actual_count migration files in infra/sql, found $expected_count. Update ci.yml."
+            exit 1
+          fi
 
       # --- Seed Postgres with migrations ---
       - name: Apply SQL migrations
@@ -61,9 +76,19 @@ jobs:
             infra/sql/0010_review_status_check.sql \
             infra/sql/0011_teacher_review_required_status.sql \
             infra/sql/0012_superuser_only_rls_bypass.sql \
-            infra/sql/0013_unique_email_per_tenant.sql; do
-            psql "$DATABASE_URL" -f "$sql"
+            infra/sql/0013_unique_email_per_tenant.sql \
+            infra/sql/0015_teacher_review_scholar_approval_indexes.sql \
+            infra/sql/0016_missing_tenant_indexes.sql \
+            infra/sql/0017_eval_runs_index.sql \
+            infra/sql/0018_agent_run_learner_id.sql \
+            infra/sql/0019_recitation_and_findings_sort_indexes.sql \
+            infra/sql/0020_language_check.sql \
+            infra/sql/0021_pilot_identity.sql; do
+            echo "Applying $sql..."
+            psql -v ON_ERROR_STOP=1 "$DATABASE_URL" -f "$sql"
           done
+          echo "Applying rls-app-role.sql..."
+          psql "$DATABASE_URL" -v app_password="ci-dummy-password" -f infra/sql/rls-app-role.sql
 
       # --- Seed the full Quran (canonical_ayahs/words for all 114 surahs) so integration
       #     tests like gets_quran_surah_list_from_postgres (expects >= 114) hold in CI. The
@@ -72,6 +97,34 @@ jobs:
       #     postgres service, only PSQL needs the ubuntu path. ---
       - name: Seed full Quran
         run: PSQL=psql bash packages/quran-data/scripts/seed-full-quran-to-db.sh
+
+      # --- Run dependency vulnerability scan (JS) ---
+      - name: Dependency vulnerability scan
+        run: pnpm audit
+
+      # --- Rust dependency vulnerability scan (cargo-audit). Prebuilt binary for speed; each crate
+      #     is scanned from its own dir so its .cargo/audit.toml (documented, reachability-analysed
+      #     ignores) is honoured. Fails CI on any NEW advisory. ---
+      - name: Install cargo-audit
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-audit
+      - name: Rust dependency vulnerability scan
+        run: |
+          (cd services/platform-api && cargo audit)
+          (cd services/realtime-gateway && cargo audit)
+
+      # --- Software Bill of Materials (CycloneDX, all languages) for supply-chain review (P0.4/P4.4).
+      #     Non-blocking (it is an artifact, not a gate — the advisory GATES are pnpm/cargo audit
+      #     above); uploaded so a security reviewer (P4.5) has the exact component inventory. ---
+      - name: Generate SBOM (CycloneDX)
+        run: npx -y @cyclonedx/cdxgen@^11 -o sbom.cdx.json . || echo "::warning::SBOM generation had issues (non-blocking)"
+      - name: Upload SBOM
+        uses: actions/upload-artifact@v4
+        with:
+          name: sbom-cyclonedx
+          path: sbom.cdx.json
+          if-no-files-found: warn
 
       # --- The CODYSTEM gate (same script the agent runs locally) ---
       - run: bash scripts/verify.sh

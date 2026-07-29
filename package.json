@@ -14,6 +14,7 @@
     "smoke:a11y": "node scripts/smoke-a11y.mjs",
     "smoke:privacy": "node scripts/smoke-privacy.mjs",
     "smoke:sql": "node scripts/smoke-sql.mjs",
+    "smoke:e2e": "node scripts/smoke-e2e.mjs",
     "smoke:all": "node scripts/smoke-all.mjs",
     "build": "pnpm --filter @quran-ai/contracts build && pnpm --filter @quran-ai/quran-data build && pnpm --filter @quran-ai/web build",
     "preview": "pnpm --filter @quran-ai/web preview",

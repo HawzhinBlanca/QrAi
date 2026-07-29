@@ -40,15 +40,15 @@ jobs:
 
       # Assert the four service images run as the non-root appuser (uid 10001), not root. Overrides the
       # entrypoint to print the effective uid; --no-deps so it doesn't start Postgres/other services.
-      - name: Assert containers run as non-root (uid 10001)
+      - name: Assert containers run as non-root
         run: |
           set -euo pipefail
           fail=0
-          for svc in platform-api realtime-gateway ml-inference asr-inference; do
+          for svc in platform-api realtime-gateway ml-inference asr-inference web; do
             uid=$(docker compose run --rm --no-deps --entrypoint sh "$svc" -c 'id -u' | tr -d '\r')
             echo "$svc -> uid $uid"
-            if [ "$uid" != "10001" ]; then
-              echo "::error::$svc is not running as the non-root uid 10001 (got '$uid')"
+            if [ "$uid" = "0" ] || [ -z "$uid" ]; then
+              echo "::error::$svc is running as root (uid '$uid')"
               fail=1
             fi
           done

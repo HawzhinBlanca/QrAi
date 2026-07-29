@@ -38,25 +38,53 @@ describe("startAsr", () => {
       onError: () => {},
     });
 
-    // event.resultIndex is a single event-level value (the index of the first result that
-    // changed since the last event) — it is NOT a per-result finality signal. The bug this
-    // guards against treated any truthy resultIndex as "this result is final" for every result
-    // in the event, regardless of that result's own real isFinal flag. Set resultIndex=1 (a
-    // plausible real value) while result[0].isFinal is genuinely false: the old code
-    // (`!!event.resultIndex || i === results.length - 1`) would report index 0 as final too,
-    // since `!!1` is true independent of `i`.
+    // Both results changed this event (resultIndex=0), so both are emitted. isFinal must be read
+    // from each result's own flag, NOT derived from event.resultIndex — the bug this guards against
+    // treated a truthy resultIndex as "final" for every result, reporting index 0 as final too.
     fireResult(
       fake,
       [
         { transcript: "بسم", confidence: 0.9, isFinal: false },
         { transcript: "الله", confidence: 0.95, isFinal: true },
       ],
-      1,
+      0,
     );
 
     expect(results).toHaveLength(2);
     expect(results[0]).toMatchObject({ transcript: "بسم", isFinal: false });
     expect(results[1]).toMatchObject({ transcript: "الله", isFinal: true });
+
+    delete (window as unknown as { SpeechRecognition?: unknown }).SpeechRecognition;
+  });
+
+  it("iterates from event.resultIndex so already-finalized results are not re-emitted", () => {
+    const fake = new FakeSpeechRecognition();
+    (window as unknown as { SpeechRecognition: unknown }).SpeechRecognition = function () {
+      return fake;
+    };
+
+    const results: Array<{ transcript: string; isFinal: boolean }> = [];
+    startAsr({
+      onResult: (r) => results.push(r),
+      onStatusChange: () => {},
+      onError: () => {},
+    });
+
+    // Event 1: the first (interim) result appears at index 0.
+    fireResult(fake, [{ transcript: "بسم", isFinal: false }], 0);
+    // Event 2: index 0 has finalized and a new interim appears at index 1. `results` is cumulative,
+    // but resultIndex=1 says only index 1 changed — index 0 must NOT be re-emitted (the old
+    // iterate-from-0 loop would emit "بسم" a second time, duplicating it downstream).
+    fireResult(
+      fake,
+      [
+        { transcript: "بسم", isFinal: true },
+        { transcript: "الله", isFinal: false },
+      ],
+      1,
+    );
+
+    expect(results.map((r) => r.transcript)).toEqual(["بسم", "الله"]);
 
     delete (window as unknown as { SpeechRecognition?: unknown }).SpeechRecognition;
   });

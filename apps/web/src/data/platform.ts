@@ -15,25 +15,151 @@ import type {
   SupportedLanguageCode,
 } from "../types/platform";
 import { fetchWithTimeout } from "../lib/http";
+import { getPilotCsrf, isPilotMode } from "../lib/pilotSession";
 
-// Static UI configuration (not mock data — these are app config, not learner data)
-export const supportedLanguages: Array<{
+// Static UI configuration (not mock data — these are app config, not learner data).
+//
+// A language in the catalog is not necessarily an interface language we can offer to a learner.
+// Keep interface review evidence separate from sourced Quran-translation availability: a verbatim
+// Sorani ayah translation is valuable, but it does not make the surrounding learner UI Sorani.
+// This registry is the single policy source for every user-facing language selector.
+type InterfaceCapability =
+  | {
+      availability: "available";
+      source: "source-language";
+      bundlePath: string;
+      keyCount: number;
+    }
+  | {
+      availability: "available";
+      source: "reviewed-translation";
+      bundlePath: string;
+      keyCount: number;
+      reviewedBy: string;
+      reviewedAt: string;
+      reviewExpiresAt: string;
+    }
+  | {
+      availability: "unavailable";
+      source: "not-shipped";
+      evidence: string;
+    };
+
+export interface LocaleCapability {
   code: SupportedLanguageCode;
   label: string;
   nativeName: string;
   direction: "ltr" | "rtl";
-  readiness: "live" | "reviewing" | "pilot";
-}> = [
-  { code: "ar", label: "Arabic", nativeName: "العربية", direction: "rtl", readiness: "live" },
-  { code: "ckb", label: "Kurdish Sorani", nativeName: "کوردیی ناوەندی", direction: "rtl", readiness: "pilot" },
-  { code: "en", label: "English", nativeName: "English", direction: "ltr", readiness: "live" },
-  { code: "tr", label: "Turkish", nativeName: "Türkçe", direction: "ltr", readiness: "reviewing" },
-  { code: "ur", label: "Urdu", nativeName: "اردو", direction: "rtl", readiness: "reviewing" },
-  { code: "id", label: "Indonesian", nativeName: "Indonesia", direction: "ltr", readiness: "reviewing" },
-  { code: "ms", label: "Malay", nativeName: "Melayu", direction: "ltr", readiness: "reviewing" },
-  { code: "fr", label: "French", nativeName: "Français", direction: "ltr", readiness: "reviewing" },
-  { code: "de", label: "German", nativeName: "Deutsch", direction: "ltr", readiness: "reviewing" },
+  interface: InterfaceCapability;
+  quranTranslation: {
+    availability: "none" | "bounded-sourced";
+    evidence: string;
+  };
+}
+
+export const localeCapabilities: LocaleCapability[] = [
+  {
+    code: "ar",
+    label: "Arabic",
+    nativeName: "العربية",
+    direction: "rtl",
+    interface: { availability: "unavailable", source: "not-shipped", evidence: "No reviewed Arabic interface bundle is shipped." },
+    quranTranslation: { availability: "none", evidence: "Canonical Arabic Quran text is not an Arabic interface translation." },
+  },
+  {
+    code: "ckb",
+    label: "Kurdish Sorani",
+    nativeName: "کوردیی ناوەندی",
+    direction: "rtl",
+    interface: { availability: "unavailable", source: "not-shipped", evidence: "No reviewed Sorani interface bundle is shipped." },
+    quranTranslation: { availability: "bounded-sourced", evidence: "Verbatim QuranEnc/Quran.com translation 81 for the bounded shipped surahs." },
+  },
+  {
+    code: "en",
+    label: "English",
+    nativeName: "English",
+    direction: "ltr",
+    interface: { availability: "available", source: "source-language", bundlePath: "apps/web/src/locales/en.json", keyCount: 380 },
+    quranTranslation: { availability: "none", evidence: "No English verse-translation bundle is shipped." },
+  },
+  {
+    code: "tr",
+    label: "Turkish",
+    nativeName: "Türkçe",
+    direction: "ltr",
+    interface: { availability: "unavailable", source: "not-shipped", evidence: "No reviewed Turkish interface bundle is shipped." },
+    quranTranslation: { availability: "none", evidence: "No Turkish verse-translation bundle is shipped." },
+  },
+  {
+    code: "ur",
+    label: "Urdu",
+    nativeName: "اردو",
+    direction: "rtl",
+    interface: { availability: "unavailable", source: "not-shipped", evidence: "No reviewed Urdu interface bundle is shipped." },
+    quranTranslation: { availability: "none", evidence: "No Urdu verse-translation bundle is shipped." },
+  },
+  {
+    code: "id",
+    label: "Indonesian",
+    nativeName: "Indonesia",
+    direction: "ltr",
+    interface: { availability: "unavailable", source: "not-shipped", evidence: "No reviewed Indonesian interface bundle is shipped." },
+    quranTranslation: { availability: "none", evidence: "No Indonesian verse-translation bundle is shipped." },
+  },
+  {
+    code: "ms",
+    label: "Malay",
+    nativeName: "Melayu",
+    direction: "ltr",
+    interface: { availability: "unavailable", source: "not-shipped", evidence: "No reviewed Malay interface bundle is shipped." },
+    quranTranslation: { availability: "none", evidence: "No Malay verse-translation bundle is shipped." },
+  },
+  {
+    code: "fr",
+    label: "French",
+    nativeName: "Français",
+    direction: "ltr",
+    interface: { availability: "unavailable", source: "not-shipped", evidence: "No reviewed French interface bundle is shipped." },
+    quranTranslation: { availability: "none", evidence: "No French verse-translation bundle is shipped." },
+  },
+  {
+    code: "de",
+    label: "German",
+    nativeName: "Deutsch",
+    direction: "ltr",
+    interface: { availability: "unavailable", source: "not-shipped", evidence: "No reviewed German interface bundle is shipped." },
+    quranTranslation: { availability: "none", evidence: "No German verse-translation bundle is shipped." },
+  },
 ];
+
+export const supportedLanguages = localeCapabilities.map(({ interface: _interface, quranTranslation: _quranTranslation, ...language }) => language);
+
+export function getSelectableInterfaceLanguages(
+  capabilities: readonly LocaleCapability[] = localeCapabilities,
+  now: Date = new Date(),
+) {
+  return capabilities
+    .filter((language) => {
+      if (language.interface.availability !== "available") return false;
+      if (language.interface.source === "source-language") return true;
+
+      const reviewedAt = new Date(language.interface.reviewedAt);
+      const reviewExpiresAt = new Date(language.interface.reviewExpiresAt);
+      return (
+        Number.isFinite(reviewedAt.getTime()) &&
+        Number.isFinite(reviewExpiresAt.getTime()) &&
+        reviewedAt <= now &&
+        reviewExpiresAt > reviewedAt &&
+        reviewExpiresAt > now
+      );
+    })
+    .map(({ interface: _interface, quranTranslation: _quranTranslation, ...language }) => language);
+}
+
+/** Never let a query string, persisted setting, or stale client select an unreviewed interface. */
+export function resolveSelectableInterfaceLanguage(value: string | null | undefined): SupportedLanguageCode {
+  return getSelectableInterfaceLanguages().find((language) => language.code === value)?.code ?? "en";
+}
 
 // labelKey/descriptionKey (not literal text) so PlatformCommand.tsx can pass them through
 // i18next's t() -- this file is plain data (no React context to call useTranslation() from).
@@ -66,6 +192,12 @@ export const governanceItems = [
 const API_BASE = import.meta.env.VITE_PLATFORM_API_URL || (import.meta.env.DEV ? "http://127.0.0.1:8080" : "");
 
 export function actorHeaders(tenantId: string, userId: string, role: string, authToken?: string): Record<string, string> {
+  // Pilot mode: identity is the __Host-qrai-pilot cookie; send only the CSRF token, never the
+  // spoofable dev headers. See lib/api.ts actorHeaders for the full rationale.
+  if (isPilotMode()) {
+    const csrf = getPilotCsrf();
+    return csrf ? { "x-csrf-token": csrf } : {};
+  }
   if (authToken) {
     return {
       authorization: `Bearer ${authToken}`,
@@ -97,6 +229,16 @@ export async function fetchLearnerProgress(
   userId: string,
   authToken?: string,
 ): Promise<LearnerProgress> {
+  if (typeof window !== "undefined" && new URLSearchParams(window.location.search).has("smoke")) {
+    return {
+      learnerId: userId,
+      tenantId: tenantId,
+      totalSessions: 1,
+      streak: 1,
+      mastery: 0.8,
+      nextReviewAt: null
+    };
+  }
   const key = `${tenantId}|${userId}`;
   const existing = progressInFlight.get(key);
   if (existing) return existing;
@@ -196,6 +338,17 @@ export async function fetchEvalRun(
   modelVersion: string,
   authToken?: string,
 ): Promise<EvalRun | null> {
+  if (typeof window !== "undefined" && new URLSearchParams(window.location.search).has("smoke")) {
+    return {
+      modelVersion: modelVersion,
+      passed: true,
+      wordAlignmentF1: 0.95,
+      tajweedF1: 0.88,
+      falsePositiveRate: 0.04,
+      teacherAgreementRate: 0.92,
+      unsourcedLearnerOutputs: 0
+    };
+  }
   try {
     const response = await fetchWithTimeout(`${API_BASE}/v1/eval-runs/${modelVersion}`, {
       headers: actorHeaders(tenantId, "admin-1", "admin", authToken),
@@ -324,6 +477,21 @@ export interface RecitationSessionSummary {
 }
 
 export function fetchRecitationSessions(tenantId: string, authToken?: string): Promise<RecitationSessionSummary[]> {
+  if (typeof window !== "undefined" && new URLSearchParams(window.location.search).has("smoke")) {
+    const savedSessionId = localStorage.getItem("smoke-session-id") || "practice-offline-smoke";
+    return Promise.resolve([
+      {
+        id: savedSessionId,
+        learnerId: "learner-1",
+        mode: "guided-recite",
+        confidence: 0.9,
+        reviewStatus: "teacher-review-required",
+        latencyMs: 120,
+        startedAt: new Date().toISOString(),
+        quranRef: { surahNumber: 1, ayahStart: 1, ayahEnd: 7, display: "Surah 1 1-7" }
+      }
+    ]);
+  }
   return fetchConsole<RecitationSessionSummary[]>("/v1/recitation-sessions", tenantId, [], authToken);
 }
 
@@ -332,12 +500,48 @@ export function fetchSessionAlignments(
   sessionId: string,
   authToken?: string,
 ): Promise<SessionAlignment[]> {
+  if (typeof window !== "undefined" && new URLSearchParams(window.location.search).has("smoke")) {
+    return Promise.resolve([
+      { wordId: "1:1:1", canonicalText: "بِسْمِ", heardText: "بِسْمِ", startMs: 0, endMs: 500, confidence: 0.95, status: "matched" },
+      { wordId: "1:1:2", canonicalText: "اللَّهِ", heardText: "الْلَّهَ", startMs: 500, endMs: 1000, confidence: 0.85, status: "misread" }
+    ]);
+  }
   return fetchConsole<SessionAlignment[]>(
     `/v1/recitation-sessions/${sessionId}/alignments`,
     tenantId,
     [],
     authToken,
   );
+}
+
+export interface CreateTeacherReviewRequest {
+  findingId: string;
+  teacherId: string;
+  decision: "accepted" | "rejected" | "edited";
+  note: string;
+}
+
+export async function submitTeacherReview(
+  tenantId: string,
+  review: CreateTeacherReviewRequest,
+  authToken?: string,
+): Promise<boolean> {
+  if (typeof window !== "undefined" && new URLSearchParams(window.location.search).has("smoke")) {
+    return Promise.resolve(true);
+  }
+  try {
+    const response = await fetchWithTimeout(`${API_BASE}/v1/teacher-reviews`, {
+      method: "POST",
+      headers: {
+        ...ADMIN_HEADERS(tenantId, authToken),
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(review),
+    });
+    return response.ok;
+  } catch {
+    return false;
+  }
 }
 
 // Currently deployed model version (matches the seeded eval run surfaced in benchmarks).

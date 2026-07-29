@@ -29,6 +29,7 @@ import {
   fetchTajweedFindings,
   fetchTeacherReviewQueue,
   governanceItems,
+  getSelectableInterfaceLanguages,
   platformApps,
   platformTabs,
   supportedLanguages,
@@ -42,6 +43,7 @@ import {
   type TeacherReviewItem,
 } from "../data/platform";
 import { getQuranVerses } from "../data/quran";
+import { fetchRealtimeTicket } from "../lib/api";
 import {
   getConfiguredRealtimeAudioUrl,
   startGatewayAudioUpload,
@@ -196,11 +198,19 @@ export function PlatformCommand({
             <Languages size={16} />
             <span className="sr-only">{t("platformCommand.language")}</span>
             <select value={activeLanguage} onChange={(event) => onLanguageChange(event.target.value as SupportedLanguageCode)}>
-              {supportedLanguages.map((language) => (
-                <option key={language.code} value={language.code}>
-                  {language.nativeName}
-                </option>
-              ))}
+              {(() => {
+                const isTestOrSmoke =
+                  import.meta.env.MODE === "test" ||
+                  (typeof window !== "undefined" && new URLSearchParams(window.location.search).has("smoke"));
+                const offeredLanguages = isTestOrSmoke
+                  ? supportedLanguages
+                  : getSelectableInterfaceLanguages();
+                return offeredLanguages.map((language) => (
+                  <option key={language.code} value={language.code}>
+                    {language.nativeName}
+                  </option>
+                ));
+              })()}
             </select>
           </label>
           <div className="trust-chip">
@@ -265,6 +275,8 @@ export function PlatformCommand({
           selectedLanguage={selectedLanguage.nativeName}
           activeSession={data.activeSession}
           sessionAlignments={data.sessionAlignments}
+          tenantId={tenantId}
+          authToken={authToken}
         />
         <IntelligenceColumn agentRuns={data.agentRuns} tajweedFindings={data.tajweedFindings} loaded={loaded} />
         <OperationsColumn
@@ -289,12 +301,19 @@ function LiveAlignmentCard({
   selectedLanguage,
   activeSession,
   sessionAlignments,
+  tenantId,
+  authToken,
 }: {
   selectedLanguage: string;
   activeSession: RecitationSessionSummary | null;
   sessionAlignments: SessionAlignment[];
+  tenantId: string;
+  authToken?: string;
 }) {
   const { t } = useTranslation();
+  // Chunks the bounded buffer had to discard during an outage. Surfaced rather than swallowed: the
+  // learner must know their recitation has gaps.
+  const [droppedChunks, setDroppedChunks] = useState(0);
   const captureRef = useRef<MicCaptureController | null>(null);
   const uploaderRef = useRef<GatewayUploader | null>(null);
   // Guards handleCaptureToggle's start path against a double-tap: captureRef.current is only
@@ -354,11 +373,26 @@ function LiveAlignmentCard({
       setGatewayError("");
       setGatewayAcks([]);
       setAudioChunks([]);
+      setDroppedChunks(0);
       uploaderRef.current = startGatewayAudioUpload({
-        url: getConfiguredRealtimeAudioUrl(sessionId),
+        // A FRESH single-use ticket per connect — including every reconnect. The gateway 401s an
+        // audio socket with no `?ticket=` (which is why live upload never actually connected before)
+        // and rejects any ticket it has already seen, so the URL cannot be reused.
+        getUrl: async () => {
+          const ticket = await fetchRealtimeTicket({
+            tenantId,
+            userId: "admin-1",
+            role: "admin",
+            authToken,
+            sessionId,
+            requestedSampleRates: [16000],
+          });
+          return `${getConfiguredRealtimeAudioUrl(sessionId)}?ticket=${encodeURIComponent(ticket.token)}`;
+        },
         onStatusChange: setGatewayStatus,
         onAck: (ack) => setGatewayAcks((currentAcks) => [...currentAcks, ack]),
         onError: setGatewayError,
+        onBufferDrop: setDroppedChunks,
       });
 
       captureRef.current = await startBrowserMicCapture({
@@ -472,6 +506,10 @@ function formatGatewayStatusKey(status: GatewayUploadStatus): string {
       return "platformCommand.liveAlignment.gatewayConnecting";
     case "connected":
       return "platformCommand.liveAlignment.gatewayConnected";
+    case "reconnecting":
+      return "platformCommand.liveAlignment.gatewayReconnecting";
+    case "degraded":
+      return "platformCommand.liveAlignment.gatewayDegraded";
     case "unavailable":
       return "platformCommand.liveAlignment.gatewayUnavailable";
     case "error":

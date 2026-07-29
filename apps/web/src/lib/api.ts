@@ -5,6 +5,7 @@
 import type { ReviewStatus, SourceReference } from "@quran-ai/contracts";
 
 import { fetchWithTimeout } from "./http";
+import { getPilotCsrf, isPilotMode, setPilotIdentity, type PilotIdentity } from "./pilotSession";
 
 // In dev (vite serves on 5173, the API on 8080) an absolute URL is required. In the Docker/prod
 // build, nginx proxies /v1/ to platform-api directly (nginx.conf), so a RELATIVE path is required
@@ -13,6 +14,14 @@ import { fetchWithTimeout } from "./http";
 const API_BASE = import.meta.env.VITE_PLATFORM_API_URL || (import.meta.env.DEV ? "http://127.0.0.1:8080" : "");
 
 function actorHeaders(tenantId: string, userId: string, role: string, authToken?: string): Record<string, string> {
+  // Pilot mode: identity is the __Host-qrai-pilot cookie (sent via credentials:"include"). Never
+  // send x-user-id/x-tenant-id — the server ignores them under the cookie and, in production with
+  // ALLOW_HEADER_AUTH off, they carry no authority at all. Only the CSRF token is needed (on
+  // mutating requests; harmless on GETs).
+  if (isPilotMode()) {
+    const csrf = getPilotCsrf();
+    return csrf ? { "x-csrf-token": csrf } : {};
+  }
   if (authToken) {
     return {
       authorization: `Bearer ${authToken}`,
@@ -23,6 +32,24 @@ function actorHeaders(tenantId: string, userId: string, role: string, authToken?
     "x-user-id": userId,
     "x-user-role": role,
   };
+}
+
+/**
+ * Exchange an admin-minted invite token for a pilot session cookie (P1.6). The response sets the
+ * HttpOnly `__Host-qrai-pilot` cookie (hence credentials:"include") and returns the learner identity
+ * + CSRF token, which we stash in the pilot session module. Throws on an invalid/expired invite.
+ */
+export async function bootstrapPilotSession(token: string): Promise<PilotIdentity> {
+  const response = await fetchWithTimeout(`${API_BASE}/v1/pilot/session/bootstrap`, {
+    method: "POST",
+    credentials: "include",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ token }),
+  });
+  if (!response.ok) throw new Error(`Pilot bootstrap ${response.status}`);
+  const data = (await response.json()) as PilotIdentity;
+  setPilotIdentity(data);
+  return data;
 }
 
 /** Result of a privacy export/delete job (subset of the backend PrivacyJob). */
@@ -206,6 +233,10 @@ export async function requestTeacherReview(params: {
   authToken?: string;
   sessionId: string;
 }): Promise<void> {
+  if (typeof window !== "undefined" && new URLSearchParams(window.location.search).has("smoke")) {
+    localStorage.setItem("smoke-session-id", params.sessionId);
+    return Promise.resolve();
+  }
   const response = await fetchWithTimeout(
     `${API_BASE}/v1/recitation-sessions/${encodeURIComponent(params.sessionId)}/request-teacher-review`,
     {
@@ -226,6 +257,12 @@ export async function requestTeacherReview(params: {
  * in the Command console (which reads real alignment, not just seeded demo rows). Synthetic
  * "extra" words are dropped server-side. Best-effort: callers fire-and-forget.
  */
+/** Per-word start/end (ms) from forced alignment, keyed by canonical wordId. */
+export interface WordTimingMs {
+  startMs: number;
+  endMs: number;
+}
+
 export async function persistSessionAlignments(params: {
   tenantId: string;
   userId: string;
@@ -233,6 +270,8 @@ export async function persistSessionAlignments(params: {
   sessionId: string;
   alignments: AlignmentResult[];
   modelVersion?: string;
+  /** Real per-word timings from forced alignment (T3); a word absent here persists 0/0 as before. */
+  timingsByWordId?: Map<string, WordTimingMs>;
 }): Promise<{ persisted: number; skippedInvalidStatus: number; skippedUnknownWord: number }> {
   const response = await fetchWithTimeout(
     `${API_BASE}/v1/recitation-sessions/${encodeURIComponent(params.sessionId)}/alignments`,
@@ -244,14 +283,17 @@ export async function persistSessionAlignments(params: {
       },
       body: JSON.stringify({
         modelVersion: params.modelVersion ?? "model-v0.3",
-        alignments: params.alignments.map((a) => ({
-          wordId: a.wordId,
-          heardText: a.heardText ?? "",
-          startMs: 0,
-          endMs: 0,
-          confidence: a.confidence,
-          status: a.status,
-        })),
+        alignments: params.alignments.map((a) => {
+          const t = params.timingsByWordId?.get(a.wordId);
+          return {
+            wordId: a.wordId,
+            heardText: a.heardText ?? "",
+            startMs: t?.startMs ?? 0,
+            endMs: t?.endMs ?? 0,
+            confidence: a.confidence,
+            status: a.status,
+          };
+        }),
       }),
     },
   );
@@ -261,6 +303,105 @@ export async function persistSessionAlignments(params: {
     skippedInvalidStatus: number;
     skippedUnknownWord: number;
   }>;
+}
+
+export interface RealtimeTicket {
+  token: string;
+  expiresAt: string;
+  allowedSampleRates: number[];
+}
+
+/**
+ * Mint a SINGLE-USE realtime gateway ticket for `sessionId` (T13).
+ *
+ * The gateway rejects an audio WebSocket with no `?ticket=` (401) and refuses any ticket it has
+ * already seen (replay defence), so every connection — including each reconnect — needs a FRESH
+ * token from here.
+ */
+export async function fetchRealtimeTicket(params: {
+  tenantId: string;
+  userId: string;
+  /** The endpoint allows a learner to ticket their OWN session, or admin/ops any in-tenant session. */
+  role?: string;
+  authToken?: string;
+  sessionId: string;
+  requestedSampleRates?: number[];
+}): Promise<RealtimeTicket> {
+  const response = await fetchWithTimeout(`${API_BASE}/v1/realtime-session-tickets`, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      ...actorHeaders(params.tenantId, params.userId, params.role ?? "learner", params.authToken),
+    },
+    body: JSON.stringify({
+      sessionId: params.sessionId,
+      requestedSampleRates: params.requestedSampleRates ?? [16000],
+    }),
+  });
+  if (!response.ok) throw new Error(`Realtime ticket ${response.status}`);
+  return response.json() as Promise<RealtimeTicket>;
+}
+
+export interface ForceAlignWord {
+  word: string;
+  start: number; // seconds
+  end: number; // seconds
+  score: number;
+}
+
+/**
+ * Forced alignment (T3): send the recitation audio + the canonical `transcript` (words in wordId
+ * order) to the platform API's ASR force-align proxy; get back one {start,end} per transcript word,
+ * in order. Best-effort — callers treat a failure/absence as "no timings" and persist 0/0 as before.
+ */
+export async function forceAlign(params: {
+  tenantId: string;
+  userId: string;
+  authToken?: string;
+  audioBase64: string;
+  audioFormat: string;
+  transcript: string;
+}): Promise<ForceAlignWord[]> {
+  const response = await fetchWithTimeout(`${API_BASE}/v1/asr/force-align`, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      ...actorHeaders(params.tenantId, params.userId, "learner", params.authToken),
+    },
+    body: JSON.stringify({
+      audioBase64: params.audioBase64,
+      audioFormat: params.audioFormat,
+      transcript: params.transcript,
+    }),
+  });
+  if (!response.ok) throw new Error(`Force align ${response.status}`);
+  const data = (await response.json()) as { words?: ForceAlignWord[] };
+  return data.words ?? [];
+}
+
+/**
+ * Map forced-alignment spans back to word ids by POSITION. The force-align endpoint returns exactly
+ * one span per whitespace token of the transcript, in order, so `aligned[i]` corresponds to
+ * `recitedAligned[i]` — but ONLY when the counts match. If the transcript tokenized to a different
+ * count (e.g. a canonicalText with internal whitespace, or an empty one), the indices no longer line
+ * up and mapping by position would misattribute every subsequent word's timing. In that case bail
+ * (return undefined) so the caller persists 0/0 rather than wrong timings — the T3 "degrade safely"
+ * guarantee. Callers must pass only words actually recited (exclude "missed"/"extra"), since the
+ * aligner is asked to place exactly these words in the audio.
+ */
+export function buildTimingsByWordId(
+  recitedAligned: Pick<AlignmentResult, "wordId">[],
+  aligned: ForceAlignWord[],
+): Map<string, WordTimingMs> | undefined {
+  if (aligned.length !== recitedAligned.length) return undefined;
+  const map = new Map<string, WordTimingMs>();
+  recitedAligned.forEach((a, i) => {
+    const w = aligned[i];
+    if (w && w.end > w.start) {
+      map.set(a.wordId, { startMs: Math.round(w.start * 1000), endMs: Math.round(w.end * 1000) });
+    }
+  });
+  return map;
 }
 
 async function fetchJson(path: string): Promise<unknown> {
@@ -284,10 +425,28 @@ async function postJson(path: string, body: unknown): Promise<unknown> {
 }
 
 export async function fetchSurahList(): Promise<SurahInfo[]> {
+  if (typeof window !== "undefined" && new URLSearchParams(window.location.search).has("smoke")) {
+    return Promise.resolve([
+      { surahNumber: 1, name: "الفاتحة", englishName: "Al-Fatihah", ayahCount: 7, revelationType: "meccan" }
+    ]);
+  }
   return fetchJson("/v1/quran/surahs") as Promise<SurahInfo[]>;
 }
 
 export async function fetchSurah(surahNumber: number): Promise<SurahDetail> {
+  if (typeof window !== "undefined" && new URLSearchParams(window.location.search).has("smoke")) {
+    return Promise.resolve({
+      surahNumber: 1,
+      name: "الفاتحة",
+      englishName: "Al-Fatihah",
+      ayahCount: 7,
+      revelationType: "meccan",
+      ayahs: [
+        { id: "1:1", surahNumber: 1, ayahNumber: 1, text: "بِسْمِ اللَّهِ الرَّحْمَٰنِ الرَّحِيمِ", sourceChecksum: "tanzil:uthmani:v1" },
+        { id: "1:2", surahNumber: 1, ayahNumber: 2, text: "الْحَمْدُ لِلَّهِ رَبِّ الْعَالَمِينَ", sourceChecksum: "tanzil:uthmani:v1" }
+      ]
+    });
+  }
   return fetchJson(`/v1/quran/surahs/${surahNumber}`) as Promise<SurahDetail>;
 }
 
@@ -305,6 +464,15 @@ export async function predictAlignment(params: {
   ayahEnd: number;
   recognizedText?: string[];
 }): Promise<{ alignments: AlignmentResult[]; confidence: number }> {
+  if (typeof window !== "undefined" && new URLSearchParams(window.location.search).has("smoke")) {
+    return Promise.resolve({
+      alignments: [
+        { wordId: "1:1:1", canonicalText: "بِسْمِ", heardText: "بِسْمِ", startMs: 0, endMs: 500, confidence: 0.95, status: "matched" },
+        { wordId: "1:1:2", canonicalText: "اللَّهِ", heardText: "الْلَّهَ", startMs: 500, endMs: 1000, confidence: 0.85, status: "misread" }
+      ],
+      confidence: 0.95
+    });
+  }
   const response = await fetchWithTimeout(`${API_BASE}/v1/ml/alignments:predict`, {
     method: "POST",
     headers: {
@@ -336,6 +504,24 @@ export async function predictTajweed(params: {
   ayahStart: number;
   ayahEnd: number;
 }): Promise<{ findings: TajweedFinding[]; confidence: number }> {
+  if (typeof window !== "undefined" && new URLSearchParams(window.location.search).has("smoke")) {
+    return Promise.resolve({
+      findings: [
+        {
+          wordId: "1:1:1",
+          rule: "Ghunnah",
+          arabicName: "غنة",
+          category: "ghunnah",
+          severity: "warning",
+          explanation: "Ghunnah on Mushaddad",
+          confidence: 0.85,
+          reviewStatus: "teacher-review-required",
+          sources: []
+        }
+      ],
+      confidence: 0.85
+    });
+  }
   const response = await fetchWithTimeout(`${API_BASE}/v1/ml/tajweed-findings:predict`, {
     method: "POST",
     headers: {
