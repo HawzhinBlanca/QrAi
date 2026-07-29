@@ -9,3 +9,10 @@ minimumReleaseAgeExclude:
   - motion@12.41.0
   - recharts@3.9.0
   - vite@8.1.0
+
+# postcss <=8.5.17 has a path-traversal advisory (GHSA-r28c-9q8g-f849) reachable only transitively
+# via vite/@vitejs/plugin-react. It broke `pnpm audit` in CI for every branch, including main, the
+# day the advisory published — nothing in this repo changed. Pinned forward rather than suppressed,
+# so the gate keeps its teeth. pnpm 10+ reads overrides from this file, not package.json.
+overrides:
+  postcss: '>=8.5.18'
