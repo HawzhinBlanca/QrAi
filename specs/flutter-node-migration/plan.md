@@ -69,23 +69,35 @@ construction. Re-deriving `canonical_words` is a **schema-breaking data migratio
 timings, and the `word_alignments` / `tajweed_findings` / `teacher_reviews` rows that FK into them):
 **4–6 weeks**, and it must happen before any new client renders words.
 
-## 0.3 🔴 RLS has never actually executed — and this corrects what I told you earlier
+## 0.3 🟠 RLS is inert in most tests — CORRECTED after measurement (MIG1)
 
-I told you an hour ago that RLS "fails closed, good design, survives the rewrite." **The design is
-real. It has never once been exercised.**
+> **CORRECTION (post-MIG1).** This section originally claimed *"RLS has never executed in any test."*
+> **That was wrong, and it came from an audit agent's claim I relayed without checking.**
+> `tests/integration.rs:3097` (`adversarial_sql_isolation_prevents_cross_tenant_access`) issues
+> `SET LOCAL ROLE quran_ai_app` **specifically so RLS applies**, and asserts a cross-tenant read
+> returns 0 rows and a cross-tenant insert raises 42501. Three tests reference the restricted role.
+> The accurate claim is below. See `tasks.md` MIG1/MIG2 for the measured result.
+
+**Accurate version:** *most* tests run with RLS inert, because the default connection role is a
+superuser — so RLS was proven only for one hand-built adversarial path, never for the app as a whole.
 
 - `.github/workflows/ci.yml:14` — `POSTGRES_USER: hawzhin` (the container's **superuser**)
 - `.github/workflows/ci.yml:26` and `scripts/verify.sh:28` — both connect as that role
 - `begin_tenant_tx`'s own doc comment (`lib.rs:449-451`) admits it: *"In dev the connection role is a
   superuser (RLS bypassed), so this is a no-op there."*
 
-So all 16 tenant policies are **inert in every environment where they have been tested**, and
-`infra/sql/rls-app-role.sql` is applied but never used by the suite.
+So the 16 tenant policies are inert for the *default* suite run, and `infra/sql/rls-app-role.sql`
+is applied in CI but never connected as — except by the three adversarial tests noted above.
 
-**Fix first, before a line of Node exists:** switch CI to `quran_ai_app`, run the existing Rust suite,
-and repair the fallout. The security audit estimates **2–3 weeks of pure discovery** — inert writes
-like the pilot idle-roll will surface, each needing a product decision. Doing this *after* the port
-means you can never tell whether a failure is the port's fault or was always there.
+**RESOLVED by MIG1 (2026-07-29).** The whole suite was run against the restricted role on an isolated
+Postgres: **76/76 integration tests passed**, including all 6 pilot tests. The audit's estimate of
+"2–3 weeks of pure discovery" and its prediction that the pilot idle-roll would surface as an inert
+write were both **wrong** — production can run as `quran_ai_app` today without breaking. Raw log:
+`specs/flutter-node-migration/evidence/mig1-rls-discovery.log`.
+
+**Still open (MIG2a):** nothing proves RLS works as a *backstop*. Every handler currently sets its
+tenant context correctly, so no test exercises what happens when one **forgets** — which is exactly
+the failure a Node port introduces via a stray pooled query outside the transaction.
 
 ## 0.4 🟠 No Unicode normalization contract — 92.5% of the corpus is NFC-unstable
 
