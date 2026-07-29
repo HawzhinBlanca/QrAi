@@ -2,6 +2,7 @@ import { Suspense, lazy, useEffect, useMemo, useRef, useState, useCallback } fro
 import { motion } from "motion/react";
 import { Send } from "lucide-react";
 import { useTranslation } from "react-i18next";
+import { isNonRecitedMark } from "@quran-ai/contracts";
 // App.tsx is the common entry point for BOTH main.tsx (real app) and App.smoke.test.tsx (which
 // renders <App /> directly via createRoot, bypassing main.tsx entirely) -- importing i18n's
 // init here, not just in main.tsx, is what makes useTranslation() work in both.
@@ -760,8 +761,18 @@ function AuthenticatedApp({ bypassLogin = false }: { bypassLogin?: boolean }) {
       // Only words the learner ACTUALLY RECITED: exclude "extra" (spoken but not canonical) AND
       // "missed" (canonical but not spoken). Feeding a missed word into the aligner asks it to place
       // a word that isn't in the audio, distorting that word's span and every neighbor's.
+      // Also drop non-recited mushaf marks (waqf/sajdah/hizb). The comment above is already the
+      // argument for it — a waqf sign is never in the audio, so asking the aligner to place one
+      // distorts its span and every neighbour's. ml-inference (T2) should mean none ever reach here;
+      // this stays as a second gate because the next hop is a Python service that splits the
+      // transcript with `req.transcript.split()` and validates nothing (server.py:453).
+      //
+      // Filtering into `recitedAligned` itself — rather than at the `transcript:` join below — is
+      // deliberate: buildTimingsByWordId(recitedAligned, aligned) is POSITIONAL and returns undefined
+      // on any count mismatch, silently losing every timing. One filtered array feeds both consumers,
+      // so the counts cannot drift apart.
       const recitedAligned = alignment.alignments.filter(
-        (a) => a.status !== "extra" && a.status !== "missed",
+        (a) => a.status !== "extra" && a.status !== "missed" && !isNonRecitedMark(a.canonicalText),
       );
       if (audioBlob && recitedAligned.length > 0) {
         try {

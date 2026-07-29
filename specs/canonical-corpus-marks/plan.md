@@ -1,10 +1,10 @@
 # Plan — stop scoring non-recited mushaf marks
 
-**Status: PROPOSED. No code until `Approved-by:` is filled by a human** (AGENTS.md step 2).
+**Status: APPROVED 2026-07-29** by the repo owner in session (AGENTS.md step 2 gate satisfied).
 **Research:** `research.md` (same directory). **Measured at** main `462ebe8`.
 **Phase 3 of** `specs/flutter-node-migration/plan.md`.
 
-**Approved-by:**
+**Approved-by:** repo owner (HawzhinBlanca), 2026-07-29, in session — scope T1-T4 as written below.
 
 ---
 
