@@ -691,3 +691,42 @@ marketed as a Sorani UI.
 - The registry is a local truthfulness guard, not R5 proof. Native-language,
   Quran-content, RTL/accessibility, and candidate-bound review evidence are
   still required before a non-English interface can return.
+
+## ADR-0021 — Agent-run dedup is application-level, not a DB unique constraint (for now)
+**Date:** 2026-07-08 · **Status:** Accepted
+
+**Context.** The Tajweed Explainer batch re-recorded every finding on every tick, growing
+`agent_runs` unboundedly and spamming the teacher review queue with duplicates. The obvious fix
+is a DB unique constraint on `(tenant_id, finding_id)` — but `finding_id` lives inside the
+`trace` JSONB, not a column, so that needs a new migration. New migrations currently can't ship
+green: CI's Postgres only applies `infra/sql/0001–0013` (its list in the CI-protected
+`.github/workflows/ci.yml`), so any integration test touching a new column fails `verify` — the
+exact wall that's kept PR #123 red since 2026-07-07.
+
+**Decision.** Dedup at the application layer instead (PR #193): `list_agent_runs` surfaces
+`findingId` from the *existing* `trace` JSONB (no migration), and the batch skips findings that
+already have a run. Sufficient because batches are sequential cron ticks, not concurrent.
+
+**Options.** (A) DB unique constraint — bulletproof against concurrency, but blocked on the
+`ci.yml` migration-list unblock. (B) App-level skip — ships now, CI-green, no schema change; not
+atomic against two concurrent batch runs.
+
+**Consequences.** Duplicates stop today. When the owner adds `0015–0020` (+#123's `0018`) to
+`ci.yml`, promote to Option A in the same batch: migration adds an indexed `finding_id` column +
+partial unique index, and `create_agent_run` uses `ON CONFLICT DO NOTHING`. Until then, a
+hypothetical concurrent double-run could still double-record — acceptable for a single-tenant
+cron pilot.
+
+---
+
+**Renumbered 2026-07-29 (was ADR-0013).** ADR-0013 on `main` is a different decision — release
+gating of the mushaddad ghunnah limitation — so this one was a number collision, which is why the
+PR could never merge cleanly. Content is unchanged apart from the number and this note.
+
+**Status update 2026-07-29 — the constraint this ADR was written around is gone.** Two of its
+premises no longer hold: CI now applies migrations `0001–0021` (not `0001–0013`), and PR #123 was
+closed as obsolete because the agent-run erasure fix had already landed on `main` by another path
+(`0018_agent_run_learner_id.sql` + `privacy.rs:356` + `privacy_delete_erases_learner_agent_runs`).
+So the "blocked on the ci.yml migration list" reason for choosing Option B has expired, and Option A
+(the DB unique constraint) is now shippable whenever the owner wants it. The app-level dedup remains
+correct and in place; this is no longer a forced choice, just an unpromoted one.
