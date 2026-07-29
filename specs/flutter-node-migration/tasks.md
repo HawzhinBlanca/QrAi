@@ -195,9 +195,36 @@ step, not a conditional.
 
 **Test ID:** `t-mig5-python-gated`
 
-- [ ] MIG5 — Gate Python tests — Wire the three existing plain-interpreter suites into verify.sh + CI.
+- [x] MIG5 — Gate Python tests — Wire the three existing plain-interpreter suites into verify.sh + CI.
 
-### MIG5 STATUS: BLOCKED on merge order — attempted, reverted, not faked
+### MIG5 STATUS: DONE (#262). Resolved — the blocker below is kept as the record of how.
+
+Merged in #262 after the dependency was cleared. Proven in the gate run:
+
+```
+test_eval_metrics.py                 27/27 passed
+test_forced_align_normalization.py    6/6 passed
+VERIFY OK
+```
+
+`test_audio_guards.py` remains excluded and ungated — named in the verify.sh comment, not silently
+dropped (system python3 has numpy 2.4.4 but not fastapi, which it imports).
+
+**Clearing the blocker surfaced a bigger problem.** #258 and #256 could not be merged because CI was
+**red on every branch, including `main` at e0f37c1** — `pnpm audit` started failing the day
+GHSA-r28c-9q8g-f849 published (postcss <=8.5.17 path traversal, reachable transitively via vite).
+Nothing in the repo had changed; the same commit passed earlier (d6a8b40 green, e0f37c1 red). Fixed
+in **#261** by pinning `postcss >=8.5.18` (resolved 8.5.24) — pinned forward, not suppressed with an
+audit-ignore, so the P4.4 supply-chain gate keeps its teeth. Note the override had to go in
+`pnpm-workspace.yaml`: pnpm 10+ **silently ignores** `pnpm.overrides` in `package.json` (verified —
+the install reported "Already up to date" and kept the vulnerable version, with no warning).
+
+Merge order that unblocked this: **#261 → #258 → #256 → #262**.
+
+---
+
+#### Original BLOCKED record (kept deliberately — this is what "BLOCKED is a success state" looks like)
+
 
 The change was written and run. `verify.sh` **failed correctly**:
 
