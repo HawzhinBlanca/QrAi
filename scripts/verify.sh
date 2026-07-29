@@ -124,6 +124,17 @@ if [[ "$FAST" != "yes" ]]; then
   # helpers import ONLY node builtins, so this needs no install — just Node's type-stripping to read
   # the .ts directly. Same explicit-path style as the node services line above.
   run "test: mobile"              "node --experimental-strip-types --test apps/mobile/lib/session.test.ts"
+  # MIG5 — Python. asr-inference ships plain-interpreter suites (documented as `python test_x.py`)
+  # that import no torch and load no model, so they run anywhere Python 3 + numpy exist. They were
+  # previously ungated ENTIRELY — including test_forced_align_normalization.py, which guards the
+  # diacritic character class that once deleted every Arabic letter and shipped through review
+  # (PR #258). Deliberately NOT skip-if-missing: a soft skip would report green on a machine with
+  # no Python and hide exactly the class of bug this exists to catch.
+  # NOT included: test_audio_guards.py. Its docstring claims plain-interpreter, but it imports
+  # fastapi and shells out to ffmpeg (verified: system python3 has numpy but not fastapi), so it
+  # needs the service venv. It stays ungated until CI installs the asr-inference requirements —
+  # a named gap, not a silent one.
+  run "test: python (asr-inference)" "cd services/asr-inference && { command -v python3 >/dev/null || { echo 'python3 not found — required, not optional'; exit 1; }; } && python3 test_eval_metrics.py && python3 test_forced_align_normalization.py"
   run "test: rust gateway"        "cargo test --manifest-path $GW"
   run "test: rust platform-api"   "cargo test --manifest-path $API"
 
