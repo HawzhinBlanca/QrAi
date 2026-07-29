@@ -5,6 +5,7 @@ import { describe, expect, it } from "vitest";
 import {
   canShowLearnerFacingAiOutput,
   canUseExternalAsr,
+  isNonRecitedMark,
   modelEvalPassesReleaseGate,
   mustDiscardAudio,
   sha256Hex,
@@ -67,6 +68,16 @@ describe("canonical-gates fixture corpus", () => {
       // An unpopulated vector must fail loudly rather than be skipped — see the fixture's $comment.
       expect(c.expected, `${c.name}: expected value is null (unpopulated)`).not.toBeNull();
       expect(sha256Hex(c.input as string), c.name).toBe(c.expected);
+    }
+  });
+
+  it("isNonRecitedMark matches every vector", () => {
+    for (const c of casesFor("isNonRecitedMark")) {
+      // Built from codepoints, never literal characters — see the fixture group's $comment.
+      const cps = (c as unknown as { inputCodepoints: number[] }).inputCodepoints;
+      expect(cps, `${c.name}: missing inputCodepoints`).toBeDefined();
+      const input = String.fromCodePoint(...cps);
+      expect(isNonRecitedMark(input), c.name).toBe(c.expected);
     }
   });
 

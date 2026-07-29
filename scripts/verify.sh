@@ -118,7 +118,7 @@ if [[ "$FAST" != "yes" ]]; then
   # node:test suites by explicit path. server.mjs gates its side effects (listen/timers) on
   # `isMain`, so server.test.mjs can import it directly; keep explicit paths (a dir glob would
   # still pick up non-test .mjs files).
-  run "test: node services"       "node --test services/ml-inference/alignment.test.mjs services/ml-inference/tajweed.test.mjs services/ml-inference/server.test.mjs services/agents/agents.test.mjs scripts/release-manifest.test.mjs scripts/release-build-evidence.test.mjs scripts/release-evidence-summary.test.mjs scripts/smoke-evidence.test.mjs scripts/smoke-database.test.mjs"
+  run "test: node services"       "node --test services/ml-inference/alignment.test.mjs services/ml-inference/marks-parity.test.mjs services/ml-inference/tajweed.test.mjs services/ml-inference/server.test.mjs services/agents/agents.test.mjs scripts/release-manifest.test.mjs scripts/release-build-evidence.test.mjs scripts/release-evidence-summary.test.mjs scripts/smoke-evidence.test.mjs scripts/smoke-database.test.mjs"
   # apps/mobile is NOT a pnpm workspace member, so the TS `test: ts` line above never covered it and
   # its consent/auth/audio-format helpers went unguarded (a real audioFormat bug shipped there). The
   # helpers import ONLY node builtins, so this needs no install — just Node's type-stripping to read

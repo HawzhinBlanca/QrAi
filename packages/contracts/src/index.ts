@@ -388,6 +388,74 @@ export function canShowLearnerFacingAiOutput(record: Pick<AgentRun | TajweedFind
   return record.confidence >= 0.82 && record.sources.length > 0;
 }
 
+/**
+ * Codepoints that are mushaf ANNOTATION, not recited text: waqf (pause) signs, the end-of-ayah
+ * marker, the rub'-el-hizb marker, and the sajdah marker.
+ *
+ * Written as explicit escapes, never literal characters — a literal-character class in
+ * `forced_align.py` merged two ranges, deleted every Arabic letter, and passed review (PR #258).
+ * See AGENTS.md's hard boundary on Arabic character classes.
+ *
+ * U+06D6..U+06DC  small high letters — waqf signs (pause permitted / compulsory / forbidden)
+ * U+06DD          end of ayah
+ * U+06DE          start of rub el hizb
+ * U+06E9          place of sajdah
+ *
+ * NOT included: U+06DF..U+06E8 and U+06EA..U+06ED. Those are combining marks that live INSIDE a
+ * word (superscript alef, small high/low marks); they are handled by the all-characters rule in
+ * `isNonRecitedMark` rather than by listing them, because a word carrying one is still a word.
+ */
+const NON_RECITED_MARK_CODEPOINTS: ReadonlySet<number> = new Set([
+  0x06d6, 0x06d7, 0x06d8, 0x06d9, 0x06da, 0x06db, 0x06dc, 0x06dd, 0x06de, 0x06e9,
+]);
+
+/**
+ * True when a canonical word token is entirely mushaf annotation and therefore must never be
+ * scored as recitation.
+ *
+ * 4,578 of the 82,456 tokens in `packages/quran-data` are standalone annotation symbols carrying
+ * real word ids (`surah:ayah:index`) — measured across 89 of 114 surahs. Without this gate they are
+ * rendered as scored word buttons and fed to the forced aligner, so a learner is marked "missed" on
+ * a sajdah sign and the aligner is asked to find audio for a silent token, distorting that token's
+ * span and every neighbour's.
+ *
+ * These tokens are deliberately NOT removed from the corpus: waqf signs tell a reciter where they
+ * may, must, or must not pause, which is recitation instruction a learner needs to SEE. The fix is
+ * to separate display from scoring, not to delete the marks. See
+ * specs/canonical-corpus-marks/plan.md.
+ *
+ * Every character must be a mark. A real word that happens to carry a combining mark is still a
+ * word and stays scored — the failure mode of a looser rule (e.g. "contains a mark") would be
+ * silently dropping real words from scoring, which is worse than the bug being fixed.
+ *
+ * This value is metadata ABOUT a token, not part of its canonical identity: it must never enter
+ * `canonicalWordPayload`, or every checksum after the first mark in an ayah changes and
+ * `verifyCanonicalWord` fails across 89 surahs.
+ */
+export function isNonRecitedMark(text: string): boolean {
+  if (text.length === 0) {
+    return false;
+  }
+  let sawMark = false;
+  for (const char of text) {
+    const cp = char.codePointAt(0);
+    if (cp === undefined) {
+      return false;
+    }
+    if (NON_RECITED_MARK_CODEPOINTS.has(cp)) {
+      sawMark = true;
+      continue;
+    }
+    // Whitespace is tolerated around a mark (the corpus has a few padded tokens) but cannot on its
+    // own make a token a mark — otherwise " " would classify as annotation.
+    if (/\s/u.test(char)) {
+      continue;
+    }
+    return false;
+  }
+  return sawMark;
+}
+
 export function mustDiscardAudio(retention: AudioRetentionMode): boolean {
   return retention === "discard";
 }
