@@ -7,6 +7,13 @@ findings, 12 blockers, across security / correctness / delivery / Quranic-domain
 **Every claim below is measured or executed, not recalled.** Where I verified something personally it
 says so.
 
+**Scope of this approval round:** `specs/flutter-node-migration/tasks.md` **MIG1–MIG5 only**
+(Phase 1–2 discovery + fixture work). Approving this line authorizes that scope — not Phase 3's
+schema-breaking corpus rework and not phases 5–9, which need their own plan once MIG1's evidence and
+the owner/scholar/SRE assignments in `P0.1` exist.
+
+**Approved-by:**
+
 ---
 
 # PART 0 — STOP: three live bugs, found while planning
