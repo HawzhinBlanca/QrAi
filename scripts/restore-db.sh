@@ -87,6 +87,9 @@ fi
 
 end_epoch="$(date -u +%s)"
 elapsed=$(( end_epoch - start_epoch ))
+# `date +%s` has 1-second resolution, so a fast restore reports "0s" — which is not a usable
+# measurement and would be misread as "instant". Report sub-second honestly instead.
+if [[ "$elapsed" -eq 0 ]]; then elapsed_str="<1s"; else elapsed_str="${elapsed}s"; fi
 
 # --- Verification: a restore that "succeeded" but restored nothing is the failure that hides ------
 echo ""
@@ -118,11 +121,11 @@ done
 
 echo ""
 if [[ "$verify_failed" -ne 0 ]]; then
-  echo "RESTORE VERIFICATION FAILED after ${elapsed}s — do NOT cut over to this database." >&2
+  echo "RESTORE VERIFICATION FAILED after ${elapsed_str} — do NOT cut over to this database." >&2
   exit 1
 fi
 
-echo "RESTORE OK in ${elapsed}s (measured wall-clock)."
+echo "RESTORE OK in ${elapsed_str} (measured wall-clock, 1s resolution)."
 echo ""
 echo "NOTE: this measurement is a FLOOR, not a prediction. A drill on isolated infrastructure has"
 echo "no network latency, no concurrent load, and a 6,236-ayah corpus is not a year of pilot audio."

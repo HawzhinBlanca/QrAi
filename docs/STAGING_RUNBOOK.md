@@ -164,7 +164,14 @@ curl -s -o /dev/null -w '%{http_code}\n' http://localhost:8080/ready            
 Enforced by the middleware layer inside CORS (`platform-api/src/lib.rs:344`), so 503s still carry
 CORS headers and a browser client sees a clean error rather than a network failure.
 
-**Time to take effect: UNMEASURED** (T3 drill blocked — see `evidence/T1-drill-BLOCKED.md`).
+**MEASURED (T3 drill, 2026-07-30):** with `MAINTENANCE_MODE=1`, `/v1/recitation-sessions`,
+`/v1/learners/active` and `/v1/tajweed-findings` all returned **503** while `/health`, `/ready`
+and `/metrics` returned **200**. Control run with `MAINTENANCE_MODE=0` on the same binary and
+database returned **200** on those app routes, so the 503s are the switch and not an unrelated
+failure. Process start to serving traffic: **1s**. Evidence:
+`specs/dr-rehearsal/evidence/T3-killswitch-drill.log`.
+
+> The switch is read once at startup, so it takes effect on restart — it is not a live toggle.
 
 To bring it back: `MAINTENANCE_MODE=0 docker compose up -d platform-api`.
 
@@ -206,8 +213,16 @@ RESTORE_TARGET_URL="postgresql://<user>:<pass>@<host>:5432/quran_ai_restored" \
 drill overwrite live data. It verifies row counts after restoring and fails loudly rather than
 reporting a partial restore as success.
 
-**Measured RTO: UNMEASURED — the drill has never run.** `docs/BACKUP_RESTORE.md`'s own instruction to
-restore into a throwaway database before go-live is still outstanding (P5.6).
+**MEASURED (T1 drill, 2026-07-30): restore of the full corpus completed in <1s** (1-second timer
+resolution) from a 4.9 MB custom-format dump, with all row counts matching the source exactly
+(114 surahs / 6,236 ayahs / 82,456 words / 5 users / 1 consent record / 1 session). The drill also
+proved the verification has teeth: restoring a deliberately under-seeded dump reported
+`FAIL canonical_ayahs expected 6236, got 7` and exited 1. Evidence:
+`specs/dr-rehearsal/evidence/T1-restore-drill.log`.
+
+> **This number is a FLOOR, not a prediction.** Isolated infrastructure, no network latency, no
+> concurrent load, and a 6,236-ayah corpus is not a year of pilot audio. P5.6 also requires
+> *encrypted* backups, which `backup-db.sh` does not yet do.
 
 > 🔴 **Legal step, not optional.** If the dump predates a learner's right-to-erasure request, the
 > restore **resurrects data they asked to have deleted**. Re-apply outstanding erasure requests
@@ -226,6 +241,15 @@ is still firing before declaring the incident closed.
 
 ### What is NOT proven here
 
-Everything in this section is written from the code and from the scripts, **not from a rehearsal**.
-No drill in `specs/dr-rehearsal/evidence/` has completed. P5.5, P5.6, P5.7 and P7.5 all remain open.
-Do not cite this runbook as evidence that recovery works.
+**Proven by drill (2026-07-30):** database restore (T1) and the kill-switch (T3) — both on isolated
+infrastructure, both with controls, evidence in `specs/dr-rehearsal/evidence/`.
+
+**NOT proven:**
+- **Rollback (step 2).** There is still no artifact to roll back to — see ADR-0022. What is written
+  above is a rebuild procedure, and it is untimed.
+- **Audio-volume recovery.** The `audio_storage` volume has no tested restore path (T2 not run).
+- **Anything at production scale.** Every measurement here is a floor from an isolated drill.
+- **P5.5, P5.6, P5.7, P7.5 all remain open.** P5.6 additionally requires encrypted backups.
+
+Do not cite this runbook as proof that recovery works end to end. Cite it for the two things that
+were measured, and treat the rest as procedure awaiting rehearsal.

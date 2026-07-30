@@ -3,22 +3,31 @@
 Plan: `plan.md` (APPROVED 2026-07-30). Rows flip ONLY via `scripts/update-ledger.sh` after
 `verify.sh` exits 0 **and** the task's stated acceptance is met.
 
-## ⚠️ Outcome: 0 of 5 tasks closed. Every acceptance criterion required a drill; no drill ran.
+## Outcome after the Docker restart: 2 of 5 closed (T1, T3). T2/T4/T5 remain open.
 
-The Docker daemon on this host cannot start new containers (evidence:
-`evidence/T1-drill-BLOCKED.md`). `psql`/`pg_dump` are not on PATH either — earlier work reached
-Postgres through a `docker exec` shim, which the same failure removes. There is no route to a
-database from here.
+**First attempt was BLOCKED** — the Docker daemon died mid-attempt and Docker Desktop reinitialized
+its VM on restart, taking the staging stack's containers, images and volumes with it. That record is
+kept in `evidence/T1-drill-BLOCKED.md` rather than deleted: it is what actually happened, and the
+incident landed squarely on the gap this phase exists to close.
 
-Real work was delivered and is gated (below), but **delivering a script is not the same as proving
-recovery works**, and that inference is exactly what this project has been burned by before. So no
-row is flipped and no ledger item is claimed.
+**After the restart the drills ran for real:**
 
-- [ ] T1 restore script + timed drill — **script DONE, drill BLOCKED**
+| Drill | Result | Evidence |
+|---|---|---|
+| **T1** restore | **PASS** — full corpus restored, all counts matched source, `<1s` | `evidence/T1-restore-drill.log` |
+| **T3** kill-switch | **PASS** — app routes 503, health/ready/metrics 200, control confirms | `evidence/T3-killswitch-drill.log` |
+| T2 audio volume | not run | — |
+| T4 rollback | **still impossible** — no artifact exists (ADR-0022 unresolved) | — |
+| T5 runbook | partially closed — T1/T3 numbers filled in, rollback still UNMEASURED | — |
+
+The principle still holds for what did NOT run: **delivering a script is not the same as proving
+recovery works.** T2 and T4 have scripts or analysis but no drill, so their rows stay open.
+
+- [x] T1 restore script + timed drill — DONE, drill PASSED with controls
 - [ ] T2 audio-volume round trip + erasure re-application — **BLOCKED, not started**
-- [ ] T3 kill-switch drill through the real stack — **BLOCKED**
+- [x] T3 kill-switch drill — DONE (native binary over real HTTP, not compose — stated in the log)
 - [ ] T4 rollback artifact — **ADR written (proposed), rehearsal BLOCKED**
-- [ ] T5 runbook sections — **written, but with UNMEASURED markers, so acceptance not met**
+- [ ] T5 runbook sections — T1/T3 numbers now measured and filled in; rollback still UNMEASURED, so not closed
 
 ---
 
@@ -26,11 +35,13 @@ row is flipped and no ledger item is claimed.
 
 | Artifact | State |
 |---|---|
-| `scripts/restore-db.sh` | Written. Refuses a non-empty target without `RESTORE_FORCE=1`; **no default target**; verifies row counts after restore; prints measured elapsed time. **Never executed against a live database.** |
+| `scripts/restore-db.sh` | **Drill-proven.** Refuses a non-empty target without `RESTORE_FORCE=1` (confirmed: exit 3 against a populated DB); **no default target**; row-count verification confirmed to FAIL on an under-restored database (`FAIL canonical_ayahs expected 6236, got 7`, exit 1). Timer resolution fixed after the drill showed `0s`, which is not a usable number. |
 | `scripts/restore-db.test.sh` | **5/5 green, wired into `verify.sh`.** Covers the pre-connection guards, including a source-level assertion that a `DATABASE_URL` fallback can never be reintroduced |
 | `docs/DECISIONS.md` ADR-0022 | The T4 blocker analysed, three options, recommendation. **Status: Proposed** — the owner picks (A) local tags or (B) registry |
-| `docs/STAGING_RUNBOOK.md` | Take-down / rollback / restore / bring-up sections. Closes the dangling `alerts.yml` → runbook reference. Timings marked **UNMEASURED**, never estimated |
-| `evidence/T1-drill-BLOCKED.md` | The absence of a drill, recorded rather than left to be inferred from silence |
+| `docs/STAGING_RUNBOOK.md` | Take-down / rollback / restore / bring-up. Closes the dangling `alerts.yml` → runbook reference. T1/T3 timings now **measured**; rollback still reads UNMEASURED because it genuinely is |
+| `evidence/T1-drill-BLOCKED.md` | The first, blocked attempt — **kept, not deleted.** It is what happened, and the daemon crash it records is itself the incident this phase exists to prepare for |
+| `evidence/T1-restore-drill.log` | The real drill: backup → restore → verify, both guards exercised, plus a correction of my own piping error that had masked an exit code |
+| `evidence/T3-killswitch-drill.log` | Kill-switch over real HTTP, with the control run that makes the 503s meaningful |
 
 ### The safety rule that is proven
 
@@ -44,15 +55,12 @@ database to prove.
 
 ---
 
-## Why T5 does not close despite being written
+## Why T5 still does not close
 
-`plan.md` T5 required *"every command in the new sections was actually executed in a T1–T4 drill; no
-step is written from assumption."* The sections are written from the code and the scripts, not from a
-rehearsal. Writing plausible timings would have satisfied the letter of the task and defeated its
-purpose — a number nobody measured is worse than no number, because it gets planned against.
-
-Every timing therefore reads **UNMEASURED**, and the runbook ends with an explicit statement that it
-is not evidence recovery works.
+`plan.md` T5 required *"every command in the new sections was actually executed in a T1–T4 drill."*
+The restore and kill-switch sections now meet that bar. **The rollback section does not** — it cannot,
+because there is nothing to roll back to (ADR-0022). Its timing still reads UNMEASURED rather than
+carrying an invented number, so the task stays open.
 
 ---
 
@@ -61,11 +69,13 @@ is not evidence recovery works.
 Needs a host with a working Docker daemon, or two reachable Postgres instances. The exact commands
 are in `evidence/T1-drill-BLOCKED.md`. Then:
 
-1. Run the T1 drill; commit the log **red or green**.
-2. T2, T3 follow the same pattern.
-3. T4 needs the owner's ADR-0022 decision **before** rehearsal — rehearsing rollback today would
+1. ~~T1 restore drill~~ **done, PASS.**
+2. ~~T3 kill-switch drill~~ **done, PASS.**
+3. **T2** audio-volume round trip — needs the `audio_storage` volume and the erasure re-application
+   step. Not started.
+4. **T4** needs the owner's ADR-0022 decision **before** rehearsal — rehearsing rollback today would
    rehearse a rebuild, which is the wrong thing to practise.
-4. T5's UNMEASURED markers get replaced with the numbers the drills produce.
+5. **T5** closes when T4's rollback timing replaces the last UNMEASURED marker.
 
 Still human afterwards regardless: **P5.7** (SRE signs the evidence), **P7.5** (independent
 challenger rehearses rollback), **P5.1** (RTO/RPO ratified — I can measure recovery time, but whether
