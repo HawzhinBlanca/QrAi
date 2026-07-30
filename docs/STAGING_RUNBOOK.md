@@ -135,3 +135,97 @@ MAINTENANCE_MODE=0 docker compose up -d platform-api      # or unset it and re-u
 Flipping requires the env change + a container restart (read once at startup). If ops ever need a
 no-restart live toggle, upgrade `maintenance_mode` to an `Arc<AtomicBool>` flipped by an
 admin-only endpoint (see the note on `AppState.maintenance_mode` in `services/platform-api/src/lib.rs`).
+
+---
+
+## Incident response: take down, roll back, restore, bring up
+
+Added by P4-T5 (`specs/dr-rehearsal/plan.md`). `monitoring/alerts.yml` routes `PlatformApiDown` here
+with "consider kill-switch + rollback", so this section closes a reference that previously pointed at
+a document explaining neither.
+
+> **Read this first.** Timings below are marked UNMEASURED where no drill has produced a number.
+> They are deliberately not estimates. A number here that nobody measured is worse than no number,
+> because it will be planned against. See `specs/dr-rehearsal/evidence/`.
+
+### 1. Take the service down gracefully (kill-switch)
+
+Prefer this to stopping containers: `/health`, `/ready` and `/metrics` stay live, so the outage reads
+as "up, in maintenance" rather than "crashed", and monitoring keeps working while you work.
+
+```bash
+MAINTENANCE_MODE=1 docker compose up -d platform-api
+# verify: app routes 503, health/ready/metrics still 200
+curl -s -o /dev/null -w '%{http_code}\n' http://localhost:8080/v1/recitation-sessions   # expect 503
+curl -s -o /dev/null -w '%{http_code}\n' http://localhost:8080/health                    # expect 200
+curl -s -o /dev/null -w '%{http_code}\n' http://localhost:8080/ready                     # expect 200
+```
+
+Enforced by the middleware layer inside CORS (`platform-api/src/lib.rs:344`), so 503s still carry
+CORS headers and a browser client sees a clean error rather than a network failure.
+
+**Time to take effect: UNMEASURED** (T3 drill blocked — see `evidence/T1-drill-BLOCKED.md`).
+
+To bring it back: `MAINTENANCE_MODE=0 docker compose up -d platform-api`.
+
+### 2. Roll back
+
+> ⚠️ **There is currently nothing to roll back to.** Every app service is built from source
+> (`build:`), and no image artifact is produced anywhere. "Rollback" today means
+> `git checkout <sha> && docker compose build` — a rebuild, which takes minutes and **can fail for
+> reasons unrelated to the code you are restoring**. That is not theoretical: the postcss advisory
+> (#261) red-lighted every branch including `main` at a commit that had passed CI hours earlier.
+>
+> **ADR-0022** proposes the fix (digest-pinned images with tag retention). Until it lands, treat
+> rollback as a rebuild and budget minutes, not seconds — and prefer the kill-switch (step 1) plus
+> restore (step 3) as your fast path.
+
+Interim procedure (rebuild-based):
+
+```bash
+MAINTENANCE_MODE=1 docker compose up -d platform-api   # stop the bleeding first
+git checkout <last-known-good-sha>
+docker compose build platform-api realtime-gateway     # these two move TOGETHER — the realtime
+                                                        # ticket is a cross-service HMAC contract
+docker compose up -d platform-api realtime-gateway
+MAINTENANCE_MODE=0 docker compose up -d platform-api
+```
+
+**Time: UNMEASURED, and dependent on build success.**
+
+### 3. Restore the database
+
+```bash
+# Backups: scripts/backup-db.sh (custom-format pg_dump, rotated). Restore into a FRESH database.
+RESTORE_TARGET_URL="postgresql://<user>:<pass>@<host>:5432/quran_ai_restored" \
+  bash scripts/restore-db.sh backups/quran_ai-<timestamp>.dump
+```
+
+`restore-db.sh` refuses a non-empty target unless `RESTORE_FORCE=1`, and has **no default target** —
+`verify.sh` exports a default `DATABASE_URL` pointing at a real database, so a fallback would let a
+drill overwrite live data. It verifies row counts after restoring and fails loudly rather than
+reporting a partial restore as success.
+
+**Measured RTO: UNMEASURED — the drill has never run.** `docs/BACKUP_RESTORE.md`'s own instruction to
+restore into a throwaway database before go-live is still outstanding (P5.6).
+
+> 🔴 **Legal step, not optional.** If the dump predates a learner's right-to-erasure request, the
+> restore **resurrects data they asked to have deleted**. Re-apply outstanding erasure requests
+> immediately after restoring, before the database serves traffic. Audio blobs live in the
+> `audio_storage` volume, outside the dump, and must be handled separately.
+
+### 4. Bring the service back
+
+```bash
+MAINTENANCE_MODE=0 docker compose up -d platform-api
+bash scripts/smoke-api.mjs      # or: pnpm smoke:all
+```
+
+Confirm in Grafana that `http_requests_total` is climbing and no alert from `monitoring/alerts.yml`
+is still firing before declaring the incident closed.
+
+### What is NOT proven here
+
+Everything in this section is written from the code and from the scripts, **not from a rehearsal**.
+No drill in `specs/dr-rehearsal/evidence/` has completed. P5.5, P5.6, P5.7 and P7.5 all remain open.
+Do not cite this runbook as evidence that recovery works.
