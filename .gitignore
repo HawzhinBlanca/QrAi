@@ -46,3 +46,7 @@ UnpredectableGAME/
 *.dump
 # CocoIndex Code (ccc)
 /.cocoindex_code/
+
+# Drill evidence is the POINT of this directory — the global *.log rule was silently
+# excluding it, which would have left "the drill passed" as an unbacked claim.
+!specs/dr-rehearsal/evidence/*.log
