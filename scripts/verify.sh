@@ -124,6 +124,11 @@ if [[ "$FAST" != "yes" ]]; then
   # helpers import ONLY node builtins, so this needs no install — just Node's type-stripping to read
   # the .ts directly. Same explicit-path style as the node services line above.
   run "test: mobile"              "node --experimental-strip-types --test apps/mobile/lib/session.test.ts"
+  # P4-T1: restore-db.sh's pre-connection guards. The critical one asserts the script has NO
+  # DATABASE_URL fallback — verify.sh (line 28 of this file) exports a default DATABASE_URL pointing
+  # at a real local database, so a restore script that fell back to it would overwrite a developer's
+  # own data during what they believed was a drill. Pure bash, no DB needed, so it always runs.
+  run "test: restore guards"      "bash scripts/restore-db.test.sh"
   # MIG5 — Python. asr-inference ships plain-interpreter suites (documented as `python test_x.py`)
   # that import no torch and load no model, so they run anywhere Python 3 + numpy exist. They were
   # previously ungated ENTIRELY — including test_forced_align_normalization.py, which guards the

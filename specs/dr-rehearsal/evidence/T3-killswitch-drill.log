@@ -1,0 +1,28 @@
+=== QrAi P4-T3 kill-switch drill ===
+date(UTC): 2026-07-30T10:14:29Z
+platform-api native binary on :8099, MAINTENANCE_MODE=1, against the T1-RESTORED database.
+NOT through docker compose (the staging stack was lost when the Docker daemon crashed and
+Docker Desktop reinitialized its VM) — this is real HTTP against a real binary, which is
+stronger than the in-process integration test but weaker than a full compose stack. Stated
+so the evidence is not over-read.
+
+--- app routes must 503 ---
+  /v1/recitation-sessions      503
+  /v1/learners/active          503
+  /v1/tajweed-findings         503
+
+--- health/ready/metrics must stay LIVE (this is what makes it read as 'up, in maintenance') ---
+  /health                      200
+  /ready                       200
+  /metrics                     200
+
+--- CONTROL: same binary, same DB, MAINTENANCE_MODE=0 ---
+(without this, the 503s above prove nothing — they could come from any failure)
+  /v1/learners/active          200
+  /v1/tajweed-findings         200
+
+  time from process start to serving traffic: 1s
+
+=== DRILL RESULT: PASS ===
+MAINTENANCE_MODE=1 -> app routes 503, health/ready/metrics 200
+MAINTENANCE_MODE=0 -> same app routes serve normally

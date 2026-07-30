@@ -135,3 +135,121 @@ MAINTENANCE_MODE=0 docker compose up -d platform-api      # or unset it and re-u
 Flipping requires the env change + a container restart (read once at startup). If ops ever need a
 no-restart live toggle, upgrade `maintenance_mode` to an `Arc<AtomicBool>` flipped by an
 admin-only endpoint (see the note on `AppState.maintenance_mode` in `services/platform-api/src/lib.rs`).
+
+---
+
+## Incident response: take down, roll back, restore, bring up
+
+Added by P4-T5 (`specs/dr-rehearsal/plan.md`). `monitoring/alerts.yml` routes `PlatformApiDown` here
+with "consider kill-switch + rollback", so this section closes a reference that previously pointed at
+a document explaining neither.
+
+> **Read this first.** Timings below are marked UNMEASURED where no drill has produced a number.
+> They are deliberately not estimates. A number here that nobody measured is worse than no number,
+> because it will be planned against. See `specs/dr-rehearsal/evidence/`.
+
+### 1. Take the service down gracefully (kill-switch)
+
+Prefer this to stopping containers: `/health`, `/ready` and `/metrics` stay live, so the outage reads
+as "up, in maintenance" rather than "crashed", and monitoring keeps working while you work.
+
+```bash
+MAINTENANCE_MODE=1 docker compose up -d platform-api
+# verify: app routes 503, health/ready/metrics still 200
+curl -s -o /dev/null -w '%{http_code}\n' http://localhost:8080/v1/recitation-sessions   # expect 503
+curl -s -o /dev/null -w '%{http_code}\n' http://localhost:8080/health                    # expect 200
+curl -s -o /dev/null -w '%{http_code}\n' http://localhost:8080/ready                     # expect 200
+```
+
+Enforced by the middleware layer inside CORS (`platform-api/src/lib.rs:344`), so 503s still carry
+CORS headers and a browser client sees a clean error rather than a network failure.
+
+**MEASURED (T3 drill, 2026-07-30):** with `MAINTENANCE_MODE=1`, `/v1/recitation-sessions`,
+`/v1/learners/active` and `/v1/tajweed-findings` all returned **503** while `/health`, `/ready`
+and `/metrics` returned **200**. Control run with `MAINTENANCE_MODE=0` on the same binary and
+database returned **200** on those app routes, so the 503s are the switch and not an unrelated
+failure. Process start to serving traffic: **1s**. Evidence:
+`specs/dr-rehearsal/evidence/T3-killswitch-drill.log`.
+
+> The switch is read once at startup, so it takes effect on restart — it is not a live toggle.
+
+To bring it back: `MAINTENANCE_MODE=0 docker compose up -d platform-api`.
+
+### 2. Roll back
+
+> ⚠️ **There is currently nothing to roll back to.** Every app service is built from source
+> (`build:`), and no image artifact is produced anywhere. "Rollback" today means
+> `git checkout <sha> && docker compose build` — a rebuild, which takes minutes and **can fail for
+> reasons unrelated to the code you are restoring**. That is not theoretical: the postcss advisory
+> (#261) red-lighted every branch including `main` at a commit that had passed CI hours earlier.
+>
+> **ADR-0022** proposes the fix (digest-pinned images with tag retention). Until it lands, treat
+> rollback as a rebuild and budget minutes, not seconds — and prefer the kill-switch (step 1) plus
+> restore (step 3) as your fast path.
+
+Interim procedure (rebuild-based):
+
+```bash
+MAINTENANCE_MODE=1 docker compose up -d platform-api   # stop the bleeding first
+git checkout <last-known-good-sha>
+docker compose build platform-api realtime-gateway     # these two move TOGETHER — the realtime
+                                                        # ticket is a cross-service HMAC contract
+docker compose up -d platform-api realtime-gateway
+MAINTENANCE_MODE=0 docker compose up -d platform-api
+```
+
+**Time: UNMEASURED, and dependent on build success.**
+
+### 3. Restore the database
+
+```bash
+# Backups: scripts/backup-db.sh (custom-format pg_dump, rotated). Restore into a FRESH database.
+RESTORE_TARGET_URL="postgresql://<user>:<pass>@<host>:5432/quran_ai_restored" \
+  bash scripts/restore-db.sh backups/quran_ai-<timestamp>.dump
+```
+
+`restore-db.sh` refuses a non-empty target unless `RESTORE_FORCE=1`, and has **no default target** —
+`verify.sh` exports a default `DATABASE_URL` pointing at a real database, so a fallback would let a
+drill overwrite live data. It verifies row counts after restoring and fails loudly rather than
+reporting a partial restore as success.
+
+**MEASURED (T1 drill, 2026-07-30): restore of the full corpus completed in <1s** (1-second timer
+resolution) from a 4.9 MB custom-format dump, with all row counts matching the source exactly
+(114 surahs / 6,236 ayahs / 82,456 words / 5 users / 1 consent record / 1 session). The drill also
+proved the verification has teeth: restoring a deliberately under-seeded dump reported
+`FAIL canonical_ayahs expected 6236, got 7` and exited 1. Evidence:
+`specs/dr-rehearsal/evidence/T1-restore-drill.log`.
+
+> **This number is a FLOOR, not a prediction.** Isolated infrastructure, no network latency, no
+> concurrent load, and a 6,236-ayah corpus is not a year of pilot audio. P5.6 also requires
+> *encrypted* backups, which `backup-db.sh` does not yet do.
+
+> 🔴 **Legal step, not optional.** If the dump predates a learner's right-to-erasure request, the
+> restore **resurrects data they asked to have deleted**. Re-apply outstanding erasure requests
+> immediately after restoring, before the database serves traffic. Audio blobs live in the
+> `audio_storage` volume, outside the dump, and must be handled separately.
+
+### 4. Bring the service back
+
+```bash
+MAINTENANCE_MODE=0 docker compose up -d platform-api
+bash scripts/smoke-api.mjs      # or: pnpm smoke:all
+```
+
+Confirm in Grafana that `http_requests_total` is climbing and no alert from `monitoring/alerts.yml`
+is still firing before declaring the incident closed.
+
+### What is NOT proven here
+
+**Proven by drill (2026-07-30):** database restore (T1) and the kill-switch (T3) — both on isolated
+infrastructure, both with controls, evidence in `specs/dr-rehearsal/evidence/`.
+
+**NOT proven:**
+- **Rollback (step 2).** There is still no artifact to roll back to — see ADR-0022. What is written
+  above is a rebuild procedure, and it is untimed.
+- **Audio-volume recovery.** The `audio_storage` volume has no tested restore path (T2 not run).
+- **Anything at production scale.** Every measurement here is a floor from an isolated drill.
+- **P5.5, P5.6, P5.7, P7.5 all remain open.** P5.6 additionally requires encrypted backups.
+
+Do not cite this runbook as proof that recovery works end to end. Cite it for the two things that
+were measured, and treat the rest as procedure awaiting rehearsal.

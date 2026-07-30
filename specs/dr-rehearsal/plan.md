@@ -1,10 +1,10 @@
 # Plan — deploy, rollback, and restore rehearsal
 
-**Status: PROPOSED. No code until `Approved-by:` is filled by a human** (AGENTS.md step 2).
+**Status: APPROVED 2026-07-30** by the repo owner in session (AGENTS.md step 2 gate satisfied).
 **Research:** `research.md`. **Measured at** main `0e49078`.
 **Phase 4 of** `specs/flutter-node-migration/plan.md`. Targets **P5.5**, **P5.6**.
 
-**Approved-by:**
+**Approved-by:** repo owner (HawzhinBlanca), 2026-07-30, in session — scope T1-T5 as written below.
 
 ---
 

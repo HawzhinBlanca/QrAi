@@ -1,0 +1,111 @@
+=== QrAi P4-T1 restore drill ===
+date(UTC): 2026-07-30T10:10:59Z
+host: isolated docker, source :5435 -> target :5436 (NOT production, NOT staging)
+
+--- source row counts BEFORE backup ---
+        t         | count 
+------------------+-------
+ canonical_ayahs  |  6236
+ canonical_surahs |   114
+ canonical_words  | 82456
+ users            |     5
+(4 rows)
+
+
+--- BACKUP (scripts/backup-db.sh) ---
+backing up database -> ./backups/quran_ai-20260730T101059Z.dump
+backup complete: ./backups/quran_ai-20260730T101059Z.dump (4879126 bytes)
+done. 14 most-recent dumps retained in ./backups
+reminder: copy ./backups/quran_ai-20260730T101059Z.dump off-host — an on-host backup is not disaster recovery.
+DATABASE_URL="postgresql://hawzhin@localhost:5435/quran_ai" BACKUP_DIR= bash   0.02s user 0.03s system 6% cpu 0.757 total
+
+--- target BEFORE restore (must be empty) ---
+ERROR:  relation "users" does not exist
+LINE 1: select count(*) from users
+
+--- RESTORE (scripts/restore-db.sh) ---
+dump: backups/quran_ai-20260730T101059Z.dump
+restoring backups/quran_ai-20260730T101059Z.dump -> postgresql://hawzhin@localhost:5436/quran_ai_restored
+
+verifying restored row counts:
+  ok   canonical_surahs     114
+  ok   canonical_ayahs      6236
+  ok   canonical_words      82456
+  ok   users                5 row(s)
+  ok   consent_records      1 row(s)
+  ok   recitation_sessions  1 row(s)
+
+RESTORE OK in 0s (measured wall-clock).
+
+NOTE: this measurement is a FLOOR, not a prediction. A drill on isolated infrastructure has
+no network latency, no concurrent load, and a 6,236-ayah corpus is not a year of pilot audio.
+
+REQUIRED next step if this restored a PRE-ERASURE backup: re-apply outstanding right-to-erasure
+requests. A restore resurrects audio and records a learner asked to have deleted.
+See docs/BACKUP_RESTORE.md.
+restore-db.sh exit=0
+
+=== GUARD TEST 1: restoring into a NON-EMPTY target must be REFUSED ===
+REFUSED: target already has 5 row(s) in 'users'.
+         Restoring would overwrite live data. Set RESTORE_FORCE=1 to proceed anyway,
+         or point RESTORE_TARGET_URL at a fresh database.
+exit=3 (expect 3 = REFUSED)
+
+=== GUARD TEST 2: does row-count verification actually CATCH a bad restore? ===
+deliberately truncating canonical_surahs in the RESTORED target to simulate a partial restore...
+TRUNCATE TABLE
+
+re-running verification against the damaged target (expect FAIL):
+error: dump file not found: /dev/null
+
+=== GUARD TEST 2 (corrected): does verification CATCH an under-restored database? ===
+Backing up a migrations-only DB (7 ayahs / 29 words instead of 6236 / 82456),
+then restoring it into a fresh target. Verification asserts the full-corpus counts,
+so a correct implementation MUST report FAIL here.
+
+done. 14 most-recent dumps retained in ./backups-partial
+reminder: copy ./backups-partial/quran_ai-20260730T101233Z.dump off-host — an on-host backup is not disaster recovery.
+
+restoring backups-partial/quran_ai-20260730T101233Z.dump -> postgresql://hawzhin@localhost:5436/quran_ai_bad
+
+verifying restored row counts:
+  ok   canonical_surahs     114
+  FAIL canonical_ayahs      expected 6236, got 7
+  FAIL canonical_words      expected 82456, got 29
+  ok   users                0 row(s)
+  ok   consent_records      0 row(s)
+  ok   recitation_sessions  0 row(s)
+
+RESTORE VERIFICATION FAILED after 0s — do NOT cut over to this database.
+restore-db.sh exit=0 (expect 1 = verification FAILED)
+
+=== CORRECTION to GUARD TEST 2 above ===
+The line 'restore-db.sh exit=0' in GUARD TEST 2 is WRONG, and the error was mine, not the
+script's: the invocation was piped through `tail`, so $? captured tail's exit code instead
+of the script's. Re-run unpiped against a fresh under-restored target:
+
+  TRUE exit code on verification failure (unpiped): 1  <- expected 1, correct
+
+=== FINAL CLEAN RUN (fresh target, timing fix applied, exit captured unpiped) ===
+restoring backups/quran_ai-20260730T101059Z.dump -> postgresql://hawzhin@localhost:5436/quran_ai_final
+
+verifying restored row counts:
+  ok   canonical_surahs     114
+  ok   canonical_ayahs      6236
+  ok   canonical_words      82456
+  ok   users                5 row(s)
+  ok   consent_records      1 row(s)
+  ok   recitation_sessions  1 row(s)
+
+RESTORE OK in <1s (measured wall-clock, 1s resolution).
+
+NOTE: this measurement is a FLOOR, not a prediction. A drill on isolated infrastructure has
+no network latency, no concurrent load, and a 6,236-ayah corpus is not a year of pilot audio.
+
+REQUIRED next step if this restored a PRE-ERASURE backup: re-apply outstanding right-to-erasure
+requests. A restore resurrects audio and records a learner asked to have deleted.
+See docs/BACKUP_RESTORE.md.
+restore-db.sh exit=0 (captured unpiped)
+
+=== DRILL RESULT: PASS ===
+date(UTC): 2026-07-30T10:13:47Z

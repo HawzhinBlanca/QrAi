@@ -730,3 +730,54 @@ closed as obsolete because the agent-run erasure fix had already landed on `main
 So the "blocked on the ci.yml migration list" reason for choosing Option B has expired, and Option A
 (the DB unique constraint) is now shippable whenever the owner wants it. The app-level dedup remains
 correct and in place; this is no longer a forced choice, just an unpromoted one.
+
+## ADR-0022 — Deployable artifacts must be immutable and digest-pinned, so rollback has a target
+**Date:** 2026-07-30 · **Status:** Proposed (blocks P5.5) · **Deciders:** repo owner + whoever owns ops
+
+**Context.** `docker-compose.yml` builds every application service from source (`build:`); only
+`postgres` uses `image:`. No workflow builds or pushes a container image — `grep -i
+"docker build|docker push|ghcr|registry|docker/build-push"` across `.github/workflows/` returns
+nothing. So there is no artifact anywhere that represents "the version that was running".
+
+Consequently **rollback today means `git checkout <old-sha> && docker compose build`** — a rebuild,
+not a rollback. It takes minutes instead of seconds, and it can fail for reasons unrelated to the
+code being restored. That is not hypothetical: when GHSA-r28c-9q8g-f849 (postcss) published, `pnpm
+audit` failed on every branch including `main` at a commit that had passed CI hours earlier (#261).
+A rollback attempted in that window would have failed at the build step, at exactly the moment it
+was needed.
+
+The release-evidence machinery already assumes this is solved. `scripts/release-manifest.mjs:179`
+defines `assertImageDigests()`, `:241-243` requires build-provenance digests to match the build
+summary, and `scripts/release-challenge.mjs:248` forwards `RELEASE_IMAGE_DIGESTS_JSON`. **The
+evidence model and the deploy model disagree, and the deploy model is the one that is wrong.**
+
+**Decision.** Deployables become immutable images identified by digest. `docker-compose.yml` gains an
+image reference per service, tagged from the git SHA at build time, with the previous tag retained so
+there is always a target to return to. `imageDigests` is populated for real, satisfying the manifest
+verifier that already demands it rather than relaxing the verifier to match reality.
+
+**Options.**
+- **(A) Local tag retention.** Build and tag locally (`qrai/<service>:<git-sha>`), keep the last N.
+  No credentials, no network dependency during an incident. But tags live only on the host that
+  built them — a replacement host has nothing to roll back to, so it is not disaster recovery.
+- **(B) Registry (GHCR).** Push digest-pinned images from CI. Survives host loss, gives a real
+  provenance chain, and is what the manifest verifier was designed for. Costs CI credentials and
+  makes a rollback depend on registry availability during an incident.
+- **(C) Do nothing.** Keep rebuilding. Rejected: it makes P5.5 permanently unprovable, and the
+  postcss episode shows the failure mode is real rather than theoretical.
+
+**Recommendation: (B), with (A) as the interim** — (A) is a few lines and makes rollback rehearsable
+immediately; (B) is what makes it disaster recovery. Do not let (A) become the resting state.
+
+**Consequences.**
+- Rollback becomes `docker compose up -d` against a pinned digest: seconds, and immune to a broken
+  build or a moving upstream dependency.
+- Everything that drives compose is affected — `docs/STAGING_RUNBOOK.md`, the `scripts/smoke-*.mjs`
+  family, `monitoring/docker-compose.monitoring.yml`, and CI if images are built there.
+- Under (B), an incident acquires a dependency on the registry being reachable. That trade is
+  deliberate and should be stated in the runbook, not discovered during an outage.
+- Storage grows with retained tags; a retention count is needed, mirroring `backup-db.sh`'s.
+
+**Status note.** Proposed, not accepted: this is an architectural change to how the system is
+deployed and the owner has not chosen between (A) and (B). **P5.5 cannot close until it is decided
+and rehearsed** — a rollback rehearsal performed before this lands would be rehearsing a rebuild.
