@@ -10,6 +10,7 @@ use tower_http::trace::TraceLayer;
 
 pub mod auth;
 pub mod handlers;
+pub mod insecure;
 pub mod metrics;
 pub mod types;
 
@@ -83,9 +84,16 @@ impl AppState {
             metrics_token: std::env::var("METRICS_TOKEN")
                 .ok()
                 .filter(|s| !s.is_empty()),
-            metrics_dev_open: std::env::var("ALLOW_INSECURE_DEFAULTS")
-                .map(|v| v == "1")
-                .unwrap_or(false),
+            // LEGACY_ONE_ONLY, not LEGACY_ONE_OR_TRUE: before the split this site accepted "1"
+            // alone while every other accepted "1" or "true", so ALLOW_INSECURE_DEFAULTS=true
+            // skipped the boot checks and still left /metrics CLOSED.
+            // tests/api-parity/metrics.test.mjs depends on exactly that combination, so the
+            // asymmetry is carried forward verbatim inside the deprecated alias. METRICS_DEV_OPEN
+            // itself is consistent — it accepts "1" or "true" like everything else.
+            metrics_dev_open: insecure::relaxed(
+                insecure::METRICS_DEV_OPEN,
+                insecure::LEGACY_ONE_ONLY,
+            ),
             maintenance_mode: std::env::var("MAINTENANCE_MODE")
                 .map(|v| v == "1" || v == "true")
                 .unwrap_or(false),

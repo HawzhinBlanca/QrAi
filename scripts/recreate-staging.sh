@@ -23,6 +23,9 @@ bash scripts/gen-production-secrets.sh "$ENV_FILE"
 
 # Add staging overrides to .env.staging
 echo "# Staging operational flags" >> "$ENV_FILE"
+# Deprecated single switch, pinned off. Staging runs the production posture on purpose — that is the
+# whole point of staging — so no per-control relaxation is set either
+# (specs/insecure-defaults-split/plan.md §3.1).
 echo "ALLOW_INSECURE_DEFAULTS=0" >> "$ENV_FILE"
 
 echo "=== 3. Pulling/Building staging images ==="

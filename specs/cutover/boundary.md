@@ -83,19 +83,51 @@ what stops a cross-origin page sending the pilot cookie today. `@fastify/cors`'s
 - Proven by: `tests/node-api/shell.test.mjs` — asserts `access-control-allow-credentials` is absent
   from **every** response, and that configuring it throws.
 
-### 3.4 🔴 `ALLOW_INSECURE_DEFAULTS` — NOT split, and this is a live finding
+### 3.4 `ALLOW_INSECURE_DEFAULTS` — split, and one earlier claim here was wrong
 
-`migration/plan.md §2.6` requires splitting one variable that disables five independent controls.
-**That was not done.** The Node shell reads the same single variable.
+**Two corrections to what this section said before** (`specs/insecure-defaults-split/research.md`):
 
-Worse, Phase 6 measured that it already means two different things: `metrics_dev_open` checks
-`== "1"` (`lib.rs:86`) while main.rs's boot checks accept `"1" OR "true"`. So
-`ALLOW_INSECURE_DEFAULTS=true` skips the production secret and superuser-role checks while leaving
-`/metrics` closed.
+1. 🔴 **It claimed "the Node shell reads the same single variable." It does not.**
+   `services/node-api/` contains no insecure-defaults read of any kind — `server.mjs` reads
+   `PLATFORM_API_UPSTREAM`, `NODE_API_BIND`, `NODE_API_PORTED`, `DATABASE_URL`, `JWT_SECRET`,
+   `ALLOW_HEADER_AUTH`, `CORS_ALLOWED_ORIGINS` and `REALTIME_GATEWAY_TICKET_SECRET`. A review package
+   that overstates a blast radius trains its reader to discount it, so this is corrected rather than
+   quietly dropped.
+2. **`migration/plan.md §2.6` undercounted at five controls.** There are **six**: it missed chaos
+   fault injection (`services/realtime-gateway/src/lib.rs`), whose own comment promises a production gateway
+   "cannot be told to sabotage itself" — a promise that rested entirely on this variable.
 
-- Recorded in: `specs/api-parity-suite/tasks.md` (Findings §2) and `tests/api-parity/metrics.test.mjs`,
-  which **depends** on the asymmetry and goes red if someone "fixes" it.
-- **Open for the reviewer.** A reviewer should treat this as unresolved, not as documented-therefore-fine.
+**Now split** (`ADR-0024`) into `ALLOW_INSECURE_SECRETS`, `ALLOW_SUPERUSER_DB_ROLE`,
+`METRICS_DEV_OPEN`, `GATEWAY_ALLOW_MISSING_ORIGIN`, `ALLOW_CHAOS_INJECTION`.
+`ALLOW_INSECURE_DEFAULTS` survives as a working alias with a boot warning and a refusal to start
+when combined with a per-control variable.
+
+- Proven by: `services/realtime-gateway/src/insecure.rs` and
+  `services/platform-api/src/insecure.rs` (resolver + 18 unit tests),
+  `tests/security/legacy-insecure-flag.test.mjs` (no production artifact ships a relaxation on).
+- **The security-relevant part:** `GATEWAY_ALLOW_MISSING_ORIGIN` relaxes only the missing-`Origin`
+  branch — a request carrying a disallowed `Origin` is **still 403**. Asserted in
+  `missing_origin_knob_does_not_disable_the_allowlist`.
+- The `"1"`/`"true"` asymmetry is **deliberately preserved inside the deprecated alias**, so
+  `tests/api-parity/metrics.test.mjs` — which depends on it — passes unchanged.
+- **Still for the reviewer**, and narrower than before: the alias is not *removed*, and the
+  "never set in production" assertion `§2.6` asked for **is not implemented**. No service knows what
+  environment it is in. The repo gate catches a bad committed default and **cannot** catch an
+  operator exporting the variable by hand.
+
+### 3.5 🔴 The gateway never received `CORS_ALLOWED_ORIGINS` in compose — found while doing 3.4
+
+`docker-compose.yml` set `CORS_ALLOWED_ORIGINS` on **platform-api only**. The gateway reads the same
+variable for its CSWSH allowlist and, when it is unset in strict mode, **returns 403 to every
+WebSocket upgrade** — including from an allowed browser origin.
+
+So a production compose deploy (`ALLOW_INSECURE_DEFAULTS=0`, which is the committed default) had
+**realtime audio entirely broken**, and the failure mode is a security control rejecting legitimate
+traffic rather than admitting illegitimate traffic. Fixed in the same change; there is no deployment,
+so nothing was live.
+
+**A reviewer should note what this implies:** the gateway's strict-mode path had never been exercised
+against the committed compose configuration.
 
 ## 4. The cross-service credential
 

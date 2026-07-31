@@ -198,6 +198,13 @@ So `ALLOW_INSECURE_DEFAULTS=true` skips the boot checks while leaving `/metrics`
 the SAFE direction, so it is an inconsistency rather than a vulnerability — but an operator setting
 `=true` expecting dev mode gets a closed `/metrics` with no signal.
 
+> **Kept on purpose, 2026-08-01** (`specs/insecure-defaults-split/`, `ADR-0024`). The variable is now
+> split into five per-control names, and **the new names are consistent** — `METRICS_DEV_OPEN`
+> accepts `"1"` or `"true"` like everything else. The asymmetry survives **only inside the deprecated
+> alias**, reproduced verbatim, precisely so `metrics.test.mjs` keeps passing **unchanged**. That is
+> the sharpest available evidence that backwards compatibility actually held; if this suite had
+> needed editing, the compatibility design would have been wrong.
+
 `tests/api-parity/metrics.test.mjs` **relies** on this to run in both environments (CI's DATABASE_URL
 is a superuser, so a server with boot checks on would panic there). That reliance is documented in
 the file, and if someone makes `metrics_dev_open` accept `"true"`, those tests go RED rather than

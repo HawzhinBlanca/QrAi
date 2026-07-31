@@ -14,6 +14,8 @@ use sha2::{Digest, Sha256};
 use thiserror::Error;
 use tokio::sync::{RwLock, mpsc};
 
+pub mod insecure;
+
 pub use quran_ai_shared_ticket::{
     RealtimeTicketClaims, TicketError, issue_realtime_ticket, validate_realtime_ticket,
 };
@@ -424,12 +426,12 @@ pub struct GatewayServerConfig {
     /// gateway is meant to be reachable OFF-HOST (docker-compose publishes 8081 on all interfaces),
     /// so an unauthenticated /metrics publishes operational telemetry to the internet. Env: METRICS_TOKEN.
     pub metrics_token: Option<String>,
-    /// Allow scraping /metrics with no token — dev/CI only. Env: ALLOW_INSECURE_DEFAULTS=1.
+    /// Allow scraping /metrics with no token — dev/CI only. Env: METRICS_DEV_OPEN=1.
     pub metrics_dev_open: bool,
     /// DEV-ONLY fault injection (T13): drop the audio socket after this many accepted chunks, so a
     /// client's reconnect/backoff/re-ticket path can be exercised deterministically instead of
     /// hoping for a real Wi-Fi blip. Read from REALTIME_CHAOS_DROP_AFTER_CHUNKS, but IGNORED unless
-    /// ALLOW_INSECURE_DEFAULTS=1 — a production gateway cannot be told to sabotage itself even if
+    /// ALLOW_CHAOS_INJECTION=1 — a production gateway cannot be told to sabotage itself even if
     /// the env var leaks into its config.
     pub chaos_drop_after_chunks: Option<u64>,
     /// How many connections chaos may drop IN TOTAL before letting one through
@@ -456,14 +458,9 @@ impl Default for GatewayServerConfig {
             metrics_token: std::env::var("METRICS_TOKEN")
                 .ok()
                 .filter(|t| !t.trim().is_empty()),
-            metrics_dev_open: std::env::var("ALLOW_INSECURE_DEFAULTS")
-                .map(|v| v == "1" || v == "true")
-                .unwrap_or(false),
+            metrics_dev_open: insecure::relaxed(insecure::METRICS_DEV_OPEN),
             // Chaos is only readable in explicit dev mode — production ignores the env var outright.
-            chaos_drop_after_chunks: if std::env::var("ALLOW_INSECURE_DEFAULTS")
-                .map(|v| v == "1" || v == "true")
-                .unwrap_or(false)
-            {
+            chaos_drop_after_chunks: if insecure::relaxed(insecure::ALLOW_CHAOS_INJECTION) {
                 std::env::var("REALTIME_CHAOS_DROP_AFTER_CHUNKS")
                     .ok()
                     .and_then(|v| v.parse::<u64>().ok())
@@ -710,11 +707,19 @@ async fn validate_origin(
     request: axum::extract::Request,
     next: axum::middleware::Next,
 ) -> impl IntoResponse {
-    let allow_insecure = std::env::var("ALLOW_INSECURE_DEFAULTS")
-        .map(|v| v == "1" || v == "true")
-        .unwrap_or(false);
+    // TWO different relaxations, and keeping them apart is the point of the split
+    // (specs/insecure-defaults-split/plan.md §3.2).
+    //
+    //   - Disabling the allowlist ENTIRELY has no legitimate deployment, so it stays reachable only
+    //     through the deprecated blunt instrument.
+    //   - Accepting a MISSING Origin is what a native/Flutter client actually needs, and it now has
+    //     its own name. With it set, a request that DOES carry an Origin is still checked — so
+    //     browsers keep their CSWSH protection instead of losing it as collateral damage.
+    let skip_origin_check_entirely = insecure::legacy_alias_active();
+    let allow_missing_origin =
+        skip_origin_check_entirely || insecure::relaxed(insecure::GATEWAY_ALLOW_MISSING_ORIGIN);
 
-    if !allow_insecure {
+    if !skip_origin_check_entirely {
         if let Some(origin_str) = headers
             .get(axum::http::header::ORIGIN)
             .and_then(|h| h.to_str().ok())
@@ -740,11 +745,12 @@ async fn validate_origin(
         } else if headers.contains_key(axum::http::header::ORIGIN) {
             tracing::warn!("CSWSH check failed: Invalid Origin header");
             return StatusCode::FORBIDDEN.into_response();
-        } else {
+        } else if !allow_missing_origin {
             // No Origin header at all. Browsers ALWAYS send Origin on a cross-origin WebSocket
             // upgrade, so in strict (production) mode we fail CLOSED here rather than let the origin
-            // allowlist be silently bypassed by simply omitting the header. Dev and non-browser
-            // clients opt out via ALLOW_INSECURE_DEFAULTS.
+            // allowlist be silently bypassed by simply omitting the header. Native clients — which
+            // send no Origin — opt out with GATEWAY_ALLOW_MISSING_ORIGIN=1, which relaxes ONLY this
+            // branch: the allowlist above still rejects a disallowed Origin.
             tracing::warn!("CSWSH check failed: missing Origin header");
             return StatusCode::FORBIDDEN.into_response();
         }
@@ -1596,8 +1602,9 @@ mod tests {
     }
 
     /// Serializes tests that mutate the process-wide env vars `validate_origin` reads per-request
-    /// (ALLOW_INSECURE_DEFAULTS / CORS_ALLOWED_ORIGINS). Any future test touching those MUST take this
-    /// lock, or it can race this one (cargo runs unit tests multi-threaded in one process).
+    /// (ALLOW_INSECURE_DEFAULTS / GATEWAY_ALLOW_MISSING_ORIGIN / CORS_ALLOWED_ORIGINS). Any future
+    /// test touching those MUST take this lock, or it can race this one (cargo runs unit tests
+    /// multi-threaded in one process).
     static ORIGIN_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
     #[tokio::test]
@@ -1678,6 +1685,79 @@ mod tests {
         // Restore env
         unsafe {
             std::env::remove_var("ALLOW_INSECURE_DEFAULTS");
+            std::env::remove_var("CORS_ALLOWED_ORIGINS");
+        }
+    }
+
+    /// The reason the split exists (specs/insecure-defaults-split/plan.md §3.2).
+    ///
+    /// A native/Flutter client sends no `Origin` header, so before the split the only way to accept
+    /// one was ALLOW_INSECURE_DEFAULTS — which ALSO turned off the allowlist, a public JWT key, a
+    /// BYPASSRLS DB role and an open /metrics. GATEWAY_ALLOW_MISSING_ORIGIN relaxes ONLY the
+    /// missing-Origin branch.
+    ///
+    /// Case 2 is the whole point: a disallowed Origin must STILL be 403. If that ever returns 426,
+    /// the narrow knob has silently become the blunt one and every browser loses CSWSH protection.
+    #[tokio::test]
+    async fn missing_origin_knob_does_not_disable_the_allowlist() {
+        use axum::http::{Request, StatusCode};
+        use tower::ServiceExt;
+
+        let _env = ORIGIN_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+
+        unsafe {
+            // Explicitly remove rather than assume: another test in this process may have left it.
+            std::env::remove_var("ALLOW_INSECURE_DEFAULTS");
+            std::env::set_var("GATEWAY_ALLOW_MISSING_ORIGIN", "1");
+            std::env::set_var("CORS_ALLOWED_ORIGINS", "https://quran-ai.example.com");
+        }
+
+        let router = gateway_router_with_rate_limit(GatewayServerConfig::default(), false);
+        let upgrade_request = |origin: Option<&str>| {
+            let mut builder = Request::builder()
+                .uri("/v1/recitation-sessions/session-1/audio?ticket=invalid")
+                .header("upgrade", "websocket")
+                .header("connection", "upgrade")
+                .header("sec-websocket-key", "dGhlIHNhbXBsZSBub25jZQ==")
+                .header("sec-websocket-version", "13");
+            if let Some(value) = origin {
+                builder = builder.header("origin", value);
+            }
+            builder.body(axum::body::Body::empty()).unwrap()
+        };
+
+        // 1. The native client: NO Origin header now gets past the CSWSH layer (426 = the origin
+        //    check passed and the ticket layer took over, which is as far as this test goes).
+        let resp = router.clone().oneshot(upgrade_request(None)).await.unwrap();
+        assert_eq!(
+            resp.status(),
+            StatusCode::UPGRADE_REQUIRED,
+            "a native client sending no Origin must connect"
+        );
+
+        // 2. THE ASSERTION. A browser presenting a disallowed Origin is still refused.
+        let resp = router
+            .clone()
+            .oneshot(upgrade_request(Some("https://malicious.example.com")))
+            .await
+            .unwrap();
+        assert_eq!(
+            resp.status(),
+            StatusCode::FORBIDDEN,
+            "GATEWAY_ALLOW_MISSING_ORIGIN must NOT disable the allowlist — this is the difference \
+             between the split being a fix and being bookkeeping"
+        );
+
+        // 3. An allowed Origin is unaffected.
+        let resp = router
+            .clone()
+            .oneshot(upgrade_request(Some("https://quran-ai.example.com")))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::UPGRADE_REQUIRED);
+
+        unsafe {
+            std::env::remove_var("GATEWAY_ALLOW_MISSING_ORIGIN");
             std::env::remove_var("CORS_ALLOWED_ORIGINS");
         }
     }

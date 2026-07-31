@@ -1,15 +1,13 @@
 use std::net::SocketAddr;
 
-use quran_ai_realtime_gateway::{GatewayServerConfig, gateway_router};
+use quran_ai_realtime_gateway::{GatewayServerConfig, gateway_router, insecure};
 
 /// Refuse to boot in production with a missing or known-weak ticket secret. The HMAC
 /// ticket secret must be shared with platform-api and unpredictable, otherwise anyone
-/// can forge realtime-audio tickets. Local dev opts out with ALLOW_INSECURE_DEFAULTS=1.
+/// can forge realtime-audio tickets. Local dev opts out with ALLOW_INSECURE_SECRETS=1
+/// (or the deprecated ALLOW_INSECURE_DEFAULTS).
 fn ensure_secure_config() {
-    let dev = std::env::var("ALLOW_INSECURE_DEFAULTS")
-        .map(|v| v == "1" || v == "true")
-        .unwrap_or(false);
-    if dev {
+    if insecure::relaxed(insecure::ALLOW_INSECURE_SECRETS) {
         return;
     }
     let secret = std::env::var("REALTIME_GATEWAY_TICKET_SECRET").unwrap_or_default();
@@ -20,7 +18,7 @@ fn ensure_secure_config() {
     {
         panic!(
             "REALTIME_GATEWAY_TICKET_SECRET must be set to a strong, non-default value in \
-             production (shared with platform-api, at least 32 characters). Set ALLOW_INSECURE_DEFAULTS=1 for local dev only."
+             production (shared with platform-api, at least 32 characters). Set ALLOW_INSECURE_SECRETS=1 for local dev only."
         );
     }
     // ML_API_KEY is the only credential gating the ML inference service; refuse the public default.
@@ -28,13 +26,16 @@ fn ensure_secure_config() {
     if ml_key.trim().is_empty() || ml_key == "smoke-ml-api-key" {
         panic!(
             "ML_API_KEY must be set to a non-default value in production (it is the only credential \
-             gating the ML inference service). Set ALLOW_INSECURE_DEFAULTS=1 for local dev only."
+             gating the ML inference service). Set ALLOW_INSECURE_SECRETS=1 for local dev only."
         );
     }
 }
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // Before any control is consulted: refuse an ambiguous config, and say loudly if the deprecated
+    // single switch is still doing the work of four variables.
+    insecure::enforce_legacy_alias();
     ensure_secure_config();
 
     // Without this, every tracing::info!/warn! call in lib.rs (CSWSH rejections, ticket
