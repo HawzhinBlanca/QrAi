@@ -1,0 +1,1274 @@
+{
+  "$comment": "K1 — every key in apps/web/src/locales/en.json classified by the register a translator needs. tests/i18n/registers.test.mjs fails if this does not cover en.json EXACTLY, so adding a string means deciding what it is. If that is why your build is red: add the key here. religious = NEVER AI-drafted. A wrong word there does not read awkwardly, it teaches a learner something false about recitation; those are Arabic technical terms whose Kurdish usage is established in some cases and contested in others, and choosing is a scholarly judgement. brand = never translated at all, in any language.",
+  "registers": {
+    "ui": "interface chrome — any fluent Sorani speaker can translate",
+    "product": "spaced repetition, consent and privacy semantics — needs a speaker who understands the concept",
+    "religious": "tajweed terminology and acts of worship — needs religious literacy; NOT AI-drafted",
+    "brand": "product name — not translated"
+  },
+  "counts": {
+    "ui": 166,
+    "religious": 112,
+    "product": 101,
+    "brand": 2
+  },
+  "keys": {
+    "topBar.language": {
+      "register": "ui"
+    },
+    "topBar.trustLabelDefault": {
+      "register": "religious",
+      "reason": "uses scholar — the Sorani choice here is a register decision, not a lookup"
+    },
+    "topBar.trustLabelTeacherReviewed": {
+      "register": "product"
+    },
+    "topBar.displayNameDefault": {
+      "register": "ui"
+    },
+    "topBar.roleLabelDefault": {
+      "register": "ui"
+    },
+    "topBar.logout": {
+      "register": "ui"
+    },
+    "sidebar.brand": {
+      "register": "brand",
+      "reason": "product name — must not be translated in any register"
+    },
+    "sidebar.nav.learner": {
+      "register": "ui"
+    },
+    "sidebar.nav.teacher": {
+      "register": "ui"
+    },
+    "sidebar.nav.scholar": {
+      "register": "religious",
+      "reason": "uses scholar — the Sorani choice here is a register decision, not a lookup"
+    },
+    "sidebar.nav.modelOps": {
+      "register": "ui"
+    },
+    "sidebar.nav.trustLedger": {
+      "register": "ui"
+    },
+    "sidebar.nav.internalCommand": {
+      "register": "ui"
+    },
+    "sidebar.nav.badges": {
+      "register": "ui"
+    },
+    "sidebar.nav.teachers": {
+      "register": "ui"
+    },
+    "sidebar.nav.settings": {
+      "register": "ui"
+    },
+    "sidebar.pilotRegion": {
+      "register": "ui"
+    },
+    "sidebar.pilotRegionValue": {
+      "register": "ui"
+    },
+    "login.brand": {
+      "register": "brand",
+      "reason": "product name — must not be translated in any register"
+    },
+    "login.tagline": {
+      "register": "religious",
+      "reason": "uses recitation — the Sorani choice here is a register decision, not a lookup"
+    },
+    "login.signIn": {
+      "register": "ui"
+    },
+    "login.register": {
+      "register": "ui"
+    },
+    "login.displayNamePlaceholder": {
+      "register": "ui"
+    },
+    "login.displayNameLabel": {
+      "register": "ui"
+    },
+    "login.userIdPlaceholder": {
+      "register": "ui"
+    },
+    "login.userIdLabel": {
+      "register": "ui"
+    },
+    "login.passwordPlaceholder": {
+      "register": "ui"
+    },
+    "login.passwordLabel": {
+      "register": "ui"
+    },
+    "login.emailPlaceholder": {
+      "register": "ui"
+    },
+    "login.emailLabel": {
+      "register": "ui"
+    },
+    "login.institutionIdPlaceholder": {
+      "register": "ui"
+    },
+    "login.institutionIdLabel": {
+      "register": "ui"
+    },
+    "login.roleLabel": {
+      "register": "ui"
+    },
+    "login.roleLearner": {
+      "register": "ui"
+    },
+    "login.roleTeacher": {
+      "register": "ui"
+    },
+    "login.roleScholar": {
+      "register": "religious",
+      "reason": "uses scholar — the Sorani choice here is a register decision, not a lookup"
+    },
+    "login.roleAdmin": {
+      "register": "ui"
+    },
+    "login.languageLabel": {
+      "register": "ui"
+    },
+    "login.submitLoading": {
+      "register": "ui"
+    },
+    "login.submitSignIn": {
+      "register": "ui"
+    },
+    "login.submitCreateAccount": {
+      "register": "ui"
+    },
+    "login.hintSignIn": {
+      "register": "ui"
+    },
+    "login.hintRegister": {
+      "register": "ui"
+    },
+    "login.errorPasswordLength": {
+      "register": "ui"
+    },
+    "login.errorLoginFailed": {
+      "register": "ui"
+    },
+    "login.errorRegisterFailed": {
+      "register": "ui"
+    },
+    "consent.ariaLabel": {
+      "register": "product"
+    },
+    "consent.title": {
+      "register": "product"
+    },
+    "consent.recordingConsent": {
+      "register": "religious",
+      "reason": "uses recitation — the Sorani choice here is a register decision, not a lookup"
+    },
+    "consent.teacherReview": {
+      "register": "religious",
+      "reason": "uses recitation — the Sorani choice here is a register decision, not a lookup"
+    },
+    "consent.anonymizedLearning": {
+      "register": "product"
+    },
+    "consent.externalAsrProcessing": {
+      "register": "religious",
+      "reason": "uses quran — the Sorani choice here is a register decision, not a lookup"
+    },
+    "consent.guardianApproved": {
+      "register": "product"
+    },
+    "progress.ariaLabel": {
+      "register": "product"
+    },
+    "progress.title": {
+      "register": "product"
+    },
+    "progress.thisWeek": {
+      "register": "product"
+    },
+    "progress.accuracy": {
+      "register": "product"
+    },
+    "progress.recitations": {
+      "register": "religious",
+      "reason": "uses recitation — the Sorani choice here is a register decision, not a lookup"
+    },
+    "progress.mastery": {
+      "register": "product"
+    },
+    "progress.correctWords": {
+      "register": "product"
+    },
+    "progress.mistakes": {
+      "register": "product"
+    },
+    "progress.chartLabel": {
+      "register": "product"
+    },
+    "progress.chartEntry": {
+      "register": "product"
+    },
+    "progress.chartEntryPending": {
+      "register": "product"
+    },
+    "progress.chartEmpty": {
+      "register": "religious",
+      "reason": "uses recite — the Sorani choice here is a register decision, not a lookup"
+    },
+    "progress.streakDays": {
+      "register": "product"
+    },
+    "progress.badgeGold": {
+      "register": "product"
+    },
+    "progress.badgeSilver": {
+      "register": "product"
+    },
+    "progress.badgeBronze": {
+      "register": "product"
+    },
+    "progress.level": {
+      "register": "product"
+    },
+    "learnerHome.ariaLabel": {
+      "register": "ui"
+    },
+    "learnerHome.onboardingAriaLabel": {
+      "register": "product"
+    },
+    "learnerHome.onboardingEyebrow": {
+      "register": "ui"
+    },
+    "learnerHome.onboardingTitle": {
+      "register": "product"
+    },
+    "learnerHome.onboardingStepListen": {
+      "register": "religious",
+      "reason": "uses recitation — the Sorani choice here is a register decision, not a lookup"
+    },
+    "learnerHome.onboardingStepRecite": {
+      "register": "religious",
+      "reason": "uses recite — the Sorani choice here is a register decision, not a lookup"
+    },
+    "learnerHome.onboardingStepMemory": {
+      "register": "ui"
+    },
+    "learnerHome.onboardingStepCorrect": {
+      "register": "product"
+    },
+    "learnerHome.onboardingDismiss": {
+      "register": "ui"
+    },
+    "learnerHome.masteryEmptyTitle": {
+      "register": "religious",
+      "reason": "uses recitation — the Sorani choice here is a register decision, not a lookup"
+    },
+    "learnerHome.masteryEmptyBody": {
+      "register": "religious",
+      "reason": "uses recite — the Sorani choice here is a register decision, not a lookup"
+    },
+    "learnerHome.todaysMission": {
+      "register": "ui"
+    },
+    "learnerHome.missionHeading": {
+      "register": "religious",
+      "reason": "uses surah — the Sorani choice here is a register decision, not a lookup"
+    },
+    "learnerHome.missionBody": {
+      "register": "religious",
+      "reason": "uses recite — the Sorani choice here is a register decision, not a lookup"
+    },
+    "learnerHome.startPractice": {
+      "register": "product"
+    },
+    "learnerHome.checkMicrophone": {
+      "register": "ui"
+    },
+    "learnerHome.masterySummaryAriaLabel": {
+      "register": "product"
+    },
+    "learnerHome.mastery": {
+      "register": "product"
+    },
+    "learnerHome.nextReview": {
+      "register": "product"
+    },
+    "learnerHome.notScheduled": {
+      "register": "product"
+    },
+    "learnerHome.dueToday": {
+      "register": "product"
+    },
+    "learnerHome.streak": {
+      "register": "product"
+    },
+    "learnerHome.streakDays": {
+      "register": "product"
+    },
+    "learnerHome.practiceMode": {
+      "register": "product"
+    },
+    "learnerHome.practiceModeValue": {
+      "register": "religious",
+      "reason": "uses recite — the Sorani choice here is a register decision, not a lookup"
+    },
+    "learnerHome.estimatedTime": {
+      "register": "ui"
+    },
+    "learnerHome.estimatedTimeValue": {
+      "register": "ui"
+    },
+    "learnerHome.trustState": {
+      "register": "ui"
+    },
+    "learnerHome.trustStateValue": {
+      "register": "product"
+    },
+    "practiceSteps.listen.label": {
+      "register": "product"
+    },
+    "practiceSteps.listen.helper": {
+      "register": "product"
+    },
+    "practiceSteps.guidedRecite.label": {
+      "register": "religious",
+      "reason": "uses recite — the Sorani choice here is a register decision, not a lookup"
+    },
+    "practiceSteps.guidedRecite.helper": {
+      "register": "religious",
+      "reason": "uses mushaf, recite — the Sorani choice here is a register decision, not a lookup"
+    },
+    "practiceSteps.memoryRecite.label": {
+      "register": "religious",
+      "reason": "uses recite — the Sorani choice here is a register decision, not a lookup"
+    },
+    "practiceSteps.memoryRecite.helper": {
+      "register": "religious",
+      "reason": "uses recite — the Sorani choice here is a register decision, not a lookup"
+    },
+    "practiceSteps.correction.label": {
+      "register": "product"
+    },
+    "practiceSteps.correction.helper": {
+      "register": "product"
+    },
+    "practiceSteps.drill.label": {
+      "register": "product"
+    },
+    "practiceSteps.drill.helper": {
+      "register": "product"
+    },
+    "practiceSteps.complete.label": {
+      "register": "product"
+    },
+    "practiceSteps.complete.helper": {
+      "register": "product"
+    },
+    "practiceFlow.ariaLabel": {
+      "register": "product"
+    },
+    "practiceFlow.backToHome": {
+      "register": "product"
+    },
+    "practiceFlow.practiceComplete": {
+      "register": "product"
+    },
+    "practiceFlow.nextStep": {
+      "register": "product"
+    },
+    "practiceFlow.stepperAriaLabel": {
+      "register": "product"
+    },
+    "practiceFlow.analyzing": {
+      "register": "religious",
+      "reason": "uses recitation — the Sorani choice here is a register decision, not a lookup"
+    },
+    "practiceFlow.guidanceAriaLabel": {
+      "register": "product"
+    },
+    "practiceFlow.progressAriaLabel": {
+      "register": "product"
+    },
+    "practiceFlow.consentPromptTitle": {
+      "register": "product"
+    },
+    "quranReader.ariaLabel": {
+      "register": "religious",
+      "reason": "uses quran — the Sorani choice here is a register decision, not a lookup"
+    },
+    "quranReader.legendAriaLabel": {
+      "register": "religious",
+      "reason": "uses quran — the Sorani choice here is a register decision, not a lookup"
+    },
+    "quranReader.wordAriaLabel": {
+      "register": "religious",
+      "reason": "uses quran — the Sorani choice here is a register decision, not a lookup"
+    },
+    "quranReader.statusGood": {
+      "register": "religious",
+      "reason": "uses quran — the Sorani choice here is a register decision, not a lookup"
+    },
+    "quranReader.statusMistake": {
+      "register": "religious",
+      "reason": "uses quran — the Sorani choice here is a register decision, not a lookup"
+    },
+    "quranReader.statusNeedsWork": {
+      "register": "religious",
+      "reason": "uses quran — the Sorani choice here is a register decision, not a lookup"
+    },
+    "quranReader.statusMissed": {
+      "register": "religious",
+      "reason": "uses quran — the Sorani choice here is a register decision, not a lookup"
+    },
+    "quranReader.translationToggle": {
+      "register": "religious",
+      "reason": "uses quran — the Sorani choice here is a register decision, not a lookup"
+    },
+    "quranReader.translationSource": {
+      "register": "religious",
+      "reason": "uses quran — the Sorani choice here is a register decision, not a lookup"
+    },
+    "quranReader.waqfMarkAriaLabel": {
+      "register": "religious",
+      "reason": "uses waqf, quran, recite — the Sorani choice here is a register decision, not a lookup"
+    },
+    "surahPicker.label": {
+      "register": "religious",
+      "reason": "uses surah — the Sorani choice here is a register decision, not a lookup"
+    },
+    "surahPicker.optionWithTranslation": {
+      "register": "religious",
+      "reason": "uses surah, ayah — the Sorani choice here is a register decision, not a lookup"
+    },
+    "surahPicker.optionWithoutTranslation": {
+      "register": "religious",
+      "reason": "uses surah, ayah — the Sorani choice here is a register decision, not a lookup"
+    },
+    "micNotice.idle": {
+      "register": "religious",
+      "reason": "uses recite — the Sorani choice here is a register decision, not a lookup"
+    },
+    "micNotice.checking": {
+      "register": "ui"
+    },
+    "micNotice.ready": {
+      "register": "religious",
+      "reason": "uses recite — the Sorani choice here is a register decision, not a lookup"
+    },
+    "micNotice.denied": {
+      "register": "product"
+    },
+    "micNotice.unavailable": {
+      "register": "ui"
+    },
+    "modeBanner.deniedText": {
+      "register": "product"
+    },
+    "modeBanner.tryAgain": {
+      "register": "ui"
+    },
+    "modeBanner.unavailableText": {
+      "register": "product"
+    },
+    "modeBanner.correctionText_one": {
+      "register": "product"
+    },
+    "modeBanner.correctionText_other": {
+      "register": "product"
+    },
+    "modeBanner.correctionTextNoMistakes": {
+      "register": "product"
+    },
+    "modeBanner.sendToTeacher": {
+      "register": "ui"
+    },
+    "modeBanner.drillTextSent": {
+      "register": "product"
+    },
+    "modeBanner.drillTextSendFailed": {
+      "register": "ui"
+    },
+    "modeBanner.drillTextNothingToSend": {
+      "register": "religious",
+      "reason": "uses recitation — the Sorani choice here is a register decision, not a lookup"
+    },
+    "modeBanner.drillTextLocal": {
+      "register": "product"
+    },
+    "modeBanner.defaultText": {
+      "register": "religious",
+      "reason": "uses verse — the Sorani choice here is a register decision, not a lookup"
+    },
+    "completePanel.ariaLabel": {
+      "register": "ui"
+    },
+    "completePanel.title": {
+      "register": "product"
+    },
+    "completePanel.bodySaved": {
+      "register": "product"
+    },
+    "completePanel.bodyNothingRecited": {
+      "register": "religious",
+      "reason": "uses recite, recitation — the Sorani choice here is a register decision, not a lookup"
+    },
+    "completePanel.bodySaveFailed": {
+      "register": "religious",
+      "reason": "uses recitation — the Sorani choice here is a register decision, not a lookup"
+    },
+    "completePanel.nextReviewDefault": {
+      "register": "product"
+    },
+    "completePanel.returnHome": {
+      "register": "ui"
+    },
+    "issuePanel.ariaLabel": {
+      "register": "religious",
+      "reason": "uses recitation — the Sorani choice here is a register decision, not a lookup"
+    },
+    "issuePanel.title": {
+      "register": "ui"
+    },
+    "issuePanel.kindMistake": {
+      "register": "ui"
+    },
+    "issuePanel.kindMissed": {
+      "register": "ui"
+    },
+    "issuePanel.kindNeedsWork": {
+      "register": "ui"
+    },
+    "issuePanel.heard": {
+      "register": "ui"
+    },
+    "issuePanel.coach": {
+      "register": "ui"
+    },
+    "offlineBanner.text": {
+      "register": "ui"
+    },
+    "errorBoundary.title": {
+      "register": "ui"
+    },
+    "errorBoundary.body": {
+      "register": "product"
+    },
+    "errorBoundary.technicalDetails": {
+      "register": "ui"
+    },
+    "errorBoundary.tryAgain": {
+      "register": "ui"
+    },
+    "errorBoundary.reloadPage": {
+      "register": "ui"
+    },
+    "audioCoach.ariaLabel": {
+      "register": "ui"
+    },
+    "audioCoach.statusRecording": {
+      "register": "ui"
+    },
+    "audioCoach.statusAnalyzing": {
+      "register": "religious",
+      "reason": "uses recitation — the Sorani choice here is a register decision, not a lookup"
+    },
+    "audioCoach.statusReady": {
+      "register": "religious",
+      "reason": "uses recitation — the Sorani choice here is a register decision, not a lookup"
+    },
+    "audioCoach.statusReadyToRecite": {
+      "register": "religious",
+      "reason": "uses recite — the Sorani choice here is a register decision, not a lookup"
+    },
+    "audioCoach.hintRecording": {
+      "register": "religious",
+      "reason": "uses recite — the Sorani choice here is a register decision, not a lookup"
+    },
+    "audioCoach.hintAnalyzing": {
+      "register": "religious",
+      "reason": "uses quran — the Sorani choice here is a register decision, not a lookup"
+    },
+    "audioCoach.hintReady": {
+      "register": "ui"
+    },
+    "audioCoach.hintReadyToRecite": {
+      "register": "religious",
+      "reason": "uses recite — the Sorani choice here is a register decision, not a lookup"
+    },
+    "audioCoach.stopRecording": {
+      "register": "ui"
+    },
+    "audioCoach.recordYourRecitation": {
+      "register": "religious",
+      "reason": "uses recitation — the Sorani choice here is a register decision, not a lookup"
+    },
+    "audioCoach.stop": {
+      "register": "ui"
+    },
+    "audioCoach.recordAgain": {
+      "register": "ui"
+    },
+    "audioCoach.record": {
+      "register": "ui"
+    },
+    "audioCoach.pauseMyRecitation": {
+      "register": "religious",
+      "reason": "uses recitation — the Sorani choice here is a register decision, not a lookup"
+    },
+    "audioCoach.playMyRecitation": {
+      "register": "religious",
+      "reason": "uses recitation — the Sorani choice here is a register decision, not a lookup"
+    },
+    "audioCoach.myRecitation": {
+      "register": "religious",
+      "reason": "uses recitation — the Sorani choice here is a register decision, not a lookup"
+    },
+    "audioCoach.pauseReferenceRecitation": {
+      "register": "religious",
+      "reason": "uses recitation — the Sorani choice here is a register decision, not a lookup"
+    },
+    "audioCoach.playReferenceRecitation": {
+      "register": "religious",
+      "reason": "uses recitation — the Sorani choice here is a register decision, not a lookup"
+    },
+    "audioCoach.reference": {
+      "register": "ui"
+    },
+    "tajweedPanel.ariaLabel": {
+      "register": "religious",
+      "reason": "uses tajweed — the Sorani choice here is a register decision, not a lookup"
+    },
+    "tajweedPanel.title": {
+      "register": "religious",
+      "reason": "uses tajweed — the Sorani choice here is a register decision, not a lookup"
+    },
+    "tajweedPanel.empty": {
+      "register": "religious",
+      "reason": "uses tajweed, makhraj, madd — the Sorani choice here is a register decision, not a lookup"
+    },
+    "tajweedPanel.awaitingReview": {
+      "register": "religious",
+      "reason": "uses tajweed — the Sorani choice here is a register decision, not a lookup"
+    },
+    "tajweedPanel.sources": {
+      "register": "religious",
+      "reason": "uses tajweed — the Sorani choice here is a register decision, not a lookup"
+    },
+    "tajweedPanel.verified": {
+      "register": "religious",
+      "reason": "uses tajweed — the Sorani choice here is a register decision, not a lookup"
+    },
+    "tajweedPanel.aiSuggestion": {
+      "register": "religious",
+      "reason": "uses tajweed — the Sorani choice here is a register decision, not a lookup"
+    },
+    "tajweedPanel.verifiedTitle": {
+      "register": "religious",
+      "reason": "uses tajweed — the Sorani choice here is a register decision, not a lookup"
+    },
+    "tajweedPanel.aiSuggestionTitle": {
+      "register": "religious",
+      "reason": "uses tajweed — the Sorani choice here is a register decision, not a lookup"
+    },
+    "mutashabihatPanel.ariaLabel": {
+      "register": "religious",
+      "reason": "uses mutashabihat — the Sorani choice here is a register decision, not a lookup"
+    },
+    "mutashabihatPanel.title": {
+      "register": "religious",
+      "reason": "uses mutashabihat — the Sorani choice here is a register decision, not a lookup"
+    },
+    "mutashabihatPanel.empty": {
+      "register": "religious",
+      "reason": "uses verse, mutashabihat — the Sorani choice here is a register decision, not a lookup"
+    },
+    "internalSurface.ariaLabel": {
+      "register": "ui"
+    },
+    "internalSurface.titleTeacher": {
+      "register": "product"
+    },
+    "internalSurface.titleScholar": {
+      "register": "religious",
+      "reason": "uses scholar — the Sorani choice here is a register decision, not a lookup"
+    },
+    "internalSurface.titleModelOps": {
+      "register": "ui"
+    },
+    "internalSurface.titleTrust": {
+      "register": "ui"
+    },
+    "internalSurface.titleBadges": {
+      "register": "ui"
+    },
+    "internalSurface.titleTeachers": {
+      "register": "ui"
+    },
+    "internalSurface.titleSettings": {
+      "register": "ui"
+    },
+    "internalSurface.titleAdmin": {
+      "register": "ui"
+    },
+    "internalSurface.titleLearner": {
+      "register": "ui"
+    },
+    "internalSurface.placeholderBody": {
+      "register": "product"
+    },
+    "internalSurface.openRelatedCommandTab": {
+      "register": "ui"
+    },
+    "internalSurface.loadingConsole": {
+      "register": "ui"
+    },
+    "memorizationPlan.currentFocusDefault": {
+      "register": "religious",
+      "reason": "uses memoriz, fatihah — the Sorani choice here is a register decision, not a lookup"
+    },
+    "memorizationPlan.intervalToday": {
+      "register": "religious",
+      "reason": "uses memoriz — the Sorani choice here is a register decision, not a lookup"
+    },
+    "memorizationPlan.interval3Days": {
+      "register": "religious",
+      "reason": "uses memoriz — the Sorani choice here is a register decision, not a lookup"
+    },
+    "memorizationPlan.interval7Days": {
+      "register": "religious",
+      "reason": "uses memoriz — the Sorani choice here is a register decision, not a lookup"
+    },
+    "platformCommand.ariaLabel": {
+      "register": "religious",
+      "reason": "uses quran — the Sorani choice here is a register decision, not a lookup"
+    },
+    "platformCommand.title": {
+      "register": "ui"
+    },
+    "platformCommand.heading": {
+      "register": "religious",
+      "reason": "uses quran — the Sorani choice here is a register decision, not a lookup"
+    },
+    "platformCommand.language": {
+      "register": "ui"
+    },
+    "platformCommand.humanReviewed": {
+      "register": "product"
+    },
+    "platformCommand.appsAriaLabel": {
+      "register": "ui"
+    },
+    "platformCommand.apps.learner.label": {
+      "register": "ui"
+    },
+    "platformCommand.apps.learner.description": {
+      "register": "religious",
+      "reason": "uses memoriz — the Sorani choice here is a register decision, not a lookup"
+    },
+    "platformCommand.apps.teacher.label": {
+      "register": "ui"
+    },
+    "platformCommand.apps.teacher.description": {
+      "register": "product"
+    },
+    "platformCommand.apps.scholar.label": {
+      "register": "religious",
+      "reason": "uses scholar — the Sorani choice here is a register decision, not a lookup"
+    },
+    "platformCommand.apps.scholar.description": {
+      "register": "religious",
+      "reason": "uses scholar — the Sorani choice here is a register decision, not a lookup"
+    },
+    "platformCommand.apps.modelOps.label": {
+      "register": "ui"
+    },
+    "platformCommand.apps.modelOps.description": {
+      "register": "ui"
+    },
+    "platformCommand.tabsAriaLabel": {
+      "register": "ui"
+    },
+    "platformCommand.tabs.recitation": {
+      "register": "religious",
+      "reason": "uses recitation — the Sorani choice here is a register decision, not a lookup"
+    },
+    "platformCommand.tabs.classroom": {
+      "register": "ui"
+    },
+    "platformCommand.tabs.review": {
+      "register": "product"
+    },
+    "platformCommand.tabs.modelOps": {
+      "register": "ui"
+    },
+    "platformCommand.liveAlignment.eyebrow": {
+      "register": "ui"
+    },
+    "platformCommand.liveAlignment.noRecentSession": {
+      "register": "product"
+    },
+    "platformCommand.liveAlignment.startLive": {
+      "register": "religious",
+      "reason": "uses recitation — the Sorani choice here is a register decision, not a lookup"
+    },
+    "platformCommand.liveAlignment.stopLive": {
+      "register": "religious",
+      "reason": "uses recitation — the Sorani choice here is a register decision, not a lookup"
+    },
+    "platformCommand.liveAlignment.gatewayLabel": {
+      "register": "ui"
+    },
+    "platformCommand.liveAlignment.chunksStreamed": {
+      "register": "ui"
+    },
+    "platformCommand.liveAlignment.acceptedAcks": {
+      "register": "ui"
+    },
+    "platformCommand.liveAlignment.learner": {
+      "register": "ui"
+    },
+    "platformCommand.liveAlignment.language": {
+      "register": "ui"
+    },
+    "platformCommand.liveAlignment.mode": {
+      "register": "ui"
+    },
+    "platformCommand.liveAlignment.findings": {
+      "register": "ui"
+    },
+    "platformCommand.liveAlignment.findingsValue": {
+      "register": "product"
+    },
+    "platformCommand.liveAlignment.wordAlignmentAriaLabel": {
+      "register": "ui"
+    },
+    "platformCommand.liveAlignment.noStoredAlignments": {
+      "register": "product"
+    },
+    "platformCommand.liveAlignment.statusRequestingMic": {
+      "register": "ui"
+    },
+    "platformCommand.liveAlignment.statusStreaming": {
+      "register": "ui"
+    },
+    "platformCommand.liveAlignment.statusStopped": {
+      "register": "ui"
+    },
+    "platformCommand.liveAlignment.statusPermissionDenied": {
+      "register": "ui"
+    },
+    "platformCommand.liveAlignment.statusUnsupported": {
+      "register": "ui"
+    },
+    "platformCommand.liveAlignment.statusCaptureError": {
+      "register": "ui"
+    },
+    "platformCommand.liveAlignment.statusReady": {
+      "register": "ui"
+    },
+    "platformCommand.liveAlignment.gatewayConnecting": {
+      "register": "ui"
+    },
+    "platformCommand.liveAlignment.gatewayConnected": {
+      "register": "ui"
+    },
+    "platformCommand.liveAlignment.gatewayReconnecting": {
+      "register": "ui"
+    },
+    "platformCommand.liveAlignment.gatewayDegraded": {
+      "register": "ui"
+    },
+    "platformCommand.liveAlignment.gatewayUnavailable": {
+      "register": "ui"
+    },
+    "platformCommand.liveAlignment.gatewayError": {
+      "register": "ui"
+    },
+    "platformCommand.liveAlignment.gatewayClosed": {
+      "register": "ui"
+    },
+    "platformCommand.liveAlignment.gatewayIdle": {
+      "register": "ui"
+    },
+    "platformCommand.pipeline.eyebrow": {
+      "register": "religious",
+      "reason": "uses quran — the Sorani choice here is a register decision, not a lookup"
+    },
+    "platformCommand.pipeline.title": {
+      "register": "ui"
+    },
+    "platformCommand.pipeline.audioChunk": {
+      "register": "ui"
+    },
+    "platformCommand.pipeline.canonicalAlign": {
+      "register": "ui"
+    },
+    "platformCommand.pipeline.tajweedFeatures": {
+      "register": "religious",
+      "reason": "uses tajweed — the Sorani choice here is a register decision, not a lookup"
+    },
+    "platformCommand.pipeline.teacherGate": {
+      "register": "ui"
+    },
+    "platformCommand.agentRuns.eyebrow": {
+      "register": "ui"
+    },
+    "platformCommand.agentRuns.title": {
+      "register": "ui"
+    },
+    "platformCommand.agentRuns.review": {
+      "register": "product"
+    },
+    "platformCommand.agentRuns.safe": {
+      "register": "ui"
+    },
+    "platformCommand.agentRuns.blocked": {
+      "register": "ui"
+    },
+    "platformCommand.agentRuns.empty": {
+      "register": "ui"
+    },
+    "platformCommand.tajweedFindings.eyebrow": {
+      "register": "religious",
+      "reason": "uses tajweed — the Sorani choice here is a register decision, not a lookup"
+    },
+    "platformCommand.tajweedFindings.title": {
+      "register": "religious",
+      "reason": "uses tajweed — the Sorani choice here is a register decision, not a lookup"
+    },
+    "platformCommand.tajweedFindings.empty": {
+      "register": "religious",
+      "reason": "uses tajweed — the Sorani choice here is a register decision, not a lookup"
+    },
+    "platformCommand.teacherDashboard.eyebrow": {
+      "register": "ui"
+    },
+    "platformCommand.teacherDashboard.title": {
+      "register": "product"
+    },
+    "platformCommand.teacherDashboard.finding": {
+      "register": "ui"
+    },
+    "platformCommand.teacherDashboard.decision": {
+      "register": "ui"
+    },
+    "platformCommand.teacherDashboard.empty": {
+      "register": "product"
+    },
+    "platformCommand.scholarReview.eyebrow": {
+      "register": "religious",
+      "reason": "uses scholar — the Sorani choice here is a register decision, not a lookup"
+    },
+    "platformCommand.scholarReview.title": {
+      "register": "religious",
+      "reason": "uses scholar — the Sorani choice here is a register decision, not a lookup"
+    },
+    "platformCommand.scholarReview.queue": {
+      "register": "religious",
+      "reason": "uses scholar — the Sorani choice here is a register decision, not a lookup"
+    },
+    "platformCommand.scholarReview.approved": {
+      "register": "religious",
+      "reason": "uses scholar — the Sorani choice here is a register decision, not a lookup"
+    },
+    "platformCommand.scholarReview.blocked": {
+      "register": "religious",
+      "reason": "uses scholar — the Sorani choice here is a register decision, not a lookup"
+    },
+    "platformCommand.scholarReview.empty": {
+      "register": "religious",
+      "reason": "uses scholar — the Sorani choice here is a register decision, not a lookup"
+    },
+    "platformCommand.memorizationCoach.eyebrow": {
+      "register": "religious",
+      "reason": "uses memoriz — the Sorani choice here is a register decision, not a lookup"
+    },
+    "platformCommand.memorizationCoach.title": {
+      "register": "religious",
+      "reason": "uses memoriz — the Sorani choice here is a register decision, not a lookup"
+    },
+    "platformCommand.memorizationCoach.dueCount": {
+      "register": "religious",
+      "reason": "uses memoriz — the Sorani choice here is a register decision, not a lookup"
+    },
+    "platformCommand.memorizationCoach.retention": {
+      "register": "religious",
+      "reason": "uses memoriz — the Sorani choice here is a register decision, not a lookup"
+    },
+    "platformCommand.memorizationCoach.empty": {
+      "register": "religious",
+      "reason": "uses memoriz — the Sorani choice here is a register decision, not a lookup"
+    },
+    "platformCommand.dataFlywheel.eyebrow": {
+      "register": "ui"
+    },
+    "platformCommand.dataFlywheel.title": {
+      "register": "product"
+    },
+    "platformCommand.dataFlywheel.learnerAudio": {
+      "register": "ui"
+    },
+    "platformCommand.dataFlywheel.teacherCorrection": {
+      "register": "ui"
+    },
+    "platformCommand.dataFlywheel.scholarApprovedExamples": {
+      "register": "religious",
+      "reason": "uses scholar — the Sorani choice here is a register decision, not a lookup"
+    },
+    "platformCommand.dataFlywheel.evalSet": {
+      "register": "ui"
+    },
+    "platformCommand.dataFlywheel.modelRelease": {
+      "register": "ui"
+    },
+    "platformCommand.benchmark.eyebrow": {
+      "register": "ui"
+    },
+    "platformCommand.benchmark.title": {
+      "register": "ui"
+    },
+    "platformCommand.benchmark.target": {
+      "register": "ui"
+    },
+    "platformCommand.benchmark.empty": {
+      "register": "ui"
+    },
+    "platformCommand.governance.eyebrow": {
+      "register": "ui"
+    },
+    "platformCommand.governance.title": {
+      "register": "ui"
+    },
+    "platformCommand.governance.sourceLine": {
+      "register": "religious",
+      "reason": "uses quran — the Sorani choice here is a register decision, not a lookup"
+    },
+    "platformCommand.governance.canonicalText.label": {
+      "register": "religious",
+      "reason": "uses quran — the Sorani choice here is a register decision, not a lookup"
+    },
+    "platformCommand.governance.canonicalText.status": {
+      "register": "ui"
+    },
+    "platformCommand.governance.humanReviewed.label": {
+      "register": "product"
+    },
+    "platformCommand.governance.humanReviewed.status": {
+      "register": "religious",
+      "reason": "uses scholar — the Sorani choice here is a register decision, not a lookup"
+    },
+    "platformCommand.governance.languages.label": {
+      "register": "ui"
+    },
+    "platformCommand.governance.languages.status": {
+      "register": "religious",
+      "reason": "uses verse — the Sorani choice here is a register decision, not a lookup"
+    },
+    "platformCommand.governance.dataFlywheel.label": {
+      "register": "ui"
+    },
+    "platformCommand.governance.dataFlywheel.status": {
+      "register": "ui"
+    },
+    "app.titleLearnerHome": {
+      "register": "ui"
+    },
+    "app.titlePractice": {
+      "register": "product"
+    },
+    "app.titleInternal": {
+      "register": "ui"
+    },
+    "app.titleSettings": {
+      "register": "ui"
+    },
+    "app.errors.platformApiUnreachable": {
+      "register": "ui"
+    },
+    "app.errors.practiceUnavailableTitle": {
+      "register": "product"
+    },
+    "app.errors.practiceUnavailableBody": {
+      "register": "religious",
+      "reason": "uses recitation — the Sorani choice here is a register decision, not a lookup"
+    },
+    "app.errors.retryConnection": {
+      "register": "ui"
+    },
+    "app.errors.mlAnalysisUnavailable": {
+      "register": "ui"
+    },
+    "app.errors.asrConsentRequired": {
+      "register": "product"
+    },
+    "app.errors.recitationSavedOffline": {
+      "register": "religious",
+      "reason": "uses recitation — the Sorani choice here is a register decision, not a lookup"
+    },
+    "app.errors.noClearSpeech": {
+      "register": "religious",
+      "reason": "uses reciting — the Sorani choice here is a register decision, not a lookup"
+    },
+    "app.errors.processingFailed": {
+      "register": "ui"
+    },
+    "app.errors.consentRequiredBeforeRecording": {
+      "register": "religious",
+      "reason": "uses recitation — the Sorani choice here is a register decision, not a lookup"
+    },
+    "app.errors.recitationAudioLoadFailed": {
+      "register": "religious",
+      "reason": "uses recitation — the Sorani choice here is a register decision, not a lookup"
+    },
+    "app.errors.audioPlaybackBlocked": {
+      "register": "ui"
+    },
+    "app.errors.recordingPlaybackFailed": {
+      "register": "ui"
+    },
+    "privacySettings.ariaLabel": {
+      "register": "product"
+    },
+    "privacySettings.title": {
+      "register": "product"
+    },
+    "privacySettings.intro": {
+      "register": "religious",
+      "reason": "uses recitation — the Sorani choice here is a register decision, not a lookup"
+    },
+    "privacySettings.exportTitle": {
+      "register": "product"
+    },
+    "privacySettings.exportBody": {
+      "register": "religious",
+      "reason": "uses recitation — the Sorani choice here is a register decision, not a lookup"
+    },
+    "privacySettings.exportAction": {
+      "register": "product"
+    },
+    "privacySettings.exportBusy": {
+      "register": "product"
+    },
+    "privacySettings.exportResult": {
+      "register": "product"
+    },
+    "privacySettings.exportError": {
+      "register": "product"
+    },
+    "privacySettings.deleteTitle": {
+      "register": "product"
+    },
+    "privacySettings.deleteBody": {
+      "register": "product"
+    },
+    "privacySettings.deleteAction": {
+      "register": "product"
+    },
+    "privacySettings.deleteBusy": {
+      "register": "product"
+    },
+    "privacySettings.confirmAriaLabel": {
+      "register": "product"
+    },
+    "privacySettings.confirmQuestion": {
+      "register": "product"
+    },
+    "privacySettings.confirmDelete": {
+      "register": "product"
+    },
+    "privacySettings.confirmCancel": {
+      "register": "product"
+    },
+    "privacySettings.deleteResult": {
+      "register": "product"
+    },
+    "privacySettings.deleteError": {
+      "register": "product"
+    },
+    "teacherSurface.queueTitle": {
+      "register": "ui"
+    },
+    "teacherSurface.loadingQueue": {
+      "register": "ui"
+    },
+    "teacherSurface.noPending": {
+      "register": "religious",
+      "reason": "uses recitation — the Sorani choice here is a register decision, not a lookup"
+    },
+    "teacherSurface.learnerLabel": {
+      "register": "ui"
+    },
+    "teacherSurface.accuracyLabel": {
+      "register": "product"
+    },
+    "teacherSurface.downloadingAudio": {
+      "register": "religious",
+      "reason": "uses recitation — the Sorani choice here is a register decision, not a lookup"
+    },
+    "teacherSurface.listenTitle": {
+      "register": "religious",
+      "reason": "uses recitation — the Sorani choice here is a register decision, not a lookup"
+    },
+    "teacherSurface.listenHint": {
+      "register": "product"
+    },
+    "teacherSurface.noAudio": {
+      "register": "product"
+    },
+    "teacherSurface.alignmentsTitle": {
+      "register": "ui"
+    },
+    "teacherSurface.loadingWords": {
+      "register": "ui"
+    },
+    "teacherSurface.heardLabel": {
+      "register": "ui"
+    },
+    "teacherSurface.findingsTitle": {
+      "register": "religious",
+      "reason": "uses tajweed — the Sorani choice here is a register decision, not a lookup"
+    },
+    "teacherSurface.noFindings": {
+      "register": "religious",
+      "reason": "uses recitation — the Sorani choice here is a register decision, not a lookup"
+    },
+    "teacherSurface.ruleLabel": {
+      "register": "ui"
+    },
+    "teacherSurface.wordRef": {
+      "register": "ui"
+    },
+    "teacherSurface.confidence": {
+      "register": "product"
+    },
+    "teacherSurface.notePlaceholder": {
+      "register": "ui"
+    },
+    "teacherSurface.accept": {
+      "register": "ui"
+    },
+    "teacherSurface.reject": {
+      "register": "ui"
+    },
+    "teacherSurface.edit": {
+      "register": "ui"
+    },
+    "teacherSurface.emptyState": {
+      "register": "religious",
+      "reason": "uses recitation — the Sorani choice here is a register decision, not a lookup"
+    },
+    "teacherSurface.reviewSuccess": {
+      "register": "product"
+    },
+    "teacherSurface.reviewFailedRetry": {
+      "register": "product"
+    },
+    "teacherSurface.reviewFailed": {
+      "register": "product"
+    }
+  }
+}

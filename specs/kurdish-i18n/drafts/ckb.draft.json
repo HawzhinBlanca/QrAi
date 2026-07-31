@@ -1,0 +1,271 @@
+{
+  "$comment": "K3 — Sorani Kurdish DRAFTS. status is ai-suggested for every entry, and NOTHING here is loaded by the app: apps/ must never import this file (asserted by tests/i18n/drafts.test.mjs). A reviewer promotes a string with `node scripts/i18n-review.mjs --promote <key>`, which moves it into apps/web/src/locales/ckb.json — the only file the app reads. REJECTING A DRAFT IS THE EXPECTED OUTCOME FOR MANY OF THESE. They were written by a model with no way to verify its Sorani is idiomatic for Erbil, and `note` marks where a term has competing forms. Correcting them is the job; approving them unread defeats the entire mechanism. religious and brand keys are NOT drafted here and never will be.",
+  "language": "ckb",
+  "script": "Perso-Arabic (RTL)",
+  "totals": {
+    "allStrings": 381,
+    "draftableRegisters": 267,
+    "drafted": 51
+  },
+  "entries": {
+    "topBar.language": {
+      "english": "Language",
+      "value": "زمان",
+      "status": "ai-suggested"
+    },
+    "topBar.roleLabelDefault": {
+      "english": "Student",
+      "value": "خوێندکار",
+      "status": "ai-suggested",
+      "note": "'Student' — خوێندکار is school-register; فێرخواز (learner) is used elsewhere in this file. Pick ONE and make it consistent."
+    },
+    "topBar.logout": {
+      "english": "Log out",
+      "value": "چوونەدەرەوە",
+      "status": "ai-suggested"
+    },
+    "sidebar.nav.learner": {
+      "english": "Learner",
+      "value": "فێرخواز",
+      "status": "ai-suggested",
+      "note": "learner vs خوێندکار (student) — must match topBar.roleLabelDefault."
+    },
+    "sidebar.nav.teacher": {
+      "english": "Teacher",
+      "value": "مامۆستا",
+      "status": "ai-suggested"
+    },
+    "sidebar.nav.modelOps": {
+      "english": "Model Ops",
+      "value": "کارپێکردنی مۆدێل",
+      "status": "ai-suggested",
+      "note": "technical console label; a Kurdish IT speaker may prefer keeping 'Model Ops' in English."
+    },
+    "sidebar.nav.badges": {
+      "english": "Badges",
+      "value": "نیشانەکان",
+      "status": "ai-suggested"
+    },
+    "sidebar.nav.teachers": {
+      "english": "Teachers",
+      "value": "مامۆستایان",
+      "status": "ai-suggested"
+    },
+    "sidebar.nav.settings": {
+      "english": "Settings",
+      "value": "ڕێکخستنەکان",
+      "status": "ai-suggested"
+    },
+    "sidebar.pilotRegion": {
+      "english": "Pilot region",
+      "value": "ناوچەی تاقیکردنەوە",
+      "status": "ai-suggested"
+    },
+    "sidebar.pilotRegionValue": {
+      "english": "Kurdistan",
+      "value": "کوردستان",
+      "status": "ai-suggested"
+    },
+    "login.signIn": {
+      "english": "Sign In",
+      "value": "چوونەژوورەوە",
+      "status": "ai-suggested"
+    },
+    "login.register": {
+      "english": "Register",
+      "value": "تۆمارکردن",
+      "status": "ai-suggested"
+    },
+    "login.displayNamePlaceholder": {
+      "english": "Display name",
+      "value": "ناوی پیشاندان",
+      "status": "ai-suggested"
+    },
+    "login.displayNameLabel": {
+      "english": "Display name",
+      "value": "ناوی پیشاندان",
+      "status": "ai-suggested"
+    },
+    "login.userIdLabel": {
+      "english": "User ID",
+      "value": "ناسنامەی بەکارهێنەر",
+      "status": "ai-suggested"
+    },
+    "login.passwordLabel": {
+      "english": "Password",
+      "value": "وشەی نهێنی",
+      "status": "ai-suggested"
+    },
+    "login.emailLabel": {
+      "english": "Email",
+      "value": "ئیمەیڵ",
+      "status": "ai-suggested"
+    },
+    "login.emailPlaceholder": {
+      "english": "Email (optional)",
+      "value": "ئیمەیڵ (ئارەزوومەندانە)",
+      "status": "ai-suggested"
+    },
+    "login.institutionIdLabel": {
+      "english": "Institution ID",
+      "value": "ناسنامەی دامەزراوە",
+      "status": "ai-suggested"
+    },
+    "login.institutionIdPlaceholder": {
+      "english": "Institution ID",
+      "value": "ناسنامەی دامەزراوە",
+      "status": "ai-suggested"
+    },
+    "login.roleLabel": {
+      "english": "Role",
+      "value": "ڕۆڵ",
+      "status": "ai-suggested"
+    },
+    "login.roleLearner": {
+      "english": "Learner",
+      "value": "فێرخواز",
+      "status": "ai-suggested"
+    },
+    "login.roleTeacher": {
+      "english": "Teacher",
+      "value": "مامۆستا",
+      "status": "ai-suggested"
+    },
+    "login.roleAdmin": {
+      "english": "Admin",
+      "value": "بەڕێوەبەر",
+      "status": "ai-suggested"
+    },
+    "login.languageLabel": {
+      "english": "Language",
+      "value": "زمان",
+      "status": "ai-suggested"
+    },
+    "login.submitLoading": {
+      "english": "Please wait...",
+      "value": "تکایە چاوەڕێ بکە...",
+      "status": "ai-suggested"
+    },
+    "login.submitSignIn": {
+      "english": "Sign In",
+      "value": "چوونەژوورەوە",
+      "status": "ai-suggested"
+    },
+    "login.submitCreateAccount": {
+      "english": "Create Account",
+      "value": "دروستکردنی هەژمار",
+      "status": "ai-suggested"
+    },
+    "login.passwordPlaceholder": {
+      "english": "Password (min 8 characters)",
+      "value": "وشەی نهێنی (لانیکەم ٨ پیت)",
+      "status": "ai-suggested",
+      "note": "Uses Eastern Arabic-Indic ٨ — confirm which digits the Erbil UI should show; the rest of the app renders Latin digits."
+    },
+    "login.errorPasswordLength": {
+      "english": "Password must be at least 8 characters.",
+      "value": "وشەی نهێنی دەبێت لانیکەم ٨ پیت بێت.",
+      "status": "ai-suggested"
+    },
+    "login.errorLoginFailed": {
+      "english": "Login failed. Check credentials.",
+      "value": "چوونەژوورەوە سەرکەوتوو نەبوو. زانیارییەکانت بپشکنە.",
+      "status": "ai-suggested"
+    },
+    "learnerHome.ariaLabel": {
+      "english": "Learner home",
+      "value": "ماڵەوەی فێرخواز",
+      "status": "ai-suggested"
+    },
+    "learnerHome.onboardingEyebrow": {
+      "english": "Welcome",
+      "value": "بەخێربێیت",
+      "status": "ai-suggested"
+    },
+    "learnerHome.onboardingDismiss": {
+      "english": "Dismiss",
+      "value": "داخستن",
+      "status": "ai-suggested"
+    },
+    "learnerHome.todaysMission": {
+      "english": "Today's mission",
+      "value": "ئەرکی ئەمڕۆ",
+      "status": "ai-suggested"
+    },
+    "learnerHome.checkMicrophone": {
+      "english": "Check microphone",
+      "value": "پشکنینی مایکرۆفۆن",
+      "status": "ai-suggested"
+    },
+    "learnerHome.estimatedTime": {
+      "english": "Estimated time",
+      "value": "کاتی مەزەندەکراو",
+      "status": "ai-suggested"
+    },
+    "learnerHome.estimatedTimeValue": {
+      "english": "~{{minutes}} minutes",
+      "value": "~{{minutes}} خولەک",
+      "status": "ai-suggested"
+    },
+    "learnerHome.trustState": {
+      "english": "Trust state",
+      "value": "دۆخی متمانە",
+      "status": "ai-suggested"
+    },
+    "micNotice.checking": {
+      "english": "Checking microphone permission...",
+      "value": "پشکنینی مۆڵەتی مایکرۆفۆن...",
+      "status": "ai-suggested"
+    },
+    "micNotice.unavailable": {
+      "english": "Microphone unavailable on this device.",
+      "value": "مایکرۆفۆن لەم ئامێرەدا بەردەست نییە.",
+      "status": "ai-suggested"
+    },
+    "modeBanner.tryAgain": {
+      "english": "Try again",
+      "value": "دووبارە هەوڵ بدەرەوە",
+      "status": "ai-suggested"
+    },
+    "modeBanner.sendToTeacher": {
+      "english": "Send to teacher",
+      "value": "ناردن بۆ مامۆستا",
+      "status": "ai-suggested"
+    },
+    "completePanel.ariaLabel": {
+      "english": "Complete state",
+      "value": "دۆخی تەواوبوون",
+      "status": "ai-suggested"
+    },
+    "completePanel.returnHome": {
+      "english": "Return home",
+      "value": "گەڕانەوە بۆ ماڵەوە",
+      "status": "ai-suggested"
+    },
+    "issuePanel.title": {
+      "english": "Mistakes",
+      "value": "هەڵەکان",
+      "status": "ai-suggested"
+    },
+    "issuePanel.kindMistake": {
+      "english": "Mistakes",
+      "value": "هەڵەکان",
+      "status": "ai-suggested"
+    },
+    "issuePanel.kindMissed": {
+      "english": "Missed words",
+      "value": "وشە لەدەستچووەکان",
+      "status": "ai-suggested"
+    },
+    "issuePanel.kindNeedsWork": {
+      "english": "Needs improvement",
+      "value": "پێویستی بە باشترکردن هەیە",
+      "status": "ai-suggested"
+    },
+    "issuePanel.heard": {
+      "english": "Heard",
+      "value": "بیستراو",
+      "status": "ai-suggested"
+    }
+  }
+}
