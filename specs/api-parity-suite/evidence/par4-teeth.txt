@@ -1,0 +1,29 @@
+PAR4 teeth check — recorded 2026-07-31T17:38:46Z
+commit: 194e2b0  db: postgres:16-alpine on 127.0.0.1:5433 (superuser 'hawzhin')
+extension is .txt, NOT .log: .gitignore:28 excludes *.log, which is how Phase 4 landed a PASSED claim with no committed evidence behind it.
+
+
+==> precondition: DATABASE_URL must be a superuser for the RLS mutation to mean anything
+    ok  connected as a superuser — dropping to quran_ai_app is a real privilege change
+
+==> mutation 'header-auth-on' must break: spoofed x-user-role headers are rejected when header auth is OFF
+    ok  went red as required
+
+==> mutation 'rls-no-role-drop' must break: RLS backstops a query that forgets its tenant context entirely
+    ok  went red as required
+
+==> mutation 'rls-no-role-drop' must break: hostile SQL under another tenant's context reads nothing and cannot insert
+    ok  went red as required
+
+==> mutation 'cors-permissive' must break: a disallowed Origin gets no access-control-allow-origin header
+    ok  went red as required
+
+==> mutation 'metrics-dev-open' must break: /metrics is CLOSED when neither a token nor dev mode is set
+    ok  went red as required
+
+==> control: with no mutation, the whole suite must pass
+    ok  clean run is green
+
+PARITY TEETH OK — every mutation produced its named failure, and the clean run is green
+
+TEETH_EXIT=0

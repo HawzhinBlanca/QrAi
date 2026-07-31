@@ -781,3 +781,43 @@ immediately; (B) is what makes it disaster recovery. Do not let (A) become the r
 **Status note.** Proposed, not accepted: this is an architectural change to how the system is
 deployed and the owner has not chosen between (A) and (B). **P5.5 cannot close until it is decided
 and rehearsed** — a rollback rehearsal performed before this lands would be rehearsing a rebuild.
+
+---
+
+## ADR-0023 — Node tests talk to Postgres through `pg`, not a `psql` subprocess
+**Date:** 2026-07-31 · **Status:** Accepted (Phase 6, `specs/api-parity-suite/plan.md` §7) · **Deciders:** repo owner
+
+**Context.** Phase 6 adds a black-box `node:test` suite that must assert on database state — 23 of
+the 77 Rust integration tests do (`specs/api-parity-suite/research.md §3`), and those are exactly the
+assertions the Phase 5 fixture differ structurally cannot make, because it only sees HTTP responses.
+
+Before this ADR there was **no Postgres driver in the repository**: `grep -rn '"pg"'
+--include=package.json .` returned nothing. Node reached the database by shelling out to `psql`
+(`scripts/smoke-sql.mjs:162`, with a `PSQL` path override at `:414`).
+
+**Decision.** Add `pg` (node-postgres) as a **root devDependency**. All database access in the parity
+suite goes through a single `queryJson()` function in `tests/api-parity/lib/harness.mjs`.
+
+**Why not the `psql` subprocess, which needs no new dependency.** `psql` is not guaranteed to be on
+PATH — verified absent on the maintainer's own machine while planning this phase, though present in
+CI via the `postgres:16-alpine` service. A suite that depends on it would **silently skip** where it
+is missing. That is the skip-if-missing anti-pattern MIG5 rejected in as many words: *"a soft skip
+would report green on a machine with no Python and hide exactly the class of bug this exists to
+catch."* A test suite whose security assertions vanish on some machines is worse than one that isn't
+written, because the gate still prints green.
+
+Secondary: Phase 7's Node backend needs a Postgres driver regardless. Choosing one now, while the
+blast radius is test-only, is cheaper than choosing it under delivery pressure.
+
+**Consequences.**
+- `pg` enters the `pnpm audit` supply-chain gate (P4.4). Checked at adoption: `pnpm audit
+  --audit-level moderate` → *No known vulnerabilities found*. It is a mainstream, low-churn package,
+  but this is a real new surface, not a free one.
+- **dev-only.** It must not become a runtime dependency of any shipped artifact without a new ADR.
+  The Rust services keep using `sqlx`; nothing in `apps/web` imports it.
+- Reversible for one file's cost: `queryJson()` is the only place the driver is named. If a future
+  constraint forbids the dependency, that function is rewritten to shell out to `psql` and the 26
+  tests are untouched — but the skip-vs-fail rule above must then be enforced explicitly.
+- This ADR takes **no position** on which driver Phase 7's backend should use for production traffic
+  (pooling, prepared statements, and RLS transaction pinning are different requirements). That is a
+  separate decision on its own evidence.
