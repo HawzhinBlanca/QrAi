@@ -361,6 +361,23 @@
         "input": "بِسْمِ",
         "expected": "1c562fd4a7951a03c69ed9f9a10f9423120f439d4fea482d35f3a5c6062dc006",
         "$note": "A UTF-16 byte source yields 4595330cb3470c17227f05845841b9b7c670a71870d7c53813e5a806ebc79881 for this same string -- verified, not assumed. That is why an Arabic vector is mandatory: the two ASCII cases above pass under BOTH encodings, so they cannot catch a Dart port using String.codeUnits."
+      },
+      {
+        "name": "supplementary-plane (surrogate pair) — catches what the Arabic case does NOT",
+        "$comment": "U+1EE00 + U+1EE01: 2 code points, 4 UTF-16 code units. The Arabic vector already catches a naive UTF-16 byte source, but NOT an implementation that iterates by code UNIT and splits a surrogate pair — that produces two lone surrogates, which encode to U+FFFD in UTF-8 and give a different digest. Dart's String.runes and Swift's Character are correct here; String.codeUnits and a JS for-loop over .length are not.",
+        "input": "𞸀𞸁",
+        "expected": "edf3963653b69809861f31419d9872de172f6b8e6e6eb691876a6817de1a8898"
+      },
+      {
+        "name": "NFC-unstable canonical text — normalizing CHANGES the digest",
+        "$comment": "inputCodepoints, NOT a literal: writing combining marks as characters is how PR #258 shipped a regex that deleted every Arabic letter, and while adding THIS vector the literal was silently reordered in transit and produced the normalized digest. Codepoints cannot be reordered by a tool that touches the file. U+0628 U+0651 U+064E (beh, shadda, fatha) reorders under NFC to U+0628 U+064E U+0651 — the dominant transform among the 5,771 of 6,236 ayahs that are NFC-unstable (MIG4). A client that normalizes gets `wrongIfNormalized` and invalidates verifyCanonicalWord across 89 of 114 surahs.",
+        "inputCodepoints": [
+          1576,
+          1617,
+          1614
+        ],
+        "expected": "19402f73700d7e4ada3809a392cb3977d8ae44e2e5b78b6f21ce481828e8a2ea",
+        "wrongIfNormalized": "84dc4a445ec8ef514bd07de8c06f45d8a55649776f39e7adbd02ded073dc424e"
       }
     ]
   },
