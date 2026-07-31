@@ -1,8 +1,9 @@
 # Plan — Phase 8: the Flutter client
 
-**Status: awaiting approval. Nothing below has been implemented.**
+**Status: APPROVED 2026-07-31. Option A (contract layer) implemented; the Flutter client remains BLOCKED.**
 
-Approved-by: _(unsigned — no work starts until a human signs this line)_
+Approved-by: repo owner (hawzhin88@gmail.com), 2026-07-31 — §8 answered: **scope A**, and **no
+toolchain installation**.
 
 Source: `specs/flutter-node-migration/plan.md` Part 6, phase 8 — *"Flutter client: mushaf, audio,
 bearer auth, i18n, a11y. 12–20 weeks. Gate: parity checklist; physical-device matrix."*

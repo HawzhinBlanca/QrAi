@@ -26,7 +26,20 @@ import {
 // disagree, that is the signal, and neither one silently wins.
 const fixtures = JSON.parse(
   readFileSync(fileURLToPath(new URL("../fixtures/canonical-gates.json", import.meta.url)), "utf8"),
-) as Record<string, { cases: { name: string; input: unknown; expected: unknown }[] }>;
+) as Record<
+  string,
+  {
+    cases: {
+      name: string;
+      input?: unknown;
+      /** Combining marks are stored as code points — a literal can be reordered in transit. */
+      inputCodepoints?: number[];
+      expected: unknown;
+      /** Present only on NFC-unstable vectors: the digest normalizing WRONGLY produces. */
+      wrongIfNormalized?: string;
+    }[];
+  }
+>;
 
 function casesFor(fn: string) {
   const group = fixtures[fn];
@@ -35,6 +48,15 @@ function casesFor(fn: string) {
   expect(group, `fixture group "${fn}" is missing`).toBeDefined();
   expect(group.cases.length, `fixture group "${fn}" has no cases`).toBeGreaterThan(0);
   return group.cases;
+}
+
+/**
+ * `inputCodepoints` is the safe medium for combining marks — a literal can be silently reordered by
+ * any tool that touches the file, which happened while this corpus was being extended (and is the
+ * same class as the PR #258 diacritic-regex incident).
+ */
+function inputOf(c: { input?: unknown; inputCodepoints?: number[] }): string {
+  return c.inputCodepoints ? String.fromCodePoint(...c.inputCodepoints) : (c.input as string);
 }
 
 describe("canonical-gates fixture corpus", () => {
@@ -67,8 +89,35 @@ describe("canonical-gates fixture corpus", () => {
     for (const c of casesFor("sha256Hex")) {
       // An unpopulated vector must fail loudly rather than be skipped — see the fixture's $comment.
       expect(c.expected, `${c.name}: expected value is null (unpopulated)`).not.toBeNull();
-      expect(sha256Hex(c.input as string), c.name).toBe(c.expected);
+      expect(sha256Hex(inputOf(c)), c.name).toBe(c.expected);
     }
+  });
+
+  it("a vector marked NFC-unstable really is, and normalizing gives the WRONG digest", () => {
+    // F3. Without this the NFC vector would be an ordinary hash case: it only proves anything if
+    // normalizing actually changes the answer, and that `wrongIfNormalized` is the answer it changes
+    // to. A future Dart or Swift client asserting the same file inherits the trap.
+    const unstable = casesFor("sha256Hex").filter((c) => c.wrongIfNormalized !== undefined);
+    expect(unstable.length, "the corpus must carry at least one NFC-unstable vector").toBeGreaterThan(0);
+
+    for (const c of unstable) {
+      const input = inputOf(c);
+      expect(input, `${c.name}: must not already be in NFC`).not.toBe(input.normalize("NFC"));
+      expect(sha256Hex(input.normalize("NFC")), `${c.name}: normalized digest`).toBe(c.wrongIfNormalized);
+      expect(c.wrongIfNormalized, `${c.name}: the trap is vacuous`).not.toBe(c.expected);
+    }
+  });
+
+  it("code-point vectors survive a surrogate-pair-splitting implementation", () => {
+    // The Arabic vector catches a UTF-16 byte source. It does NOT catch iterating by code UNIT and
+    // splitting a surrogate pair, which is a different bug with the same symptom.
+    const astral = casesFor("sha256Hex").find((c) => c.name.includes("supplementary-plane"));
+    expect(astral, "the corpus must carry a supplementary-plane vector").toBeDefined();
+    const input = inputOf(astral!);
+    expect(input.length, "must be a surrogate pair, i.e. more units than code points").toBeGreaterThan(
+      [...input].length,
+    );
+    expect(sha256Hex(input)).toBe(astral!.expected);
   });
 
   it("isNonRecitedMark matches every vector", () => {
