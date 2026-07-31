@@ -1,11 +1,11 @@
 # Plan — golden API fixtures from the Rust service
 
-**Status: PROPOSED. No code until `Approved-by:` is filled by a human** (AGENTS.md step 2).
+**Status: APPROVED 2026-07-30** by the repo owner in session (AGENTS.md step 2 gate satisfied).
 **Research:** `research.md`. **Measured at** main `964ffef`.
 **Phase 5 of** `specs/flutter-node-migration/plan.md` — the first phase that is migration work
 rather than preparation.
 
-**Approved-by:**
+**Approved-by:** repo owner (HawzhinBlanca), 2026-07-30, in session — scope F1-F5 as written below.
 
 ---
 
