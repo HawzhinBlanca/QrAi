@@ -114,6 +114,13 @@ Phases 7–9 did not do it, and Phase 6 measured that it already means two diffe
 
 `boundary.md §3.4` flags it **for the reviewer as unresolved**, not as documented-therefore-fine.
 
+> **Resolved 2026-08-01** by `specs/insecure-defaults-split/` (`ADR-0024`). The count was wrong in
+> both directions: **six** controls, not five (§2.6 missed chaos injection), and this document's
+> claim that the Node shell read the same variable was **false** — `services/node-api/` never read
+> it. Split into five per-control names; the alias survives with a boot warning and an
+> ambiguity panic. The "never set in production" assertion §2.6 asked for is **not** implemented —
+> no service knows its environment — and `boundary.md §3.4` now says so explicitly.
+
 ---
 
 ## Not in this phase

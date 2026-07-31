@@ -106,6 +106,12 @@ sifat output on pilot data.
   `ML_API_KEY`, `ASR_API_KEY`, `POSTGRES_PASSWORD` into a gitignored `.env.production` (mode 600), with
   `ALLOW_INSECURE_DEFAULTS=0`. Load it at deploy (`docker compose --env-file .env.production up -d`) or
   import into your secrets manager. Do **not** commit it or set `ALLOW_INSECURE_DEFAULTS` in prod.
+  That variable is **deprecated**: it relaxes six controls at once, and each now has its own name
+  (`ALLOW_INSECURE_SECRETS`, `ALLOW_SUPERUSER_DB_ROLE`, `METRICS_DEV_OPEN`,
+  `GATEWAY_ALLOW_MISSING_ORIGIN`, `ALLOW_CHAOS_INJECTION` — see
+  `specs/insecure-defaults-split/plan.md`). A **native/mobile client** needs only
+  `GATEWAY_ALLOW_MISSING_ORIGIN=1`, which keeps the CSWSH allowlist enforced for browsers; reaching
+  for the old variable to make mobile connect also ships a public JWT key and an inert RLS layer.
 - **D10 — DB posture · 🧰.** Run `platform-api` as the **restricted `quran_ai_app` role** (see
   `infra/sql/rls-app-role.sql`; nosuperuser + nobypassrls, so RLS actually bites). Add automated
   Postgres backups (pg_dump or a managed snapshot schedule) + a tested restore. Migrations apply in

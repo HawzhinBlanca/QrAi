@@ -115,7 +115,7 @@ psql "$SUPERUSER_URL" -v app_password="$STRONG_PASSWORD" -f infra/sql/rls-app-ro
 
 # 2. Run platform-api as that role and smoke it.
 DATABASE_URL="postgresql://quran_ai_app:$STRONG_PASSWORD@localhost:5432/quran_ai" \
-ALLOW_HEADER_AUTH=1 ALLOW_INSECURE_DEFAULTS=1 JWT_SECRET=dev PLATFORM_API_BIND=127.0.0.1:8085 \
+ALLOW_HEADER_AUTH=1 ALLOW_INSECURE_SECRETS=1 JWT_SECRET=dev PLATFORM_API_BIND=127.0.0.1:8085 \
   ./services/platform-api/target/debug/quran-ai-platform-api &
 PLATFORM_API_SMOKE_URL=http://127.0.0.1:8085 node scripts/smoke-api.mjs
 ```

@@ -41,6 +41,12 @@ REALTIME_GATEWAY_TICKET_SECRET=$TICKET_SECRET
 ML_API_KEY=$ML_API_KEY
 ASR_API_KEY=$ASR_API_KEY
 # Production posture: real auth, no insecure fallbacks.
+#
+# The deprecated single switch, pinned off. Each control it used to disable now has its own name
+# (specs/insecure-defaults-split/plan.md §3.1); all are left UNSET, which is strict.
+# Setting any of ALLOW_INSECURE_SECRETS / ALLOW_SUPERUSER_DB_ROLE / METRICS_DEV_OPEN /
+# ALLOW_CHAOS_INJECTION in this file would disable a production control — tests/security/
+# legacy-insecure-flag.test.mjs fails the build if one is ever added here switched on.
 ALLOW_INSECURE_DEFAULTS=0
 EOF
 chmod 600 "$OUT"

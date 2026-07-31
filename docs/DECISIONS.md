@@ -821,3 +821,58 @@ blast radius is test-only, is cheaper than choosing it under delivery pressure.
 - This ADR takes **no position** on which driver Phase 7's backend should use for production traffic
   (pooling, prepared statements, and RLS transaction pinning are different requirements). That is a
   separate decision on its own evidence.
+
+## ADR-0024 — One security switch becomes six named ones; the blunt name survives as a deprecated alias
+
+**Status:** Accepted (2026-08-01). **Context:** `specs/insecure-defaults-split/` ·
+supersedes the unimplemented `specs/flutter-node-migration/plan.md §2.6`.
+
+**Context.** `ALLOW_INSECURE_DEFAULTS` disabled **six independent controls** across two services
+through **seven read sites** and thirteen assertions: every secret-strength boot panic, the
+superuser/`BYPASSRLS` DB-role assertion, `/metrics` fail-closed in both services, the entire CSWSH
+`Origin` allowlist, its missing-`Origin` fail-closed branch, and chaos fault injection.
+
+The operational pressure is specific and imminent. A native/Flutter client sends **no `Origin`
+header**, and the gateway fails closed on that. "Mobile can't connect" leads an operator to the one
+variable that also ships a known-public JWT signing key, a DB role that makes all 16 RLS policies
+inert, an internet-reachable `/metrics`, and a gateway that will drop sockets on command.
+
+**Decision.** Split into `ALLOW_INSECURE_SECRETS`, `ALLOW_SUPERUSER_DB_ROLE`, `METRICS_DEV_OPEN`,
+`GATEWAY_ALLOW_MISSING_ORIGIN` and `ALLOW_CHAOS_INJECTION`. Keep `ALLOW_INSECURE_DEFAULTS` as a
+working alias that relaxes everything, with a loud boot warning and a **refusal to start** if it is
+set alongside any per-control variable.
+
+**The load-bearing part is narrower than a rename.** `GATEWAY_ALLOW_MISSING_ORIGIN` relaxes *only*
+the missing-`Origin` branch: a request that carries an `Origin` is still checked against the
+allowlist. A native deployment gets exactly the relaxation it needs and **browsers keep their CSWSH
+protection**. Disabling the allowlist outright has no legitimate deployment, so it stays reachable
+only through the deprecated name. Pinned by
+`realtime-gateway/src/lib.rs::missing_origin_knob_does_not_disable_the_allowlist`, whose second
+assertion is that a disallowed origin is still 403.
+
+**Rejected: inventing `APP_ENV` so the alias could panic in production.** §2.6 asked for "a boot
+assertion that it is never set in production". Neither service knows what environment it is in, and
+adding a variable to find out is the same mistake in a new costume — plus a service that panics
+because `APP_ENV` was forgotten is a new outage mode. Instead:
+`tests/security/legacy-insecure-flag.test.mjs` fails the build if a committed production artifact
+ships a relaxation switched on. **That is strictly weaker** — it cannot catch an operator exporting
+the variable by hand — and both `insecure.rs` modules say so in place rather than implying coverage
+they do not have.
+
+**Rejected: fixing the `"1"`/`"true"` asymmetry.** `platform-api/src/lib.rs` accepted `"1"` alone at
+the `/metrics` gate while every other site accepted `"1"` or `"true"`, so
+`ALLOW_INSECURE_DEFAULTS=true` skipped the boot checks and still left `/metrics` closed.
+`tests/api-parity/metrics.test.mjs` **depends** on that combination. The asymmetry is carried forward
+verbatim **inside the deprecated alias only**; the new names are consistent everywhere. The parity
+suite therefore passes **unchanged**, which is the sharpest available evidence that backwards
+compatibility actually held.
+
+**Consequences.**
+- Two hand-maintained copies of a ~25-line resolver (`services/*/src/insecure.rs`). A workspace crate
+  for that buys a dependency edge and nothing else; `shared-ticket` exists because a *wire format*
+  must not diverge, which this is not. The copies genuinely differ, and a test asserts they agree on
+  the alias name.
+- `ALLOW_INSECURE_DEFAULTS` still works, so this **reduces the pressure** to reach for the blunt
+  instrument without removing it. Removal is a separate breaking change and needs its own ADR.
+- Setting the old and new variables together is now a **boot failure**, not a merge. Any deploy doing
+  both must pick one.

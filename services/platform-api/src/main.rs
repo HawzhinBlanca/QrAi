@@ -1,6 +1,6 @@
 use std::net::SocketAddr;
 
-use quran_ai_platform_api::{AppState, platform_router};
+use quran_ai_platform_api::{AppState, insecure, platform_router};
 use sqlx::postgres::PgPoolOptions;
 
 /// Parse DATABASE_MAX_CONNECTIONS, falling back to 10 for anything absent, unparseable, or zero
@@ -21,12 +21,12 @@ fn acquire_timeout_secs_from_env(raw: Option<String>) -> u64 {
 
 /// Refuse to boot in production with missing or known-weak secrets (JWT signing key and
 /// the realtime ticket HMAC secret). Weak defaults let anyone forge auth tokens/tickets.
-/// Local dev opts out with ALLOW_INSECURE_DEFAULTS=1.
+/// Local dev opts out with ALLOW_INSECURE_SECRETS=1 (or the deprecated ALLOW_INSECURE_DEFAULTS).
 fn ensure_secure_config() {
-    let dev = std::env::var("ALLOW_INSECURE_DEFAULTS")
-        .map(|v| v == "1" || v == "true")
-        .unwrap_or(false);
-    if dev {
+    if insecure::relaxed(
+        insecure::ALLOW_INSECURE_SECRETS,
+        insecure::LEGACY_ONE_OR_TRUE,
+    ) {
         return;
     }
     let jwt = std::env::var("JWT_SECRET").unwrap_or_default();
@@ -37,7 +37,7 @@ fn ensure_secure_config() {
     {
         panic!(
             "JWT_SECRET must be set to a strong, non-default value in production (at least 32 characters). \
-             Set ALLOW_INSECURE_DEFAULTS=1 for local dev only."
+             Set ALLOW_INSECURE_SECRETS=1 for local dev only."
         );
     }
     let ticket = std::env::var("REALTIME_GATEWAY_TICKET_SECRET").unwrap_or_default();
@@ -48,7 +48,7 @@ fn ensure_secure_config() {
     {
         panic!(
             "REALTIME_GATEWAY_TICKET_SECRET must be set to a strong, non-default value in \
-             production (shared with the realtime gateway, at least 32 characters). Set ALLOW_INSECURE_DEFAULTS=1 for local dev only."
+             production (shared with the realtime gateway, at least 32 characters). Set ALLOW_INSECURE_SECRETS=1 for local dev only."
         );
     }
     // ML_API_KEY is the only credential gating the ML inference service; a hardcoded default would
@@ -57,7 +57,7 @@ fn ensure_secure_config() {
     if ml_key.trim().is_empty() || ml_key == "smoke-ml-api-key" {
         panic!(
             "ML_API_KEY must be set to a non-default value in production (it is the only credential \
-             gating the ML inference service). Set ALLOW_INSECURE_DEFAULTS=1 for local dev only."
+             gating the ML inference service). Set ALLOW_INSECURE_SECRETS=1 for local dev only."
         );
     }
     // ASR_API_KEY gates the ASR inference service, which the browser reaches only via the
@@ -67,7 +67,7 @@ fn ensure_secure_config() {
     if asr_key.trim().is_empty() || asr_key == "smoke-asr-api-key" {
         panic!(
             "ASR_API_KEY must be set to a non-default value in production (it gates the ASR \
-             inference service, fronted by the /v1/asr proxy). Set ALLOW_INSECURE_DEFAULTS=1 for local dev only."
+             inference service, fronted by the /v1/asr proxy). Set ALLOW_INSECURE_SECRETS=1 for local dev only."
         );
     }
     // CORS_ALLOWED_ORIGINS gates BOTH the pilot Origin allowlist (auth::require_allowed_origin) and
@@ -82,7 +82,7 @@ fn ensure_secure_config() {
         panic!(
             "CORS_ALLOWED_ORIGINS must be set to the exact web origin(s) in production \
              (comma-separated) so the pilot Origin allowlist and browser CORS are enforced rather \
-             than permissive. Set ALLOW_INSECURE_DEFAULTS=1 for local dev only."
+             than permissive. Set ALLOW_INSECURE_SECRETS=1 for local dev only."
         );
     }
 }
@@ -147,6 +147,9 @@ fn redact_query_password(database_url: &str) -> String {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // Before any control is consulted: refuse an ambiguous config, and say loudly if the deprecated
+    // single switch is still doing the work of five variables.
+    insecure::enforce_legacy_alias();
     ensure_secure_config();
 
     // LOG_FORMAT=json emits one structured JSON object per line — the shape a log aggregator
@@ -193,11 +196,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Defense-in-depth: if the API connects as a superuser / BYPASSRLS role, EVERY RLS policy is a
     // no-op and tenant isolation rests solely on per-handler filters. Refuse to boot in production in
-    // that case (dev/CI opt out with ALLOW_INSECURE_DEFAULTS=1), mirroring infra/sql/rls-app-role.sql.
-    if !std::env::var("ALLOW_INSECURE_DEFAULTS")
-        .map(|v| v == "1" || v == "true")
-        .unwrap_or(false)
-    {
+    // that case (dev/CI opt out with ALLOW_SUPERUSER_DB_ROLE=1), mirroring infra/sql/rls-app-role.sql.
+    if !insecure::relaxed(
+        insecure::ALLOW_SUPERUSER_DB_ROLE,
+        insecure::LEGACY_ONE_OR_TRUE,
+    ) {
         let (rolname, rolsuper, rolbypassrls): (String, bool, bool) = sqlx::query_as(
             "SELECT rolname, rolsuper, rolbypassrls FROM pg_roles WHERE rolname = current_user",
         )
@@ -206,7 +209,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         if rolsuper || rolbypassrls {
             panic!(
                 "DB role '{rolname}' is superuser/bypassrls — RLS tenant isolation is INERT. Connect \
-                 as a restricted role (see infra/sql/rls-app-role.sql), or set ALLOW_INSECURE_DEFAULTS=1 \
+                 as a restricted role (see infra/sql/rls-app-role.sql), or set ALLOW_SUPERUSER_DB_ROLE=1 \
                  for local dev only."
             );
         }
