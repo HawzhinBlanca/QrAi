@@ -1,0 +1,22 @@
+N4/N5 — A/B: the same request to the ported Node route and to Rust
+recorded 2026-07-31T18:37:47Z
+
+--- GET /v1/learner/progress (N4) ---
+ok   own progress (learner)  [node 200 | rust 200]
+ok   staff reads another learner  [node 200 | rust 200]
+ok   teacher reads another learner  [node 200 | rust 200]
+ok   learner reads someone else -> 403  [node 403 | rust 403]
+ok   SCHOLAR is refused at the first gate  [node 403 | rust 403]
+ok   no identity -> 401  [node 401 | rust 401]
+ok   learner with no rows  [node 200 | rust 200]
+
+--- POST /v1/realtime-session-tickets (N5) ---
+node 200: rt_v1.session-0b18a00b-036f-487d-bd48-5eae7a7c0db5.hikmah-pilot-erbil.learner-1.false.1785523367.<varies>.<varies>
+rust 200: rt_v1.session-0b18a00b-036f-487d-bd48-5eae7a7c0db5.hikmah-pilot-erbil.learner-1.false.1785523367.<varies>.<varies>
+ok   ticket shape + response keys identical (nonce and signature necessarily differ)
+ok   ticket for a nonexistent session  [node 404 | rust 404]
+FAIL ticket with no sessionId  [node 422 | rust 422]
+   node: {"error":"sessionId is required"}
+   rust: "Failed to deserialize the JSON body into the target type: missing field `sessionId` at line 1 column 2"
+
+1 DIVERGENCE(S)

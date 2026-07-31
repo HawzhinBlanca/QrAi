@@ -1,0 +1,11 @@
+N5 — the UNCHANGED Rust realtime-gateway accepts a NODE-minted ticket
+recorded 2026-07-31T18:37:46Z  commit 927bc1a
+gateway built from unmodified source; the two services share ONLY the HMAC secret.
+
+ticket minted by NODE: rt_v1.session-893e52f9-62b9-4b2e-b073-c7c1457f4efe.hikmah-pi...
+
+ok   the UNCHANGED Rust gateway ACCEPTED the Node-minted ticket
+ok   a tampered signature was REJECTED
+ok   a swapped tenant was REJECTED
+
+N5 PROVEN

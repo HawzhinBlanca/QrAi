@@ -1,0 +1,74 @@
+{
+  "$comment": "N1 — cross-language golden vectors for the realtime ticket (services/shared-ticket/src/lib.rs:48-69). Asserted by BOTH a Rust test in that crate and tests/node-api/ticket-vectors.test.mjs, so platform-api and realtime-gateway can be ported independently instead of cutting over together (specs/node-backend-port/plan.md §1). GENERATED FROM RUST, never from a port: vectors derived from the port would pin the port's behaviour including its bugs, and both suites would agree while both were wrong. To regenerate, add a temporary printing test to shared-ticket — do not hand-edit expectedTicket. expiresAtUnixSeconds is a STRING, not a JSON number: Rust's u64 range exceeds JS's Number.MAX_SAFE_INTEGER, and the max-u64 vector proved it — JSON.parse turned 18446744073709551615 into 18446744073709552000. Any u64 crossing a JSON boundary in this port has the same hazard.",
+  "payloadFormat": "{sessionId}.{tenantId}.{learnerId}.{externalAsrProcessing}.{expiresAtUnixSeconds}.{nonce}",
+  "ticketFormat": "rt_v1.{payload}.{lowercase hex HMAC-SHA256(secret, payload)}",
+  "vectorCount": 6,
+  "vectors": [
+    {
+      "name": "ascii-basic",
+      "sessionId": "session-1",
+      "tenantId": "tenant-1",
+      "learnerId": "learner-1",
+      "externalAsrProcessing": true,
+      "expiresAtUnixSeconds": "2000",
+      "nonce": "nonce-1",
+      "secret": "test-secret",
+      "expectedTicket": "rt_v1.session-1.tenant-1.learner-1.true.2000.nonce-1.36d4d9e1a13d75f018be3822a00ced7975cb87d28bd63c7a2fb777c36ab600de"
+    },
+    {
+      "name": "external-asr-false",
+      "sessionId": "session-2",
+      "tenantId": "hikmah-pilot-erbil",
+      "learnerId": "learner-1",
+      "externalAsrProcessing": false,
+      "expiresAtUnixSeconds": "1900000000",
+      "nonce": "n-2",
+      "secret": "test-secret",
+      "expectedTicket": "rt_v1.session-2.hikmah-pilot-erbil.learner-1.false.1900000000.n-2.a6e461e5aeb9c5bee3b077e08e9442d47281755a7f40e0412c25aa1c51731d20"
+    },
+    {
+      "name": "prefixed-uuid-ids",
+      "sessionId": "recitation-session-550e8400-e29b-41d4-a716-446655440000",
+      "tenantId": "hikmah-pilot-erbil",
+      "learnerId": "learner-42",
+      "externalAsrProcessing": true,
+      "expiresAtUnixSeconds": "1893456000",
+      "nonce": "0123456789abcdef",
+      "secret": "a-much-longer-secret-value-32ch",
+      "expectedTicket": "rt_v1.recitation-session-550e8400-e29b-41d4-a716-446655440000.hikmah-pilot-erbil.learner-42.true.1893456000.0123456789abcdef.dbc7328d9a8c7ce2df7745d1438bb569e6f03f622fdae9cd70fcf9915d93ec0d"
+    },
+    {
+      "name": "unicode-tenant",
+      "sessionId": "s-1",
+      "tenantId": "مدرسة-هيكمة",
+      "learnerId": "learner-ك",
+      "externalAsrProcessing": false,
+      "expiresAtUnixSeconds": "2147483647",
+      "nonce": "nonce-ünïcode",
+      "secret": "sécret-with-ünicode",
+      "expectedTicket": "rt_v1.s-1.مدرسة-هيكمة.learner-ك.false.2147483647.nonce-ünïcode.a449aa4fb790d55c19d175be294ddc893db5bcd6ab00892dd7f19e685b23aa44"
+    },
+    {
+      "name": "empty-secret",
+      "sessionId": "s-1",
+      "tenantId": "t-1",
+      "learnerId": "l-1",
+      "externalAsrProcessing": true,
+      "expiresAtUnixSeconds": "2000",
+      "nonce": "n-1",
+      "secret": "",
+      "expectedTicket": "rt_v1.s-1.t-1.l-1.true.2000.n-1.8b6dff077be80e337c0e07ff72f5f4e74aa3606299aa8d39018d0ec9c6b12ab3"
+    },
+    {
+      "name": "max-u64-expiry",
+      "sessionId": "s-1",
+      "tenantId": "t-1",
+      "learnerId": "l-1",
+      "externalAsrProcessing": false,
+      "expiresAtUnixSeconds": "18446744073709551615",
+      "nonce": "n-1",
+      "secret": "test-secret",
+      "expectedTicket": "rt_v1.s-1.t-1.l-1.false.18446744073709551615.n-1.f24df72d22063f7ba92bc81a77955b74d596f92b26ce1fcb96a57aa3a09fb93b"
+    }
+  ]
+}

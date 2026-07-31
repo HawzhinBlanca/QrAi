@@ -27,6 +27,11 @@
   },
   "packageManager": "pnpm@11.7.0",
   "devDependencies": {
-    "pg": "^8.22.0"
+    "@fastify/cors": "^11.3.0",
+    "fastify": "^5.11.0",
+    "jose": "^6.2.5",
+    "pg": "^8.22.0",
+    "postgres": "^3.4.9",
+    "zod": "^4.4.3"
   }
 }

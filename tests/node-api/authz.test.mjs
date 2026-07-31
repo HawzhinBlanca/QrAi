@@ -1,0 +1,193 @@
+import assert from "node:assert/strict";
+import test from "node:test";
+
+import { SignJWT } from "jose";
+
+import { ApiError, requireSelfOrAny, resolveActor } from "../../services/node-api/lib/authz.mjs";
+
+/**
+ * N3 §2.3 — the ownership gate.
+ * specs/node-backend-port/plan.md §5
+ *
+ * Rust compares two non-`Option` `String`s and errors on a missing DB column. JavaScript compares
+ * whatever it is handed, and **`undefined === undefined` is `true`** — so the naive port passes the
+ * gate for every caller. This is the ONLY ownership check on 8 endpoints.
+ *
+ * Most of this file asserts the gate REFUSES. A gate that only has happy-path tests is
+ * indistinguishable from `return true`.
+ *
+ * Hermetic: no database, no server.
+ */
+
+const STAFF = ["teacher", "scholar", "admin", "ops"];
+const learner = { userId: "learner-1", role: "learner", tenantId: "t1" };
+const ops = { userId: "ops-1", role: "ops", tenantId: "t1" };
+
+// --- passes where it should ---
+
+test("the owner passes", () => {
+  requireSelfOrAny(learner, "learner-1", STAFF);
+});
+
+test("a permitted role passes for someone else's resource", () => {
+  requireSelfOrAny(ops, "learner-1", STAFF);
+});
+
+// --- THE failure this primitive exists for ---
+
+test("undefined === undefined must NOT pass the gate", () => {
+  // The naive port. A renamed DB column yields `undefined` for the owner id; a JWT missing `sub`
+  // yields `undefined` for the actor. Comparing them is `true`, and every caller owns everything.
+  assert.throws(() => requireSelfOrAny({ userId: undefined, role: "learner" }, undefined, STAFF), ApiError);
+  assert.throws(() => requireSelfOrAny({ userId: undefined, role: "learner" }, undefined, STAFF), /not allowed to perform/);
+});
+
+test("null === null must NOT pass the gate either", () => {
+  assert.throws(() => requireSelfOrAny({ userId: null, role: "learner" }, null, STAFF), ApiError);
+});
+
+test("empty strings must NOT pass, even though they are strings and equal", () => {
+  // `"" === ""` is true and both are strings, so a type check alone is not enough.
+  assert.throws(() => requireSelfOrAny({ userId: "", role: "learner" }, "", STAFF), ApiError);
+  assert.throws(() => requireSelfOrAny({ userId: "   ", role: "learner" }, "   ", STAFF), ApiError);
+});
+
+test("a missing owner id is refused even when the actor is perfectly valid", () => {
+  // The realistic shape: the query returned a row whose owner column was renamed.
+  assert.throws(() => requireSelfOrAny(learner, undefined, STAFF), /not allowed to perform/);
+});
+
+test("a missing actor is refused even when the owner id is valid", () => {
+  for (const bad of [null, undefined, {}, { role: "ops" }]) {
+    assert.throws(() => requireSelfOrAny(bad, "learner-1", STAFF), ApiError);
+  }
+});
+
+/** node:assert's `throws` returns undefined, so the thrown value has to be captured directly. */
+const caught = (fn) => {
+  try {
+    fn();
+  } catch (e) {
+    return e;
+  }
+  return assert.fail("expected a throw, got none");
+};
+
+test("a non-owner without a permitted role is Forbidden with 403, not 401", () => {
+  const other = { userId: "learner-2", role: "learner", tenantId: "t1" };
+  assert.equal(caught(() => requireSelfOrAny(other, "learner-1", STAFF)).status, 403);
+});
+
+test("a malformed allowlist refuses rather than throwing a TypeError into a 500", () => {
+  const other = { userId: "learner-2", role: "learner", tenantId: "t1" };
+  for (const bad of [undefined, null, "ops"]) {
+    assert.equal(
+      caught(() => requireSelfOrAny(other, "learner-1", bad)).status,
+      403,
+      "a bad allowlist must fail closed, not 500",
+    );
+  }
+});
+
+// --- actor resolution ---
+
+const req = (headers) => ({ headers });
+const SECRET = "test-jwt-secret";
+const sign = (claims) =>
+  new SignJWT(claims)
+    .setProtectedHeader({ alg: "HS256" })
+    .setExpirationTime("1h")
+    .sign(new TextEncoder().encode(SECRET));
+
+test("dev-header identity resolves only when header auth is ENABLED", async () => {
+  const headers = { "x-tenant-id": "t1", "x-user-id": "admin-1", "x-user-role": "admin" };
+  const on = await resolveActor(req(headers), { jwtSecret: SECRET, allowHeaderAuth: true });
+  assert.deepEqual(on.actor, { tenantId: "t1", userId: "admin-1", role: "admin" });
+
+  // Production default. This is the spoofable path Phase 6's auth-disabled group exists to refuse.
+  await assert.rejects(
+    () => resolveActor(req(headers), { jwtSecret: SECRET, allowHeaderAuth: false }),
+    (e) => e.status === 401,
+  );
+});
+
+test("a partial dev-header identity resolves to NO actor, not a half-built one", async () => {
+  // An actor with `role: undefined` would sail through a role check that uses `includes`.
+  for (const headers of [
+    { "x-tenant-id": "t1", "x-user-id": "admin-1" },
+    { "x-tenant-id": "t1", "x-user-role": "admin" },
+    { "x-user-id": "admin-1", "x-user-role": "admin" },
+    { "x-tenant-id": "t1", "x-user-id": "", "x-user-role": "admin" },
+  ]) {
+    await assert.rejects(() => resolveActor(req(headers), { jwtSecret: SECRET, allowHeaderAuth: true }));
+  }
+});
+
+test("a valid Bearer token resolves", async () => {
+  const token = await sign({ sub: "learner-1", tenant_id: "t1", role: "learner" });
+  const { actor } = await resolveActor(req({ authorization: `Bearer ${token}` }), {
+    jwtSecret: SECRET,
+    allowHeaderAuth: false,
+  });
+  assert.deepEqual(actor, { tenantId: "t1", userId: "learner-1", role: "learner" });
+});
+
+test("a token missing a claim is REJECTED, never resolved to undefined", async () => {
+  // The other half of the §2.3 bypass: a token with no `sub` yields `payload.sub === undefined`,
+  // which would then compare equal to a missing owner id.
+  for (const claims of [
+    { tenant_id: "t1", role: "learner" },
+    { sub: "learner-1", role: "learner" },
+    { sub: "learner-1", tenant_id: "t1" },
+  ]) {
+    const token = await sign(claims);
+    await assert.rejects(
+      () => resolveActor(req({ authorization: `Bearer ${token}` }), { jwtSecret: SECRET, allowHeaderAuth: false }),
+      (e) => e.status === 401,
+    );
+  }
+});
+
+test("an alg:none token is REJECTED — the most likely security regression in this port", async () => {
+  // `jsonwebtoken` trusts the token-declared alg unless the allowlist is remembered. jose refuses by
+  // construction because `algorithms: ['HS256']` is passed at the call site.
+  const header = Buffer.from(JSON.stringify({ alg: "none", typ: "JWT" })).toString("base64url");
+  const body = Buffer.from(JSON.stringify({ sub: "admin-1", tenant_id: "t1", role: "admin" })).toString("base64url");
+  await assert.rejects(
+    () => resolveActor(req({ authorization: `Bearer ${header}.${body}.` }), { jwtSecret: SECRET, allowHeaderAuth: false }),
+    (e) => e.status === 401,
+  );
+});
+
+test("a token signed with the WRONG secret is rejected", async () => {
+  const token = await new SignJWT({ sub: "admin-1", tenant_id: "t1", role: "admin" })
+    .setProtectedHeader({ alg: "HS256" })
+    .setExpirationTime("1h")
+    .sign(new TextEncoder().encode("attacker-secret"));
+  await assert.rejects(
+    () => resolveActor(req({ authorization: `Bearer ${token}` }), { jwtSecret: SECRET, allowHeaderAuth: false }),
+    (e) => e.status === 401,
+  );
+});
+
+test("a pilot cookie DELEGATES rather than being half-authenticated here", async () => {
+  // 306 lines of session lookup, idle-roll, CSRF and Origin checks are not ported. Delegating to the
+  // implementation that Phase 6 already proved is the fail-SAFE choice; half-porting it would be
+  // exactly the regression this phase exists to avoid.
+  const { delegate, actor } = await resolveActor(
+    req({ cookie: "__Host-qrai-pilot=sometoken" }),
+    { jwtSecret: SECRET, allowHeaderAuth: true },
+  );
+  assert.ok(delegate, "a cookie-bearing request must be delegated");
+  assert.equal(actor, undefined);
+});
+
+test("a Bearer token wins over dev headers when both are present", async () => {
+  // Otherwise a spoofed header could downgrade a real token's identity.
+  const token = await sign({ sub: "learner-1", tenant_id: "t1", role: "learner" });
+  const { actor } = await resolveActor(
+    req({ authorization: `Bearer ${token}`, "x-user-id": "admin-1", "x-user-role": "admin", "x-tenant-id": "t1" }),
+    { jwtSecret: SECRET, allowHeaderAuth: true },
+  );
+  assert.equal(actor.role, "learner", "the signed identity must win over the spoofable one");
+});
