@@ -205,6 +205,39 @@ export async function startApi({ env = {}, timeoutMs = 30_000, bin = API_BIN } =
     await sleep(100);
   }
 
+  /** SIGTERM first — main.rs:241 installs a graceful-shutdown handler — then SIGKILL if it lingers. */
+  async function stopRust() {
+    if (exited) return;
+    child.kill("SIGTERM");
+    const hardDeadline = Date.now() + 5_000;
+    while (!exited && Date.now() < hardDeadline) await sleep(25);
+    if (!exited) {
+      child.kill("SIGKILL");
+      while (!exited) await sleep(25);
+    }
+  }
+
+  // Phase 7 N2: when PARITY_THROUGH_SHELL=1, put the Node strangler shell in front and hand the
+  // tests ITS url instead. The 39 tests are unchanged — that is the point. A shell with zero routes
+  // ported must be indistinguishable from the Rust service, and any header, cookie, or body mangling
+  // in the proxy shows up here immediately rather than being blamed on a later port.
+  if (process.env.PARITY_THROUGH_SHELL === "1") {
+    const shell = await startShell({ upstream: baseUrl, env });
+    return {
+      baseUrl: shell.baseUrl,
+      port: shell.port,
+      upstreamUrl: baseUrl,
+      pid: child.pid,
+      get stderr() {
+        return stderr + shell.stderr;
+      },
+      async stop() {
+        await shell.stop();
+        await stopRust();
+      },
+    };
+  }
+
   return {
     baseUrl,
     port,
@@ -213,16 +246,7 @@ export async function startApi({ env = {}, timeoutMs = 30_000, bin = API_BIN } =
       return stderr;
     },
     /** SIGTERM first — main.rs:241 installs a graceful-shutdown handler — then SIGKILL if it lingers. */
-    async stop() {
-      if (exited) return;
-      child.kill("SIGTERM");
-      const hardDeadline = Date.now() + 5_000;
-      while (!exited && Date.now() < hardDeadline) await sleep(25);
-      if (!exited) {
-        child.kill("SIGKILL");
-        while (!exited) await sleep(25);
-      }
-    },
+    stop: stopRust,
   };
 }
 
@@ -363,4 +387,76 @@ let counter = 0;
 export function uniqueSuffix() {
   counter += 1;
   return `${process.pid}-${counter}`;
+}
+
+/**
+ * Start the Node strangler shell in front of a running Rust service (Phase 7 N2).
+ *
+ * `NODE_API_PORTED` decides which routes the shell serves itself; unset means it proxies everything,
+ * which is the configuration N2's acceptance requires the whole existing suite to pass under.
+ */
+export async function startShell({ upstream, env = {}, timeoutMs = 20_000 }) {
+  const port = await reservePort();
+  const child = spawn(process.execPath, ["services/node-api/server.mjs"], {
+    env: {
+      PATH: process.env.PATH,
+      HOME: process.env.HOME,
+      DATABASE_URL,
+      ...BASE_ENV,
+      ...env,
+      ...(MUTATION ? (MUTATIONS[MUTATION] ?? {}) : {}),
+      PLATFORM_API_UPSTREAM: upstream,
+      NODE_API_BIND: `127.0.0.1:${port}`,
+      NODE_API_PORTED: process.env.NODE_API_PORTED ?? "",
+    },
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+
+  let stderr = "";
+  let exited = null;
+  child.stderr.on("data", (d) => {
+    stderr += d.toString();
+  });
+  child.stdout.on("data", () => {});
+  child.once("exit", (code, signal) => {
+    exited = { code, signal };
+  });
+
+  const baseUrl = `http://127.0.0.1:${port}`;
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    if (exited) {
+      throw new HarnessError(
+        `node-api shell exited during startup (code=${exited.code}).\n--- stderr ---\n${stderr.slice(-2000)}`,
+      );
+    }
+    try {
+      // /health is proxied, so a 200 proves BOTH processes are up and the proxy path works.
+      const res = await fetch(`${baseUrl}/health`);
+      if (res.ok) break;
+    } catch {
+      // not listening yet
+    }
+    if (Date.now() > deadline) {
+      child.kill("SIGKILL");
+      throw new HarnessError(`node-api shell did not answer /health within ${timeoutMs}ms.\n${stderr.slice(-2000)}`);
+    }
+    await sleep(50);
+  }
+
+  return {
+    baseUrl,
+    port,
+    get stderr() {
+      return stderr;
+    },
+    async stop() {
+      if (exited) return;
+      child.kill("SIGTERM");
+      const hard = Date.now() + 5_000;
+      while (!exited && Date.now() < hard) await sleep(25);
+      if (!exited) child.kill("SIGKILL");
+      while (!exited) await sleep(25);
+    },
+  };
 }

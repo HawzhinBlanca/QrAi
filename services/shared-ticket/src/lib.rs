@@ -297,3 +297,93 @@ mod tests {
         assert!(!constant_time_eq(&left, &right));
     }
 }
+
+/// N1 — the Rust half of the cross-language ticket vectors.
+/// specs/node-backend-port/plan.md §5
+///
+/// The same file is asserted by `tests/node-api/ticket-vectors.test.mjs`. Both halves must agree,
+/// which is what lets a Node `platform-api` mint tickets the UNCHANGED Rust gateway accepts — so the
+/// two services no longer have to cut over together (plan.md §1).
+///
+/// The vectors were generated FROM THIS IMPLEMENTATION. Never regenerate them from a port: vectors
+/// derived from the port would pin the port's behaviour, bugs included, and both suites would agree
+/// while both were wrong.
+#[cfg(test)]
+mod ticket_vectors {
+    use super::*;
+
+    fn vectors() -> Vec<serde_json::Value> {
+        // CARGO_MANIFEST_DIR keeps this working regardless of the caller's cwd.
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../specs/node-backend-port/fixtures/ticket-vectors.json"
+        );
+        let raw = std::fs::read_to_string(path)
+            .unwrap_or_else(|e| panic!("cannot read ticket vectors at {path}: {e}"));
+        serde_json::from_str::<serde_json::Value>(&raw).expect("ticket vectors must be valid JSON")
+            ["vectors"]
+            .as_array()
+            .expect("`vectors` must be an array")
+            .clone()
+    }
+
+    #[test]
+    fn rust_reproduces_every_committed_vector() {
+        let vectors = vectors();
+        assert!(!vectors.is_empty(), "the vector file must not be empty");
+        for v in &vectors {
+            let name = v["name"].as_str().unwrap();
+            let issued = issue_realtime_ticket(
+                v["sessionId"].as_str().unwrap(),
+                v["tenantId"].as_str().unwrap(),
+                v["learnerId"].as_str().unwrap(),
+                v["externalAsrProcessing"].as_bool().unwrap(),
+                // A STRING in the fixture, not a JSON number: u64::MAX does not survive
+                // JSON.parse in the Node half (18446744073709551615 -> ...552000). Found by
+                // the max-u64 vector, which is why it is in the set.
+                v["expiresAtUnixSeconds"].as_str().unwrap().parse().unwrap(),
+                v["nonce"].as_str().unwrap(),
+                v["secret"].as_str().unwrap(),
+            );
+            assert_eq!(
+                issued,
+                v["expectedTicket"].as_str().unwrap(),
+                "vector '{name}' drifted — the wire format changed, which is a TWO-SERVICE change"
+            );
+        }
+    }
+
+    #[test]
+    fn every_committed_vector_validates_against_this_implementation() {
+        // Reproducing the string is not enough: the gateway must also accept it. A format change
+        // that broke only validation would pass the test above.
+        for v in vectors() {
+            let expires: u64 = v["expiresAtUnixSeconds"].as_str().unwrap().parse().unwrap();
+            let claims = validate_realtime_ticket(
+                v["sessionId"].as_str().unwrap(),
+                v["expectedTicket"].as_str().unwrap(),
+                v["secret"].as_str().unwrap(),
+                expires - 1,
+            )
+            .unwrap_or_else(|e| panic!("vector '{}' failed validation: {e}", v["name"]));
+            assert_eq!(claims.tenant_id, v["tenantId"].as_str().unwrap());
+            assert_eq!(claims.learner_id, v["learnerId"].as_str().unwrap());
+        }
+    }
+
+    #[test]
+    fn the_vector_count_is_pinned() {
+        // Guards against a truncated or partially-written file silently reducing coverage to zero
+        // while both suites still report green.
+        let raw = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../specs/node-backend-port/fixtures/ticket-vectors.json"
+        ))
+        .unwrap();
+        let doc: serde_json::Value = serde_json::from_str(&raw).unwrap();
+        assert_eq!(
+            doc["vectorCount"].as_u64().unwrap() as usize,
+            doc["vectors"].as_array().unwrap().len()
+        );
+    }
+}

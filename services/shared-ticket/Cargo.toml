@@ -7,3 +7,9 @@ publish = false
 [dependencies]
 hmac = "0.12.1"
 sha2 = "0.10.9"
+
+[dev-dependencies]
+# N1 ticket vectors are committed as JSON, matching every other fixture in this repo
+# (canonical-gates.json, nfc-vectors.json, platform-api.json). Dev-only: the ticket itself
+# still has zero serialization dependencies.
+serde_json = "1"

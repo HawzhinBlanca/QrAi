@@ -1,8 +1,9 @@
 # Plan — Phase 7: the Node backend
 
-**Status: awaiting approval. Nothing below has been implemented.**
+**Status: APPROVED 2026-07-31. N1–N6 implemented.**
 
-Approved-by: _(unsigned — no work starts until a human signs this line)_
+Approved-by: repo owner (hawzhin88@gmail.com), 2026-07-31 — §10 answered: **scope A**, the walking
+skeleton. Results and findings: [`tasks.md`](tasks.md) §N6.
 
 Source: `specs/flutter-node-migration/plan.md` Part 6, phase 7 — *"Node backend: routes, auth, RLS
 discipline, gateway + ticket. 10–18 weeks. Gate: golden fixtures byte-identical; ordering test

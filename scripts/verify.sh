@@ -121,7 +121,7 @@ if [[ "$FAST" != "yes" ]]; then
   # PAR6: tests/api-parity/coverage.test.mjs belongs HERE, not in the DB-gated block below. It only
   # reads integration.rs + coverage.json, so "is every Rust test accounted for" has nothing to do
   # with Postgres. The parity suite ITSELF is DB- and binary-gated further down.
-  run "test: node services"       "node --test scripts/fixture-normalize.test.mjs scripts/diff-api-fixtures.test.mjs scripts/fixture-coverage.test.mjs services/ml-inference/alignment.test.mjs services/ml-inference/marks-parity.test.mjs services/ml-inference/tajweed.test.mjs services/ml-inference/server.test.mjs services/agents/agents.test.mjs scripts/release-manifest.test.mjs scripts/release-build-evidence.test.mjs scripts/release-evidence-summary.test.mjs scripts/smoke-evidence.test.mjs scripts/smoke-database.test.mjs tests/api-parity/coverage.test.mjs"
+  run "test: node services"       "node --test scripts/fixture-normalize.test.mjs scripts/diff-api-fixtures.test.mjs scripts/fixture-coverage.test.mjs services/ml-inference/alignment.test.mjs services/ml-inference/marks-parity.test.mjs services/ml-inference/tajweed.test.mjs services/ml-inference/server.test.mjs services/agents/agents.test.mjs scripts/release-manifest.test.mjs scripts/release-build-evidence.test.mjs scripts/release-evidence-summary.test.mjs scripts/smoke-evidence.test.mjs scripts/smoke-database.test.mjs tests/api-parity/coverage.test.mjs tests/node-api/ticket-vectors.test.mjs tests/node-api/authz.test.mjs tests/node-api/shell.test.mjs"
   # apps/mobile is NOT a pnpm workspace member, so the TS `test: ts` line above never covered it and
   # its consent/auth/audio-format helpers went unguarded (a real audioFormat bug shipped there). The
   # helpers import ONLY node builtins, so this needs no install — just Node's type-stripping to read
@@ -143,6 +143,10 @@ if [[ "$FAST" != "yes" ]]; then
   # needs the service venv. It stays ungated until CI installs the asr-inference requirements —
   # a named gap, not a silent one.
   run "test: python (asr-inference)" "cd services/asr-inference && { command -v python3 >/dev/null || { echo 'python3 not found — required, not optional'; exit 1; }; } && python3 test_eval_metrics.py && python3 test_forced_align_normalization.py"
+  # shared-ticket is only ever BUILT as a dependency of the two services, so `cargo test` on them
+  # never ran its own 14 tests — including the cross-language ticket vectors, which pin the one
+  # credential that crosses a service boundary. Same class of gap as MIG5's ungated Python.
+  run "test: rust shared-ticket"  "cargo test --manifest-path services/shared-ticket/Cargo.toml"
   run "test: rust gateway"        "cargo test --manifest-path $GW"
   run "test: rust platform-api"   "cargo test --manifest-path $API"
 
@@ -181,7 +185,7 @@ if [[ "$FAST" != "yes" ]]; then
     # weaken anything from an already-restricted role, and it refuses to report a hollow pass). CI's
     # DATABASE_URL is deterministic, so CI runs it as its own step — a named boundary, not a gap.
     run "test: api parity suite (live Postgres)" \
-      "cargo build --manifest-path $API && node --test tests/api-parity/lib/harness.test.mjs tests/api-parity/default.test.mjs tests/api-parity/auth-disabled.test.mjs tests/api-parity/cors.test.mjs tests/api-parity/metrics.test.mjs tests/api-parity/ml-proxy.test.mjs"
+      "cargo build --manifest-path $API && node --test tests/api-parity/lib/harness.test.mjs tests/api-parity/default.test.mjs tests/api-parity/auth-disabled.test.mjs tests/api-parity/cors.test.mjs tests/api-parity/metrics.test.mjs tests/api-parity/ml-proxy.test.mjs tests/api-parity/realtime-ticket.test.mjs tests/node-api/db-tenant.test.mjs"
   else
     say "test: platform-api integration + api parity suite"
     if [[ "$RELEASE" == "yes" ]]; then
