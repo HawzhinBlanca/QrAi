@@ -1,8 +1,11 @@
 # Plan — Phase 6: a cross-language API parity suite
 
-**Status: awaiting approval. Nothing below has been implemented.**
+**Status: APPROVED 2026-07-31. Implementation in progress.**
 
-Approved-by: _(unsigned — no work starts until a human signs this line)_
+Approved-by: repo owner (hawzhin88@gmail.com), 2026-07-31 — answering §10 directly:
+
+1. **Scope: B** — the 26 incident-class tests, not all 77.
+2. **Driver: `pg` as a devDependency**, recorded in ADR-0023.
 
 Source: `specs/flutter-node-migration/plan.md` Part 6, phase 6 — *"Port the 79-test integration suite
 to `node:test`. Gate: suite runs against real Postgres."*
@@ -103,7 +106,7 @@ would be green through exactly the regression the migration plan predicts.
 
 ## 5. Tasks
 
-### P1 — The harness, built and tested before any test is ported
+### PAR1 — The harness, built and tested before any test is ported
 
 `tests/api-parity/lib/harness.mjs`: `startApi`, `request`, `queryJson`, `startMockUpstream`.
 
@@ -118,19 +121,19 @@ would be green through exactly the regression the migration plan predicts.
 **Acceptance:** `node --test tests/api-parity/lib/harness.test.mjs` passes; starting two servers
 concurrently yields two different ports and both answer `/health`.
 
-### P2 — Default-config group: the 17 incident-class tests that need no special env
+### PAR2 — Default-config group: the 18 incident-class tests that need no special env
 
-**Acceptance:** all 17 pass against a freshly migrated, seeded Postgres. Each ported test's header
+**Acceptance:** all 18 pass against a freshly migrated, seeded Postgres. Each ported test's header
 comment names the Rust test it came from (`integration.rs:<line>`), so drift is reviewable.
 
-### P3 — The four non-default config groups: the remaining 9
+### PAR3 — The four non-default config groups: the remaining 8
 
-`auth-disabled` (1), `ml-proxy` (5, against a programmable mock upstream), `cors` (1), `metrics` (2).
+`auth-disabled` (1), `ml-proxy` (4, against a programmable mock upstream), `cors` (1), `metrics` (2).
 
-**Acceptance:** all 9 pass; each file starts and stops its own server; the full suite leaves no
+**Acceptance:** all 8 pass; each file starts and stops its own server; the full suite leaves no
 orphaned processes (checked by asserting the port is closed after the run).
 
-### P4 — Teeth: prove the suite FAILS when the behaviour breaks
+### PAR4 — Teeth: prove the suite FAILS when the behaviour breaks
 
 `scripts/verify-parity-teeth.sh` runs the suite against deliberately weakened server configurations
 and asserts the *expected named tests* go red — a suite that stays green under a broken server is
@@ -151,7 +154,7 @@ committed to `specs/api-parity-suite/evidence/`, and note `.gitignore:28` exclud
 landed "T1 PASSED" with nothing behind it because of that rule — a negated rule is required, or use a
 non-`.log` extension).
 
-### P5 — Gate it
+### PAR5 — Gate it
 
 Append the suite to `scripts/verify.sh:121`'s explicit path list, and add a CI step that builds and
 runs the binary against the existing `postgres:16-alpine` service.
@@ -165,7 +168,7 @@ soft skip reports green on a machine that gated nothing.
 on a machine with no Postgres prints SKIP for it and still exits 0; a run with the binary deleted
 **fails**.
 
-### P6 — Record what was NOT ported, mechanically
+### PAR6 — Record what was NOT ported, mechanically
 
 A committed `coverage.json` + a test asserting it matches reality: every one of the 77 Rust tests is
 either `ported`, `deferred-to-phase-7` (the 5 category-D), or `mechanical-remainder` — with a reason
@@ -183,7 +186,7 @@ entry. Verified by adding one temporarily and watching it go red.
 - **No changes to `integration.rs`.** The Rust suite stays as-is and keeps running. Deleting it in
   favour of the port would trade a suite that runs in CI today for one that has never run.
 - **No re-porting of what the fixture differ already covers** (under recommendation B) — named in
-  P6's `mechanical-remainder`, not silently dropped.
+  PAR6's `mechanical-remainder`, not silently dropped.
 - **No performance/load assertions.** Different phase, different apparatus.
 
 ## 7. Open decision — the Postgres driver (needs ADR-0023)
@@ -204,16 +207,16 @@ it; a developer may not.
 failure mode is a silent skip and this repo has already been burned by one. Either way `queryJson()`
 is the single seam, so reversing costs one file.
 
-**This is an approver decision.** If `pg` is rejected, P1 uses `psql` and P5 makes its absence a hard
+**This is an approver decision.** If `pg` is rejected, PAR1 uses `psql` and PAR5 makes its absence a hard
 failure rather than a skip.
 
 ## 8. Risks
 
 | risk | mitigation |
 |---|---|
-| **Transcription that weakens an assertion** — the central risk; invisible in review and in a green run | P4's teeth check. This is why P4 is a task and not a nice-to-have. |
+| **Transcription that weakens an assertion** — the central risk; invisible in review and in a green run | PAR4's teeth check. This is why PAR4 is a task and not a nice-to-have. |
 | Black-box loses in-process injection | Accepted and bounded: it costs exactly the 5 category-D tests, enumerated in `research.md §3`, deferred not hidden. |
-| Server-lifecycle flake (ports, startup races, zombies) | Ephemeral ports; `/health` polling with a timeout; P3 asserts the port is closed after the run. |
+| Server-lifecycle flake (ports, startup races, zombies) | Ephemeral ports; `/health` polling with a timeout; PAR3 asserts the port is closed after the run. |
 | Dual maintenance for 24–42 weeks | The explicit argument for scope B. Recommendation A is available and costed. |
 | CI time grows (build + run the binary) | `cargo test` already builds it; the added cost is process startup, not compilation. |
 

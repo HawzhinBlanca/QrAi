@@ -10,16 +10,16 @@ only the number of test cases inside `default.test.mjs` grows.
 | path | what |
 |---|---|
 | `tests/api-parity/lib/harness.mjs` | `startApi` / `request` / `queryJson` / `startMockUpstream` |
-| `tests/api-parity/lib/harness.test.mjs` | P1 — tests for the harness itself |
-| `tests/api-parity/default.test.mjs` | P2 — 17 tests, default config |
-| `tests/api-parity/auth-disabled.test.mjs` | P3 — `ALLOW_HEADER_AUTH=0` |
-| `tests/api-parity/ml-proxy.test.mjs` | P3 — mock ML/ASR upstream |
-| `tests/api-parity/cors.test.mjs` | P3 — `CORS_ALLOWED_ORIGINS` |
-| `tests/api-parity/metrics.test.mjs` | P3 — `METRICS_TOKEN` / dev-open / closed |
-| `tests/api-parity/coverage.json` | P6 — the ported / deferred / remainder ledger |
-| `tests/api-parity/coverage.test.mjs` | P6 — asserts it matches `integration.rs` |
-| `scripts/verify-parity-teeth.sh` | P4 — the must-fail mutation runner |
-| `specs/api-parity-suite/evidence/` | P4 output, committed |
+| `tests/api-parity/lib/harness.test.mjs` | PAR1 — tests for the harness itself |
+| `tests/api-parity/default.test.mjs` | PAR2 — 17 tests, default config |
+| `tests/api-parity/auth-disabled.test.mjs` | PAR3 — `ALLOW_HEADER_AUTH=0` |
+| `tests/api-parity/ml-proxy.test.mjs` | PAR3 — mock ML/ASR upstream |
+| `tests/api-parity/cors.test.mjs` | PAR3 — `CORS_ALLOWED_ORIGINS` |
+| `tests/api-parity/metrics.test.mjs` | PAR3 — `METRICS_TOKEN` / dev-open / closed |
+| `tests/api-parity/coverage.json` | PAR6 — the ported / deferred / remainder ledger |
+| `tests/api-parity/coverage.test.mjs` | PAR6 — asserts it matches `integration.rs` |
+| `scripts/verify-parity-teeth.sh` | PAR4 — the must-fail mutation runner |
+| `specs/api-parity-suite/evidence/` | PAR4 output, committed |
 
 `tests/` does not exist at the repo root today (verified) — no collision. It is deliberately **not**
 `scripts/`: these files are a language-independent contract suite, not tooling.
@@ -73,7 +73,7 @@ Only if the gate command list changes shape. Appending a step inside `verify.sh`
 `AGENTS.md` is the declared single source of truth for gate commands, and a divergence there is the
 exact drift it exists to prevent.
 
-## 3. Read but not modified — the coupling P6 makes explicit
+## 3. Read but not modified — the coupling PAR6 makes explicit
 
 `services/platform-api/tests/integration.rs` is **parsed** by `coverage.test.mjs` to enumerate the 77
 `#[test]` functions. Nothing parses it today (verified: no references in `scripts/` or `.github/`).
@@ -84,7 +84,7 @@ drifting silently out of date. It is also a new way to break the gate with an un
 must be documented at the top of `coverage.json` with the one-line fix (add an entry).
 
 The parser matches `#[tokio::test]` / `#[test]` followed by an optional attribute block then
-`fn <name>`. If someone adds a test using a different macro, the parser under-counts silently. P6's
+`fn <name>`. If someone adds a test using a different macro, the parser under-counts silently. PAR6's
 acceptance therefore requires temporarily adding a test and watching it go red — measured, not
 assumed.
 
@@ -122,7 +122,7 @@ around.
 
 | failure | who notices | contained by |
 |---|---|---|
-| Flaky server startup | every PR — CI red on unrelated changes | ephemeral ports, `/health` polling with timeout, P3's port-closed assertion |
+| Flaky server startup | every PR — CI red on unrelated changes | ephemeral ports, `/health` polling with timeout, PAR3's port-closed assertion |
 | Suite added to the wrong `verify.sh` block | every developer without Postgres — gate fails locally | §2's placement rule: DB-gated block, not line 121 |
-| Orphaned server processes | slow accumulation, then port exhaustion | `after()` hook reaps; P1 tests that `stop()` actually kills the child |
-| Transcription weakened an assertion | **nobody — this is the silent one** | P4's teeth check is the only thing that catches it |
+| Orphaned server processes | slow accumulation, then port exhaustion | `after()` hook reaps; PAR1 tests that `stop()` actually kills the child |
+| Transcription weakened an assertion | **nobody — this is the silent one** | PAR4's teeth check is the only thing that catches it |

@@ -123,9 +123,34 @@ There is **no Postgres driver in the repo**. Node reaches the database by shelli
 `docker exec … psql`). CI does have it, via the `postgres:16-alpine` service and an explicit ubuntu
 path (`.github/workflows/ci.yml:88-97`).
 
-This matters: a `psql`-based harness would **silently skip** on a developer machine without it. That
-is the skip-if-missing anti-pattern MIG5 explicitly forbade, and it is the reason the driver choice
-is an open decision in `plan.md §7` rather than an assumption.
+**Corrected during implementation — the claim above was only half right.** `verify.sh:27` prepends a
+hardcoded `/opt/homebrew/opt/postgresql@16/bin` to PATH, so anything *verify.sh* runs does find
+`psql` here. What does not get that PATH is a developer running `node --test tests/api-parity/…`
+directly — and a hardcoded macOS Homebrew path is not a guarantee anywhere else.
+
+The conclusion stands: a `psql`-based harness would **silently skip** wherever the binary is absent.
+That is the skip-if-missing anti-pattern MIG5 explicitly forbade, and it is why the driver choice is
+`plan.md §7` rather than an assumption.
+
+## 6a. That hazard was not hypothetical — it was live in this repo
+
+Found while wiring PAR5, by running the gate with a database up and watching it skip anyway.
+
+`verify.sh:33-38` sources a git-ignored per-machine `scripts/stack.env`, which did
+`export DATABASE_URL=…@127.0.0.1:5433/…` **unconditionally** — *after* `verify.sh:28` had already
+honoured the caller's value. So `DATABASE_URL=… bash scripts/verify.sh` silently ran against 5433 no
+matter what was passed.
+
+That stack had been gone since Docker reinitialized its VM during Phase 4. The DB probe therefore
+failed every time, and **every database-dependent test silently SKIPPED — the whole 67-test Rust
+integration suite included — while the run still printed `VERIFY OK`.**
+
+`scripts/stack.env` matches the `.env*` hard boundary in AGENTS.md, so it was **not edited**. Fixed
+by rebuilding the database it points at: port 5433, all migrations + `rls-app-role.sql` + the full
+82,456-word corpus. The gate then ran the block for real — **77/77 Rust integration, 39/39 parity**.
+
+This is the strongest available argument for ADR-0023 choosing `pg` over a `psql` subprocess: a gate
+that skips silently reports green having verified nothing, and this repo was doing exactly that.
 
 ## 7. CI does provision a real Postgres
 

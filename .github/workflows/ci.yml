@@ -127,7 +127,21 @@ jobs:
           if-no-files-found: warn
 
       # --- The CODYSTEM gate (same script the agent runs locally) ---
+      # This already runs the API parity suite: verify.sh's DB-gated block starts the platform-api
+      # binary per configuration group against the postgres service above.
       - run: bash scripts/verify.sh
+
+      # --- PAR4: prove the parity suite's assertions have TEETH ---
+      # A ported test that passes proves the assertion was transcribed, not that it is equivalent to
+      # the Rust original. This starts the service deliberately broken and requires the NAMED tests
+      # to go red; a mutation that changes nothing is a failure.
+      #
+      # It lives here rather than in verify.sh because its rls-no-role-drop mutation needs a
+      # SUPERUSER DATABASE_URL — it works by making `SET LOCAL ROLE` a no-op, which weakens nothing
+      # if the connection is already restricted, and the script refuses to report a hollow pass.
+      # CI's DATABASE_URL is the postgres container superuser, deterministically.
+      - name: API parity suite — mutation (teeth) check
+        run: bash scripts/verify-parity-teeth.sh
 
       # --- Lightweight CI smoke: start platform-api and hit /health ---
       - name: CI smoke test

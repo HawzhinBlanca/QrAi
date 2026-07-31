@@ -1,0 +1,473 @@
+{
+  "$comment": "PAR6 — every Rust integration test accounted for. coverage.test.mjs FAILS if a #[test] in services/platform-api/tests/integration.rs has no entry here. If that is why your build is red: add an entry with a status of ported | deferred-to-phase-7 | mechanical-remainder. Do not delete the check. rustLine is informational and NOT asserted — it drifts on every edit above it, and a gate that fails on unrelated line shifts gets disabled.",
+  "scope": "specs/api-parity-suite/plan.md option B (approved 2026-07-31)",
+  "totals": {
+    "ported": 26,
+    "mechanical-remainder": 46,
+    "deferred-to-phase-7": 5
+  },
+  "tests": [
+    {
+      "rustTest": "rejects_spoofed_header_identity_when_header_auth_disabled",
+      "rustLine": 78,
+      "status": "ported",
+      "parityFile": "auth-disabled.test.mjs"
+    },
+    {
+      "rustTest": "creates_recitation_session_in_postgres",
+      "rustLine": 105,
+      "status": "mechanical-remainder",
+      "reason": "not incident-class under the approved scope B; response shape is pinned by the Phase 5 fixture differ"
+    },
+    {
+      "rustTest": "quran_ref_word_start_and_word_end_round_trip_through_create_and_get",
+      "rustLine": 145,
+      "status": "mechanical-remainder",
+      "reason": "not incident-class under the approved scope B; response shape is pinned by the Phase 5 fixture differ"
+    },
+    {
+      "rustTest": "create_session_rejects_an_unsupported_language_code",
+      "rustLine": 219,
+      "status": "mechanical-remainder",
+      "reason": "not incident-class under the approved scope B; response shape is pinned by the Phase 5 fixture differ"
+    },
+    {
+      "rustTest": "ready_endpoint_returns_200_when_the_db_pool_answers",
+      "rustLine": 257,
+      "status": "mechanical-remainder",
+      "reason": "not incident-class under the approved scope B; response shape is pinned by the Phase 5 fixture differ"
+    },
+    {
+      "rustTest": "gets_quran_surah_list_from_postgres",
+      "rustLine": 265,
+      "status": "mechanical-remainder",
+      "reason": "not incident-class under the approved scope B; response shape is pinned by the Phase 5 fixture differ"
+    },
+    {
+      "rustTest": "gets_eval_run_from_postgres",
+      "rustLine": 292,
+      "status": "mechanical-remainder",
+      "reason": "not incident-class under the approved scope B; response shape is pinned by the Phase 5 fixture differ"
+    },
+    {
+      "rustTest": "registers_then_logs_in_a_new_user",
+      "rustLine": 311,
+      "status": "mechanical-remainder",
+      "reason": "not incident-class under the approved scope B; response shape is pinned by the Phase 5 fixture differ"
+    },
+    {
+      "rustTest": "register_cannot_create_elevated_user_in_another_tenant",
+      "rustLine": 389,
+      "status": "ported",
+      "parityFile": "default.test.mjs"
+    },
+    {
+      "rustTest": "concurrent_registration_with_same_email_is_race_safe",
+      "rustLine": 468,
+      "status": "ported",
+      "parityFile": "default.test.mjs"
+    },
+    {
+      "rustTest": "concurrent_progress_updates_for_the_same_ayah_do_not_lose_repetitions",
+      "rustLine": 531,
+      "status": "ported",
+      "parityFile": "default.test.mjs"
+    },
+    {
+      "rustTest": "sm2_spaced_repetition_updates_correctly",
+      "rustLine": 579,
+      "status": "deferred-to-phase-7",
+      "reason": "calls handlers::progress::sm2_update directly — there is no Node equivalent to call until Phase 7 writes one"
+    },
+    {
+      "rustTest": "sm2_quality_three_is_a_pass_not_a_reset",
+      "rustLine": 605,
+      "status": "deferred-to-phase-7",
+      "reason": "calls handlers::progress::sm2_update directly — there is no Node equivalent to call until Phase 7 writes one"
+    },
+    {
+      "rustTest": "sm2_interval_never_exceeds_the_ten_year_cap",
+      "rustLine": 624,
+      "status": "deferred-to-phase-7",
+      "reason": "calls handlers::progress::sm2_update directly — there is no Node equivalent to call until Phase 7 writes one"
+    },
+    {
+      "rustTest": "review_status_serializes_teacher_review_required",
+      "rustLine": 647,
+      "status": "deferred-to-phase-7",
+      "reason": "asserts types::ReviewStatus serde directly — there is no Node equivalent to call until Phase 7 writes one"
+    },
+    {
+      "rustTest": "begin_tenant_tx_activates_rls_context",
+      "rustLine": 663,
+      "status": "deferred-to-phase-7",
+      "reason": "calls begin_tenant_tx directly — there is no Node equivalent to call until Phase 7 writes one"
+    },
+    {
+      "rustTest": "learner_progress_learner_id_is_authorized",
+      "rustLine": 682,
+      "status": "ported",
+      "parityFile": "default.test.mjs"
+    },
+    {
+      "rustTest": "get_progress_mastery_is_the_exact_mean_of_capped_per_card_repetitions",
+      "rustLine": 716,
+      "status": "mechanical-remainder",
+      "reason": "not incident-class under the approved scope B; response shape is pinned by the Phase 5 fixture differ"
+    },
+    {
+      "rustTest": "weekly_progress_reports_real_per_day_sessions_and_word_accuracy",
+      "rustLine": 772,
+      "status": "mechanical-remainder",
+      "reason": "not incident-class under the approved scope B; response shape is pinned by the Phase 5 fixture differ"
+    },
+    {
+      "rustTest": "progress_quality_out_of_range_is_clamped_not_500",
+      "rustLine": 898,
+      "status": "mechanical-remainder",
+      "reason": "not incident-class under the approved scope B; response shape is pinned by the Phase 5 fixture differ"
+    },
+    {
+      "rustTest": "list_active_learners_is_distinct_and_staff_only",
+      "rustLine": 934,
+      "status": "mechanical-remainder",
+      "reason": "not incident-class under the approved scope B; response shape is pinned by the Phase 5 fixture differ"
+    },
+    {
+      "rustTest": "agent_run_invalid_review_status_is_bad_request",
+      "rustLine": 988,
+      "status": "mechanical-remainder",
+      "reason": "not incident-class under the approved scope B; response shape is pinned by the Phase 5 fixture differ"
+    },
+    {
+      "rustTest": "list_endpoints_decode_real_numeric_confidence_not_a_fallback_zero",
+      "rustLine": 1016,
+      "status": "mechanical-remainder",
+      "reason": "not incident-class under the approved scope B; response shape is pinned by the Phase 5 fixture differ"
+    },
+    {
+      "rustTest": "request_teacher_review_flips_own_draft_session_and_is_owner_gated",
+      "rustLine": 1107,
+      "status": "ported",
+      "parityFile": "default.test.mjs"
+    },
+    {
+      "rustTest": "persists_and_reads_back_session_alignment",
+      "rustLine": 1182,
+      "status": "mechanical-remainder",
+      "reason": "not incident-class under the approved scope B; response shape is pinned by the Phase 5 fixture differ"
+    },
+    {
+      "rustTest": "teacher_review_author_is_actor_and_realignment_cascades",
+      "rustLine": 1269,
+      "status": "mechanical-remainder",
+      "reason": "not incident-class under the approved scope B; response shape is pinned by the Phase 5 fixture differ"
+    },
+    {
+      "rustTest": "privacy_delete_preserves_other_learners_teacher_reviews",
+      "rustLine": 1413,
+      "status": "ported",
+      "parityFile": "ml-proxy.test.mjs"
+    },
+    {
+      "rustTest": "privacy_delete_erases_learner_agent_runs",
+      "rustLine": 1536,
+      "status": "ported",
+      "parityFile": "ml-proxy.test.mjs"
+    },
+    {
+      "rustTest": "privacy_export_reports_included_records_but_deletes_nothing",
+      "rustLine": 1664,
+      "status": "ported",
+      "parityFile": "default.test.mjs"
+    },
+    {
+      "rustTest": "list_audit_events_returns_real_rows_not_a_fallback_empty_list",
+      "rustLine": 1728,
+      "status": "mechanical-remainder",
+      "reason": "not incident-class under the approved scope B; response shape is pinned by the Phase 5 fixture differ"
+    },
+    {
+      "rustTest": "create_scholar_approval_rejects_approval_without_sources",
+      "rustLine": 1864,
+      "status": "mechanical-remainder",
+      "reason": "not incident-class under the approved scope B; response shape is pinned by the Phase 5 fixture differ"
+    },
+    {
+      "rustTest": "create_scholar_approval_rejects_high_risk_approval",
+      "rustLine": 1890,
+      "status": "ported",
+      "parityFile": "default.test.mjs"
+    },
+    {
+      "rustTest": "create_scholar_approval_and_list_round_trips_all_fields",
+      "rustLine": 1916,
+      "status": "mechanical-remainder",
+      "reason": "not incident-class under the approved scope B; response shape is pinned by the Phase 5 fixture differ"
+    },
+    {
+      "rustTest": "list_teacher_review_queue_round_trips_all_three_decisions",
+      "rustLine": 1965,
+      "status": "mechanical-remainder",
+      "reason": "not incident-class under the approved scope B; response shape is pinned by the Phase 5 fixture differ"
+    },
+    {
+      "rustTest": "list_tajweed_findings_returns_the_seeded_finding_not_an_empty_list",
+      "rustLine": 2037,
+      "status": "mechanical-remainder",
+      "reason": "not incident-class under the approved scope B; response shape is pinned by the Phase 5 fixture differ"
+    },
+    {
+      "rustTest": "teacher_of_another_tenant_cannot_read_this_tenants_sessions_findings_or_alignments",
+      "rustLine": 2095,
+      "status": "ported",
+      "parityFile": "default.test.mjs"
+    },
+    {
+      "rustTest": "ml_proxy_refuses_analysis_for_a_session_that_does_not_exist",
+      "rustLine": 2292,
+      "status": "ported",
+      "parityFile": "default.test.mjs"
+    },
+    {
+      "rustTest": "ml_proxy_overwrites_client_consent_with_the_stored_session_consent",
+      "rustLine": 2313,
+      "status": "ported",
+      "parityFile": "ml-proxy.test.mjs"
+    },
+    {
+      "rustTest": "ml_proxy_passes_through_a_successful_upstream_response",
+      "rustLine": 2377,
+      "status": "mechanical-remainder",
+      "reason": "not incident-class under the approved scope B; response shape is pinned by the Phase 5 fixture differ"
+    },
+    {
+      "rustTest": "ml_proxy_allows_approved_model_version",
+      "rustLine": 2402,
+      "status": "mechanical-remainder",
+      "reason": "not incident-class under the approved scope B; response shape is pinned by the Phase 5 fixture differ"
+    },
+    {
+      "rustTest": "ml_proxy_rejects_unapproved_model_version",
+      "rustLine": 2426,
+      "status": "mechanical-remainder",
+      "reason": "not incident-class under the approved scope B; response shape is pinned by the Phase 5 fixture differ"
+    },
+    {
+      "rustTest": "asr_transcribe_proxy_passes_through_a_successful_upstream_response",
+      "rustLine": 2447,
+      "status": "mechanical-remainder",
+      "reason": "not incident-class under the approved scope B; response shape is pinned by the Phase 5 fixture differ"
+    },
+    {
+      "rustTest": "asr_force_align_proxy_forwards_and_requires_auth",
+      "rustLine": 2468,
+      "status": "mechanical-remainder",
+      "reason": "not incident-class under the approved scope B; response shape is pinned by the Phase 5 fixture differ"
+    },
+    {
+      "rustTest": "ml_proxy_maps_upstream_error_status_to_bad_gateway",
+      "rustLine": 2506,
+      "status": "mechanical-remainder",
+      "reason": "not incident-class under the approved scope B; response shape is pinned by the Phase 5 fixture differ"
+    },
+    {
+      "rustTest": "asr_transcribe_proxy_maps_upstream_error_status_to_bad_gateway",
+      "rustLine": 2529,
+      "status": "mechanical-remainder",
+      "reason": "not incident-class under the approved scope B; response shape is pinned by the Phase 5 fixture differ"
+    },
+    {
+      "rustTest": "create_agent_run_rejects_invalid_status",
+      "rustLine": 2552,
+      "status": "mechanical-remainder",
+      "reason": "not incident-class under the approved scope B; response shape is pinned by the Phase 5 fixture differ"
+    },
+    {
+      "rustTest": "create_agent_run_rejects_invalid_review_status",
+      "rustLine": 2575,
+      "status": "mechanical-remainder",
+      "reason": "not incident-class under the approved scope B; response shape is pinned by the Phase 5 fixture differ"
+    },
+    {
+      "rustTest": "create_agent_run_rejects_approved_without_sources",
+      "rustLine": 2598,
+      "status": "ported",
+      "parityFile": "default.test.mjs"
+    },
+    {
+      "rustTest": "create_agent_run_rejects_approved_with_low_confidence",
+      "rustLine": 2625,
+      "status": "mechanical-remainder",
+      "reason": "not incident-class under the approved scope B; response shape is pinned by the Phase 5 fixture differ"
+    },
+    {
+      "rustTest": "create_agent_run_rejects_approved_with_an_unreviewed_review_status",
+      "rustLine": 2655,
+      "status": "ported",
+      "parityFile": "default.test.mjs"
+    },
+    {
+      "rustTest": "create_agent_run_accepts_approved_when_every_gate_condition_is_met",
+      "rustLine": 2685,
+      "status": "mechanical-remainder",
+      "reason": "not incident-class under the approved scope B; response shape is pinned by the Phase 5 fixture differ"
+    },
+    {
+      "rustTest": "create_agent_run_accepts_a_valid_run_and_it_is_listed",
+      "rustLine": 2712,
+      "status": "mechanical-remainder",
+      "reason": "not incident-class under the approved scope B; response shape is pinned by the Phase 5 fixture differ"
+    },
+    {
+      "rustTest": "list_agent_runs_surfaces_finding_id_for_dedup",
+      "rustLine": 2759,
+      "status": "mechanical-remainder",
+      "reason": "not incident-class under the approved scope B; response shape is pinned by the Phase 5 fixture differ"
+    },
+    {
+      "rustTest": "register_rejects_a_password_shorter_than_eight_characters",
+      "rustLine": 2807,
+      "status": "mechanical-remainder",
+      "reason": "not incident-class under the approved scope B; response shape is pinned by the Phase 5 fixture differ"
+    },
+    {
+      "rustTest": "register_rejects_an_unsupported_language_code",
+      "rustLine": 2829,
+      "status": "mechanical-remainder",
+      "reason": "not incident-class under the approved scope B; response shape is pinned by the Phase 5 fixture differ"
+    },
+    {
+      "rustTest": "register_accepts_a_password_exactly_eight_characters_long",
+      "rustLine": 2854,
+      "status": "mechanical-remainder",
+      "reason": "not incident-class under the approved scope B; response shape is pinned by the Phase 5 fixture differ"
+    },
+    {
+      "rustTest": "create_agent_run_defaults_sources_to_an_empty_array_when_omitted",
+      "rustLine": 2880,
+      "status": "mechanical-remainder",
+      "reason": "not incident-class under the approved scope B; response shape is pinned by the Phase 5 fixture differ"
+    },
+    {
+      "rustTest": "create_session_external_processing_requires_both_asr_consent_and_guardian_approval",
+      "rustLine": 2908,
+      "status": "ported",
+      "parityFile": "default.test.mjs"
+    },
+    {
+      "rustTest": "create_realtime_ticket_expires_at_matches_the_configured_ttl",
+      "rustLine": 2975,
+      "status": "mechanical-remainder",
+      "reason": "not incident-class under the approved scope B; response shape is pinned by the Phase 5 fixture differ"
+    },
+    {
+      "rustTest": "get_session_round_trips_every_practice_mode",
+      "rustLine": 3015,
+      "status": "mechanical-remainder",
+      "reason": "not incident-class under the approved scope B; response shape is pinned by the Phase 5 fixture differ"
+    },
+    {
+      "rustTest": "adversarial_sql_isolation_prevents_cross_tenant_access",
+      "rustLine": 3097,
+      "status": "ported",
+      "parityFile": "default.test.mjs"
+    },
+    {
+      "rustTest": "adversarial_api_isolation_prevents_cross_tenant_read",
+      "rustLine": 3177,
+      "status": "ported",
+      "parityFile": "default.test.mjs"
+    },
+    {
+      "rustTest": "adversarial_api_isolation_prevents_cross_tenant_write",
+      "rustLine": 3209,
+      "status": "ported",
+      "parityFile": "default.test.mjs"
+    },
+    {
+      "rustTest": "adversarial_api_isolation_prevents_cross_tenant_delete",
+      "rustLine": 3250,
+      "status": "ported",
+      "parityFile": "default.test.mjs"
+    },
+    {
+      "rustTest": "test_platform_api_cors_origin_validation",
+      "rustLine": 3284,
+      "status": "ported",
+      "parityFile": "cors.test.mjs"
+    },
+    {
+      "rustTest": "metrics_endpoint_serves_prometheus_and_counts_requests",
+      "rustLine": 3341,
+      "status": "mechanical-remainder",
+      "reason": "not incident-class under the approved scope B; response shape is pinned by the Phase 5 fixture differ"
+    },
+    {
+      "rustTest": "metrics_endpoint_requires_a_token_when_one_is_configured",
+      "rustLine": 3370,
+      "status": "ported",
+      "parityFile": "metrics.test.mjs"
+    },
+    {
+      "rustTest": "metrics_endpoint_is_closed_by_default_without_dev_flag_or_token",
+      "rustLine": 3416,
+      "status": "ported",
+      "parityFile": "metrics.test.mjs"
+    },
+    {
+      "rustTest": "pilot_admin_mints_and_learner_bootstraps_and_cookie_authenticates",
+      "rustLine": 3494,
+      "status": "mechanical-remainder",
+      "reason": "not incident-class under the approved scope B; response shape is pinned by the Phase 5 fixture differ"
+    },
+    {
+      "rustTest": "pilot_invitation_is_single_use",
+      "rustLine": 3560,
+      "status": "mechanical-remainder",
+      "reason": "not incident-class under the approved scope B; response shape is pinned by the Phase 5 fixture differ"
+    },
+    {
+      "rustTest": "pilot_bootstrap_rejects_expired_invitation",
+      "rustLine": 3597,
+      "status": "mechanical-remainder",
+      "reason": "not incident-class under the approved scope B; response shape is pinned by the Phase 5 fixture differ"
+    },
+    {
+      "rustTest": "pilot_non_admin_cannot_mint_invitation",
+      "rustLine": 3634,
+      "status": "mechanical-remainder",
+      "reason": "not incident-class under the approved scope B; response shape is pinned by the Phase 5 fixture differ"
+    },
+    {
+      "rustTest": "pilot_mint_rejects_nonexistent_and_non_learner_targets",
+      "rustLine": 3656,
+      "status": "mechanical-remainder",
+      "reason": "not incident-class under the approved scope B; response shape is pinned by the Phase 5 fixture differ"
+    },
+    {
+      "rustTest": "pilot_cookie_mutation_requires_origin_and_csrf",
+      "rustLine": 3693,
+      "status": "ported",
+      "parityFile": "default.test.mjs"
+    },
+    {
+      "rustTest": "ml_proxy_rejects_analysis_against_another_learners_session",
+      "rustLine": 3802,
+      "status": "ported",
+      "parityFile": "ml-proxy.test.mjs"
+    },
+    {
+      "rustTest": "maintenance_mode_503s_normal_routes_but_keeps_health_live",
+      "rustLine": 3851,
+      "status": "mechanical-remainder",
+      "reason": "not incident-class under the approved scope B; response shape is pinned by the Phase 5 fixture differ"
+    },
+    {
+      "rustTest": "rls_backstops_a_query_that_forgets_its_tenant_context",
+      "rustLine": 3902,
+      "status": "ported",
+      "parityFile": "default.test.mjs"
+    }
+  ]
+}

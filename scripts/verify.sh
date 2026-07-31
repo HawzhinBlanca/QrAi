@@ -118,7 +118,10 @@ if [[ "$FAST" != "yes" ]]; then
   # node:test suites by explicit path. server.mjs gates its side effects (listen/timers) on
   # `isMain`, so server.test.mjs can import it directly; keep explicit paths (a dir glob would
   # still pick up non-test .mjs files).
-  run "test: node services"       "node --test scripts/fixture-normalize.test.mjs scripts/diff-api-fixtures.test.mjs scripts/fixture-coverage.test.mjs services/ml-inference/alignment.test.mjs services/ml-inference/marks-parity.test.mjs services/ml-inference/tajweed.test.mjs services/ml-inference/server.test.mjs services/agents/agents.test.mjs scripts/release-manifest.test.mjs scripts/release-build-evidence.test.mjs scripts/release-evidence-summary.test.mjs scripts/smoke-evidence.test.mjs scripts/smoke-database.test.mjs"
+  # PAR6: tests/api-parity/coverage.test.mjs belongs HERE, not in the DB-gated block below. It only
+  # reads integration.rs + coverage.json, so "is every Rust test accounted for" has nothing to do
+  # with Postgres. The parity suite ITSELF is DB- and binary-gated further down.
+  run "test: node services"       "node --test scripts/fixture-normalize.test.mjs scripts/diff-api-fixtures.test.mjs scripts/fixture-coverage.test.mjs services/ml-inference/alignment.test.mjs services/ml-inference/marks-parity.test.mjs services/ml-inference/tajweed.test.mjs services/ml-inference/server.test.mjs services/agents/agents.test.mjs scripts/release-manifest.test.mjs scripts/release-build-evidence.test.mjs scripts/release-evidence-summary.test.mjs scripts/smoke-evidence.test.mjs scripts/smoke-database.test.mjs tests/api-parity/coverage.test.mjs"
   # apps/mobile is NOT a pnpm workspace member, so the TS `test: ts` line above never covered it and
   # its consent/auth/audio-format helpers went unguarded (a real audioFormat bug shipped there). The
   # helpers import ONLY node builtins, so this needs no install — just Node's type-stripping to read
@@ -165,8 +168,22 @@ if [[ "$FAST" != "yes" ]]; then
 
   if [[ "$can_auth" == "yes" ]]; then
     run "test: platform-api integration (live Postgres)" "cargo test --manifest-path $API -- --include-ignored"
+    # PAR5 — the cross-language API parity suite (specs/api-parity-suite/). Black-box: it starts the
+    # real platform-api binary on an ephemeral port per configuration group and asserts over HTTP +
+    # direct SQL. This is the oracle a future Node backend must satisfy.
+    #
+    # `cargo build` is explicit rather than assumed: `cargo test` above builds the test harness, and
+    # a suite that silently skipped on a missing binary would gate nothing (the harness raises
+    # instead — see tests/api-parity/lib/harness.mjs).
+    #
+    # NOT run here: scripts/verify-parity-teeth.sh, which proves each ported assertion FAILS when the
+    # behaviour breaks. It requires a SUPERUSER DATABASE_URL (its rls-no-role-drop mutation cannot
+    # weaken anything from an already-restricted role, and it refuses to report a hollow pass). CI's
+    # DATABASE_URL is deterministic, so CI runs it as its own step — a named boundary, not a gap.
+    run "test: api parity suite (live Postgres)" \
+      "cargo build --manifest-path $API && node --test tests/api-parity/lib/harness.test.mjs tests/api-parity/default.test.mjs tests/api-parity/auth-disabled.test.mjs tests/api-parity/cors.test.mjs tests/api-parity/metrics.test.mjs tests/api-parity/ml-proxy.test.mjs"
   else
-    say "test: platform-api integration"
+    say "test: platform-api integration + api parity suite"
     if [[ "$RELEASE" == "yes" ]]; then
       echo "    ✗ RELEASE FAIL — dedicated release database is unreachable or authentication failed." >&2
       fail=1
