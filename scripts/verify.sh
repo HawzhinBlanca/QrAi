@@ -121,7 +121,7 @@ if [[ "$FAST" != "yes" ]]; then
   # PAR6: tests/api-parity/coverage.test.mjs belongs HERE, not in the DB-gated block below. It only
   # reads integration.rs + coverage.json, so "is every Rust test accounted for" has nothing to do
   # with Postgres. The parity suite ITSELF is DB- and binary-gated further down.
-  run "test: node services"       "node --test scripts/fixture-normalize.test.mjs scripts/diff-api-fixtures.test.mjs scripts/fixture-coverage.test.mjs services/ml-inference/alignment.test.mjs services/ml-inference/marks-parity.test.mjs services/ml-inference/tajweed.test.mjs services/ml-inference/server.test.mjs services/agents/agents.test.mjs scripts/release-manifest.test.mjs scripts/release-build-evidence.test.mjs scripts/release-evidence-summary.test.mjs scripts/smoke-evidence.test.mjs scripts/smoke-database.test.mjs tests/api-parity/coverage.test.mjs tests/node-api/ticket-vectors.test.mjs tests/node-api/authz.test.mjs tests/node-api/shell.test.mjs tests/contract/coverage.test.mjs"
+  run "test: node services"       "node --test scripts/fixture-normalize.test.mjs scripts/diff-api-fixtures.test.mjs scripts/fixture-coverage.test.mjs services/ml-inference/alignment.test.mjs services/ml-inference/marks-parity.test.mjs services/ml-inference/tajweed.test.mjs services/ml-inference/server.test.mjs services/agents/agents.test.mjs scripts/release-manifest.test.mjs scripts/release-build-evidence.test.mjs scripts/release-evidence-summary.test.mjs scripts/smoke-evidence.test.mjs scripts/smoke-database.test.mjs tests/api-parity/coverage.test.mjs tests/node-api/ticket-vectors.test.mjs tests/node-api/authz.test.mjs tests/node-api/shell.test.mjs tests/contract/coverage.test.mjs tests/contract/cutover-readiness.test.mjs tests/contract/boundary-references.test.mjs"
   # apps/mobile is NOT a pnpm workspace member, so the TS `test: ts` line above never covered it and
   # its consent/auth/audio-format helpers went unguarded (a real audioFormat bug shipped there). The
   # helpers import ONLY node builtins, so this needs no install — just Node's type-stripping to read
@@ -136,6 +136,12 @@ if [[ "$FAST" != "yes" ]]; then
   # belongs here and not in the DB-gated block. A spec that has never met a real response is
   # documentation; this is what makes it a contract.
   run "contract: openapi vs real responses" "node scripts/validate-openapi-responses.mjs"
+  # CU1 — cutover readiness, printed for the record. INFORMATIONAL: it must never fail the gate,
+  # because "not ready to cut over" is the correct and expected state, not a build break. A gate
+  # that went red for that would be noise, and noise gets silenced — which is how the one signal
+  # that mattered would be lost. Its LOGIC is gated properly, by cutover-readiness.test.mjs above.
+  say "cutover readiness (informational)"
+  node scripts/cutover-readiness.mjs 2>&1 | sed 's/^/    /' || true
   run "test: restore guards"      "bash scripts/restore-db.test.sh"
   # MIG5 — Python. asr-inference ships plain-interpreter suites (documented as `python test_x.py`)
   # that import no torch and load no model, so they run anywhere Python 3 + numpy exist. They were
