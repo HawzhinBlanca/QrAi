@@ -1,0 +1,1636 @@
+{
+  "$comment": [
+    "Golden API fixtures recorded from the Rust platform-api (F2/F3).",
+    "",
+    "These record REALITY, not intent: anything odd here is odd in the service, and a port must",
+    "reproduce it. The /v1/auth/token snake_case body is preserved deliberately — changing it is",
+    "a separate, visible decision, not something to bury in a migration.",
+    "",
+    "Volatile values are placeholders (<ID:prefix#n>, <JWT#n>, <TIME#n>). The same raw value maps",
+    "to the same placeholder throughout, so cross-step references are still checked.",
+    "Key names and CASING are never normalized.",
+    "",
+    "Coverage is bounded by this scenario. Routes reachable only from unusual states are NOT",
+    "covered; see specs/api-golden-fixtures/plan.md."
+  ],
+  "capturedFrom": "rust-platform-api",
+  "stepCount": 26,
+  "steps": [
+    {
+      "name": "health",
+      "request": {
+        "headers": {},
+        "method": "GET",
+        "path": "/health"
+      },
+      "response": {
+        "body": {
+          "<non-json-body>": "1 lines"
+        },
+        "headers": {
+          "access-control-allow-origin": "*",
+          "content-type": "text/plain; charset=utf-8"
+        },
+        "status": 200
+      }
+    },
+    {
+      "name": "ready",
+      "request": {
+        "headers": {},
+        "method": "GET",
+        "path": "/ready"
+      },
+      "response": {
+        "body": {
+          "<non-json-body>": "1 lines"
+        },
+        "headers": {
+          "access-control-allow-origin": "*",
+          "content-type": "text/plain; charset=utf-8"
+        },
+        "status": 200
+      }
+    },
+    {
+      "name": "metrics rejects a bad token with 404, not 401",
+      "request": {
+        "headers": {
+          "x-metrics-token": "wrong-token"
+        },
+        "method": "GET",
+        "path": "/metrics"
+      },
+      "response": {
+        "body": null,
+        "headers": {
+          "access-control-allow-origin": "*"
+        },
+        "status": 404
+      }
+    },
+    {
+      "name": "quran surah list",
+      "request": {
+        "headers": {},
+        "method": "GET",
+        "path": "/v1/quran/surahs"
+      },
+      "response": {
+        "body": [
+          {
+            "arabicName": "سُورَةُ ٱلْفَاتِحَةِ",
+            "ayahCount": 7,
+            "name": "Al-Faatiha",
+            "revelationType": "Meccan",
+            "surahNumber": 1,
+            "translation": "The Opening"
+          },
+          {
+            "arabicName": "سُورَةُ البَقَرَةِ",
+            "ayahCount": 286,
+            "name": "Al-Baqara",
+            "revelationType": "Medinan",
+            "surahNumber": 2,
+            "translation": "The Cow"
+          },
+          {
+            "arabicName": "سُورَةُ آلِ عِمۡرَانَ",
+            "ayahCount": 200,
+            "name": "Aal-i-Imraan",
+            "revelationType": "Medinan",
+            "surahNumber": 3,
+            "translation": "The Family of Imraan"
+          },
+          {
+            "arabicName": "سُورَةُ النِّسَاءِ",
+            "ayahCount": 176,
+            "name": "An-Nisaa",
+            "revelationType": "Medinan",
+            "surahNumber": 4,
+            "translation": "The Women"
+          },
+          {
+            "arabicName": "سُورَةُ المَائـِدَةِ",
+            "ayahCount": 120,
+            "name": "Al-Maaida",
+            "revelationType": "Medinan",
+            "surahNumber": 5,
+            "translation": "The Table"
+          },
+          {
+            "arabicName": "سُورَةُ الأَنۡعَامِ",
+            "ayahCount": 165,
+            "name": "Al-An'aam",
+            "revelationType": "Meccan",
+            "surahNumber": 6,
+            "translation": "The Cattle"
+          },
+          {
+            "arabicName": "سُورَةُ الأَعۡرَافِ",
+            "ayahCount": 206,
+            "name": "Al-A'raaf",
+            "revelationType": "Meccan",
+            "surahNumber": 7,
+            "translation": "The Heights"
+          },
+          {
+            "arabicName": "سُورَةُ الأَنفَالِ",
+            "ayahCount": 75,
+            "name": "Al-Anfaal",
+            "revelationType": "Medinan",
+            "surahNumber": 8,
+            "translation": "The Spoils of War"
+          },
+          {
+            "arabicName": "سُورَةُ التَّوۡبَةِ",
+            "ayahCount": 129,
+            "name": "At-Tawba",
+            "revelationType": "Medinan",
+            "surahNumber": 9,
+            "translation": "The Repentance"
+          },
+          {
+            "arabicName": "سُورَةُ يُونُسَ",
+            "ayahCount": 109,
+            "name": "Yunus",
+            "revelationType": "Meccan",
+            "surahNumber": 10,
+            "translation": "Jonas"
+          },
+          {
+            "arabicName": "سُورَةُ هُودٍ",
+            "ayahCount": 123,
+            "name": "Hud",
+            "revelationType": "Meccan",
+            "surahNumber": 11,
+            "translation": "Hud"
+          },
+          {
+            "arabicName": "سُورَةُ يُوسُفَ",
+            "ayahCount": 111,
+            "name": "Yusuf",
+            "revelationType": "Meccan",
+            "surahNumber": 12,
+            "translation": "Joseph"
+          },
+          {
+            "arabicName": "سُورَةُ الرَّعۡدِ",
+            "ayahCount": 43,
+            "name": "Ar-Ra'd",
+            "revelationType": "Medinan",
+            "surahNumber": 13,
+            "translation": "The Thunder"
+          },
+          {
+            "arabicName": "سُورَةُ إِبۡرَاهِيمَ",
+            "ayahCount": 52,
+            "name": "Ibrahim",
+            "revelationType": "Meccan",
+            "surahNumber": 14,
+            "translation": "Abraham"
+          },
+          {
+            "arabicName": "سُورَةُ الحِجۡرِ",
+            "ayahCount": 99,
+            "name": "Al-Hijr",
+            "revelationType": "Meccan",
+            "surahNumber": 15,
+            "translation": "The Rock"
+          },
+          {
+            "arabicName": "سُورَةُ النَّحۡلِ",
+            "ayahCount": 128,
+            "name": "An-Nahl",
+            "revelationType": "Meccan",
+            "surahNumber": 16,
+            "translation": "The Bee"
+          },
+          {
+            "arabicName": "سُورَةُ الإِسۡرَاءِ",
+            "ayahCount": 111,
+            "name": "Al-Israa",
+            "revelationType": "Meccan",
+            "surahNumber": 17,
+            "translation": "The Night Journey"
+          },
+          {
+            "arabicName": "سُورَةُ الكَهۡفِ",
+            "ayahCount": 110,
+            "name": "Al-Kahf",
+            "revelationType": "Meccan",
+            "surahNumber": 18,
+            "translation": "The Cave"
+          },
+          {
+            "arabicName": "سُورَةُ مَرۡيَمَ",
+            "ayahCount": 98,
+            "name": "Maryam",
+            "revelationType": "Meccan",
+            "surahNumber": 19,
+            "translation": "Mary"
+          },
+          {
+            "arabicName": "سُورَةُ طه",
+            "ayahCount": 135,
+            "name": "Taa-Haa",
+            "revelationType": "Meccan",
+            "surahNumber": 20,
+            "translation": "Taa-Haa"
+          },
+          {
+            "arabicName": "سُورَةُ الأَنبِيَاءِ",
+            "ayahCount": 112,
+            "name": "Al-Anbiyaa",
+            "revelationType": "Meccan",
+            "surahNumber": 21,
+            "translation": "The Prophets"
+          },
+          {
+            "arabicName": "سُورَةُ الحَجِّ",
+            "ayahCount": 78,
+            "name": "Al-Hajj",
+            "revelationType": "Medinan",
+            "surahNumber": 22,
+            "translation": "The Pilgrimage"
+          },
+          {
+            "arabicName": "سُورَةُ المُؤۡمِنُونَ",
+            "ayahCount": 118,
+            "name": "Al-Muminoon",
+            "revelationType": "Meccan",
+            "surahNumber": 23,
+            "translation": "The Believers"
+          },
+          {
+            "arabicName": "سُورَةُ النُّورِ",
+            "ayahCount": 64,
+            "name": "An-Noor",
+            "revelationType": "Medinan",
+            "surahNumber": 24,
+            "translation": "The Light"
+          },
+          {
+            "arabicName": "سُورَةُ الفُرۡقَانِ",
+            "ayahCount": 77,
+            "name": "Al-Furqaan",
+            "revelationType": "Meccan",
+            "surahNumber": 25,
+            "translation": "The Criterion"
+          },
+          {
+            "arabicName": "سُورَةُ الشُّعَرَاءِ",
+            "ayahCount": 227,
+            "name": "Ash-Shu'araa",
+            "revelationType": "Meccan",
+            "surahNumber": 26,
+            "translation": "The Poets"
+          },
+          {
+            "arabicName": "سُورَةُ النَّمۡلِ",
+            "ayahCount": 93,
+            "name": "An-Naml",
+            "revelationType": "Meccan",
+            "surahNumber": 27,
+            "translation": "The Ant"
+          },
+          {
+            "arabicName": "سُورَةُ القَصَصِ",
+            "ayahCount": 88,
+            "name": "Al-Qasas",
+            "revelationType": "Meccan",
+            "surahNumber": 28,
+            "translation": "The Stories"
+          },
+          {
+            "arabicName": "سُورَةُ العَنكَبُوتِ",
+            "ayahCount": 69,
+            "name": "Al-Ankaboot",
+            "revelationType": "Meccan",
+            "surahNumber": 29,
+            "translation": "The Spider"
+          },
+          {
+            "arabicName": "سُورَةُ الرُّومِ",
+            "ayahCount": 60,
+            "name": "Ar-Room",
+            "revelationType": "Meccan",
+            "surahNumber": 30,
+            "translation": "The Romans"
+          },
+          {
+            "arabicName": "سُورَةُ لُقۡمَانَ",
+            "ayahCount": 34,
+            "name": "Luqman",
+            "revelationType": "Meccan",
+            "surahNumber": 31,
+            "translation": "Luqman"
+          },
+          {
+            "arabicName": "سُورَةُ السَّجۡدَةِ",
+            "ayahCount": 30,
+            "name": "As-Sajda",
+            "revelationType": "Meccan",
+            "surahNumber": 32,
+            "translation": "The Prostration"
+          },
+          {
+            "arabicName": "سُورَةُ الأَحۡزَابِ",
+            "ayahCount": 73,
+            "name": "Al-Ahzaab",
+            "revelationType": "Medinan",
+            "surahNumber": 33,
+            "translation": "The Clans"
+          },
+          {
+            "arabicName": "سُورَةُ سَبَإٍ",
+            "ayahCount": 54,
+            "name": "Saba",
+            "revelationType": "Meccan",
+            "surahNumber": 34,
+            "translation": "Sheba"
+          },
+          {
+            "arabicName": "سُورَةُ فَاطِرٍ",
+            "ayahCount": 45,
+            "name": "Faatir",
+            "revelationType": "Meccan",
+            "surahNumber": 35,
+            "translation": "The Originator"
+          },
+          {
+            "arabicName": "سُورَةُ يسٓ",
+            "ayahCount": 83,
+            "name": "Yaseen",
+            "revelationType": "Meccan",
+            "surahNumber": 36,
+            "translation": "Yaseen"
+          },
+          {
+            "arabicName": "سُورَةُ الصَّافَّاتِ",
+            "ayahCount": 182,
+            "name": "As-Saaffaat",
+            "revelationType": "Meccan",
+            "surahNumber": 37,
+            "translation": "Those drawn up in Ranks"
+          },
+          {
+            "arabicName": "سُورَةُ صٓ",
+            "ayahCount": 88,
+            "name": "Saad",
+            "revelationType": "Meccan",
+            "surahNumber": 38,
+            "translation": "The letter Saad"
+          },
+          {
+            "arabicName": "سُورَةُ الزُّمَرِ",
+            "ayahCount": 75,
+            "name": "Az-Zumar",
+            "revelationType": "Meccan",
+            "surahNumber": 39,
+            "translation": "The Groups"
+          },
+          {
+            "arabicName": "سُورَةُ غَافِرٍ",
+            "ayahCount": 85,
+            "name": "Ghafir",
+            "revelationType": "Meccan",
+            "surahNumber": 40,
+            "translation": "The Forgiver"
+          },
+          {
+            "arabicName": "سُورَةُ فُصِّلَتۡ",
+            "ayahCount": 54,
+            "name": "Fussilat",
+            "revelationType": "Meccan",
+            "surahNumber": 41,
+            "translation": "Explained in detail"
+          },
+          {
+            "arabicName": "سُورَةُ الشُّورَىٰ",
+            "ayahCount": 53,
+            "name": "Ash-Shura",
+            "revelationType": "Meccan",
+            "surahNumber": 42,
+            "translation": "Consultation"
+          },
+          {
+            "arabicName": "سُورَةُ الزُّخۡرُفِ",
+            "ayahCount": 89,
+            "name": "Az-Zukhruf",
+            "revelationType": "Meccan",
+            "surahNumber": 43,
+            "translation": "Ornaments of gold"
+          },
+          {
+            "arabicName": "سُورَةُ الدُّخَانِ",
+            "ayahCount": 59,
+            "name": "Ad-Dukhaan",
+            "revelationType": "Meccan",
+            "surahNumber": 44,
+            "translation": "The Smoke"
+          },
+          {
+            "arabicName": "سُورَةُ الجَاثِيَةِ",
+            "ayahCount": 37,
+            "name": "Al-Jaathiya",
+            "revelationType": "Meccan",
+            "surahNumber": 45,
+            "translation": "Crouching"
+          },
+          {
+            "arabicName": "سُورَةُ الأَحۡقَافِ",
+            "ayahCount": 35,
+            "name": "Al-Ahqaf",
+            "revelationType": "Meccan",
+            "surahNumber": 46,
+            "translation": "The Dunes"
+          },
+          {
+            "arabicName": "سُورَةُ مُحَمَّدٍ",
+            "ayahCount": 38,
+            "name": "Muhammad",
+            "revelationType": "Medinan",
+            "surahNumber": 47,
+            "translation": "Muhammad"
+          },
+          {
+            "arabicName": "سُورَةُ الفَتۡحِ",
+            "ayahCount": 29,
+            "name": "Al-Fath",
+            "revelationType": "Medinan",
+            "surahNumber": 48,
+            "translation": "The Victory"
+          },
+          {
+            "arabicName": "سُورَةُ الحُجُرَاتِ",
+            "ayahCount": 18,
+            "name": "Al-Hujuraat",
+            "revelationType": "Medinan",
+            "surahNumber": 49,
+            "translation": "The Inner Apartments"
+          },
+          {
+            "arabicName": "سُورَةُ قٓ",
+            "ayahCount": 45,
+            "name": "Qaaf",
+            "revelationType": "Meccan",
+            "surahNumber": 50,
+            "translation": "The letter Qaaf"
+          },
+          {
+            "arabicName": "سُورَةُ الذَّارِيَاتِ",
+            "ayahCount": 60,
+            "name": "Adh-Dhaariyat",
+            "revelationType": "Meccan",
+            "surahNumber": 51,
+            "translation": "The Winnowing Winds"
+          },
+          {
+            "arabicName": "سُورَةُ الطُّورِ",
+            "ayahCount": 49,
+            "name": "At-Tur",
+            "revelationType": "Meccan",
+            "surahNumber": 52,
+            "translation": "The Mount"
+          },
+          {
+            "arabicName": "سُورَةُ النَّجۡمِ",
+            "ayahCount": 62,
+            "name": "An-Najm",
+            "revelationType": "Meccan",
+            "surahNumber": 53,
+            "translation": "The Star"
+          },
+          {
+            "arabicName": "سُورَةُ القَمَرِ",
+            "ayahCount": 55,
+            "name": "Al-Qamar",
+            "revelationType": "Meccan",
+            "surahNumber": 54,
+            "translation": "The Moon"
+          },
+          {
+            "arabicName": "سُورَةُ الرَّحۡمَٰن",
+            "ayahCount": 78,
+            "name": "Ar-Rahmaan",
+            "revelationType": "Medinan",
+            "surahNumber": 55,
+            "translation": "The Beneficent"
+          },
+          {
+            "arabicName": "سُورَةُ الوَاقِعَةِ",
+            "ayahCount": 96,
+            "name": "Al-Waaqia",
+            "revelationType": "Meccan",
+            "surahNumber": 56,
+            "translation": "The Inevitable"
+          },
+          {
+            "arabicName": "سُورَةُ الحَدِيدِ",
+            "ayahCount": 29,
+            "name": "Al-Hadid",
+            "revelationType": "Medinan",
+            "surahNumber": 57,
+            "translation": "The Iron"
+          },
+          {
+            "arabicName": "سُورَةُ المُجَادلَةِ",
+            "ayahCount": 22,
+            "name": "Al-Mujaadila",
+            "revelationType": "Medinan",
+            "surahNumber": 58,
+            "translation": "The Pleading Woman"
+          },
+          {
+            "arabicName": "سُورَةُ الحَشۡرِ",
+            "ayahCount": 24,
+            "name": "Al-Hashr",
+            "revelationType": "Medinan",
+            "surahNumber": 59,
+            "translation": "The Exile"
+          },
+          {
+            "arabicName": "سُورَةُ المُمۡتَحنَةِ",
+            "ayahCount": 13,
+            "name": "Al-Mumtahana",
+            "revelationType": "Medinan",
+            "surahNumber": 60,
+            "translation": "She that is to be examined"
+          },
+          {
+            "arabicName": "سُورَةُ الصَّفِّ",
+            "ayahCount": 14,
+            "name": "As-Saff",
+            "revelationType": "Medinan",
+            "surahNumber": 61,
+            "translation": "The Ranks"
+          },
+          {
+            "arabicName": "سُورَةُ الجُمُعَةِ",
+            "ayahCount": 11,
+            "name": "Al-Jumu'a",
+            "revelationType": "Medinan",
+            "surahNumber": 62,
+            "translation": "Friday"
+          },
+          {
+            "arabicName": "سُورَةُ المُنَافِقُونَ",
+            "ayahCount": 11,
+            "name": "Al-Munaafiqoon",
+            "revelationType": "Medinan",
+            "surahNumber": 63,
+            "translation": "The Hypocrites"
+          },
+          {
+            "arabicName": "سُورَةُ التَّغَابُنِ",
+            "ayahCount": 18,
+            "name": "At-Taghaabun",
+            "revelationType": "Medinan",
+            "surahNumber": 64,
+            "translation": "Mutual Disillusion"
+          },
+          {
+            "arabicName": "سُورَةُ الطَّلَاقِ",
+            "ayahCount": 12,
+            "name": "At-Talaaq",
+            "revelationType": "Medinan",
+            "surahNumber": 65,
+            "translation": "Divorce"
+          },
+          {
+            "arabicName": "سُورَةُ التَّحۡرِيمِ",
+            "ayahCount": 12,
+            "name": "At-Tahrim",
+            "revelationType": "Medinan",
+            "surahNumber": 66,
+            "translation": "The Prohibition"
+          },
+          {
+            "arabicName": "سُورَةُ المُلۡكِ",
+            "ayahCount": 30,
+            "name": "Al-Mulk",
+            "revelationType": "Meccan",
+            "surahNumber": 67,
+            "translation": "The Sovereignty"
+          },
+          {
+            "arabicName": "سُورَةُ القَلَمِ",
+            "ayahCount": 52,
+            "name": "Al-Qalam",
+            "revelationType": "Meccan",
+            "surahNumber": 68,
+            "translation": "The Pen"
+          },
+          {
+            "arabicName": "سُورَةُ الحَاقَّةِ",
+            "ayahCount": 52,
+            "name": "Al-Haaqqa",
+            "revelationType": "Meccan",
+            "surahNumber": 69,
+            "translation": "The Reality"
+          },
+          {
+            "arabicName": "سُورَةُ المَعَارِجِ",
+            "ayahCount": 44,
+            "name": "Al-Ma'aarij",
+            "revelationType": "Meccan",
+            "surahNumber": 70,
+            "translation": "The Ascending Stairways"
+          },
+          {
+            "arabicName": "سُورَةُ نُوحٍ",
+            "ayahCount": 28,
+            "name": "Nooh",
+            "revelationType": "Meccan",
+            "surahNumber": 71,
+            "translation": "Noah"
+          },
+          {
+            "arabicName": "سُورَةُ الجِنِّ",
+            "ayahCount": 28,
+            "name": "Al-Jinn",
+            "revelationType": "Meccan",
+            "surahNumber": 72,
+            "translation": "The Jinn"
+          },
+          {
+            "arabicName": "سُورَةُ المُزَّمِّلِ",
+            "ayahCount": 20,
+            "name": "Al-Muzzammil",
+            "revelationType": "Meccan",
+            "surahNumber": 73,
+            "translation": "The Enshrouded One"
+          },
+          {
+            "arabicName": "سُورَةُ المُدَّثِّرِ",
+            "ayahCount": 56,
+            "name": "Al-Muddaththir",
+            "revelationType": "Meccan",
+            "surahNumber": 74,
+            "translation": "The Cloaked One"
+          },
+          {
+            "arabicName": "سُورَةُ القِيَامَةِ",
+            "ayahCount": 40,
+            "name": "Al-Qiyaama",
+            "revelationType": "Meccan",
+            "surahNumber": 75,
+            "translation": "The Resurrection"
+          },
+          {
+            "arabicName": "سُورَةُ الإِنسَانِ",
+            "ayahCount": 31,
+            "name": "Al-Insaan",
+            "revelationType": "Medinan",
+            "surahNumber": 76,
+            "translation": "Man"
+          },
+          {
+            "arabicName": "سُورَةُ المُرۡسَلَاتِ",
+            "ayahCount": 50,
+            "name": "Al-Mursalaat",
+            "revelationType": "Meccan",
+            "surahNumber": 77,
+            "translation": "The Emissaries"
+          },
+          {
+            "arabicName": "سُورَةُ النَّبَإِ",
+            "ayahCount": 40,
+            "name": "An-Naba",
+            "revelationType": "Meccan",
+            "surahNumber": 78,
+            "translation": "The Announcement"
+          },
+          {
+            "arabicName": "سُورَةُ النَّازِعَاتِ",
+            "ayahCount": 46,
+            "name": "An-Naazi'aat",
+            "revelationType": "Meccan",
+            "surahNumber": 79,
+            "translation": "Those who drag forth"
+          },
+          {
+            "arabicName": "سُورَةُ عَبَسَ",
+            "ayahCount": 42,
+            "name": "Abasa",
+            "revelationType": "Meccan",
+            "surahNumber": 80,
+            "translation": "He frowned"
+          },
+          {
+            "arabicName": "سُورَةُ التَّكۡوِيرِ",
+            "ayahCount": 29,
+            "name": "At-Takwir",
+            "revelationType": "Meccan",
+            "surahNumber": 81,
+            "translation": "The Overthrowing"
+          },
+          {
+            "arabicName": "سُورَةُ الانفِطَارِ",
+            "ayahCount": 19,
+            "name": "Al-Infitaar",
+            "revelationType": "Meccan",
+            "surahNumber": 82,
+            "translation": "The Cleaving"
+          },
+          {
+            "arabicName": "سُورَةُ المُطَفِّفِينَ",
+            "ayahCount": 36,
+            "name": "Al-Mutaffifin",
+            "revelationType": "Meccan",
+            "surahNumber": 83,
+            "translation": "Defrauding"
+          },
+          {
+            "arabicName": "سُورَةُ الانشِقَاقِ",
+            "ayahCount": 25,
+            "name": "Al-Inshiqaaq",
+            "revelationType": "Meccan",
+            "surahNumber": 84,
+            "translation": "The Splitting Open"
+          },
+          {
+            "arabicName": "سُورَةُ البُرُوجِ",
+            "ayahCount": 22,
+            "name": "Al-Burooj",
+            "revelationType": "Meccan",
+            "surahNumber": 85,
+            "translation": "The Constellations"
+          },
+          {
+            "arabicName": "سُورَةُ الطَّارِقِ",
+            "ayahCount": 17,
+            "name": "At-Taariq",
+            "revelationType": "Meccan",
+            "surahNumber": 86,
+            "translation": "The Morning Star"
+          },
+          {
+            "arabicName": "سُورَةُ الأَعۡلَىٰ",
+            "ayahCount": 19,
+            "name": "Al-A'laa",
+            "revelationType": "Meccan",
+            "surahNumber": 87,
+            "translation": "The Most High"
+          },
+          {
+            "arabicName": "سُورَةُ الغَاشِيَةِ",
+            "ayahCount": 26,
+            "name": "Al-Ghaashiya",
+            "revelationType": "Meccan",
+            "surahNumber": 88,
+            "translation": "The Overwhelming"
+          },
+          {
+            "arabicName": "سُورَةُ الفَجۡرِ",
+            "ayahCount": 30,
+            "name": "Al-Fajr",
+            "revelationType": "Meccan",
+            "surahNumber": 89,
+            "translation": "The Dawn"
+          },
+          {
+            "arabicName": "سُورَةُ البَلَدِ",
+            "ayahCount": 20,
+            "name": "Al-Balad",
+            "revelationType": "Meccan",
+            "surahNumber": 90,
+            "translation": "The City"
+          },
+          {
+            "arabicName": "سُورَةُ الشَّمۡسِ",
+            "ayahCount": 15,
+            "name": "Ash-Shams",
+            "revelationType": "Meccan",
+            "surahNumber": 91,
+            "translation": "The Sun"
+          },
+          {
+            "arabicName": "سُورَةُ اللَّيۡلِ",
+            "ayahCount": 21,
+            "name": "Al-Lail",
+            "revelationType": "Meccan",
+            "surahNumber": 92,
+            "translation": "The Night"
+          },
+          {
+            "arabicName": "سُورَةُ الضُّحَىٰ",
+            "ayahCount": 11,
+            "name": "Ad-Dhuhaa",
+            "revelationType": "Meccan",
+            "surahNumber": 93,
+            "translation": "The Morning Hours"
+          },
+          {
+            "arabicName": "سُورَةُ الشَّرۡحِ",
+            "ayahCount": 8,
+            "name": "Ash-Sharh",
+            "revelationType": "Meccan",
+            "surahNumber": 94,
+            "translation": "The Consolation"
+          },
+          {
+            "arabicName": "سُورَةُ التِّينِ",
+            "ayahCount": 8,
+            "name": "At-Tin",
+            "revelationType": "Meccan",
+            "surahNumber": 95,
+            "translation": "The Fig"
+          },
+          {
+            "arabicName": "سُورَةُ العَلَقِ",
+            "ayahCount": 19,
+            "name": "Al-Alaq",
+            "revelationType": "Meccan",
+            "surahNumber": 96,
+            "translation": "The Clot"
+          },
+          {
+            "arabicName": "سُورَةُ القَدۡرِ",
+            "ayahCount": 5,
+            "name": "Al-Qadr",
+            "revelationType": "Meccan",
+            "surahNumber": 97,
+            "translation": "The Power, Fate"
+          },
+          {
+            "arabicName": "سُورَةُ البَيِّنَةِ",
+            "ayahCount": 8,
+            "name": "Al-Bayyina",
+            "revelationType": "Medinan",
+            "surahNumber": 98,
+            "translation": "The Evidence"
+          },
+          {
+            "arabicName": "سُورَةُ الزَّلۡزَلَةِ",
+            "ayahCount": 8,
+            "name": "Az-Zalzala",
+            "revelationType": "Medinan",
+            "surahNumber": 99,
+            "translation": "The Earthquake"
+          },
+          {
+            "arabicName": "سُورَةُ العَادِيَاتِ",
+            "ayahCount": 11,
+            "name": "Al-Aadiyaat",
+            "revelationType": "Meccan",
+            "surahNumber": 100,
+            "translation": "The Chargers"
+          },
+          {
+            "arabicName": "سُورَةُ القَارِعَةِ",
+            "ayahCount": 11,
+            "name": "Al-Qaari'a",
+            "revelationType": "Meccan",
+            "surahNumber": 101,
+            "translation": "The Calamity"
+          },
+          {
+            "arabicName": "سُورَةُ التَّكَاثُرِ",
+            "ayahCount": 8,
+            "name": "At-Takaathur",
+            "revelationType": "Meccan",
+            "surahNumber": 102,
+            "translation": "Competition"
+          },
+          {
+            "arabicName": "سُورَةُ العَصۡرِ",
+            "ayahCount": 3,
+            "name": "Al-Asr",
+            "revelationType": "Meccan",
+            "surahNumber": 103,
+            "translation": "The Declining Day, Epoch"
+          },
+          {
+            "arabicName": "سُورَةُ الهُمَزَةِ",
+            "ayahCount": 9,
+            "name": "Al-Humaza",
+            "revelationType": "Meccan",
+            "surahNumber": 104,
+            "translation": "The Traducer"
+          },
+          {
+            "arabicName": "سُورَةُ الفِيلِ",
+            "ayahCount": 5,
+            "name": "Al-Fil",
+            "revelationType": "Meccan",
+            "surahNumber": 105,
+            "translation": "The Elephant"
+          },
+          {
+            "arabicName": "سُورَةُ قُرَيۡشٍ",
+            "ayahCount": 4,
+            "name": "Quraish",
+            "revelationType": "Meccan",
+            "surahNumber": 106,
+            "translation": "Quraysh"
+          },
+          {
+            "arabicName": "سُورَةُ المَاعُونِ",
+            "ayahCount": 7,
+            "name": "Al-Maa'un",
+            "revelationType": "Meccan",
+            "surahNumber": 107,
+            "translation": "Almsgiving"
+          },
+          {
+            "arabicName": "سُورَةُ الكَوۡثَرِ",
+            "ayahCount": 3,
+            "name": "Al-Kawthar",
+            "revelationType": "Meccan",
+            "surahNumber": 108,
+            "translation": "Abundance"
+          },
+          {
+            "arabicName": "سُورَةُ الكَافِرُونَ",
+            "ayahCount": 6,
+            "name": "Al-Kaafiroon",
+            "revelationType": "Meccan",
+            "surahNumber": 109,
+            "translation": "The Disbelievers"
+          },
+          {
+            "arabicName": "سُورَةُ النَّصۡرِ",
+            "ayahCount": 3,
+            "name": "An-Nasr",
+            "revelationType": "Medinan",
+            "surahNumber": 110,
+            "translation": "Divine Support"
+          },
+          {
+            "arabicName": "سُورَةُ المَسَدِ",
+            "ayahCount": 5,
+            "name": "Al-Masad",
+            "revelationType": "Meccan",
+            "surahNumber": 111,
+            "translation": "The Palm Fibre"
+          },
+          {
+            "arabicName": "سُورَةُ الإِخۡلَاصِ",
+            "ayahCount": 4,
+            "name": "Al-Ikhlaas",
+            "revelationType": "Meccan",
+            "surahNumber": 112,
+            "translation": "Sincerity"
+          },
+          {
+            "arabicName": "سُورَةُ الفَلَقِ",
+            "ayahCount": 5,
+            "name": "Al-Falaq",
+            "revelationType": "Meccan",
+            "surahNumber": 113,
+            "translation": "The Dawn"
+          },
+          {
+            "arabicName": "سُورَةُ النَّاسِ",
+            "ayahCount": 6,
+            "name": "An-Naas",
+            "revelationType": "Meccan",
+            "surahNumber": 114,
+            "translation": "Mankind"
+          }
+        ],
+        "headers": {
+          "access-control-allow-origin": "*",
+          "content-type": "application/json"
+        },
+        "status": 200
+      }
+    },
+    {
+      "name": "quran single ayah",
+      "request": {
+        "headers": {},
+        "method": "GET",
+        "path": "/v1/quran/ayahs/1/1"
+      },
+      "response": {
+        "body": {
+          "ayahNumber": 1,
+          "id": "1:1",
+          "sourceChecksum": "sha256:f4a876cf5be00a701eca070691bfd31ca28ab206e790e35d13b8dff206536f0d",
+          "surahNumber": 1,
+          "text": "﻿بِسْمِ ٱللَّهِ ٱلرَّحْمَٰنِ ٱلرَّحِيمِ",
+          "words": [
+            {
+              "id": "1:1:1",
+              "sourceChecksum": "sha256:31487c1e5b27aaf072c56996965fbcddb0cf626ef8dd8f7101c0fb68a98d9b63",
+              "text": "بِسْمِ",
+              "wordIndex": 1
+            },
+            {
+              "id": "1:1:2",
+              "sourceChecksum": "sha256:2a0decfb4b406737570ddb4ce8686eccfc68d891803a08772d1915f9db283011",
+              "text": "ٱللَّهِ",
+              "wordIndex": 2
+            },
+            {
+              "id": "1:1:3",
+              "sourceChecksum": "sha256:0727c379f92402c2217dce9958e6ed246489403274adaa13d3608bc05359d62b",
+              "text": "ٱلرَّحْمَٰنِ",
+              "wordIndex": 3
+            },
+            {
+              "id": "1:1:4",
+              "sourceChecksum": "sha256:0f885f435e2ec74f404a18767c5defbc897a7000a8dab33610adc1794f7b2601",
+              "text": "ٱلرَّحِيمِ",
+              "wordIndex": 4
+            }
+          ]
+        },
+        "headers": {
+          "access-control-allow-origin": "*",
+          "content-type": "application/json"
+        },
+        "status": 200
+      }
+    },
+    {
+      "name": "quran ayah not found",
+      "request": {
+        "headers": {},
+        "method": "GET",
+        "path": "/v1/quran/ayahs/1/999"
+      },
+      "response": {
+        "body": {
+          "error": "record not found"
+        },
+        "headers": {
+          "access-control-allow-origin": "*",
+          "content-type": "application/json"
+        },
+        "status": 404
+      }
+    },
+    {
+      "name": "login with unknown email",
+      "request": {
+        "body": {
+          "email": "nobody@example.invalid",
+          "password": "wrong-password-1",
+          "tenantId": "hikmah-pilot-erbil"
+        },
+        "headers": {},
+        "method": "POST",
+        "path": "/v1/auth/login"
+      },
+      "response": {
+        "body": {
+          "error": "missing or invalid authorization"
+        },
+        "headers": {
+          "access-control-allow-origin": "*",
+          "content-type": "application/json"
+        },
+        "status": 401
+      }
+    },
+    {
+      "name": "issue token for a seeded learner (snake_case body)",
+      "request": {
+        "body": {
+          "role": "learner",
+          "tenantId": "hikmah-pilot-erbil",
+          "userId": "learner-1"
+        },
+        "headers": {
+          "x-tenant-id": "hikmah-pilot-erbil",
+          "x-user-id": "admin-1",
+          "x-user-role": "admin"
+        },
+        "method": "POST",
+        "path": "/v1/auth/token"
+      },
+      "response": {
+        "body": {
+          "audit_event_id": "<ID:audit#1>",
+          "role": "learner",
+          "tenant_id": "hikmah-pilot-erbil",
+          "token": "<JWT#1>",
+          "user_id": "learner-1"
+        },
+        "headers": {
+          "access-control-allow-origin": "*",
+          "content-type": "application/json"
+        },
+        "status": 200
+      }
+    },
+    {
+      "name": "issue token rejects a role mismatch",
+      "request": {
+        "body": {
+          "role": "admin",
+          "tenantId": "hikmah-pilot-erbil",
+          "userId": "learner-1"
+        },
+        "headers": {
+          "x-tenant-id": "hikmah-pilot-erbil",
+          "x-user-id": "admin-1",
+          "x-user-role": "admin"
+        },
+        "method": "POST",
+        "path": "/v1/auth/token"
+      },
+      "response": {
+        "body": {
+          "error": "actor is not allowed to perform this action"
+        },
+        "headers": {
+          "access-control-allow-origin": "*",
+          "content-type": "application/json"
+        },
+        "status": 403
+      }
+    },
+    {
+      "name": "issue token rejects a cross-tenant caller",
+      "request": {
+        "body": {
+          "role": "learner",
+          "tenantId": "hikmah-pilot-erbil",
+          "userId": "learner-1"
+        },
+        "headers": {
+          "x-tenant-id": "some-other-tenant",
+          "x-user-id": "admin-1",
+          "x-user-role": "admin"
+        },
+        "method": "POST",
+        "path": "/v1/auth/token"
+      },
+      "response": {
+        "body": {
+          "error": "actor is not allowed to perform this action"
+        },
+        "headers": {
+          "access-control-allow-origin": "*",
+          "content-type": "application/json"
+        },
+        "status": 403
+      }
+    },
+    {
+      "name": "learner cannot list all sessions (role gate)",
+      "request": {
+        "headers": {
+          "x-tenant-id": "hikmah-pilot-erbil",
+          "x-user-id": "learner-1",
+          "x-user-role": "learner"
+        },
+        "method": "GET",
+        "path": "/v1/recitation-sessions"
+      },
+      "response": {
+        "body": {
+          "error": "actor is not allowed to perform this action"
+        },
+        "headers": {
+          "access-control-allow-origin": "*",
+          "content-type": "application/json"
+        },
+        "status": 403
+      }
+    },
+    {
+      "name": "teacher can list sessions",
+      "request": {
+        "headers": {
+          "x-tenant-id": "hikmah-pilot-erbil",
+          "x-user-id": "teacher-1",
+          "x-user-role": "teacher"
+        },
+        "method": "GET",
+        "path": "/v1/recitation-sessions"
+      },
+      "response": {
+        "body": [],
+        "headers": {
+          "access-control-allow-origin": "*",
+          "content-type": "application/json"
+        },
+        "status": 200
+      }
+    },
+    {
+      "name": "session not found",
+      "request": {
+        "headers": {
+          "x-tenant-id": "hikmah-pilot-erbil",
+          "x-user-id": "teacher-1",
+          "x-user-role": "teacher"
+        },
+        "method": "GET",
+        "path": "/v1/recitation-sessions/session-does-not-exist"
+      },
+      "response": {
+        "body": {
+          "error": "record not found"
+        },
+        "headers": {
+          "access-control-allow-origin": "*",
+          "content-type": "application/json"
+        },
+        "status": 404
+      }
+    },
+    {
+      "name": "active learners",
+      "request": {
+        "headers": {
+          "x-tenant-id": "hikmah-pilot-erbil",
+          "x-user-id": "teacher-1",
+          "x-user-role": "teacher"
+        },
+        "method": "GET",
+        "path": "/v1/learners/active"
+      },
+      "response": {
+        "body": [],
+        "headers": {
+          "access-control-allow-origin": "*",
+          "content-type": "application/json"
+        },
+        "status": 200
+      }
+    },
+    {
+      "name": "create a recitation session",
+      "request": {
+        "body": {
+          "consent": {
+            "anonymizedLearning": false,
+            "audioRetention": "discard",
+            "consentVersion": "pilot-v1",
+            "externalAsrProcessing": false,
+            "guardianApproved": false,
+            "recordingConsent": true
+          },
+          "language": "ar",
+          "learnerId": "learner-1",
+          "modelVersion": "model-v0.3",
+          "quranRef": {
+            "ayahEnd": 7,
+            "ayahStart": 1,
+            "display": "1:1-7",
+            "surahNumber": 1
+          },
+          "sourceChecksum": "sha256:fixture-capture-not-a-real-checksum"
+        },
+        "headers": {
+          "x-tenant-id": "hikmah-pilot-erbil",
+          "x-user-id": "learner-1",
+          "x-user-role": "learner"
+        },
+        "method": "POST",
+        "path": "/v1/recitation-sessions"
+      },
+      "response": {
+        "body": {
+          "auditEventId": "<ID:audit#2>",
+          "confidence": 0,
+          "consent": {
+            "anonymizedLearning": false,
+            "audioRetention": "discard",
+            "consentVersion": "pilot-v1",
+            "externalAsrProcessing": false,
+            "guardianApproved": false,
+            "recordingConsent": true
+          },
+          "externalProcessingAllowed": false,
+          "id": "<ID:session#1>",
+          "language": "ar",
+          "learnerId": "learner-1",
+          "mode": "guided-recite",
+          "modelVersion": "model-v0.3",
+          "practicePlanId": "fatihah-mastery-v1",
+          "quranRef": {
+            "ayahEnd": 7,
+            "ayahStart": 1,
+            "display": "1:1-7",
+            "surahNumber": 1,
+            "wordEnd": null,
+            "wordStart": null
+          },
+          "reviewStatus": "draft",
+          "sourceChecksum": "sha256:fixture-capture-not-a-real-checksum",
+          "tenantId": "hikmah-pilot-erbil"
+        },
+        "headers": {
+          "access-control-allow-origin": "*",
+          "content-type": "application/json"
+        },
+        "status": 200
+      }
+    },
+    {
+      "name": "read back the created session",
+      "request": {
+        "headers": {
+          "x-tenant-id": "hikmah-pilot-erbil",
+          "x-user-id": "learner-1",
+          "x-user-role": "learner"
+        },
+        "method": "GET",
+        "path": "/v1/recitation-sessions/<ID:session#1>"
+      },
+      "response": {
+        "body": {
+          "auditEventId": "<ID:audit#2>",
+          "confidence": 0,
+          "consent": {
+            "anonymizedLearning": false,
+            "audioRetention": "discard",
+            "consentVersion": "pilot-v1",
+            "externalAsrProcessing": false,
+            "guardianApproved": false,
+            "recordingConsent": true
+          },
+          "externalProcessingAllowed": false,
+          "id": "<ID:session#1>",
+          "language": "ar",
+          "learnerId": "learner-1",
+          "mode": "guided-recite",
+          "modelVersion": "model-v0.3",
+          "practicePlanId": "fatihah-mastery-v1",
+          "quranRef": {
+            "ayahEnd": 7,
+            "ayahStart": 1,
+            "display": "1:1-7",
+            "surahNumber": 1,
+            "wordEnd": null,
+            "wordStart": null
+          },
+          "reviewStatus": "draft",
+          "sourceChecksum": "sha256:fixture-capture-not-a-real-checksum",
+          "tenantId": "hikmah-pilot-erbil"
+        },
+        "headers": {
+          "access-control-allow-origin": "*",
+          "content-type": "application/json"
+        },
+        "status": 200
+      }
+    },
+    {
+      "name": "another learner cannot read the session (ownership gate)",
+      "request": {
+        "headers": {
+          "x-tenant-id": "hikmah-pilot-erbil",
+          "x-user-id": "learner-2",
+          "x-user-role": "learner"
+        },
+        "method": "GET",
+        "path": "/v1/recitation-sessions/<ID:session#1>"
+      },
+      "response": {
+        "body": {
+          "error": "actor is not allowed to perform this action"
+        },
+        "headers": {
+          "access-control-allow-origin": "*",
+          "content-type": "application/json"
+        },
+        "status": 403
+      }
+    },
+    {
+      "name": "learner progress",
+      "request": {
+        "headers": {
+          "x-tenant-id": "hikmah-pilot-erbil",
+          "x-user-id": "learner-1",
+          "x-user-role": "learner"
+        },
+        "method": "GET",
+        "path": "/v1/learner/progress?learnerId=learner-1"
+      },
+      "response": {
+        "body": {
+          "learnerId": "learner-1",
+          "mastery": 0,
+          "nextReviewAt": null,
+          "streak": 1,
+          "tenantId": "hikmah-pilot-erbil",
+          "totalSessions": 1
+        },
+        "headers": {
+          "access-control-allow-origin": "*",
+          "content-type": "application/json"
+        },
+        "status": 200
+      }
+    },
+    {
+      "name": "weekly progress",
+      "request": {
+        "headers": {
+          "x-tenant-id": "hikmah-pilot-erbil",
+          "x-user-id": "learner-1",
+          "x-user-role": "learner"
+        },
+        "method": "GET",
+        "path": "/v1/learner/progress/weekly?learnerId=learner-1"
+      },
+      "response": {
+        "body": {
+          "days": [
+            {
+              "accuracy": null,
+              "date": "2026-07-31",
+              "sessions": 1,
+              "wordsMatched": 0,
+              "wordsTotal": 0
+            }
+          ],
+          "learnerId": "learner-1",
+          "tenantId": "hikmah-pilot-erbil"
+        },
+        "headers": {
+          "access-control-allow-origin": "*",
+          "content-type": "application/json"
+        },
+        "status": 200
+      }
+    },
+    {
+      "name": "tajweed findings",
+      "request": {
+        "headers": {
+          "x-tenant-id": "hikmah-pilot-erbil",
+          "x-user-id": "teacher-1",
+          "x-user-role": "teacher"
+        },
+        "method": "GET",
+        "path": "/v1/tajweed-findings"
+      },
+      "response": {
+        "body": [],
+        "headers": {
+          "access-control-allow-origin": "*",
+          "content-type": "application/json"
+        },
+        "status": 200
+      }
+    },
+    {
+      "name": "teacher review queue",
+      "request": {
+        "headers": {
+          "x-tenant-id": "hikmah-pilot-erbil",
+          "x-user-id": "teacher-1",
+          "x-user-role": "teacher"
+        },
+        "method": "GET",
+        "path": "/v1/teacher-review-queue"
+      },
+      "response": {
+        "body": [],
+        "headers": {
+          "access-control-allow-origin": "*",
+          "content-type": "application/json"
+        },
+        "status": 200
+      }
+    },
+    {
+      "name": "agent run approved without sources is rejected",
+      "request": {
+        "body": {
+          "confidence": 0.99,
+          "goal": "explain a tajweed finding",
+          "learnerId": "learner-1",
+          "name": "tajweed-explainer",
+          "reviewStatus": "scholar-approved",
+          "sources": [],
+          "status": "completed"
+        },
+        "headers": {
+          "x-tenant-id": "hikmah-pilot-erbil",
+          "x-user-id": "ops-1",
+          "x-user-role": "ops"
+        },
+        "method": "POST",
+        "path": "/v1/agent-runs"
+      },
+      "response": {
+        "body": {
+          "error": "invalid agent run status: completed"
+        },
+        "headers": {
+          "access-control-allow-origin": "*",
+          "content-type": "application/json"
+        },
+        "status": 400
+      }
+    },
+    {
+      "name": "privacy export for a synthetic learner",
+      "request": {
+        "body": {
+          "learnerId": "learner-1"
+        },
+        "headers": {
+          "x-tenant-id": "hikmah-pilot-erbil",
+          "x-user-id": "learner-1",
+          "x-user-role": "learner"
+        },
+        "method": "POST",
+        "path": "/v1/privacy/export"
+      },
+      "response": {
+        "body": {
+          "audioObjectKeysDeleted": [],
+          "auditEventId": "<ID:audit#3>",
+          "deletedRecords": [],
+          "id": "<ID:privacy-job#1>",
+          "includedRecords": [
+            "<ID:session#1>",
+            "<ID:pilot_invitation:pilot-invitation#1>"
+          ],
+          "kind": "export",
+          "learnerId": "learner-1",
+          "tenantId": "hikmah-pilot-erbil"
+        },
+        "headers": {
+          "access-control-allow-origin": "*",
+          "content-type": "application/json"
+        },
+        "status": 200
+      }
+    },
+    {
+      "name": "privacy export rejects another learner's data",
+      "request": {
+        "body": {
+          "learnerId": "learner-1"
+        },
+        "headers": {
+          "x-tenant-id": "hikmah-pilot-erbil",
+          "x-user-id": "learner-2",
+          "x-user-role": "learner"
+        },
+        "method": "POST",
+        "path": "/v1/privacy/export"
+      },
+      "response": {
+        "body": {
+          "error": "actor is not allowed to perform this action"
+        },
+        "headers": {
+          "access-control-allow-origin": "*",
+          "content-type": "application/json"
+        },
+        "status": 403
+      }
+    },
+    {
+      "name": "non-admin cannot mint a pilot invitation",
+      "request": {
+        "body": {
+          "learnerId": "learner-1"
+        },
+        "headers": {
+          "x-tenant-id": "hikmah-pilot-erbil",
+          "x-user-id": "learner-1",
+          "x-user-role": "learner"
+        },
+        "method": "POST",
+        "path": "/v1/pilot/invitations"
+      },
+      "response": {
+        "body": {
+          "error": "actor is not allowed to perform this action"
+        },
+        "headers": {
+          "access-control-allow-origin": "*",
+          "content-type": "application/json"
+        },
+        "status": 403
+      }
+    },
+    {
+      "name": "pilot bootstrap rejects an unknown token",
+      "request": {
+        "body": {
+          "token": "00000000-0000-4000-8000-000000000000"
+        },
+        "headers": {},
+        "method": "POST",
+        "path": "/v1/pilot/session/bootstrap"
+      },
+      "response": {
+        "body": {
+          "error": "actor is not allowed to perform this action"
+        },
+        "headers": {
+          "access-control-allow-origin": "*",
+          "content-type": "application/json"
+        },
+        "status": 403
+      }
+    }
+  ]
+}
