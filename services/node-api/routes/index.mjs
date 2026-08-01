@@ -14,6 +14,7 @@
  * here by `fastifyPath()` rather than transcribed — a hand-written second copy of 38 paths is 38
  * chances to typo a route into never being served, which looks exactly like a route that proxies.
  */
+import { health, metrics, ready } from "./infra.mjs";
 import { getLearnerProgress } from "./progress.mjs";
 import { createRealtimeTicket } from "./recitation.mjs";
 
@@ -30,6 +31,10 @@ export function fastifyPath(axumPath) {
  * ticketSecret, upstream }`.
  */
 export const ROUTES = [
+  // ── N8: infra. No actor — an orchestrator healthcheck has no credentials. ───────────────────
+  { key: "GET /health", method: "get", path: "/health", handler: health },
+  { key: "GET /ready", method: "get", path: "/ready", handler: ready },
+  { key: "GET /metrics", method: "get", path: "/metrics", handler: metrics },
   {
     key: "GET /v1/learner/progress",
     method: "get",

@@ -27,7 +27,7 @@ Every wave follows the same five steps (`plan.md §2`), and step 4 is not option
 5. `bash scripts/verify.sh`, then `scripts/update-ledger.sh`.
 
 - [x] N7 — Route table — 38 `if` blocks → one table + per-domain route modules; `PORTABLE` still parseable by `cutover-readiness.mjs`.
-- [ ] N8 — Infra routes — `/health`, `/ready`, `/metrics` (Prometheus text format, dev-open gate).
+- [x] N8 — Infra routes — `/health`, `/ready`, `/metrics` (Prometheus text format, dev-open gate).
 - [ ] N9 — Quran routes — 3 read-only routes; canonical text byte-identical, digest-anchored, never normalized.
 - [ ] N10 — Progress writes — `POST /v1/learner/progress` + weekly; SM-2 arithmetic pinned to Rust.
 - [ ] N11 — Agent/audit/eval — 4 read routes; jsonb round-trip, append-only audit.

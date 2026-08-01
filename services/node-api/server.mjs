@@ -24,6 +24,8 @@ import cors from "@fastify/cors";
 
 import { ApiError } from "./lib/authz.mjs";
 import { createDb } from "./lib/db.mjs";
+import { LEGACY_ONE_ONLY, relaxed } from "./lib/insecure.mjs";
+import { createMetrics } from "./lib/metrics.mjs";
 import { proxy } from "./lib/proxy.mjs";
 import { ROUTES, fastifyPath } from "./routes/index.mjs";
 
@@ -40,7 +42,13 @@ import { ROUTES, fastifyPath } from "./routes/index.mjs";
  * `tests/node-api/routes-table.test.mjs` asserts this list and `ROUTES` describe the same set, so
  * the duplication cannot drift — the one thing a hand-maintained list is bad at.
  */
-export const PORTABLE = ["GET /v1/learner/progress", "POST /v1/realtime-session-tickets"];
+export const PORTABLE = [
+  "GET /health",
+  "GET /ready",
+  "GET /metrics",
+  "GET /v1/learner/progress",
+  "POST /v1/realtime-session-tickets",
+];
 
 export function buildServer(config) {
   const {
@@ -51,6 +59,8 @@ export function buildServer(config) {
     allowHeaderAuth = false,
     corsAllowedOrigins = null,
     ticketSecret = "smoke-secret",
+    metricsToken = null,
+    metricsDevOpen = false,
     logger = false,
   } = config;
 
@@ -58,6 +68,7 @@ export function buildServer(config) {
 
   const app = Fastify({ logger, bodyLimit: 2 * 1024 * 1024 });
   const db = ported.size > 0 && databaseUrl ? createDb(databaseUrl) : null;
+  const metrics = createMetrics();
 
   // ── Middleware order is a security invariant (§2.5) ───────────────────────────────────────────
   // Effective order in Rust is CORS → maintenance → rate limit → trace → metrics → handler. CORS is
@@ -80,6 +91,21 @@ export function buildServer(config) {
     methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
   });
 
+  // tower-http's CorsLayer emits `vary` on EVERY response, including a plain GET with no Origin.
+  // `@fastify/cors` emits it only on a preflight, so a locally-served response was missing it while
+  // a proxied one had it (copied from Rust) — the same endpoint answering differently depending on
+  // whether it happened to be ported yet. Found by the N8 A/B differ on its first run against a
+  // ported route; it had been true of N4 and N5 since they landed, because nothing had ever
+  // compared a locally-served response's HEADERS to Rust's.
+  //
+  // `hasHeader` guard: on the proxied path the header is already there, and appending would emit it
+  // twice.
+  const VARY = "origin, access-control-request-method, access-control-request-headers";
+  app.addHook("onSend", (_req, reply, payload, done) => {
+    if (!reply.hasHeader("vary")) reply.header("vary", VARY);
+    done(null, payload);
+  });
+
   // Boot assertion, not a comment: `credentials: true` anywhere in this config is unshippable.
   if (config.corsCredentials === true) {
     throw new Error(
@@ -91,11 +117,35 @@ export function buildServer(config) {
   // ── Ported routes ─────────────────────────────────────────────────────────────────────────────
   // `ctx` is built once and closed over. Handlers take it as a third argument rather than reaching
   // for module state, so a handler is testable with a stub db and no server at all.
-  const ctx = { db, jwtSecret, allowHeaderAuth, ticketSecret, upstream };
+  const ctx = { db, jwtSecret, allowHeaderAuth, ticketSecret, upstream, metrics, metricsToken, metricsDevOpen };
   for (const route of ROUTES) {
     if (!ported.has(route.key)) continue;
-    app[route.method](fastifyPath(route.path), (req, reply) => route.handler(req, reply, ctx));
+    // `config.axumPath` carries the AXUM spelling of the path (`{id}`) so the metrics label matches
+    // Rust's. Fastify's own `routeOptions.url` is the `:id` form, which would silently produce a
+    // second, differently-named series for the same endpoint on a scrape of the two processes.
+    app[route.method](
+      fastifyPath(route.path),
+      { config: { axumPath: route.path } },
+      (req, reply) => route.handler(req, reply, ctx),
+    );
   }
+
+  // Port of `track_metrics` (lib.rs:398). Records EVERY request the shell sees, proxied ones
+  // included — and a proxied request has no local route, so it lands under Rust's own fallback
+  // label `<unmatched>`. That is not a gap: during the strangler the size of the `<unmatched>`
+  // series IS the share of traffic still being forwarded, which is the number a cutover needs.
+  //
+  // `as_millis() as u64` in Rust TRUNCATES; `Math.floor` matches it. Rounding would put a 4.6ms
+  // request in the le="5" bucket on one implementation and the le="10" bucket on the other.
+  app.addHook("onResponse", (req, reply, done) => {
+    metrics.record(
+      req.method,
+      req.routeOptions?.config?.axumPath ?? "<unmatched>",
+      reply.statusCode,
+      Math.floor(reply.elapsedTime),
+    );
+    done();
+  });
 
   // ── Everything else: proxied verbatim ─────────────────────────────────────────────────────────
   // `setNotFoundHandler` alone IS the strangler catch-all: anything not registered above falls
@@ -156,6 +206,11 @@ if (isMain) {
     allowHeaderAuth: ["1", "true"].includes(process.env.ALLOW_HEADER_AUTH ?? ""),
     corsAllowedOrigins: process.env.CORS_ALLOWED_ORIGINS ?? null,
     ticketSecret: process.env.REALTIME_GATEWAY_TICKET_SECRET ?? "smoke-secret",
+    // Mirrors lib.rs:84-96. An EMPTY METRICS_TOKEN counts as unset — docker-compose.yml passes
+    // variables through as `"${FOO:-}"`, so treating "" as a configured token would make the gate
+    // compare against the empty string and open on a header nobody sent.
+    metricsToken: process.env.METRICS_TOKEN ? process.env.METRICS_TOKEN : null,
+    metricsDevOpen: relaxed("METRICS_DEV_OPEN", LEGACY_ONE_ONLY),
   });
   app.listen({ host, port: Number(port) }).catch((e) => {
     console.error(e);
