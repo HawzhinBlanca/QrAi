@@ -170,25 +170,33 @@ export async function updateProgress(req, reply, ctx) {
     const updated = sm2Update(prior, quality);
     // Defensive clamp in case a pre-existing row stored a huge interval.
     const days = Math.min(Math.max(updated.intervalDays, 1), 3650);
-    const nextReview = new Date(Date.now() + days * 86_400_000);
 
-    await tx`
+    // The timestamp is generated and formatted BY POSTGRES, in one statement, and read back with
+    // RETURNING.
+    //
+    // The first version built it as `new Date(Date.now() + …)`. A JS Date holds MILLISECONDS, so
+    // the wire value came out as `.384` where Rust — formatting an in-memory chrono value — writes
+    // `.366908`. Measured, not assumed: 3 fractional digits against Rust's 6, on every single
+    // response. The N10 A/B did not catch it because its normalizer replaced nextReviewAt with a
+    // placeholder; the same class of bug then turned up in N14a where nothing was normalized, and
+    // that is what sent me back here.
+    //
+    // `now()` is transaction time rather than chrono's `Utc::now()`, so the INSTANT still differs by
+    // microseconds — it always would, and no test can pin it. The PRECISION is what a client sees
+    // and it now matches.
+    const [{ base, us }] = await tx`
       INSERT INTO learner_progress
         (tenant_id, learner_id, ayah_ref, easiness_factor, interval_days, repetitions,
          last_quality, next_review_at, updated_at)
       VALUES (${actor.tenantId}, ${actor.userId}, ${ayahRef}, ${updated.easinessFactor},
-              ${updated.intervalDays}, ${updated.repetitions}, ${quality}, ${nextReview}, now())
+              ${updated.intervalDays}, ${updated.repetitions}, ${quality},
+              now() + make_interval(days => ${days}), now())
       ON CONFLICT (tenant_id, learner_id, ayah_ref) DO UPDATE SET
         easiness_factor = ${updated.easinessFactor}, interval_days = ${updated.intervalDays},
         repetitions = ${updated.repetitions}, last_quality = ${quality},
-        next_review_at = ${nextReview}, updated_at = now()`;
-
-    // Read the timestamp BACK from Postgres and format it there. `to_rfc3339()` renders `+00:00`
-    // with 0/3/6/9 fractional digits; `Date#toISOString` renders `Z` with exactly 3. Formatting in
-    // SQL is the only thing that keeps the wire value identical — same trick as `getLearnerProgress`.
-    const [{ base, us }] = await tx`
-      SELECT to_char(${nextReview}::timestamptz AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS') AS base,
-             (EXTRACT(microseconds FROM ${nextReview}::timestamptz)::bigint % 1000000) AS us`;
+        next_review_at = now() + make_interval(days => ${days}), updated_at = now()
+      RETURNING to_char(next_review_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS') AS base,
+                (EXTRACT(microseconds FROM next_review_at)::bigint % 1000000) AS us`;
 
     // json! keys, alphabetical.
     return {

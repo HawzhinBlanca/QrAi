@@ -21,6 +21,7 @@ import { getLearnerProgress, getWeeklyProgress, updateProgress } from "./progres
 import { getAyah, getSurah, listSurahs } from "./quran.mjs";
 import { getEvalRun, listAgentRuns, listAuditEvents } from "./reports.mjs";
 import { createRealtimeTicket } from "./recitation.mjs";
+import { getSession, listActiveLearners, listSessionAlignments, listSessions } from "./sessions.mjs";
 
 /** `/v1/x/{id}/y` → `/v1/x/:id/y`. Axum 0.8 → Fastify. */
 export function fastifyPath(axumPath) {
@@ -102,6 +103,21 @@ export const ROUTES = [
     path: "/v1/eval-runs/{model_version}",
     handler: getEvalRun,
   },
+  // ── N14a: recitation READS. The three writes are N14b. ──────────────────────────────────────
+  { key: "GET /v1/recitation-sessions", method: "get", path: "/v1/recitation-sessions", handler: listSessions },
+  {
+    key: "GET /v1/recitation-sessions/{id}",
+    method: "get",
+    path: "/v1/recitation-sessions/{id}",
+    handler: getSession,
+  },
+  {
+    key: "GET /v1/recitation-sessions/{id}/alignments",
+    method: "get",
+    path: "/v1/recitation-sessions/{id}/alignments",
+    handler: listSessionAlignments,
+  },
+  { key: "GET /v1/learners/active", method: "get", path: "/v1/learners/active", handler: listActiveLearners },
   {
     key: "POST /v1/realtime-session-tickets",
     method: "post",
