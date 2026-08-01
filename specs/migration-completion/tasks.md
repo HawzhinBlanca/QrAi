@@ -70,9 +70,9 @@ log is committed rather than summarized. **FL9 stays open.**
 
 - [x] FL1 — Toolchain — Flutter SDK in user space; `flutter doctor` captured verbatim, gaps recorded.
 - [x] FL2 — Package + contract — `apps/flutter` skeleton, Dart models + typed client from `openapi.yaml`.
-- [ ] FL3 — Secure auth — bearer tokens in Keychain/Keystore; never prefs, logs, or disk.
-- [ ] FL4 — Mushaf reader — Uthmani rendering, RTL, canonical bytes preserved end to end.
-- [ ] FL5 — Consent-gated capture — no audio stream constructed before consent is granted.
+- [x] FL3 — Secure auth — bearer tokens in Keychain/Keystore; never prefs, logs, or disk.
+- [x] FL4 — Mushaf reader — Uthmani rendering, RTL, canonical bytes preserved end to end.
+- [x] FL5 — Consent-gated capture — no audio stream constructed before consent is granted.
 - [ ] FL6 — Feedback surfaces — tajweed + progress; nothing rendered without source/confidence/approval.
 - [ ] FL7 — Privacy + i18n + a11y — export/delete, locale switching, semantics labels, contrast.
 - [ ] FL8 — Offline/error states — no stale data presented as live.
