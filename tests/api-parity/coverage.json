@@ -2,7 +2,7 @@
   "$comment": "PAR6 — every Rust integration test accounted for. coverage.test.mjs FAILS if a #[test] in services/platform-api/tests/integration.rs has no entry here. If that is why your build is red: add an entry with a status of ported | deferred-to-phase-7 | mechanical-remainder. Do not delete the check. rustLine is informational and NOT asserted — it drifts on every edit above it, and a gate that fails on unrelated line shifts gets disabled.",
   "scope": "specs/api-parity-suite/plan.md option B (approved 2026-07-31)",
   "totals": {
-    "ported": 26,
+    "ported": 28,
     "mechanical-remainder": 46,
     "deferred-to-phase-7": 5
   },
@@ -468,6 +468,18 @@
       "rustLine": 3902,
       "status": "ported",
       "parityFile": "default.test.mjs"
+    },
+    {
+      "rustTest": "privacy_job_for_unknown_learner_is_not_found",
+      "rustLine": 1424,
+      "status": "ported",
+      "parityFile": "db-endpoints.test.mjs"
+    },
+    {
+      "rustTest": "privacy_job_answers_forbidden_before_not_found",
+      "rustLine": 1457,
+      "status": "ported",
+      "parityFile": "db-endpoints.test.mjs"
     }
   ]
 }

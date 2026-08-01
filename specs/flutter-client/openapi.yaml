@@ -724,6 +724,10 @@ paths:
       responses:
         '200': { description: export job, content: { application/json: { schema: { $ref: '#/components/schemas/PrivacyJob' } } } }
         '403': { $ref: '#/components/responses/Forbidden' }
+        # A learner that does not exist in this tenant. privacy_jobs.learner_id REFERENCES
+        # users(id), so before specs/privacy-job-404/ this was a 500 — a permanent failure
+        # wearing the status code of a transient one, on a right-to-erasure endpoint.
+        '404': { $ref: '#/components/responses/NotFound' }
   /v1/privacy/delete:
     post:
       tags: [privacy]
@@ -734,6 +738,10 @@ paths:
       responses:
         '200': { description: delete job, content: { application/json: { schema: { $ref: '#/components/schemas/PrivacyJob' } } } }
         '403': { $ref: '#/components/responses/Forbidden' }
+        # A learner that does not exist in this tenant. privacy_jobs.learner_id REFERENCES
+        # users(id), so before specs/privacy-job-404/ this was a 500 — a permanent failure
+        # wearing the status code of a transient one, on a right-to-erasure endpoint.
+        '404': { $ref: '#/components/responses/NotFound' }
 
   # ── pilot ─────────────────────────────────────────────────────────────────────────────────────
   /v1/pilot/invitations:
