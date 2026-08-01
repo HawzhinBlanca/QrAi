@@ -732,7 +732,7 @@ So the "blocked on the ci.yml migration list" reason for choosing Option B has e
 correct and in place; this is no longer a forced choice, just an unpromoted one.
 
 ## ADR-0022 — Deployable artifacts must be immutable and digest-pinned, so rollback has a target
-**Date:** 2026-07-30 · **Status:** Proposed (blocks P5.5) · **Deciders:** repo owner + whoever owns ops
+**Date:** 2026-07-30 · **Status:** Accepted (2026-08-01, option A) · **Deciders:** repo owner + whoever owns ops
 
 **Context.** `docker-compose.yml` builds every application service from source (`build:`); only
 `postgres` uses `image:`. No workflow builds or pushes a container image — `grep -i
@@ -777,6 +777,33 @@ immediately; (B) is what makes it disaster recovery. Do not let (A) become the r
 - Under (B), an incident acquires a dependency on the registry being reachable. That trade is
   deliberate and should be stated in the runbook, not discovered during an outage.
 - Storage grows with retained tags; a retention count is needed, mirroring `backup-db.sh`'s.
+
+**ACCEPTED 2026-08-01 — option (A), local tag retention.**
+
+The owner chose (A). This ADR recommended **(B) with (A) as the interim** and warned "do not let (A)
+become the resting state", so the divergence is recorded here rather than left implicit.
+
+What (A) delivers — `scripts/release-images.mjs` + `.github/workflows/release-image.yml`:
+- a STABLE tag per service per commit (`qrai/<service>:<short-sha>`), so a specific commit's image
+  can be named later;
+- the image DIGEST, published as a build artifact, satisfying `release-manifest.mjs`'s
+  `assertImageDigests()` with real values rather than relaxing the verifier to match reality;
+- RETENTION of the last N, so the previous image still exists when the current one turns out to be
+  wrong. The retention rule is a pure function with its own test, run BEFORE any pruning: a bug
+  there deletes the image you were about to roll back to.
+
+**What (A) explicitly does NOT deliver, and this is the part to keep visible:**
+- **It is not disaster recovery.** The tags live only on the host that built them; a replacement
+  host has nothing to roll back to. `P5.6` (DR drill) is therefore NOT satisfied by this and must
+  not be marked as though it were.
+- It gives no provenance chain outside that host, so nobody else can verify what ran.
+
+`docker-build.yml` is unchanged and is NOT this: it builds every image to verify the Dockerfiles and
+the non-root hardening, producing no stable identifier, no digest and no retention.
+
+**Revisit (B) when** the pilot runs on a host the team does not personally control, or when anyone
+outside the build host needs to verify a deployed digest. Neither is true today; both are
+foreseeable.
 
 **Status note.** Proposed, not accepted: this is an architectural change to how the system is
 deployed and the owner has not chosen between (A) and (B). **P5.5 cannot close until it is decided
