@@ -78,6 +78,25 @@ pub async fn create_agent_run(
             "confidence must be within [0, 1]".to_owned(),
         ));
     }
+    // FK1 — `agent_runs.learner_id` REFERENCES users(id). Without this the INSERT violates the FK
+    // and surfaces as an opaque 500; a missing referenced entity is a 404 (see review.rs).
+    //
+    // Only when PRESENT: learner_id is Option, and a learner-less run is legitimate — the
+    // mistake-pattern and practice-plan agents both write them. Firing on absent-vs-unknown would
+    // break the agents service silently.
+    //
+    // Tenant-scoped, mirroring the INSERT's own predicate: an unscoped check would let one tenant
+    // confirm the existence of another tenant's user ids.
+    if let Some(learner_id) = req.learner_id.as_deref() {
+        let exists = sqlx::query("SELECT 1 FROM users WHERE id = $1 AND tenant_id = $2")
+            .bind(learner_id)
+            .bind(&actor.tenant_id)
+            .fetch_optional(&mut *tx)
+            .await?;
+        if exists.is_none() {
+            return Err(ApiError::NotFound);
+        }
+    }
     // Full server-side mirror of canShowLearnerFacingAiOutput (packages/contracts/src/index.ts)
     // / statusForRun (services/agents/lib/gate.mjs): a status of "approved" is a claim that this
     // run's output may reach a learner directly, so it must independently satisfy every gate

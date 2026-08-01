@@ -255,6 +255,201 @@ for (const route of ["/v1/privacy/export", "/v1/privacy/delete"]) {
   });
 }
 
+// ── FK surface: a dangling reference is never a 500 ────────────────────────────────────────────
+
+/**
+ * FK4 — specs/fk-surface-sweep/plan.md §7.
+ *
+ * integration.rs:1424 — privacy_job_for_unknown_learner_is_not_found
+ *
+ * The same defect has been found and fixed three times now — teacher-reviews, privacy-jobs, and
+ * these — each time by accident while doing something else. This block exists so there is no fourth
+ * accident: it covers the endpoints that were WRONG *and* the ones that were already right, because
+ * nothing was stopping the correct ones from regressing into 500s.
+ *
+ * Run red against the unfixed binary first.
+ */
+const ghostId = () => `ghost-${Math.random().toString(36).slice(2, 10)}`;
+
+const sessionBody = (overrides) => ({
+  learnerId: "learner-1",
+  quranRef: { surahNumber: 1, ayahStart: 1, ayahEnd: 1, display: "1:1" },
+  sourceChecksum: "parity-checksum",
+  modelVersion: "model-v0.3",
+  language: "ar",
+  consent: {
+    recordingConsent: true,
+    audioRetention: "discard",
+    anonymizedLearning: false,
+    externalAsrProcessing: false,
+    guardianApproved: false,
+    consentVersion: "pilot-v1",
+  },
+  ...overrides,
+});
+
+const agentRunBody = (overrides) => ({
+  name: "fk-sweep",
+  goal: "coverage",
+  status: "queued",
+  confidence: 0.5,
+  reviewStatus: "draft",
+  sources: [],
+  ...overrides,
+});
+
+test("POST /v1/agent-runs is 404 for a learnerId that does not exist", async () => {
+  const res = await request(api.baseUrl, "/v1/agent-runs", {
+    method: "POST",
+    role: "ops",
+    body: agentRunBody({ learnerId: ghostId() }),
+  });
+  assert.equal(res.status, 404, `expected 404, got ${res.status} ${res.text}`);
+  assert.equal(res.body.error, "record not found");
+});
+
+test("POST /v1/agent-runs still accepts a run with NO learnerId", async () => {
+  // learner_id is Option — the mistake-pattern and practice-plan agents both write runs without
+  // one. If the new check fires on absent-vs-unknown, it breaks the agents service silently.
+  const res = await request(api.baseUrl, "/v1/agent-runs", {
+    method: "POST",
+    role: "ops",
+    body: agentRunBody({}),
+  });
+  assert.equal(res.status, 200, `a learner-less agent run must still be accepted: ${res.text}`);
+});
+
+test("POST /v1/recitation-sessions is 404 for a learnerId that does not exist", async () => {
+  const res = await request(api.baseUrl, "/v1/recitation-sessions", {
+    method: "POST",
+    role: "admin",
+    body: sessionBody({ learnerId: ghostId() }),
+  });
+  assert.equal(res.status, 404, `expected 404, got ${res.status} ${res.text}`);
+});
+
+test("POST /v1/recitation-sessions answers 403 BEFORE 404 for another learner", async () => {
+  // Second endpoint where this ordering decides between a fix and a vulnerability. If the existence
+  // check moved ahead of require_self_or_any, a learner could enumerate learner ids by reading
+  // 404-vs-403 on the product's most-called write.
+  for (const learnerId of ["learner-2", ghostId()]) {
+    const res = await request(api.baseUrl, "/v1/recitation-sessions", {
+      method: "POST",
+      role: "learner",
+      body: sessionBody({ learnerId }),
+    });
+    assert.equal(res.status, 403, "authorization must be decided before existence");
+  }
+});
+
+test("POST /v1/recitation-sessions is 400 NAMING an unknown modelVersion", async () => {
+  // 400 rather than 404, because modelVersion is a value from a fixed server-side vocabulary —
+  // like the agent-run status enum, which already 400s naming the value. It also disambiguates:
+  // this endpoint can fail on learnerId OR modelVersion, and the shared "record not found" string
+  // cannot say which, leaving a caller guessing between two very different fixes.
+  const unknown = ghostId();
+  const res = await request(api.baseUrl, "/v1/recitation-sessions", {
+    method: "POST",
+    role: "learner",
+    body: sessionBody({ modelVersion: unknown }),
+  });
+  assert.equal(res.status, 400, `expected 400, got ${res.status} ${res.text}`);
+  assert.match(res.body.error, new RegExp(unknown), "the error must name the value that was rejected");
+});
+
+test("the endpoints that were ALREADY correct stay correct", async () => {
+  // These were right by accident of who wrote them, not by any assertion. Pinned so the next sweep
+  // does not have to rediscover them.
+  const checks = [
+    ["/v1/pilot/invitations", "admin", { learnerId: ghostId() }, 404],
+    ["/v1/realtime-session-tickets", "learner", { sessionId: ghostId() }, 404],
+    [`/v1/recitation-sessions/${ghostId()}/request-teacher-review`, "learner", {}, 404],
+    [`/v1/recitation-sessions/${ghostId()}/alignments`, "learner", { alignments: [] }, 404],
+  ];
+  for (const [path, role, body, expected] of checks) {
+    const res = await request(api.baseUrl, path, { method: "POST", role, body });
+    assert.equal(res.status, expected, `${path} must stay ${expected}, got ${res.status}`);
+  }
+});
+
+test("alignments store the model version AS GIVEN, and refuse an unknown one", async () => {
+  // THE assertion for FK3, and it reads the row back rather than trusting the 200.
+  //
+  // The bug being fixed produced a perfectly good response: an unknown model was silently stored as
+  // "model-v0.3" and the caller was told it worked. A test that only checked the status code would
+  // have passed against the bug, and would pass again if the fallback ever came back.
+  const [session] = await queryJson(
+    `SELECT id FROM recitation_sessions
+     WHERE learner_id = 'learner-1' AND tenant_id = $1
+     ORDER BY started_at DESC LIMIT 1`,
+    ["hikmah-pilot-erbil"],
+  );
+  assert.ok(session, "a session owned by learner-1 is required");
+  const path = `/v1/recitation-sessions/${session.id}/alignments`;
+  const alignment = {
+    wordId: "1:1:1",
+    status: "matched",
+    confidence: 0.9,
+    startMs: 0,
+    endMs: 100,
+    heardText: "a",
+    canonicalText: "b",
+  };
+
+  // A valid NON-DEFAULT model. If the fallback returns, this stores "model-v0.3" and the mismatch
+  // is visible in the database even though the response looks identical.
+  const stored = await request(api.baseUrl, path, {
+    method: "POST",
+    role: "learner",
+    body: { alignments: [alignment], modelVersion: "tajweed-v0.1" },
+  });
+  assert.equal(stored.status, 200);
+  const rows = await queryJson(
+    "SELECT DISTINCT model_version_id FROM word_alignments WHERE session_id = $1",
+    [session.id],
+  );
+  assert.deepEqual(
+    rows.map((r) => r.model_version_id),
+    ["tajweed-v0.1"],
+    "the alignment must record the model the caller named — silently relabelling it is provenance falsification",
+  );
+
+  // An unknown model is now refused rather than relabelled.
+  const unknown = ghostId();
+  const rejected = await request(api.baseUrl, path, {
+    method: "POST",
+    role: "learner",
+    body: { alignments: [alignment], modelVersion: unknown },
+  });
+  assert.equal(rejected.status, 400, `expected 400, got ${rejected.status} ${rejected.text}`);
+  assert.match(rejected.body.error, new RegExp(unknown));
+
+  // An ABSENT model still defaults — that is a default, not a substitution, because the caller
+  // asserted nothing. Breaking this would break every client that omits the field.
+  const defaulted = await request(api.baseUrl, path, {
+    method: "POST",
+    role: "learner",
+    body: { alignments: [alignment] },
+  });
+  assert.equal(defaulted.status, 200, "an absent modelVersion must still default, not 400");
+});
+
+test("POST /v1/scholar-approvals binds reviewerId to the ACTOR, so it cannot dangle", async () => {
+  const res = await request(api.baseUrl, "/v1/scholar-approvals", {
+    method: "POST",
+    role: "scholar",
+    body: {
+      topic: "fk sweep",
+      reviewerId: ghostId(),
+      status: "scholar-approved",
+      risk: "low",
+      sources: [{ id: "s", title: "t", citation: "c", url: null }],
+    },
+  });
+  assert.equal(res.status, 200);
+  assert.equal(res.body.reviewerId, "scholar-1", "a supplied reviewerId must be ignored, not stored");
+});
+
 // ── POST /v1/pilot/session/logout ──────────────────────────────────────────────────────────────
 
 test("POST /v1/pilot/session/logout is idempotent with no cookie, and clears the cookie", async () => {
