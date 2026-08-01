@@ -134,7 +134,23 @@ short of it. Nothing was wrong with the reasoning; the conclusion was simply onl
 and the comment's confident tone is what made it read as finished. **Second time this session** — the
 model-version fallback in `specs/fk-surface-sweep/` had the same shape.
 
-### 3. My probe reported a false positive, and the writeup says so
+### 3. 🟢 The ambiguity panic fired in the wild, on CI, on my own test
+
+All seven tests failed on CI with *"the gateway never became healthy"* while passing locally.
+
+`.github/workflows/ci.yml` exports `ALLOW_INSECURE_DEFAULTS=1` for the whole job. This suite inherits
+`process.env` and adds `ALLOW_INSECURE_SECRETS=1` and `GATEWAY_ALLOW_MISSING_ORIGIN=1` — and
+`enforce_legacy_alias` (`specs/insecure-defaults-split/`) **panics when the deprecated alias is set
+alongside any per-control variable**, because there is no defensible way to combine them.
+
+So the gateway refused to boot. **That is the guard doing exactly its job**, on the first
+configuration that ever hit it — written four PRs ago with a unit test and an exit-101 demonstration,
+and now proven against a real mixed configuration nobody constructed on purpose.
+
+Fixed by clearing the alias in the spawned environment. Any future test that spawns these services
+and sets a per-control variable must do the same, and the reason is in the code beside it.
+
+### 4. My probe reported a false positive, and the writeup says so
 
 The `u64::MAX` ticket was flagged "UPGRADE ACCEPTED with a bad ticket". It was a correctly-signed,
 unexpired ticket, and accepting it was right. Carrying that forward as a finding would have

@@ -69,6 +69,16 @@ before(async () => {
       REALTIME_GATEWAY_BIND: `127.0.0.1:${port}`,
       REALTIME_GATEWAY_TICKET_SECRET: SECRET,
       GATEWAY_TENANT_ID: TENANT,
+      // MUST be cleared, and CI is where this was learned. `.github/workflows/ci.yml` exports
+      // ALLOW_INSECURE_DEFAULTS=1 for the whole job; this spawn inherits process.env, and
+      // `enforce_legacy_alias` (specs/insecure-defaults-split/) PANICS when the deprecated alias is
+      // set alongside any per-control variable — deliberately, because there is no defensible way to
+      // combine them. So the gateway refused to boot and all seven tests failed with "never became
+      // healthy". The guard doing exactly its job, on the first configuration that ever hit it.
+      //
+      // Empty, not deleted: `enforce_legacy_alias` treats an empty value as unset, and an explicit
+      // empty string is visible to a reader in a way that a missing key is not.
+      ALLOW_INSECURE_DEFAULTS: "",
       ALLOW_INSECURE_SECRETS: "1",
       GATEWAY_ALLOW_MISSING_ORIGIN: "1",
       DISABLE_RATE_LIMIT: "1",
