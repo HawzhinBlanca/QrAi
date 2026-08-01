@@ -211,13 +211,43 @@ pub async fn resolve_actor(
                     }
                 }
 
-                // Roll the idle expiry
+                // Roll the idle expiry.
+                //
+                // MUST run inside begin_tenant_tx. `pilot_sessions` has FORCE ROW LEVEL SECURITY and
+                // a policy of `tenant_id = app.current_tenant_id()` (0021_pilot_identity.sql), and
+                // this statement previously executed on the raw pool — with no `app.tenant_id` set,
+                // because the lookup above deliberately goes through a SECURITY DEFINER function
+                // (the caller has no tenant context yet at auth time).
+                //
+                // Under the restricted production role that means the UPDATE matched ZERO rows and
+                // said nothing: every request looked like it rolled the session, and the session
+                // actually expired 8 hours after bootstrap regardless of activity. It passed tests
+                // because the test pool's `after_connect` sets the tenant GUC on every connection
+                // (integration.rs), so the policy was satisfied there and only there.
                 let new_idle = now + Duration::hours(8);
-                sqlx::query("UPDATE pilot_sessions SET last_seen_at = now(), idle_expires_at = $1 WHERE id = $2")
-                    .bind(new_idle)
-                    .bind(&session_id)
-                    .execute(&state.pool)
-                    .await?;
+                let mut tx = crate::begin_tenant_tx(&state.pool, &tenant_id).await?;
+                let rolled = sqlx::query(
+                    "UPDATE pilot_sessions SET last_seen_at = now(), idle_expires_at = $1
+                     WHERE id = $2 AND tenant_id = $3",
+                )
+                .bind(new_idle)
+                .bind(&session_id)
+                .bind(&tenant_id)
+                .execute(&mut *tx)
+                .await?;
+                tx.commit().await?;
+
+                // Assert the write landed. A silent zero-row UPDATE is what made the original bug
+                // invisible; without this check the same failure could return under any future
+                // policy change and again look like it was working.
+                if rolled.rows_affected() != 1 {
+                    tracing::error!(
+                        "pilot session {session_id} idle-expiry roll affected {} rows, expected 1 — \
+                         the session was resolved but could not be updated (RLS context or policy?)",
+                        rolled.rows_affected()
+                    );
+                    return Err(ApiError::Unauthorized);
+                }
 
                 return Ok(Actor {
                     tenant_id,

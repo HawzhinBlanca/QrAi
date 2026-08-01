@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test, { after, before } from "node:test";
 
 import { assertMatchesContract } from "./lib/contract.mjs";
-import { queryJson, request, startApi } from "./lib/harness.mjs";
+import { RLS_PROBE_ROLE, TENANT, queryJson, request, startApi, withDb } from "./lib/harness.mjs";
 
 /**
  * C1 — the five database-backed pairs that had NEITHER a fixture nor a parity test.
@@ -473,4 +473,128 @@ test("POST /v1/pilot/session/logout is idempotent with no cookie, and clears the
   for (const attribute of ["HttpOnly", "Secure", "SameSite=Strict", "Path=/"]) {
     assert.ok(setCookie.includes(attribute), `clearing cookie must keep ${attribute}`);
   }
+});
+
+// ── the pilot-session idle-expiry roll, under real RLS ─────────────────────────────────────────
+
+/**
+ * The mechanism behind an audit finding: `auth.rs` rolled `pilot_sessions.idle_expires_at` on the
+ * RAW POOL, with no `app.tenant_id` set — because the session lookup deliberately goes through a
+ * SECURITY DEFINER function (the caller has no tenant context yet at auth time).
+ *
+ * `pilot_sessions` has FORCE ROW LEVEL SECURITY and a `tenant_id = app.current_tenant_id()` policy,
+ * so under the restricted production role that UPDATE matched ZERO rows — silently. Every request
+ * looked like it rolled the session; the session actually expired 8 hours after bootstrap no matter
+ * how active the learner was.
+ *
+ * It passed every test because `integration.rs`'s pool sets the tenant GUC in `after_connect`, so
+ * the policy was satisfied there and only there. This asserts the mechanism directly, with
+ * `SET LOCAL ROLE` so it is decisive even on CI, whose DATABASE_URL is a superuser that would
+ * otherwise bypass RLS unconditionally and let the test pass against the bug.
+ */
+test("rolling a pilot session's idle expiry REQUIRES tenant context under RLS", async () => {
+  const suffix = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  const sessionId = `pilot-session-rls-${suffix}`;
+
+  // Seed with the harness's tenant context, as the app itself would.
+  await withDb(async (client) => {
+    await client.query(
+      `INSERT INTO pilot_sessions (id, tenant_id, learner_id, token_hash, csrf_token,
+                                   last_seen_at, idle_expires_at, absolute_expires_at)
+       VALUES ($1, $2, 'learner-1', $3, 'csrf-probe', now(),
+               now() + interval '8 hours', now() + interval '30 days')`,
+      [sessionId, TENANT, `hash-${suffix}`],
+    );
+  });
+
+  const rollAs = (withContext) =>
+    withDb(
+      async (client) => {
+        await client.query("BEGIN");
+        // Without this, CI's superuser DATABASE_URL bypasses RLS and the UPDATE succeeds either
+        // way — the test could never fail, whatever the policy said.
+        await client.query(`SET LOCAL ROLE ${RLS_PROBE_ROLE}`);
+        if (withContext) {
+          await client.query("SELECT set_config('app.tenant_id', $1, true)", [TENANT]);
+        }
+        const res = await client.query(
+          `UPDATE pilot_sessions SET last_seen_at = now(), idle_expires_at = now() + interval '8 hours'
+           WHERE id = $1 AND tenant_id = $2`,
+          [sessionId, TENANT],
+        );
+        await client.query("COMMIT");
+        return res.rowCount;
+      },
+      // tenant: null — this test supplies its own context on purpose; the harness default would
+      // set it session-wide and mask exactly the failure being asserted.
+      { tenant: null },
+    );
+
+  assert.equal(
+    await rollAs(false),
+    0,
+    "WITHOUT tenant context the roll silently affects zero rows — this is the bug, and it is why " +
+      "auth.rs now runs inside begin_tenant_tx AND asserts rows_affected() == 1",
+  );
+  assert.equal(await rollAs(true), 1, "WITH tenant context the roll lands");
+
+  await withDb((client) => client.query("DELETE FROM pilot_sessions WHERE id = $1", [sessionId]));
+});
+
+test("a pilot-cookie request actually MOVES the session's idle expiry", async () => {
+  // End to end, and the only observable difference between the fixed and broken handler. The broken
+  // version returned 200 and rolled nothing, so a success assertion would have passed against it —
+  // the expiry timestamp is what tells them apart.
+  //
+  // Decisive only when the API runs as a role RLS applies to. Locally DATABASE_URL is quran_ai_app,
+  // so it bites; on CI it is the superuser, where this passes without proving anything. The
+  // SQL-level test above is the one that is decisive in both, and auth.rs's rows_affected() == 1
+  // assertion is what makes a recurrence loud rather than silent.
+  const minted = await request(api.baseUrl, "/v1/pilot/invitations", {
+    method: "POST",
+    role: "admin",
+    body: { learnerId: "learner-1" },
+  });
+  assert.equal(minted.status, 200, `minting an invitation failed: ${minted.text}`);
+  const inviteToken = minted.body.token ?? minted.body.inviteToken;
+  assert.ok(inviteToken, `no invite token in ${JSON.stringify(minted.body)}`);
+
+  const booted = await request(api.baseUrl, "/v1/pilot/session/bootstrap", {
+    method: "POST",
+    tenant: null,
+    headers: { origin: "http://localhost:5173" },
+    body: { token: inviteToken },
+  });
+  assert.equal(booted.status, 200, `bootstrap failed: ${booted.text}`);
+  const setCookie = booted.headers.getSetCookie().find((c) => c.startsWith("__Host-qrai-pilot="));
+  assert.ok(setCookie, "bootstrap must set the pilot cookie");
+  const cookie = setCookie.split(";")[0];
+  const csrf = booted.body.csrfToken;
+
+  const expiryOf = async () => {
+    const [row] = await queryJson(
+      `SELECT idle_expires_at FROM pilot_sessions
+       WHERE learner_id = 'learner-1' AND tenant_id = $1
+       ORDER BY last_seen_at DESC LIMIT 1`,
+      [TENANT],
+    );
+    return row?.idle_expires_at?.valueOf();
+  };
+  const before = await expiryOf();
+  assert.ok(before, "the bootstrapped session must exist");
+
+  // The roll is `now() + 8h`, so the clock has to move for the value to change.
+  await new Promise((r) => setTimeout(r, 1100));
+  const authed = await request(api.baseUrl, "/v1/learner/progress", {
+    tenant: null,
+    headers: { cookie, origin: "http://localhost:5173", "x-csrf-token": csrf },
+  });
+  assert.equal(authed.status, 200, `the pilot cookie must authenticate: ${authed.text}`);
+
+  const after = await expiryOf();
+  assert.ok(
+    after > before,
+    `idle_expires_at did not move (${before} -> ${after}) — the session is not being kept alive, ` +
+      `so an active learner is logged out 8 hours after bootstrap regardless of activity`,
+  );
 });

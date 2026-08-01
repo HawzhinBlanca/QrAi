@@ -239,12 +239,17 @@ function getCanonicalWords(surahNumber, ayahStart, ayahEnd) {
   return words;
 }
 
-// CORS so the browser web app (served from a different origin) can call this service.
-const CORS_HEADERS = {
-  "access-control-allow-origin": "*",
-  "access-control-allow-methods": "GET, POST, OPTIONS",
-  "access-control-allow-headers": "content-type, x-tenant-id, x-user-id, x-user-role, x-trace-id, x-ml-api-key",
-};
+// NO CORS. This service is not a browser origin.
+//
+// It used to send `access-control-allow-origin: *` so the web app could call it directly — but that
+// path was removed when the platform-api proxy (`/v1/ml/*`) was introduced precisely so `ML_API_KEY`
+// stays server-side and never ships to a page. A wildcard CORS header on a service the browser must
+// never call directly only invites the pattern back: it tells any origin that a cross-origin request
+// here is welcome, and the only thing then missing is the key.
+//
+// Server-to-server callers (platform-api, the agents service) do not perform preflight and are
+// unaffected. Kept as an empty object so the response-header spread sites need no branching.
+const CORS_HEADERS = {};
 
 function jsonResponse(response, status, body) {
   response.writeHead(status, {
@@ -968,7 +973,14 @@ const server = createServer((request, response) => {
   }
 
   if (url.pathname !== "/health") {
-    const apiKey = request.headers["x-ml-api-key"] ?? url.searchParams.get("apiKey");
+    // HEADER ONLY. `?apiKey=` used to be accepted, which puts a live credential in a place that is
+    // logged by default almost everywhere a request travels: access logs, proxy logs, browser
+    // history, and any `Referer` sent onward. A header is not automatically logged by any of them.
+    //
+    // Nothing legitimate relied on the query form — the browser reaches this service through the
+    // platform-api proxy (`/v1/ml/*`), which sends `x-ml-api-key` server-side and never exposes the
+    // key to a page at all.
+    const apiKey = request.headers["x-ml-api-key"];
     if (!apiKey || apiKey !== ML_API_KEY) {
       jsonResponse(response, 401, { error: "unauthorized" });
       return;

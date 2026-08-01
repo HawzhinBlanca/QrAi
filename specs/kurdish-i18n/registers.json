@@ -7,9 +7,9 @@
     "brand": "product name — not translated"
   },
   "counts": {
-    "ui": 166,
+    "ui": 167,
     "religious": 112,
-    "product": 101,
+    "product": 103,
     "brand": 2
   },
   "keys": {
@@ -1268,6 +1268,15 @@
       "register": "product"
     },
     "teacherSurface.reviewFailed": {
+      "register": "product"
+    },
+    "app.inviteRequired.title": {
+      "register": "ui"
+    },
+    "app.inviteRequired.body": {
+      "register": "product"
+    },
+    "app.inviteRequired.help": {
       "register": "product"
     }
   }

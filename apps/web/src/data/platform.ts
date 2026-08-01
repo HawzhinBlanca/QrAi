@@ -79,7 +79,7 @@ export const localeCapabilities: LocaleCapability[] = [
     label: "English",
     nativeName: "English",
     direction: "ltr",
-    interface: { availability: "available", source: "source-language", bundlePath: "apps/web/src/locales/en.json", keyCount: 381 },
+    interface: { availability: "available", source: "source-language", bundlePath: "apps/web/src/locales/en.json", keyCount: 384 },
     quranTranslation: { availability: "none", evidence: "No English verse-translation bundle is shipped." },
   },
   {
