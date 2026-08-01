@@ -119,9 +119,21 @@ export function buildServer(config) {
   //
   // Rewritten here rather than per-handler so a route added later cannot forget it. The equality
   // test is exact: a handler that deliberately sets some other type keeps it.
+  //
+  // Third correction, from N13a: `@fastify/cors` DOES emit `vary` — but only `Origin`, and only
+  // when an allowlist is configured. A `hasHeader` guard alone therefore left the wrong value in
+  // place whenever CORS_ALLOWED_ORIGINS was set, which is every production deploy. tower-http emits
+  // the full triple in BOTH configurations.
+  //
+  // Forced on locally-served responses; PROXIED responses keep whatever upstream sent, verbatim.
+  // Overwriting a proxied header with a constant would make the strangler lie about the origin's
+  // answer, which is the one thing it must never do. `routeOptions.config.axumPath` is set only on
+  // routes this process registered, so it is exactly the "served locally" test.
   const VARY = "origin, access-control-request-method, access-control-request-headers";
-  app.addHook("onSend", (_req, reply, payload, done) => {
-    if (!reply.hasHeader("vary")) reply.header("vary", VARY);
+  app.addHook("onSend", (req, reply, payload, done) => {
+    const servedLocally = Boolean(req.routeOptions?.config?.axumPath);
+    if (servedLocally) reply.header("vary", VARY);
+    else if (!reply.hasHeader("vary")) reply.header("vary", VARY);
     if (reply.getHeader("content-type") === "application/json; charset=utf-8") {
       reply.header("content-type", "application/json");
     }
@@ -145,7 +157,13 @@ export function buildServer(config) {
   // ── Ported routes ─────────────────────────────────────────────────────────────────────────────
   // `ctx` is built once and closed over. Handlers take it as a third argument rather than reaching
   // for module state, so a handler is testable with a stub db and no server at all.
-  const ctx = { db, jwtSecret, allowHeaderAuth, ticketSecret, upstream, metrics, metricsToken, metricsDevOpen };
+  // `pilotAllowedOrigins` is the SAME allowlist CORS uses — Rust reads CORS_ALLOWED_ORIGINS for
+  // both (auth.rs:40). Passing the parsed list rather than the raw string keeps one parse.
+  const ctx = {
+    db, jwtSecret, allowHeaderAuth, ticketSecret, upstream,
+    metrics, metricsToken, metricsDevOpen,
+    pilotAllowedOrigins: allowList,
+  };
   for (const route of ROUTES) {
     if (!ported.has(route.key)) continue;
     // `config.axumPath` carries the AXUM spelling of the path (`{id}`) so the metrics label matches

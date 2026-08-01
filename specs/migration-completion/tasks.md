@@ -39,7 +39,9 @@ Every wave follows the same five steps (`plan.md §2`), and step 4 is not option
       existing dependency provides it, so these two routes need a new runtime dependency handling
       credentials. AGENTS.md requires an ADR; ADR-0025 is written and **Proposed**, awaiting the
       owner. Implementing first would be deciding it by writing code.
-- [ ] N13 — Pilot sessions — `bootstrap`, `logout`, `invitations`; `__Host-` cookie attrs, idle roll.
+- [x] N13a — Pilot cookie AUTH path — the credential path every ported route shares; `__Host-` cookie
+      parsing, Origin + CSRF gates, and the idle roll inside a tenant transaction.
+- [ ] N13b — Pilot ROUTES — `bootstrap`, `logout`, `invitations`; cookie attributes on the wire.
 - [ ] N14 — Recitation — 6 operations; the 805-line handler, FK 404s, gateway-verified tickets.
 - [ ] N15 — Review gates — 5 operations; AI feedback withheld absent source + confidence + approval.
 - [ ] N16 — ML/ASR proxies — 4 operations; server-side key injection, 16 MB limit.
