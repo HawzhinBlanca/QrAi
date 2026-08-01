@@ -14,6 +14,7 @@
  * here by `fastifyPath()` rather than transcribed — a hand-written second copy of 38 paths is 38
  * chances to typo a route into never being served, which looks exactly like a route that proxies.
  */
+import { createAgentRun } from "./agent-write.mjs";
 import { issueToken } from "./auth.mjs";
 import { health, metrics, ready } from "./infra.mjs";
 import { asrForceAlign, asrTranscribe, predictAlignment, predictTajweed } from "./ml-proxy.mjs";
@@ -121,6 +122,8 @@ export const ROUTES = [
   },
   // ── N11: read-only reporting. Three routes, three DIFFERENT staff role lists. ───────────────
   { key: "GET /v1/agent-runs", method: "get", path: "/v1/agent-runs", handler: listAgentRuns },
+  // ── N18: the ONLY place an agent run's status is set. The approval gate lives here. ─────────
+  { key: "POST /v1/agent-runs", method: "post", path: "/v1/agent-runs", handler: createAgentRun },
   { key: "GET /v1/audit-events", method: "get", path: "/v1/audit-events", handler: listAuditEvents },
   {
     key: "GET /v1/eval-runs/{model_version}",

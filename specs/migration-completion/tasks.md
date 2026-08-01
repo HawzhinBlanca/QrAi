@@ -31,7 +31,7 @@ Every wave follows the same five steps (`plan.md §2`), and step 4 is not option
 - [x] N9 — Quran routes — 3 read-only routes; canonical text byte-identical, digest-anchored, never normalized.
 - [x] N10 — Progress writes — `POST /v1/learner/progress` + weekly; SM-2 arithmetic pinned to Rust.
 - [x] N11 — Agent/audit/eval READS — `GET` agent-runs, audit-events, eval-runs; jsonb key order, f32 narrowing.
-- [ ] N18 — `POST /v1/agent-runs` — split out of N11: it carries the learner-facing AI gate (a
+- [x] N18 — `POST /v1/agent-runs` — split out of N11: it carries the learner-facing AI gate (a
       server-side re-derivation of `canShowLearnerFacingAiOutput`) and is the ONLY place an agent
       run's status is set. Three reads and one security-critical write do not belong in one slice.
 - [x] N12a — `POST /v1/auth/token` — JWT minting; admin/ops, DB-derived role, cross-verified with Rust.

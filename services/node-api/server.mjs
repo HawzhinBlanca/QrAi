@@ -58,6 +58,7 @@ export const PORTABLE = [
   "POST /v1/learner/progress",
   "GET /v1/learner/progress/weekly",
   "GET /v1/agent-runs",
+  "POST /v1/agent-runs",
   "GET /v1/audit-events",
   "GET /v1/eval-runs/{model_version}",
   "GET /v1/recitation-sessions",
