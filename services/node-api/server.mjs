@@ -1,12 +1,16 @@
 /**
- * N2/N4/N5 — the strangler shell.
- * specs/node-backend-port/plan.md §3
+ * The strangler shell.
+ * specs/node-backend-port/plan.md §3 · specs/migration-completion/plan.md §2 (N7)
  *
  *   client ──► THIS ──┬── ported route  ──► Postgres
  *                     └── everything else ──► Rust platform-api, verbatim
  *
- * Every route not listed in `PORTED` is proxied unchanged. That is what makes each step of the port
- * independently reversible: backing a route out is deleting one entry, not redeploying a rewrite.
+ * Every route not named in `NODE_API_PORTED` is proxied unchanged. That is what makes each step of
+ * the port independently reversible: backing a route out is deleting one entry, not redeploying a
+ * rewrite.
+ *
+ * N7 moved the handlers into `routes/` and the forwarder into `lib/proxy.mjs`. What is left here is
+ * exactly the shell: config, middleware order, registration, the catch-all, and error shaping.
  *
  * Env:
  *   PLATFORM_API_UPSTREAM   REQUIRED, no default — the Rust service to proxy to.
@@ -15,33 +19,45 @@
  * plus the same DATABASE_URL / JWT_SECRET / ALLOW_HEADER_AUTH / CORS_ALLOWED_ORIGINS the Rust
  * service reads, so the two can be started from one environment.
  */
-import { createHash, randomUUID } from "node:crypto";
-
 import Fastify from "fastify";
 import cors from "@fastify/cors";
 
-import { ApiError, NotFound, requireAnyRole, requireSelfOrAny, resolveActor } from "./lib/authz.mjs";
+import { ApiError } from "./lib/authz.mjs";
 import { createDb } from "./lib/db.mjs";
-import { issueRealtimeTicket } from "./lib/ticket.mjs";
+import { LEGACY_ONE_ONLY, relaxed } from "./lib/insecure.mjs";
+import { stringifyRust } from "./lib/json.mjs";
+import { createMetrics } from "./lib/metrics.mjs";
+import { proxy } from "./lib/proxy.mjs";
+import { ROUTES, fastifyPath } from "./routes/index.mjs";
 
-/** services/platform-api/src/lib.rs:19 */
-const REALTIME_TICKET_TTL_SECONDS = 300;
-
-/** Route keys that MAY be served locally. Nothing is ported unless NODE_API_PORTED names it. */
-export const PORTABLE = ["GET /v1/learner/progress", "POST /v1/realtime-session-tickets"];
-
-const HOP_BY_HOP = new Set([
-  "connection",
-  "keep-alive",
-  "proxy-authenticate",
-  "proxy-authorization",
-  "te",
-  "trailer",
-  "transfer-encoding",
-  "upgrade",
-  "host",
-  "content-length",
-]);
+/**
+ * Route keys that MAY be served locally. Nothing is ported unless NODE_API_PORTED names it.
+ *
+ * A LITERAL array, deliberately, for two reasons. `scripts/cutover-readiness.mjs:33` reads this file
+ * as TEXT and matches `/export const PORTABLE = \[([^\]]*)\]/s`; a computed value
+ * (`ROUTES.map(r => r.key)`) makes that regex miss, and the traffic-share check then reports zero
+ * portable routes while still exiting 0 — a gate that fails silently open. And an allowlist that
+ * derives itself from the handlers says "anything someone wrote a handler for is servable", which is
+ * the opposite of what an allowlist is for.
+ *
+ * `tests/node-api/routes-table.test.mjs` asserts this list and `ROUTES` describe the same set, so
+ * the duplication cannot drift — the one thing a hand-maintained list is bad at.
+ */
+export const PORTABLE = [
+  "GET /health",
+  "GET /ready",
+  "GET /metrics",
+  "GET /v1/quran/surahs",
+  "GET /v1/quran/surahs/{surah_number}",
+  "GET /v1/quran/ayahs/{surah_number}/{ayah_number}",
+  "GET /v1/learner/progress",
+  "POST /v1/learner/progress",
+  "GET /v1/learner/progress/weekly",
+  "GET /v1/agent-runs",
+  "GET /v1/audit-events",
+  "GET /v1/eval-runs/{model_version}",
+  "POST /v1/realtime-session-tickets",
+];
 
 export function buildServer(config) {
   const {
@@ -52,7 +68,8 @@ export function buildServer(config) {
     allowHeaderAuth = false,
     corsAllowedOrigins = null,
     ticketSecret = "smoke-secret",
-    ticketTtlSeconds = 300,
+    metricsToken = null,
+    metricsDevOpen = false,
     logger = false,
   } = config;
 
@@ -60,6 +77,7 @@ export function buildServer(config) {
 
   const app = Fastify({ logger, bodyLimit: 2 * 1024 * 1024 });
   const db = ported.size > 0 && databaseUrl ? createDb(databaseUrl) : null;
+  const metrics = createMetrics();
 
   // ── Middleware order is a security invariant (§2.5) ───────────────────────────────────────────
   // Effective order in Rust is CORS → maintenance → rate limit → trace → metrics → handler. CORS is
@@ -82,6 +100,39 @@ export function buildServer(config) {
     methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
   });
 
+  // tower-http's CorsLayer emits `vary` on EVERY response, including a plain GET with no Origin.
+  // `@fastify/cors` emits it only on a preflight, so a locally-served response was missing it while
+  // a proxied one had it (copied from Rust) — the same endpoint answering differently depending on
+  // whether it happened to be ported yet. Found by the N8 A/B differ on its first run against a
+  // ported route; it had been true of N4 and N5 since they landed, because nothing had ever
+  // compared a locally-served response's HEADERS to Rust's.
+  //
+  // `hasHeader` guard: on the proxied path the header is already there, and appending would emit it
+  // twice.
+  //
+  // Second divergence in the same place: axum's `Json` responder sets `application/json` with NO
+  // charset; Fastify serializes an object as `application/json; charset=utf-8`. JSON is UTF-8 by
+  // definition (RFC 8259 §8.1) so nothing MISREADS the body — but it is a different header on every
+  // JSON route in the API, and a client with an exact content-type check sees a different service.
+  // Found by the N9 differ; like `vary`, it had been true of N4 and N5 since they landed.
+  //
+  // Rewritten here rather than per-handler so a route added later cannot forget it. The equality
+  // test is exact: a handler that deliberately sets some other type keeps it.
+  const VARY = "origin, access-control-request-method, access-control-request-headers";
+  app.addHook("onSend", (_req, reply, payload, done) => {
+    if (!reply.hasHeader("vary")) reply.header("vary", VARY);
+    if (reply.getHeader("content-type") === "application/json; charset=utf-8") {
+      reply.header("content-type", "application/json");
+    }
+    done(null, payload);
+  });
+
+  // serde_json keeps a float a float: a whole-number f64 serializes as `100.0`, and
+  // JSON.stringify emits `100`. One serializer for every reply, so a handler cannot forget — it
+  // only has to wrap the value in `f64()`. Strings and Buffers bypass this, so /health and the
+  // Prometheus text are untouched.
+  app.setReplySerializer((payload) => stringifyRust(payload));
+
   // Boot assertion, not a comment: `credentials: true` anywhere in this config is unshippable.
   if (config.corsCredentials === true) {
     throw new Error(
@@ -90,172 +141,38 @@ export function buildServer(config) {
     );
   }
 
-  const key = (req) => `${req.method} ${req.routeOptions?.url ?? new URL(req.url, "http://x").pathname}`;
-
-  // ── Ported: GET /v1/learner/progress (N4) ─────────────────────────────────────────────────────
-  if (ported.has("GET /v1/learner/progress")) {
-    app.get("/v1/learner/progress", async (req, reply) => {
-      const resolved = await resolveActor(req, { jwtSecret, allowHeaderAuth });
-      if (resolved.delegate) return proxy(req, reply, upstream);
-      const { actor } = resolved;
-
-      // TWO gates, with DIFFERENT lists — handlers/progress.rs:81-96. A scholar fails the first one;
-      // collapsing them into a single check would silently grant scholars access.
-      requireAnyRole(actor, ["learner", "teacher", "admin", "ops"]);
-      const requested = req.query.learnerId;
-      const learnerId = requested ?? actor.userId;
-      if (requested !== undefined) {
-        // Note the allowlist: teacher/admin/ops, NOT scholar. Transcribed from the Rust, not guessed
-        // — my first attempt included scholar, which would have been a real privilege widening.
-        requireSelfOrAny(actor, requested, ["teacher", "admin", "ops"]);
-      }
-
-      const body = await db.withTenant(actor.tenantId, async (tx) => {
-        const [{ count: totalSessions }] = await tx`
-          SELECT COUNT(*)::int AS count FROM recitation_sessions
-          WHERE tenant_id = ${actor.tenantId} AND learner_id = ${learnerId}`;
-
-        const reps = await tx`
-          SELECT repetitions FROM learner_progress
-          WHERE tenant_id = ${actor.tenantId} AND learner_id = ${learnerId}`;
-
-        // Mean per-card min(repetitions/4, 1), rounded to 3 decimals — inlined in the Rust handler
-        // (progress.rs:119-124), so it is pinned here rather than re-derived.
-        const mastery =
-          reps.length === 0
-            ? 0
-            : Math.round(
-                (reps.reduce((a, r) => a + Math.min(r.repetitions / 4, 1), 0) / reps.length) * 1000,
-              ) / 1000;
-
-        // chrono's `to_rfc3339()` renders `+00:00`, NOT the `Z` that Date#toISOString produces, and
-        // it prints 0/3/6 fractional digits (SecondsFormat::AutoSi). Formatting this in Postgres and
-        // trimming the same way is the only thing that keeps the wire value identical.
-        const [{ base, us }] = await tx`
-          SELECT to_char(MIN(next_review_at) AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS') AS base,
-                 (EXTRACT(microseconds FROM MIN(next_review_at))::bigint % 1000000) AS us
-          FROM learner_progress
-          WHERE tenant_id = ${actor.tenantId} AND learner_id = ${learnerId}`;
-
-        const days = await tx`
-          SELECT DISTINCT (started_at AT TIME ZONE 'UTC')::date AS d
-          FROM recitation_sessions
-          WHERE tenant_id = ${actor.tenantId} AND learner_id = ${learnerId}
-          ORDER BY d DESC`;
-
-        // serde_json is built without `preserve_order`, so `json!` serializes keys ALPHABETICALLY.
-        // Insertion order here is therefore part of matching the Rust bytes, not a style choice.
-        return {
-          learnerId,
-          mastery,
-          nextReviewAt: base === null ? null : `${base}${fractional(Number(us))}+00:00`,
-          streak: computeStreak(days.map((r) => r.d)),
-          tenantId: actor.tenantId,
-          totalSessions,
-        };
-      });
-
-      return reply.send(body);
-    });
+  // ── Ported routes ─────────────────────────────────────────────────────────────────────────────
+  // `ctx` is built once and closed over. Handlers take it as a third argument rather than reaching
+  // for module state, so a handler is testable with a stub db and no server at all.
+  const ctx = { db, jwtSecret, allowHeaderAuth, ticketSecret, upstream, metrics, metricsToken, metricsDevOpen };
+  for (const route of ROUTES) {
+    if (!ported.has(route.key)) continue;
+    // `config.axumPath` carries the AXUM spelling of the path (`{id}`) so the metrics label matches
+    // Rust's. Fastify's own `routeOptions.url` is the `:id` form, which would silently produce a
+    // second, differently-named series for the same endpoint on a scrape of the two processes.
+    app[route.method](
+      fastifyPath(route.path),
+      { config: { axumPath: route.path } },
+      (req, reply) => route.handler(req, reply, ctx),
+    );
   }
 
-  // ── Ported: POST /v1/realtime-session-tickets (N5) ────────────────────────────────────────────
-  // Transcribed from handlers/recitation.rs:298-400 AFTER tests/api-parity/realtime-ticket.test.mjs
-  // existed. The first attempt was written without that oracle and failed 7 of its 9 checks while
-  // passing every pre-existing test in the repo — wrong role lists, consent from the wrong source,
-  // no sample-rate negotiation, and neither of the two rows it must persist.
-  if (ported.has("POST /v1/realtime-session-tickets")) {
-    app.post("/v1/realtime-session-tickets", async (req, reply) => {
-      const resolved = await resolveActor(req, { jwtSecret, allowHeaderAuth });
-      if (resolved.delegate) return proxy(req, reply, upstream);
-      const { actor } = resolved;
-
-      // NOT the usual staff list: teacher and scholar are refused outright. A ticket is a live
-      // audio credential, and reusing the read-route allowlist would hand one to every teacher.
-      requireAnyRole(actor, ["learner", "admin", "ops"]);
-
-      // 422, not 400: axum's `Json<T>` extractor rejects a body that fails to deserialize BEFORE
-      // the handler runs, and serde's rejection is 422. The A/B against Rust caught this — the
-      // status is what clients branch on, so it is matched.
-      //
-      // RECORDED DIVERGENCE, not fixed: Rust's body is serde's own text, e.g.
-      //   "Failed to deserialize the JSON body into the target type: missing field `sessionId` at
-      //    line 1 column 2"
-      // Reproducing that byte-for-byte would mean reimplementing serde's error formatting, including
-      // line/column offsets. It also leaks deserializer internals, so copying it is not obviously
-      // desirable. Named in the N6 report rather than silently smoothed over.
-      const sessionId = req.body?.sessionId;
-      if (typeof sessionId !== "string" || sessionId === "") {
-        throw new ApiError("sessionId is required", 422);
-      }
-
-      const body = await db.withTenant(actor.tenantId, async (tx) => {
-        const [row] = await tx`
-          SELECT id, tenant_id, learner_id, external_processing_allowed
-          FROM recitation_sessions
-          WHERE id = ${sessionId} AND tenant_id = ${actor.tenantId}`;
-        if (!row) throw NotFound();
-
-        requireSelfOrAny(actor, row.learner_id, ["admin", "ops"]);
-
-        // The gateway trusts this flag to decide whether audio may leave for external ASR, so it
-        // comes from the session's SERVER-SIDE column — never from the request, and never from the
-        // consent snapshot JSON (which is the learner's stated preference, not the resolved gate).
-        const externalAsr = row.external_processing_allowed === true;
-
-        const requested = Array.isArray(req.body?.requestedSampleRates)
-          ? req.body.requestedSampleRates.filter((sr) => [16000, 24000, 48000].includes(sr))
-          : [];
-        const allowedSampleRates = requested.length > 0 ? requested : [16000];
-
-        const auditId = `audit-${randomUUID()}`;
-        const ticketId = `rt-ticket-${randomUUID()}`;
-        const expiresAt = Math.floor(Date.now() / 1000) + REALTIME_TICKET_TTL_SECONDS;
-        const token = issueRealtimeTicket(
-          {
-            sessionId: row.id,
-            tenantId: actor.tenantId,
-            learnerId: row.learner_id,
-            externalAsrProcessing: externalAsr,
-            expiresAtUnixSeconds: expiresAt,
-            nonce: randomUUID(),
-          },
-          ticketSecret,
-        );
-
-        await tx`
-          INSERT INTO audit_events (id, tenant_id, actor_id, action, subject_type, subject_id, metadata)
-          VALUES (${auditId}, ${actor.tenantId}, ${actor.userId},
-                  'recitation.realtime-ticket.issued', 'realtime_session_ticket', ${ticketId},
-                  ${tx.json({ trace_id: req.headers["x-trace-id"] ?? null })})`;
-
-        // Only the HASH is stored. Persisting the raw token would put a live credential in a table
-        // that privacy exports and operator queries both read.
-        await tx`
-          INSERT INTO realtime_session_tickets
-            (id, tenant_id, session_id, learner_id, token_hash, expires_at,
-             allowed_sample_rates, external_asr_processing, audit_event_id)
-          VALUES (${ticketId}, ${actor.tenantId}, ${row.id}, ${row.learner_id},
-                  ${createHash("sha256").update(token).digest("hex")},
-                  ${new Date(expiresAt * 1000)}, ${allowedSampleRates}, ${externalAsr}, ${auditId})`;
-
-        return {
-          sessionId: row.id,
-          tenantId: actor.tenantId,
-          learnerId: row.learner_id,
-          // `expires_at.to_string()` on a u64 — a DECIMAL STRING of unix seconds. Serializing a Date
-          // here would put RFC3339 on the wire and break every client that parses it as a number.
-          expiresAt: String(expiresAt),
-          allowedSampleRates,
-          externalAsrProcessing: externalAsr,
-          token,
-          auditEventId: auditId,
-        };
-      });
-
-      return reply.send(body);
-    });
-  }
+  // Port of `track_metrics` (lib.rs:398). Records EVERY request the shell sees, proxied ones
+  // included — and a proxied request has no local route, so it lands under Rust's own fallback
+  // label `<unmatched>`. That is not a gap: during the strangler the size of the `<unmatched>`
+  // series IS the share of traffic still being forwarded, which is the number a cutover needs.
+  //
+  // `as_millis() as u64` in Rust TRUNCATES; `Math.floor` matches it. Rounding would put a 4.6ms
+  // request in the le="5" bucket on one implementation and the le="10" bucket on the other.
+  app.addHook("onResponse", (req, reply, done) => {
+    metrics.record(
+      req.method,
+      req.routeOptions?.config?.axumPath ?? "<unmatched>",
+      reply.statusCode,
+      Math.floor(reply.elapsedTime),
+    );
+    done();
+  });
 
   // ── Everything else: proxied verbatim ─────────────────────────────────────────────────────────
   // `setNotFoundHandler` alone IS the strangler catch-all: anything not registered above falls
@@ -290,89 +207,6 @@ export function buildServer(config) {
   return app;
 }
 
-/**
- * chrono's SecondsFormat::AutoSi: no fractional part when it is zero, 3 digits when the value is a
- * whole millisecond, 6 otherwise. `Date#toISOString` always prints exactly 3 and always ends in `Z`,
- * so using it here would put a different string on the wire for the same instant.
- */
-export function fractional(us) {
-  if (!us) return "";
-  if (us % 1000 === 0) return `.${String(us / 1000).padStart(3, "0")}`;
-  return `.${String(us).padStart(6, "0")}`;
-}
-
-/**
- * Port of `compute_streak` (handlers/progress.rs:247). Consecutive days ending today or yesterday;
- * anything older is a streak of zero.
- */
-export function computeStreak(daysDesc) {
-  if (!daysDesc || daysDesc.length === 0) return 0;
-  const day = (d) => Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate()) / 86_400_000;
-  const now = new Date();
-  const today = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()) / 86_400_000;
-  const first = day(daysDesc[0]);
-  if (first !== today && first !== today - 1) return 0;
-
-  let streak = 0;
-  let expected = first;
-  for (const d of daysDesc) {
-    const v = day(d);
-    if (v === expected) {
-      streak += 1;
-      expected -= 1;
-    } else if (v < expected) {
-      break;
-    }
-  }
-  return streak;
-}
-
-/**
- * Forward a request upstream and copy the response back verbatim.
- *
- * Verbatim is the whole contract: status, body BYTES, and every response header except the
- * hop-by-hop ones. Set-Cookie in particular must survive with its attributes intact — the
- * `__Host-qrai-pilot` cookie's Secure/HttpOnly/SameSite/Path are exactly what a careless proxy
- * drops, and nothing downstream would notice until a pilot learner's session broke.
- */
-async function proxy(req, reply, upstream) {
-  const headers = {};
-  for (const [k, v] of Object.entries(req.headers)) {
-    if (!HOP_BY_HOP.has(k.toLowerCase())) headers[k] = v;
-  }
-
-  const hasBody = !["GET", "HEAD"].includes(req.method);
-  const upstreamRes = await fetch(new URL(req.url, upstream), {
-    method: req.method,
-    headers,
-    // req.body is already parsed by Fastify; re-serialize. `rawBody` would be better but needs a
-    // content-type-agnostic parser, and every body this API accepts is JSON.
-    body: hasBody && req.body !== undefined ? JSON.stringify(req.body) : undefined,
-    redirect: "manual",
-  });
-
-  for (const [k, v] of upstreamRes.headers) {
-    if (HOP_BY_HOP.has(k.toLowerCase()) || k.toLowerCase() === "set-cookie") continue;
-    reply.header(k, v);
-  }
-  // getSetCookie() preserves MULTIPLE Set-Cookie headers; iterating headers collapses them into one
-  // comma-joined value, which silently corrupts any cookie whose Expires attribute contains a comma.
-  for (const c of upstreamRes.headers.getSetCookie()) reply.header("set-cookie", c);
-
-  reply.code(upstreamRes.status);
-
-  const body = Buffer.from(await upstreamRes.arrayBuffer());
-  // Fastify stamps a content-type on any payload it serializes. Upstream responses that carry NONE
-  // — the /metrics 404, empty error bodies — would come back with one invented by the proxy, which
-  // the Phase 5 differ caught as `keys differ ... got [.., content-type]`. Send nothing at all when
-  // there was nothing, so a header the origin never set is never manufactured.
-  if (!upstreamRes.headers.has("content-type")) {
-    reply.removeHeader("content-type");
-    return body.length === 0 ? reply.send() : reply.send(body);
-  }
-  return reply.send(body);
-}
-
 /** Started directly (not imported by a test) — mirrors the isMain gate in ml-inference/server.mjs. */
 const isMain = process.argv[1] && import.meta.url === `file://${process.argv[1]}`;
 if (isMain) {
@@ -399,6 +233,11 @@ if (isMain) {
     allowHeaderAuth: ["1", "true"].includes(process.env.ALLOW_HEADER_AUTH ?? ""),
     corsAllowedOrigins: process.env.CORS_ALLOWED_ORIGINS ?? null,
     ticketSecret: process.env.REALTIME_GATEWAY_TICKET_SECRET ?? "smoke-secret",
+    // Mirrors lib.rs:84-96. An EMPTY METRICS_TOKEN counts as unset — docker-compose.yml passes
+    // variables through as `"${FOO:-}"`, so treating "" as a configured token would make the gate
+    // compare against the empty string and open on a header nobody sent.
+    metricsToken: process.env.METRICS_TOKEN ? process.env.METRICS_TOKEN : null,
+    metricsDevOpen: relaxed("METRICS_DEV_OPEN", LEGACY_ONE_ONLY),
   });
   app.listen({ host, port: Number(port) }).catch((e) => {
     console.error(e);

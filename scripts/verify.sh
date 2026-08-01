@@ -121,12 +121,30 @@ if [[ "$FAST" != "yes" ]]; then
   # PAR6: tests/api-parity/coverage.test.mjs belongs HERE, not in the DB-gated block below. It only
   # reads integration.rs + coverage.json, so "is every Rust test accounted for" has nothing to do
   # with Postgres. The parity suite ITSELF is DB- and binary-gated further down.
-  run "test: node services"       "node --test scripts/fixture-normalize.test.mjs scripts/diff-api-fixtures.test.mjs scripts/fixture-coverage.test.mjs services/ml-inference/alignment.test.mjs services/ml-inference/marks-parity.test.mjs services/ml-inference/tajweed.test.mjs services/ml-inference/server.test.mjs services/agents/agents.test.mjs scripts/release-manifest.test.mjs scripts/release-build-evidence.test.mjs scripts/release-evidence-summary.test.mjs scripts/smoke-evidence.test.mjs scripts/smoke-database.test.mjs tests/api-parity/coverage.test.mjs tests/node-api/ticket-vectors.test.mjs tests/node-api/authz.test.mjs tests/node-api/shell.test.mjs tests/contract/coverage.test.mjs tests/contract/cutover-readiness.test.mjs tests/contract/boundary-references.test.mjs tests/i18n/registers.test.mjs tests/i18n/locale-parity.test.mjs tests/i18n/drafts.test.mjs tests/security/legacy-insecure-flag.test.mjs"
+  run "test: node services"       "node --test scripts/fixture-normalize.test.mjs scripts/diff-api-fixtures.test.mjs scripts/fixture-coverage.test.mjs services/ml-inference/alignment.test.mjs services/ml-inference/marks-parity.test.mjs services/ml-inference/tajweed.test.mjs services/ml-inference/server.test.mjs services/agents/agents.test.mjs scripts/release-manifest.test.mjs scripts/release-build-evidence.test.mjs scripts/release-evidence-summary.test.mjs scripts/smoke-evidence.test.mjs scripts/smoke-database.test.mjs tests/api-parity/coverage.test.mjs tests/node-api/ticket-vectors.test.mjs tests/node-api/authz.test.mjs tests/node-api/shell.test.mjs tests/node-api/routes-table.test.mjs tests/node-api/metrics-render.test.mjs tests/node-api/rust-json.test.mjs tests/contract/coverage.test.mjs tests/contract/cutover-readiness.test.mjs tests/contract/boundary-references.test.mjs tests/i18n/registers.test.mjs tests/i18n/locale-parity.test.mjs tests/i18n/drafts.test.mjs tests/security/legacy-insecure-flag.test.mjs"
   # apps/mobile is NOT a pnpm workspace member, so the TS `test: ts` line above never covered it and
   # its consent/auth/audio-format helpers went unguarded (a real audioFormat bug shipped there). The
   # helpers import ONLY node builtins, so this needs no install — just Node's type-stripping to read
   # the .ts directly. Same explicit-path style as the node services line above.
   run "test: mobile"              "node --experimental-strip-types --test apps/mobile/lib/session.test.ts"
+
+  # FL1/FL2 — the Flutter client. SKIPPED, loudly, when the SDK is absent: it is a 2.1 GB user-space
+  # install and neither CI nor a fresh clone has it, so making it mandatory would turn every other
+  # machine's verify.sh red for a reason unrelated to the change under test. `--fatal-infos` is
+  # deliberate — the analyzer's `info` tier is where `avoid_dynamic_calls` and `unawaited_futures`
+  # live, and both are ways canonical text or a credential goes wrong quietly.
+  #
+  # This gate covers ANALYSIS and HEADLESS TESTS only. It is not, and must never be reported as,
+  # device proof: no Xcode and no Android cmdline-tools on this machine, so FL9's iOS/Android matrix
+  # stays open (specs/migration-completion/research.md §1).
+  if command -v flutter >/dev/null 2>&1; then
+    run "analyze: flutter client"  "cd apps/flutter && flutter pub get --enforce-lockfile >/dev/null && dart analyze --fatal-infos"
+    run "test: flutter client"     "cd apps/flutter && flutter test"
+  else
+    say "analyze + test: flutter client"
+    echo "    • SKIP — no \`flutter\` on PATH. Install the SDK to include apps/flutter."
+  fi
+
   # P4-T1: restore-db.sh's pre-connection guards. The critical one asserts the script has NO
   # DATABASE_URL fallback — verify.sh (line 28 of this file) exports a default DATABASE_URL pointing
   # at a real local database, so a restore script that fell back to it would overwrite a developer's
@@ -204,7 +222,7 @@ if [[ "$FAST" != "yes" ]]; then
     # weaken anything from an already-restricted role, and it refuses to report a hollow pass). CI's
     # DATABASE_URL is deterministic, so CI runs it as its own step — a named boundary, not a gap.
     run "test: api parity suite (live Postgres)" \
-      "cargo build --manifest-path $API && node --test tests/api-parity/lib/harness.test.mjs tests/api-parity/default.test.mjs tests/api-parity/auth-disabled.test.mjs tests/api-parity/cors.test.mjs tests/api-parity/metrics.test.mjs tests/api-parity/ml-proxy.test.mjs tests/api-parity/realtime-ticket.test.mjs tests/api-parity/db-endpoints.test.mjs tests/api-parity/proxy-endpoints.test.mjs tests/api-parity/contract-shapes.test.mjs tests/api-parity/hostile-input.test.mjs tests/node-api/db-tenant.test.mjs"
+      "cargo build --manifest-path $API && node --test tests/api-parity/lib/harness.test.mjs tests/api-parity/default.test.mjs tests/api-parity/auth-disabled.test.mjs tests/api-parity/cors.test.mjs tests/api-parity/metrics.test.mjs tests/api-parity/ml-proxy.test.mjs tests/api-parity/realtime-ticket.test.mjs tests/api-parity/db-endpoints.test.mjs tests/api-parity/proxy-endpoints.test.mjs tests/api-parity/contract-shapes.test.mjs tests/api-parity/hostile-input.test.mjs tests/api-parity/infra-parity.test.mjs tests/api-parity/quran-parity.test.mjs tests/api-parity/progress-parity.test.mjs tests/api-parity/reports-parity.test.mjs tests/node-api/db-tenant.test.mjs"
   else
     say "test: platform-api integration + api parity suite"
     if [[ "$RELEASE" == "yes" ]]; then
