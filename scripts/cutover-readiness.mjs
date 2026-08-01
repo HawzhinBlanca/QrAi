@@ -171,6 +171,17 @@ export function coveredPairs(rustPairs, fixtureSteps, paritySourceText) {
   }
   // The parity suite builds paths from template literals, so match on the path shape for ANY method:
   // a parity test that exercises a path proves that path is reachable and asserted.
+  //
+  // ── A known looseness, measured rather than assumed (C4) ────────────────────────────────────
+  // This half of the rule is METHOD-BLIND: exercising GET /v1/scholar-approvals also marks
+  // POST /v1/scholar-approvals covered. Checked on 2026-08-01 — 19 pairs match a fixture with the
+  // exact method, 11 rely on this shape rule, and ALL 11 are genuinely exercised with the correct
+  // method somewhere in tests/api-parity/. So the count is honest today, and this rule would not
+  // notice if it stopped being.
+  //
+  // Deliberately NOT tightened: parsing methods out of the parity sources is a bigger and more
+  // fragile change than the risk warrants, and tightening it would reclassify pairs as uncovered on
+  // a technicality while real tests exercise them. Recorded in specs/contract-coverage-closure/.
   const parityShapes = new Set(
     [...paritySourceText.matchAll(/["\'`](\/(?:v1\/[^"\'`\s]*|health|ready|metrics))["\'`]/g)].map((m) =>
       shape(m[1]),
