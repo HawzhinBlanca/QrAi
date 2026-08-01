@@ -357,8 +357,44 @@ pub enum ApiError {
     Unavailable(String),
 }
 
+/// The two SQLSTATEs a caller-supplied NUL byte (`U+0000`) produces, depending on column type:
+///
+/// - `22021` `character_not_in_repertoire` — into a `text` column:
+///   *invalid byte sequence for encoding "UTF8": 0x00*
+/// - `22P05` `untranslatable_character` — into `jsonb`:
+///   *unsupported Unicode escape sequence*
+///
+/// **`22P05` was added after the plan.** The plan said "`22021` only", written before measuring that
+/// the same input produces a different code when the column is `jsonb` — which is why
+/// `POST /v1/agent-runs` with a NUL inside `sources` was the one surface still 500ing after the
+/// first fix. Same defect, same caller-supplied byte, different column type.
+///
+/// SQLSTATE class `22` is "Data Exception": the value cannot be represented, which is the caller's
+/// problem and not a server fault. But only THESE TWO codes, deliberately — other class-22 codes are
+/// not unambiguously caller-supplied. `22003` numeric_value_out_of_range is exactly how the SM-2
+/// `interval_days` overflow surfaced (`1675d62`), and mapping it to 400 would have reported that
+/// SERVER bug as a client error and hidden it.
+///
+/// These two are safe because **nothing in this service emits a NUL byte**, so every occurrence is
+/// caller-supplied by construction. The service is UTF-8 end to end (Rust `String`, Postgres UTF8),
+/// so a NUL is the only untranslatable character either code can be reporting.
+const SQLSTATE_NUL_BYTE: [&str; 2] = ["22021", "22P05"];
+
 impl From<sqlx::Error> for ApiError {
     fn from(e: sqlx::Error) -> Self {
+        // Checked before the match: these arrive as sqlx::Error::Database, which would otherwise
+        // fall to the catch-all below and become a 500.
+        if e.as_database_error()
+            .and_then(|db| db.code())
+            .is_some_and(|code| SQLSTATE_NUL_BYTE.contains(&code.as_ref()))
+        {
+            // A fixed message, NOT the Postgres text. `Self::Database` redacts raw database errors
+            // because they can carry table and constraint names and, on constraint violations, the
+            // conflicting values themselves. A 400 must not become the way around that.
+            return Self::BadRequest(
+                "request contains a NUL byte (U+0000), which cannot be stored".to_owned(),
+            );
+        }
         match e {
             sqlx::Error::RowNotFound => Self::NotFound,
             // Pool acquire timed out — every connection is in use. This is load, not a fault: a 503
@@ -408,6 +444,88 @@ pub fn next_id(prefix: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// N1 — the SQLSTATE mapping itself, not only its effect through one handler.
+    /// specs/nul-byte-5xx/plan.md §5
+    ///
+    /// This conversion sits on essentially every `await?` in the service, so a wrong condition here
+    /// changes how EVERY database error is reported. The parity suite proves the 400 reaches the
+    /// wire on 16 real endpoints; this proves the rule those 16 rest on, including the far more
+    /// important negative case: **anything that is not a NUL byte must still be a 500.** A 400 on a
+    /// genuine server fault reads as the caller's problem and makes the bug invisible.
+    #[test]
+    fn only_a_nul_byte_sqlstate_becomes_a_bad_request() {
+        // A minimal sqlx::Error::Database carrying a chosen SQLSTATE. sqlx's own PgDatabaseError is
+        // not constructible from outside the crate, so the code is exercised through the same
+        // `as_database_error().code()` path a real error takes.
+        #[derive(Debug)]
+        struct FakeDbError(&'static str);
+        impl std::fmt::Display for FakeDbError {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                write!(
+                    f,
+                    "table \"users\" constraint \"idx_users_tenant_email_unique\""
+                )
+            }
+        }
+        impl std::error::Error for FakeDbError {}
+        impl sqlx::error::DatabaseError for FakeDbError {
+            fn message(&self) -> &str {
+                "unsupported Unicode escape sequence"
+            }
+            fn code(&self) -> Option<std::borrow::Cow<'_, str>> {
+                Some(std::borrow::Cow::Borrowed(self.0))
+            }
+            fn as_error(&self) -> &(dyn std::error::Error + Send + Sync + 'static) {
+                self
+            }
+            fn as_error_mut(&mut self) -> &mut (dyn std::error::Error + Send + Sync + 'static) {
+                self
+            }
+            fn into_error(self: Box<Self>) -> Box<dyn std::error::Error + Send + Sync + 'static> {
+                self
+            }
+            fn kind(&self) -> sqlx::error::ErrorKind {
+                sqlx::error::ErrorKind::Other
+            }
+        }
+        let as_api =
+            |code: &'static str| ApiError::from(sqlx::Error::Database(Box::new(FakeDbError(code))));
+
+        // A NUL byte, in a text column and in jsonb.
+        for code in ["22021", "22P05"] {
+            match as_api(code) {
+                ApiError::BadRequest(message) => {
+                    assert!(
+                        message.contains("NUL"),
+                        "{code}: must name the problem: {message}"
+                    );
+                    // The fixed message must not forward the database's, which carries a table and
+                    // an index name here — Database(_) redacts that, and a 400 must not become the
+                    // way around the redaction.
+                    assert!(
+                        !message.contains("users"),
+                        "{code}: leaked a table name: {message}"
+                    );
+                    assert!(
+                        !message.contains("Unicode"),
+                        "{code}: forwarded Postgres text: {message}"
+                    );
+                }
+                other => panic!("{code} must be a 400, got {other:?}"),
+            }
+        }
+
+        // THE NEGATIVE CASE. Every other SQLSTATE — including the rest of class 22 — must still be
+        // a 500. 22003 is numeric_value_out_of_range, which is how the SM-2 interval overflow
+        // surfaced: as a 400 it would have read as the caller's fault and been ignored.
+        for code in ["22003", "22001", "23505", "23503", "42P01", "40001"] {
+            assert!(
+                matches!(as_api(code), ApiError::Database(_)),
+                "{code} must stay a 500 — mapping it to 400 would hide a server fault"
+            );
+        }
+    }
 
     /// A client-facing 500 for a DB error must never echo the raw sqlx/Postgres error text: it can
     /// contain table/constraint names and, for constraint-violation DETAIL lines, the actual

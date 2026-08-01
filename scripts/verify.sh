@@ -196,7 +196,7 @@ if [[ "$FAST" != "yes" ]]; then
     # weaken anything from an already-restricted role, and it refuses to report a hollow pass). CI's
     # DATABASE_URL is deterministic, so CI runs it as its own step — a named boundary, not a gap.
     run "test: api parity suite (live Postgres)" \
-      "cargo build --manifest-path $API && node --test tests/api-parity/lib/harness.test.mjs tests/api-parity/default.test.mjs tests/api-parity/auth-disabled.test.mjs tests/api-parity/cors.test.mjs tests/api-parity/metrics.test.mjs tests/api-parity/ml-proxy.test.mjs tests/api-parity/realtime-ticket.test.mjs tests/api-parity/db-endpoints.test.mjs tests/api-parity/proxy-endpoints.test.mjs tests/api-parity/contract-shapes.test.mjs tests/node-api/db-tenant.test.mjs"
+      "cargo build --manifest-path $API && node --test tests/api-parity/lib/harness.test.mjs tests/api-parity/default.test.mjs tests/api-parity/auth-disabled.test.mjs tests/api-parity/cors.test.mjs tests/api-parity/metrics.test.mjs tests/api-parity/ml-proxy.test.mjs tests/api-parity/realtime-ticket.test.mjs tests/api-parity/db-endpoints.test.mjs tests/api-parity/proxy-endpoints.test.mjs tests/api-parity/contract-shapes.test.mjs tests/api-parity/hostile-input.test.mjs tests/node-api/db-tenant.test.mjs"
   else
     say "test: platform-api integration + api parity suite"
     if [[ "$RELEASE" == "yes" ]]; then
