@@ -87,11 +87,22 @@ expect_fail "metrics-dev-open" "$PARITY_DIR/metrics.test.mjs" \
 
 # ── The other half: unmutated, everything must be green ──────────────────────────────────────────
 # Without this, a suite that failed unconditionally would satisfy every check above.
+# --test-concurrency=1 for the same reason scripts/verify.sh serializes this suite: every file
+# shares ONE database and `assertAB` issues its two requests concurrently, so a row another file
+# inserts between them fails the comparison on DATA rather than on behaviour. Measured, 3 runs:
+# concurrent -> 3 failures, a different test each time; serialized -> clean.
+#
+# This line was missed when verify.sh was fixed, and CI caught it — the mutation loop above runs one
+# file at a time so it was never affected, while this control run globs all of them.
 say "control: with no mutation, the whole suite must pass"
-if node --test "$PARITY_DIR"/*.test.mjs "$PARITY_DIR"/lib/*.test.mjs >/dev/null 2>&1; then
+control_out="$(node --test --test-concurrency=1 "$PARITY_DIR"/*.test.mjs "$PARITY_DIR"/lib/*.test.mjs 2>&1)"
+if [[ $? -eq 0 ]]; then
   echo "    ok  clean run is green"
 else
+  # Print WHY. The previous version discarded stdout and stderr, so a red control run cost a full
+  # CI round-trip to diagnose — the failing test name was never reported anywhere.
   echo "    ✗ the unmutated suite is RED — the mutation results above prove nothing." >&2
+  printf '%s\n' "$control_out" | grep -E "^not ok [0-9]+ - |^# (pass|fail)" >&2 || true
   fail=1
 fi
 
