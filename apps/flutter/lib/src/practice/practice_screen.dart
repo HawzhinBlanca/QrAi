@@ -219,9 +219,9 @@ class _PracticeScreenState extends State<PracticeScreen> {
                 title: Text('Discard my audio after this session'),
               ),
               RadioListTile<String>(
-                key: ValueKey<String>('retention-session-only'),
-                value: Consent.retentionSessionOnly,
-                title: Text('Keep it for this session only'),
+                key: ValueKey<String>('retention-teacher-review'),
+                value: Consent.retentionTeacherReview,
+                title: Text('Keep it so a teacher can review it'),
               ),
               RadioListTile<String>(
                 key: ValueKey<String>('retention-training'),

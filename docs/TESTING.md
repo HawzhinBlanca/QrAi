@@ -161,6 +161,19 @@ Hardware is faked at the seam, never stubbed into green:
 **Running it on a device is `FL9` and is still open** — `flutter test` is not device proof, and the
 web build this repo can produce is not either.
 
+### Against a live stack
+
+`test/live_gateway_test.dart` runs the client's real transport against a real `realtime-gateway`
+with a real ticket. It is gated on `QRAI_LIVE_TICKET` and skips otherwise, so `verify.sh` is
+unaffected. Full recipe and output:
+[`specs/migration-completion/evidence/live-gateway-e2e.md`](../specs/migration-completion/evidence/live-gateway-e2e.md).
+
+> **Deployment requirement, found by running it.** A gateway serving the Flutter client must set
+> **`GATEWAY_ALLOW_MISSING_ORIGIN=1`**. Browsers always send `Origin` on a WebSocket upgrade and
+> native clients never do, so without it the gateway fails closed and **every recitation is a 403**.
+> It relaxes only that branch — a request that does carry an Origin is still checked against the
+> allowlist. The gateway must also be pinned to the serving tenant with `GATEWAY_TENANT_ID`.
+
 ## Conventions
 - Every spec.md acceptance criterion (EARS) maps to ≥1 automated test that runs in `verify.sh`.
 - Property/fuzz tests for pure logic (parsers, checksums, contracts) where cheap.
