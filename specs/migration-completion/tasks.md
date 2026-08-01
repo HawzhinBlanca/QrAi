@@ -40,8 +40,24 @@ Every wave follows the same five steps (`plan.md §2`), and step 4 is not option
 
 ## Track F — Flutter client
 
-- [ ] FL1 — Toolchain — Flutter SDK in user space; `flutter doctor` captured verbatim, gaps recorded.
-- [ ] FL2 — Package + contract — `apps/flutter` skeleton, Dart models + typed client from `openapi.yaml`.
+### FL1 RESULT: SDK installed and working. Both device toolchains still blocked.
+
+Evidence: [`evidence/fl1-flutter-doctor.log`](evidence/fl1-flutter-doctor.log), captured verbatim.
+
+| category | verdict |
+|---|---|
+| **Flutter 3.44.8 / Dart 3.12.2** | ✅ `~/flutter`, user-space, no admin rights used |
+| **Chrome (web)** | ✅ available as a run target |
+| **macOS desktop** | ✅ available as a run target |
+| **Android toolchain** | ❌ SDK 33.0.2 present, but `cmdline-tools` missing and licences unaccepted |
+| **Xcode** | ❌ "installation is incomplete" — CLT only. CocoaPods present but non-functional |
+
+So `dart analyze`, `flutter test`, and running the app on **macOS/Chrome** are all reachable here;
+**building for iOS or Android is not**. `flutter doctor` says so in its own words, which is why the
+log is committed rather than summarized. **FL9 stays open.**
+
+- [x] FL1 — Toolchain — Flutter SDK in user space; `flutter doctor` captured verbatim, gaps recorded.
+- [x] FL2 — Package + contract — `apps/flutter` skeleton, Dart models + typed client from `openapi.yaml`.
 - [ ] FL3 — Secure auth — bearer tokens in Keychain/Keystore; never prefs, logs, or disk.
 - [ ] FL4 — Mushaf reader — Uthmani rendering, RTL, canonical bytes preserved end to end.
 - [ ] FL5 — Consent-gated capture — no audio stream constructed before consent is granted.

@@ -1,0 +1,45 @@
+=== flutter doctor -v — captured 2026-08-01T14:28:18Z ===
+[✓] Flutter (Channel stable, 3.44.8, on macOS 27.0 26A5353q darwin-arm64, locale ckb-IQ) [629ms]
+    • Flutter version 3.44.8 on channel stable at /Users/hawzhin/flutter
+    • Upstream repository https://github.com/flutter/flutter.git
+    • Framework revision 058e0af2c2 (9 days ago), 2026-07-23 10:56:21 -0700
+    • Engine revision 0cd610717b
+    • Dart version 3.12.2
+    • DevTools version 2.57.0
+    • Feature flags: enable-web, enable-linux-desktop, enable-macos-desktop, enable-windows-desktop, enable-android, enable-ios, cli-animations, enable-native-assets, enable-swift-package-manager, omit-legacy-version-file, enable-lldb-debugging, enable-uiscene-migration
+
+[!] Android toolchain - develop for Android devices (Android SDK version 33.0.2) [12.4s]
+    • Android SDK at /Users/hawzhin/Library/Android/sdk
+    • Emulator version 32.1.11.0 (build_id 9536276) (CL:N/A)
+    ✗ cmdline-tools component is missing.
+      Try installing or updating Android Studio.
+      Alternatively, download the tools from https://developer.android.com/studio#command-line-tools-only and make sure to set the ANDROID_HOME environment variable.
+      See https://developer.android.com/studio/command-line for more details.
+    ✗ Android license status unknown.
+      Run `flutter doctor --android-licenses` to accept the SDK licenses.
+      See https://flutter.dev/to/macos-android-setup for more details.
+
+[!] Xcode - develop for iOS and macOS [5.4s]
+    ✗ Xcode installation is incomplete; a full installation is necessary for iOS and macOS development.
+      Download at: https://developer.apple.com/xcode/
+      Or install Xcode via the App Store.
+      Once installed, run:
+        sudo xcode-select --switch /Applications/Xcode.app/Contents/Developer
+        sudo xcodebuild -runFirstLaunch
+    ! CocoaPods installed but not working.
+        You appear to have CocoaPods installed but it is not working.
+        This can happen if the version of Ruby that CocoaPods was installed with is different from the one being used to invoke it.
+        This can usually be fixed by re-installing CocoaPods.
+      For re-installation instructions, see https://guides.cocoapods.org/using/getting-started.html#installation
+
+[✓] Chrome - develop for the web [34ms]
+    • Chrome at /Applications/Google Chrome.app/Contents/MacOS/Google Chrome
+
+[✓] Connected device (2 available) [353ms]
+    • macOS (desktop) • macos  • darwin-arm64   • macOS 27.0 26A5353q darwin-arm64
+    • Chrome (web)    • chrome • web-javascript • Google Chrome 150.0.7871.187
+
+[✓] Network resources [921ms]
+    • All expected network resources are available.
+
+! Doctor found issues in 2 categories.

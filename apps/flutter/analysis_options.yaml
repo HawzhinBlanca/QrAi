@@ -1,0 +1,21 @@
+include: package:flutter_lints/flutter.yaml
+
+analyzer:
+  language:
+    strict-casts: true
+    strict-inference: true
+    strict-raw-types: true
+  errors:
+    # `verify.sh` runs `dart analyze --fatal-infos`, so everything below is a build failure, not a
+    # suggestion. These three are promoted because each one is a way canonical text or a credential
+    # gets damaged quietly.
+    avoid_print: error
+    unawaited_futures: error
+    close_sinks: error
+
+linter:
+  rules:
+    - always_declare_return_types
+    - avoid_dynamic_calls
+    - prefer_final_locals
+    - unnecessary_await_in_return
