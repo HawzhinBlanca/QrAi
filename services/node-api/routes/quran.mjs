@@ -14,7 +14,7 @@
  * those would be real, silent mutations of scripture. `tests/api-parity/quran-parity.test.mjs`
  * compares the served bytes against the row in Postgres for exactly this reason.
  */
-import { NotFound } from "../lib/authz.mjs";
+import { NotFound, RejectionError } from "../lib/authz.mjs";
 
 /**
  * Port of axum's `Path<i32>` extraction, INCLUDING its rejection.
@@ -40,12 +40,12 @@ function parseI32(raw) {
  * Axum's two rejection messages. They differ by EXTRACTOR, not by position: `Path<i32>` names the
  * value; `Path<(i32, i32)>` names the index as well. Transcribed from real 400 responses.
  */
-function invalidPath(reply, raw, index = null) {
+function invalidPath(raw, index = null) {
   const message =
     index === null
       ? `Invalid URL: Cannot parse \`${raw}\` to a \`i32\``
       : `Invalid URL: Cannot parse value at index ${index} with value \`${raw}\` to a \`i32\``;
-  return reply.code(400).type("text/plain; charset=utf-8").send(message);
+  return new RejectionError(message, 400);
 }
 
 /** GET /v1/quran/surahs — quran.rs:21 */
@@ -86,7 +86,7 @@ export async function listSurahs(_req, reply, ctx) {
 /** GET /v1/quran/surahs/{surah_number} — quran.rs:80 */
 export async function getSurah(req, reply, ctx) {
   const surahNumber = parseI32(req.params.surah_number);
-  if (surahNumber === null) return invalidPath(reply, req.params.surah_number);
+  if (surahNumber === null) throw invalidPath(req.params.surah_number);
 
   const rows = await ctx.db.sql`
     SELECT id, surah_number, ayah_number, text_uthmani, source_checksum
@@ -112,9 +112,9 @@ export async function getAyah(req, reply, ctx) {
   // `Path<(i32, i32)>`: the tuple extractor reports the INDEX of the segment that failed, and it
   // fails on the first bad one, left to right.
   const surahNumber = parseI32(req.params.surah_number);
-  if (surahNumber === null) return invalidPath(reply, req.params.surah_number, 0);
+  if (surahNumber === null) throw invalidPath(req.params.surah_number, 0);
   const ayahNumber = parseI32(req.params.ayah_number);
-  if (ayahNumber === null) return invalidPath(reply, req.params.ayah_number, 1);
+  if (ayahNumber === null) throw invalidPath(req.params.ayah_number, 1);
 
   const [row] = await ctx.db.sql`
     SELECT id, surah_number, ayah_number, text_uthmani, source_checksum

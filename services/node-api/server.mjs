@@ -47,6 +47,7 @@ export const PORTABLE = [
   "GET /health",
   "GET /ready",
   "GET /metrics",
+  "POST /v1/auth/token",
   "GET /v1/quran/surahs",
   "GET /v1/quran/surahs/{surah_number}",
   "GET /v1/quran/ayahs/{surah_number}/{ayah_number}",
@@ -198,6 +199,10 @@ export function buildServer(config) {
   });
 
   app.setErrorHandler((err, _req, reply) => {
+    // An extractor rejection answers in text/plain, not the JSON error body (see RejectionError).
+    if (err instanceof ApiError && err.contentType) {
+      return reply.code(err.status).type(err.contentType).send(err.message);
+    }
     if (err instanceof ApiError) return reply.code(err.status).send({ error: err.message });
     if (err.statusCode) return reply.code(err.statusCode).send({ error: err.message });
     reply.code(500).send({ error: "internal error" });

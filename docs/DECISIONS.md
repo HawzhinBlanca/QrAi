@@ -876,3 +876,59 @@ compatibility actually held.
   instrument without removing it. Removal is a separate breaking change and needs its own ADR.
 - Setting the old and new variables together is now a **boot failure**, not a merge. Any deploy doing
   both must pick one.
+
+## ADR-0025 — The Node port needs a bcrypt implementation, and there is no way around it
+
+**Status:** Proposed (2026-08-01). **Context:** `specs/migration-completion/` N12b.
+
+**Context.** `POST /v1/auth/register` and `POST /v1/auth/login` are the last two routes in the
+approved port that cannot be written with what this repo already has. `register` writes
+`bcrypt::hash(password, 12)` and `login` verifies against that stored hash
+(`services/platform-api/src/handlers/user.rs:89,179`). Both implementations must accept each
+other's hashes for the whole strangler period — a learner who registers against Rust must be able
+to log in against Node on the very next request, and the reverse.
+
+The ladder was walked before proposing a dependency, and every rung fails:
+
+| rung | verdict |
+|---|---|
+| Does it need to exist? | Yes. `login` cannot verify a stored bcrypt hash without bcrypt. |
+| Already in this repo? | No. `jose` (JWT), `postgres`, `pg`, `fastify`, `ajv`, `zod`, `yaml`. |
+| `node:crypto`? | **No bcrypt.** `scrypt`, `pbkdf2` and `hkdf` are present and are different KDFs producing incompatible hashes. |
+| A few lines of our own? | **Absolutely not.** bcrypt is Blowfish with a modified key schedule; a hand-rolled version is the canonical example of a security primitive nobody should write. |
+
+**Decision.** Add ONE new runtime dependency to the Node service for bcrypt.
+
+**Options.**
+
+| | `bcryptjs` | `bcrypt` (node.bcrypt.js) |
+|---|---|---|
+| Install | pure JS, no compiler, no `node-gyp` | native addon, needs a toolchain per platform |
+| Speed | ~3× slower than native at cost 12 | faster |
+| CI/container risk | none | a prebuilt-binary miss turns into a source build inside the image |
+| Supply chain | one package, no install scripts | native build scripts run at install |
+
+**Recommendation: `bcryptjs`.** Cost 12 is *deliberately* expensive — hundreds of milliseconds by
+design — so the constant factor between the two is small relative to the work bcrypt is doing on
+purpose. In exchange the container stops needing a build toolchain and the install stops running
+scripts. The Rust handler already moves hashing to `spawn_blocking` because it is CPU-bound; the
+Node port needs the equivalent care regardless of which library is chosen, since a synchronous
+hash at cost 12 blocks the event loop for the whole service.
+
+**Consequences.**
+- Easier: `register`/`login` become portable, which is the last blocker on N12.
+- Harder: one more thing to audit, and `pnpm audit` gains a package that handles credentials.
+- To revisit: if the platform ever ships a bcrypt primitive, or if the product moves to Argon2id —
+  which would be a *better* password hash but is a migration of every stored credential, not a
+  swap, and is out of scope for a port whose entire contract is behavioural identity.
+
+**Not decided here.** Whether to keep bcrypt at all. Argon2id is the modern recommendation, but
+changing the KDF is a data migration with a rehash-on-next-login path and its own spec. A port must
+not quietly change how credentials are stored.
+
+**Action items.**
+1. [ ] Owner accepts or rejects this ADR (a new runtime dependency handling credentials).
+2. [ ] If accepted: add `bcryptjs`, port `register`/`login`, and prove interoperability with
+       cross-language vectors generated **from Rust** — Rust-hashed passwords verified in Node and
+       Node-hashed passwords verified in Rust. A same-implementation round trip proves nothing.
+3. [ ] Hash off the event loop, and assert it.

@@ -14,6 +14,7 @@
  * here by `fastifyPath()` rather than transcribed — a hand-written second copy of 38 paths is 38
  * chances to typo a route into never being served, which looks exactly like a route that proxies.
  */
+import { issueToken } from "./auth.mjs";
 import { health, metrics, ready } from "./infra.mjs";
 import { getLearnerProgress, getWeeklyProgress, updateProgress } from "./progress.mjs";
 import { getAyah, getSurah, listSurahs } from "./quran.mjs";
@@ -37,6 +38,8 @@ export const ROUTES = [
   { key: "GET /health", method: "get", path: "/health", handler: health },
   { key: "GET /ready", method: "get", path: "/ready", handler: ready },
   { key: "GET /metrics", method: "get", path: "/metrics", handler: metrics },
+  // ── N12a: mint a JWT for an existing user. admin/ops only. ──────────────────────────────────
+  { key: "POST /v1/auth/token", method: "post", path: "/v1/auth/token", handler: issueToken },
   // ── N9: canonical Quran. Public, and NOT tenant-scoped — these are global reference tables. ──
   { key: "GET /v1/quran/surahs", method: "get", path: "/v1/quran/surahs", handler: listSurahs },
   {
