@@ -76,6 +76,8 @@ export const PORTABLE = [
   "POST /v1/ml/tajweed-findings:predict",
   "POST /v1/asr/transcribe",
   "POST /v1/asr/force-align",
+  "POST /v1/privacy/export",
+  "POST /v1/privacy/delete",
   "POST /v1/realtime-session-tickets",
 ];
 

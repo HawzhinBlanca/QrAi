@@ -18,6 +18,7 @@ import { issueToken } from "./auth.mjs";
 import { health, metrics, ready } from "./infra.mjs";
 import { asrForceAlign, asrTranscribe, predictAlignment, predictTajweed } from "./ml-proxy.mjs";
 import { bootstrap, logout, mintInvitation } from "./pilot.mjs";
+import { createPrivacyDelete, createPrivacyExport } from "./privacy.mjs";
 import { getLearnerProgress, getWeeklyProgress, updateProgress } from "./progress.mjs";
 import { getAyah, getSurah, listSurahs } from "./quran.mjs";
 import { getEvalRun, listAgentRuns, listAuditEvents } from "./reports.mjs";
@@ -196,6 +197,9 @@ export const ROUTES = [
     handler: asrForceAlign,
     bodyLimit: 16 * 1024 * 1024,
   },
+  // ── N17: right-to-erasure. The ORDER of authz -> existence -> audio -> cascade is the design. ─
+  { key: "POST /v1/privacy/export", method: "post", path: "/v1/privacy/export", handler: createPrivacyExport },
+  { key: "POST /v1/privacy/delete", method: "post", path: "/v1/privacy/delete", handler: createPrivacyDelete },
   {
     key: "POST /v1/realtime-session-tickets",
     method: "post",

@@ -48,7 +48,7 @@ Every wave follows the same five steps (`plan.md §2`), and step 4 is not option
       consent capture, the FK-skip policy, and model-version provenance.
 - [x] N15 — Review gates — 5 operations; AI feedback withheld absent source + confidence + approval.
 - [x] N16 — ML/ASR proxies — 4 operations; server-side key injection, 16 MB limit.
-- [ ] N17 — Privacy — `export`, `delete`; erasure verified by querying storage, not by a 200.
+- [x] N17 — Privacy — `export`, `delete`; erasure verified by querying storage, not by a 200.
 
 ## Track F — Flutter client
 
