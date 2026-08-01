@@ -48,9 +48,39 @@ export function formatF64(n) {
   return /[.e]/.test(s) ? s : `${s}.0`;
 }
 
+/**
+ * Format a number the way `serde_json` formats an `f32`.
+ *
+ * `EvalRun`'s metrics are `f32` (types.rs:273), read from Postgres as `float8` and narrowed with
+ * `as f32`. Rust then prints the SHORTEST decimal string that round-trips to that single-precision
+ * value — `0.82345679`, where the f64 the database handed over would print as
+ * `0.8234567890123`. JavaScript has one float type, so both the narrowing and the shortening have
+ * to be done explicitly or every metric on this route is a few digits too long.
+ *
+ * `Math.fround` does the narrowing. The shortening is a search: the shortest precision whose
+ * round-trip lands on the same f32. Nine digits always suffice for a float32.
+ */
+export function formatF32(n) {
+  if (typeof n !== "number" || !Number.isFinite(n)) {
+    throw new RangeError(`f32 must be finite, got ${n}`);
+  }
+  const narrowed = Math.fround(n);
+  if (Number.isInteger(narrowed) && Math.abs(narrowed) < 1e16) return `${narrowed}.0`;
+  for (let precision = 1; precision <= 9; precision += 1) {
+    const candidate = narrowed.toPrecision(precision);
+    if (Math.fround(Number(candidate)) === narrowed) return String(Number(candidate));
+  }
+  return String(narrowed);
+}
+
 /** Mark a value as a Rust `f64`. `null` passes through — a nullable float is still nullable. */
 export function f64(n) {
   return n === null || n === undefined ? null : new RustF64(n);
+}
+
+/** Mark a value as a Rust `f32`. See `formatF32` for why this is not the same as `f64`. */
+export function f32(n) {
+  return n === null || n === undefined ? null : new RustF64(n, formatF32);
 }
 
 /**
@@ -61,8 +91,9 @@ export function f64(n) {
 let activeNonce = null;
 
 class RustF64 {
-  constructor(value) {
+  constructor(value, format = formatF64) {
     this.value = value;
+    this.format = format;
   }
 
   toJSON() {
@@ -71,8 +102,33 @@ class RustF64 {
       // stringifyRust — which would emit the raw marker onto the wire. Fail instead.
       throw new Error("f64() values must be serialized with stringifyRust(), not JSON.stringify()");
     }
-    return `${activeNonce}${formatF64(this.value)}${activeNonce}`;
+    return `${activeNonce}${this.format(this.value)}${activeNonce}`;
   }
+}
+
+/**
+ * Recursively sort object keys, the way a `jsonb` column does after a round trip through Rust.
+ *
+ * A handler that surfaces a jsonb column reads it into a `serde_json::Value`. Without the
+ * `preserve_order` feature that `Value::Object` is a **BTreeMap**, so re-serializing it emits the
+ * keys ALPHABETICALLY — regardless of the order Postgres stored them in. The `postgres` driver in
+ * Node parses the same column into a plain object that preserves the stored order, so the two
+ * implementations disagree on the bytes of any jsonb value with more than one key.
+ *
+ * Caught by the N11 A/B on `agent_runs.source_refs`, where Rust emits
+ * `{"citation":…,"id":…,"title":…,"url":…}` and the driver's order was `{"id","url","title",
+ * "citation"}`. Same data, different bytes, and the difference is invisible in both source files.
+ *
+ * Arrays keep their order — only object KEYS are sorted, which is what a BTreeMap does.
+ */
+export function sortKeysDeep(value) {
+  if (Array.isArray(value)) return value.map(sortKeysDeep);
+  if (value === null || typeof value !== "object") return value;
+  // A Date or a Buffer from the driver is an object but not a JSON map; leave it alone.
+  if (value instanceof Date || Buffer.isBuffer(value)) return value;
+  const out = {};
+  for (const key of Object.keys(value).sort()) out[key] = sortKeysDeep(value[key]);
+  return out;
 }
 
 /** `JSON.stringify`, but values wrapped in `f64()` keep their trailing `.0`. */

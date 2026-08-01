@@ -17,6 +17,7 @@
 import { health, metrics, ready } from "./infra.mjs";
 import { getLearnerProgress, getWeeklyProgress, updateProgress } from "./progress.mjs";
 import { getAyah, getSurah, listSurahs } from "./quran.mjs";
+import { getEvalRun, listAgentRuns, listAuditEvents } from "./reports.mjs";
 import { createRealtimeTicket } from "./recitation.mjs";
 
 /** `/v1/x/{id}/y` → `/v1/x/:id/y`. Axum 0.8 → Fastify. */
@@ -68,6 +69,15 @@ export const ROUTES = [
     method: "get",
     path: "/v1/learner/progress/weekly",
     handler: getWeeklyProgress,
+  },
+  // ── N11: read-only reporting. Three routes, three DIFFERENT staff role lists. ───────────────
+  { key: "GET /v1/agent-runs", method: "get", path: "/v1/agent-runs", handler: listAgentRuns },
+  { key: "GET /v1/audit-events", method: "get", path: "/v1/audit-events", handler: listAuditEvents },
+  {
+    key: "GET /v1/eval-runs/{model_version}",
+    method: "get",
+    path: "/v1/eval-runs/{model_version}",
+    handler: getEvalRun,
   },
   {
     key: "POST /v1/realtime-session-tickets",

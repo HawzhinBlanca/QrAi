@@ -30,7 +30,10 @@ Every wave follows the same five steps (`plan.md §2`), and step 4 is not option
 - [x] N8 — Infra routes — `/health`, `/ready`, `/metrics` (Prometheus text format, dev-open gate).
 - [x] N9 — Quran routes — 3 read-only routes; canonical text byte-identical, digest-anchored, never normalized.
 - [x] N10 — Progress writes — `POST /v1/learner/progress` + weekly; SM-2 arithmetic pinned to Rust.
-- [ ] N11 — Agent/audit/eval — 4 read routes; jsonb round-trip, append-only audit.
+- [x] N11 — Agent/audit/eval READS — `GET` agent-runs, audit-events, eval-runs; jsonb key order, f32 narrowing.
+- [ ] N18 — `POST /v1/agent-runs` — split out of N11: it carries the learner-facing AI gate (a
+      server-side re-derivation of `canShowLearnerFacingAiOutput`) and is the ONLY place an agent
+      run's status is set. Three reads and one security-critical write do not belong in one slice.
 - [ ] N12 — Auth — `token`, `register`, `login`; bcrypt cost 12 + HS256 cross-language vectors.
 - [ ] N13 — Pilot sessions — `bootstrap`, `logout`, `invitations`; `__Host-` cookie attrs, idle roll.
 - [ ] N14 — Recitation — 6 operations; the 805-line handler, FK 404s, gateway-verified tickets.
