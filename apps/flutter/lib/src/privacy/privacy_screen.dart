@@ -11,6 +11,9 @@ library;
 
 import 'package:flutter/material.dart';
 
+import '../api/api_client.dart';
+import '../shell/load_state.dart';
+
 /// What the screen is currently doing. Kept explicit so the UI can disable both buttons during a
 /// request — a second delete fired while the first is in flight is not something to find out about
 /// from the server.
@@ -54,10 +57,34 @@ class _PrivacyScreenState extends State<PrivacyScreen> {
     } on Object catch (e) {
       // The failure is SHOWN. A privacy request that silently failed is the worst outcome here:
       // the learner believes their data is gone.
-      if (mounted) setState(() => _message = 'That did not complete: $e');
+      //
+      // It used to interpolate the exception, which put
+      //   "That did not complete: ApiException(ApiErrorKind.server, 502): audio erasure service
+      //    unavailable"
+      // in front of a learner — measured against the running service with the ML service down.
+      // On a DELETE that is worse than jargon: it leaves them unable to tell whether their
+      // recordings are gone. So the message states the OUTCOME first, and it is a claim this
+      // codebase can actually back: platform-api erases audio BEFORE the database cascade and
+      // fails fast, so a failure means nothing was deleted. Verified by querying the tables after
+      // a real 502 — sessions, progress and tickets were all still there.
+      if (mounted) {
+        setState(() => _message = _failureMessage(action, e));
+      }
     } finally {
       if (mounted) setState(() => _action = PrivacyAction.idle);
     }
+  }
+
+  /// What went wrong, in the learner's terms, leading with what it means for their data.
+  static String _failureMessage(PrivacyAction action, Object error) {
+    final String why = error is ApiException ? messageFor(error) : 'Something went wrong.';
+    return switch (action) {
+      // The strong, verified claim. Erasure is attempted before any database change, so a failure
+      // leaves everything in place — the learner can retry without wondering what half-happened.
+      PrivacyAction.deleting => 'Nothing was deleted — your data is still here. $why',
+      PrivacyAction.exporting => 'The export did not finish. $why',
+      PrivacyAction.idle => why,
+    };
   }
 
   Future<void> _confirmDelete() async {
