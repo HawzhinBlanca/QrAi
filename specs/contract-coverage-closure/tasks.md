@@ -105,16 +105,25 @@ becomes its own change; patching it inside a test-only commit would hide a behav
 "test-only" label. Spun out as a separate task. Whether 404 leaks learner existence to a staff caller
 is a product decision worth making explicitly.
 
-### 2. 🟠 I wrote a schema from an empty array, and it was wrong
+### 2. 🟠 I fabricated the same schema TWICE from samples before checking what the server enforces
 
-`AgentRunSource` was first written as `items: { type: string }` because the row I sampled had
-`sources: []` — **an empty array satisfies every item schema**. Real sources are objects
-(`{id, title, citation, url}`). Caught the moment `contract-shapes.test.mjs` ran against a row that
-had some.
+`AgentRun.sources`, in order:
 
-The test now asserts that **at least one run has sources**, so the item schema cannot silently go
-unexercised again. This is the same class as the Kurdish import guard that passed while matching
-nothing: a check that runs but touches nothing looks identical to a check that passes.
+1. **`items: { type: string }`** — from a row whose `sources` was `[]`. An empty array satisfies
+   *every* item schema, so nothing contradicted it.
+2. **an object with a required `url`** — because every row on my machine had `url: null` *present*.
+   CI's rows omit the key entirely.
+
+Both were inferences from whatever data happened to be in front of me. The actual answer is in
+`agent.rs:22`: `sources` is a bare `serde_json::Value`. The server counts the array — an approved run
+with zero sources is refused, which is the review gate — and otherwise **stores and returns caller
+JSON verbatim, normalising nothing**. No element shape is enforced, so none can be contracted.
+
+The contract now says `type: array` with unconstrained items, and the test asserts the guarantee that
+does exist: a source **round-trips unchanged**. Constraining it is a product change.
+
+Neither wrong version was caught by re-reading the schema. Both were caught by running it against
+data I had not chosen.
 
 ### 3. 🔴 CI caught a contract bug my machine structurally could not — and it was pre-existing
 

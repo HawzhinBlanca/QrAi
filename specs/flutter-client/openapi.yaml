@@ -386,28 +386,24 @@ components:
           type: string
           enum: [draft, ai-suggested, teacher-review-required, teacher-reviewed, scholar-approved, blocked]
         confidence: { type: number }
-        # An approved run with no sources is refused at write time (400) — the review gate.
+        # ITEMS ARE UNCONSTRAINED, and that is the honest contract rather than a gap.
         #
-        # OBJECTS, not strings. The first draft of this schema said `items: { type: string }` because
-        # the row I sampled had `sources: []`, and an empty array satisfies ANY item schema. Caught
-        # by tests/api-parity/contract-shapes.test.mjs the moment it ran against a row that had some
-        # — which is why that test refuses to pass on an empty array.
-        sources: { type: array, items: { $ref: '#/components/schemas/AgentRunSource' } }
+        # `AgentRunRequest.sources` is a bare `serde_json::Value` (agent.rs:22). The server counts the
+        # array — an approved run with zero sources is refused at write time, which is the review gate
+        # — and otherwise stores and returns whatever the caller sent, verbatim. It normalises
+        # nothing, so no element shape is enforced and none can be contracted.
+        #
+        # I got this wrong TWICE by inferring from samples: first `items: {type: string}` from a row
+        # whose sources was `[]` (an empty array satisfies every item schema), then an object with a
+        # required `url` because every row on my machine happened to have `url: null` present. CI's
+        # rows omit the key entirely. Both drafts were fabrications from a sample, and both were
+        # caught by validating against real data rather than by re-reading the schema.
+        #
+        # Constraining this is a PRODUCT change — the server would have to validate on write.
+        sources: { type: array }
         learnerId: { type: [string, "null"] }
         findingId: { type: [string, "null"] }
         lastEvent: { type: [string, "null"] }
-      additionalProperties: false
-
-    AgentRunSource:
-      type: object
-      required: [id, title, citation, url]
-      properties:
-        id: { type: string }
-        title: { type: string }
-        citation: { type: string }
-        # Present but null for a source with no canonical link — a citation without a URL is still a
-        # source, and requiring one would push callers to invent them.
-        url: { type: [string, "null"] }
       additionalProperties: false
 
     LogoutResult:

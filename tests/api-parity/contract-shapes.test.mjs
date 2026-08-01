@@ -169,12 +169,15 @@ test("GET /v1/agent-runs matches AgentRun[], including a run that HAS sources", 
   assert.ok(res.body.length > 0, "this test is vacuous against an empty array");
   assertMatchesContract("GET", "/v1/agent-runs", res);
 
-  // The nested-empty-array trap, asserted rather than assumed. The first AgentRunSource schema said
-  // `items: { type: string }` — written from a row whose `sources` was `[]`, which satisfies EVERY
-  // item schema. Without this line the schema could silently go back to unexercised.
-  assert.ok(
-    res.body.some((run) => run.sources.length > 0),
-    "no agent run has any sources, so the AgentRunSource item schema was not exercised at all",
+  // `sources` is caller-supplied JSON the server returns verbatim (agent.rs:22), so the contract
+  // constrains the ARRAY and not its elements. What is worth asserting is that a source round-trips
+  // unchanged — that is the actual guarantee, and the thing a client depends on.
+  const mine = res.body.find((run) => run.id === created.body.id);
+  assert.ok(mine, "the run seeded above must appear in the listing");
+  assert.deepEqual(
+    mine.sources,
+    [{ id: "s1", title: "Tajweed rule", citation: "ref", url: null }],
+    "sources must round-trip verbatim — the server stores them as opaque JSON and normalises nothing",
   );
 });
 
