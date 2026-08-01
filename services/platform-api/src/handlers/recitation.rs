@@ -46,6 +46,38 @@ pub async fn create_session(
 
     let mut tx = crate::begin_tenant_tx(&state.pool, &actor.tenant_id).await?;
 
+    // FK2 — `recitation_sessions.learner_id` REFERENCES users(id). Without this the INSERT violates
+    // the FK and surfaces as an opaque 500 on the product's most-called write.
+    //
+    // AFTER require_self_or_any above, and it must stay there. This is the second endpoint where
+    // that ordering decides between a fix and a vulnerability: put the existence check first and a
+    // learner can enumerate learner ids by reading 404-vs-403. Tenant-scoped for the same reason.
+    let learner_exists = sqlx::query("SELECT 1 FROM users WHERE id = $1 AND tenant_id = $2")
+        .bind(&req.learner_id)
+        .bind(&actor.tenant_id)
+        .fetch_optional(&mut *tx)
+        .await?;
+    if learner_exists.is_none() {
+        return Err(ApiError::NotFound);
+    }
+
+    // FK3 — `recitation_sessions.model_version_id` REFERENCES model_versions(id).
+    //
+    // 400 NAMING the value, not 404. model_version is chosen from a fixed server-side vocabulary,
+    // like the agent-run status enum that already 400s this way — and this endpoint can fail on
+    // learnerId OR modelVersion, so a shared "record not found" would leave a caller guessing
+    // between two very different fixes. model_versions is global, so no tenant predicate.
+    let model_exists = sqlx::query("SELECT 1 FROM model_versions WHERE id = $1")
+        .bind(&req.model_version)
+        .fetch_optional(&mut *tx)
+        .await?;
+    if model_exists.is_none() {
+        return Err(ApiError::BadRequest(format!(
+            "unknown model version: {}",
+            req.model_version
+        )));
+    }
+
     sqlx::query(
         "INSERT INTO audit_events (id, tenant_id, actor_id, action, subject_type, subject_id, metadata)
          VALUES ($1, $2, $3, 'recitation.session.started', 'recitation_session', $4, $5)",
@@ -501,13 +533,29 @@ pub async fn persist_session_alignments(
         &[ActorRole::Teacher, ActorRole::Admin, ActorRole::Ops],
     )?;
 
-    // model_version must satisfy the FK; fall back to the default aligner if unknown.
-    let requested_model = req.model_version.unwrap_or_else(|| "model-v0.3".to_owned());
-    let model_version: String = sqlx::query_scalar("SELECT id FROM model_versions WHERE id = $1")
-        .bind(&requested_model)
-        .fetch_optional(&mut *tx)
-        .await?
-        .unwrap_or_else(|| "model-v0.3".to_owned());
+    // FK3 — model_version must satisfy the FK against model_versions(id).
+    //
+    // This used to fall back to "model-v0.3" when the requested model was unknown, and return 200.
+    // That is worse than the 500s it was avoiding: a caller says "this alignment came from model X",
+    // the row is stored as model-v0.3, and the caller is never told the label changed. Every
+    // downstream "which model produced this?" — tajweed_findings, the Command console — then has a
+    // confidently wrong answer, and unlike a 500 nothing surfaces it.
+    //
+    // ABSENT still defaults. That is a default, not a substitution: the caller asserted nothing, so
+    // nothing is being overridden. Only a PRESENT-and-unknown value is now refused.
+    let model_version = match req.model_version {
+        None => "model-v0.3".to_owned(),
+        Some(requested) => {
+            let known: Option<String> =
+                sqlx::query_scalar("SELECT id FROM model_versions WHERE id = $1")
+                    .bind(&requested)
+                    .fetch_optional(&mut *tx)
+                    .await?;
+            known.ok_or(ApiError::BadRequest(format!(
+                "unknown model version: {requested}"
+            )))?
+        }
+    };
 
     // Replace-on-write: clear the session's prior alignment first, in FK-safe order.
     // tajweed_findings.alignment_id and teacher_reviews.finding_id both RESTRICT, so a naked

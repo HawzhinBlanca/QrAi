@@ -562,8 +562,15 @@ paths:
             Created. `externalProcessingAllowed` is the AND of ASR consent and guardian approval —
             never either alone, and it is the server's answer, not the client's request echoed back.
           content: { application/json: { schema: { $ref: '#/components/schemas/RecitationSession' } } }
+        # 400 also covers an unknown modelVersion, NAMED in the message. Two distinct failures are
+        # given DIFFERENT statuses on purpose so a caller can tell them apart — the shared
+        # 'record not found' string cannot say which field was wrong:
+        #   400 — unknown modelVersion (a value from a fixed server-side vocabulary)
+        #   404 — learnerId naming nobody in this tenant (a resource being acted upon)
+        # Both were 500s before specs/fk-surface-sweep/.
         '400': { $ref: '#/components/responses/BadRequest' }
         '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
   /v1/recitation-sessions/{id}:
     get:
       tags: [recitation]
@@ -588,6 +595,11 @@ paths:
       responses:
         '200': { description: persisted, content: { application/json: { schema: { $ref: '#/components/schemas/PersistAlignmentsResult' } } } }
         '403': { $ref: '#/components/responses/Forbidden' }
+        # An explicitly-supplied modelVersion that does not exist. This used to be accepted and
+        # SILENTLY stored as model-v0.3 with a 200 — provenance falsification on the rows that
+        # feed tajweed findings. An ABSENT modelVersion still defaults; only a present-and-
+        # unknown value is refused (specs/fk-surface-sweep/).
+        '400': { $ref: '#/components/responses/BadRequest' }
   /v1/recitation-sessions/{id}/request-teacher-review:
     post:
       tags: [recitation]
@@ -698,6 +710,9 @@ paths:
       responses:
         '200': { description: recorded, content: { application/json: { schema: { type: object } } } }
         '400': { $ref: '#/components/responses/BadRequest' }
+        # A learnerId naming nobody. agent_runs.learner_id REFERENCES users(id); before
+        # specs/fk-surface-sweep/ this was a 500.
+        '404': { $ref: '#/components/responses/NotFound' }
   /v1/audit-events:
     get:
       tags: [review]
