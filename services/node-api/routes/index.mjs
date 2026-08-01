@@ -21,6 +21,7 @@ import { getLearnerProgress, getWeeklyProgress, updateProgress } from "./progres
 import { getAyah, getSurah, listSurahs } from "./quran.mjs";
 import { getEvalRun, listAgentRuns, listAuditEvents } from "./reports.mjs";
 import { createRealtimeTicket } from "./recitation.mjs";
+import { createSession, persistSessionAlignments, requestTeacherReview } from "./session-writes.mjs";
 import { getSession, listActiveLearners, listSessionAlignments, listSessions } from "./sessions.mjs";
 
 /** `/v1/x/{id}/y` → `/v1/x/:id/y`. Axum 0.8 → Fastify. */
@@ -118,6 +119,20 @@ export const ROUTES = [
     handler: listSessionAlignments,
   },
   { key: "GET /v1/learners/active", method: "get", path: "/v1/learners/active", handler: listActiveLearners },
+  // ── N14b: recitation WRITES. Consent capture, FK ordering, provenance, and a cascade. ───────
+  { key: "POST /v1/recitation-sessions", method: "post", path: "/v1/recitation-sessions", handler: createSession },
+  {
+    key: "POST /v1/recitation-sessions/{id}/alignments",
+    method: "post",
+    path: "/v1/recitation-sessions/{id}/alignments",
+    handler: persistSessionAlignments,
+  },
+  {
+    key: "POST /v1/recitation-sessions/{id}/request-teacher-review",
+    method: "post",
+    path: "/v1/recitation-sessions/{id}/request-teacher-review",
+    handler: requestTeacherReview,
+  },
   {
     key: "POST /v1/realtime-session-tickets",
     method: "post",

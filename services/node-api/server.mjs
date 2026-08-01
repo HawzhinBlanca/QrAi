@@ -64,6 +64,9 @@ export const PORTABLE = [
   "GET /v1/recitation-sessions/{id}",
   "GET /v1/recitation-sessions/{id}/alignments",
   "GET /v1/learners/active",
+  "POST /v1/recitation-sessions",
+  "POST /v1/recitation-sessions/{id}/alignments",
+  "POST /v1/recitation-sessions/{id}/request-teacher-review",
   "POST /v1/realtime-session-tickets",
 ];
 
