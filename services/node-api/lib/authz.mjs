@@ -184,7 +184,7 @@ export function pilotCookieToken(cookieHeader) {
  * post from an attacker's page is the case this exists for, and treating "no Origin" as "same
  * origin" is how that check gets quietly removed.
  */
-function requireAllowedOrigin(headers, allowed) {
+export function requireAllowedOrigin(headers, allowed) {
   const origin = headers.origin;
   if (typeof origin !== "string" || origin === "") throw Forbidden("origin header required");
   if (Array.isArray(allowed) && allowed.length > 0 && !allowed.includes(origin)) {
