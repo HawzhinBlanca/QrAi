@@ -221,8 +221,19 @@ if [[ "$FAST" != "yes" ]]; then
     # behaviour breaks. It requires a SUPERUSER DATABASE_URL (its rls-no-role-drop mutation cannot
     # weaken anything from an already-restricted role, and it refuses to report a hollow pass). CI's
     # DATABASE_URL is deterministic, so CI runs it as its own step — a named boundary, not a gap.
+    # --test-concurrency=1 is NOT a performance knob and must not be removed to speed the gate up.
+    #
+    # These suites all read and write ONE database. `assertAB` issues its two requests concurrently,
+    # so any row another file inserts between them makes the comparison fail on data rather than on
+    # behaviour. Measured, 5 runs each: concurrent -> 3 failures, a DIFFERENT test every time
+    # (audit-events, a pilot cookie lookup, a CSRF gate); serialized -> 5 clean runs of 174.
+    #
+    # `GET /v1/audit-events` is the clearest case — `ORDER BY created_at DESC LIMIT 200` over a table
+    # every authenticated request appends to. That race was latent long before this change; N13's
+    # pilot routes simply write enough audit events to surface it several times an hour instead of
+    # once a month. A flaky gate is worse than a red one: it teaches everyone to re-run.
     run "test: api parity suite (live Postgres)" \
-      "cargo build --manifest-path $API && node --test tests/api-parity/lib/harness.test.mjs tests/api-parity/default.test.mjs tests/api-parity/auth-disabled.test.mjs tests/api-parity/cors.test.mjs tests/api-parity/metrics.test.mjs tests/api-parity/ml-proxy.test.mjs tests/api-parity/realtime-ticket.test.mjs tests/api-parity/db-endpoints.test.mjs tests/api-parity/proxy-endpoints.test.mjs tests/api-parity/contract-shapes.test.mjs tests/api-parity/hostile-input.test.mjs tests/api-parity/infra-parity.test.mjs tests/api-parity/quran-parity.test.mjs tests/api-parity/progress-parity.test.mjs tests/api-parity/reports-parity.test.mjs tests/api-parity/auth-token-parity.test.mjs tests/api-parity/pilot-auth-parity.test.mjs tests/node-api/db-tenant.test.mjs"
+      "cargo build --manifest-path $API && node --test --test-concurrency=1 tests/api-parity/lib/harness.test.mjs tests/api-parity/default.test.mjs tests/api-parity/auth-disabled.test.mjs tests/api-parity/cors.test.mjs tests/api-parity/metrics.test.mjs tests/api-parity/ml-proxy.test.mjs tests/api-parity/realtime-ticket.test.mjs tests/api-parity/db-endpoints.test.mjs tests/api-parity/proxy-endpoints.test.mjs tests/api-parity/contract-shapes.test.mjs tests/api-parity/hostile-input.test.mjs tests/api-parity/infra-parity.test.mjs tests/api-parity/quran-parity.test.mjs tests/api-parity/progress-parity.test.mjs tests/api-parity/reports-parity.test.mjs tests/api-parity/auth-token-parity.test.mjs tests/api-parity/pilot-auth-parity.test.mjs tests/api-parity/pilot-routes-parity.test.mjs tests/node-api/db-tenant.test.mjs"
   else
     say "test: platform-api integration + api parity suite"
     if [[ "$RELEASE" == "yes" ]]; then

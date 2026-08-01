@@ -16,6 +16,7 @@
  */
 import { issueToken } from "./auth.mjs";
 import { health, metrics, ready } from "./infra.mjs";
+import { bootstrap, logout, mintInvitation } from "./pilot.mjs";
 import { getLearnerProgress, getWeeklyProgress, updateProgress } from "./progress.mjs";
 import { getAyah, getSurah, listSurahs } from "./quran.mjs";
 import { getEvalRun, listAgentRuns, listAuditEvents } from "./reports.mjs";
@@ -40,6 +41,25 @@ export const ROUTES = [
   { key: "GET /metrics", method: "get", path: "/metrics", handler: metrics },
   // ── N12a: mint a JWT for an existing user. admin/ops only. ──────────────────────────────────
   { key: "POST /v1/auth/token", method: "post", path: "/v1/auth/token", handler: issueToken },
+  // ── N13b: pilot sessions. The cookie ATTRIBUTES are the contract, not just the value. ───────
+  {
+    key: "POST /v1/pilot/session/bootstrap",
+    method: "post",
+    path: "/v1/pilot/session/bootstrap",
+    handler: bootstrap,
+  },
+  {
+    key: "POST /v1/pilot/session/logout",
+    method: "post",
+    path: "/v1/pilot/session/logout",
+    handler: logout,
+  },
+  {
+    key: "POST /v1/pilot/invitations",
+    method: "post",
+    path: "/v1/pilot/invitations",
+    handler: mintInvitation,
+  },
   // ── N9: canonical Quran. Public, and NOT tenant-scoped — these are global reference tables. ──
   { key: "GET /v1/quran/surahs", method: "get", path: "/v1/quran/surahs", handler: listSurahs },
   {
