@@ -30,6 +30,7 @@ class PracticeScreen extends StatefulWidget {
     required this.gatewayBase,
     required this.learnerId,
     this.recorderOverride,
+    this.micPermission = requestMicrophonePermission,
   });
 
   final ApiClient client;
@@ -40,6 +41,12 @@ class PracticeScreen extends StatefulWidget {
   /// whether it is ever CALLED — an override cannot bypass consent, only replace what consent lets
   /// through.
   final AudioRecorder Function(RealtimeTicket)? recorderOverride;
+
+  /// Asks the OS. Defaults to the REAL check — it was briefly hardcoded to `true`, which made
+  /// `CaptureRefusal.micPermissionDenied` unreachable: a learner who had denied the microphone in
+  /// system settings would have been told nothing and recorded nothing. A widget test passes a fake
+  /// because there is no platform channel under `flutter test`.
+  final Future<bool> Function() micPermission;
 
   @override
   State<PracticeScreen> createState() => _PracticeScreenState();
@@ -120,8 +127,9 @@ class _PracticeScreenState extends State<PracticeScreen> {
         recorderFactory: () =>
             widget.recorderOverride?.call(ticket) ??
             StreamingRecorder(ticket: ticket, gatewayBase: widget.gatewayBase),
-        // `record` prompts the OS itself; this is the gate's second check, after consent.
-        requestMicPermission: () async => true,
+        // The gate's second check, after consent — and it really asks. `record` shows the OS prompt
+        // the first time and reports the stored answer afterwards.
+        requestMicPermission: widget.micPermission,
       );
 
       // The same state the pre-check used. The gate re-evaluates it rather than trusting the check

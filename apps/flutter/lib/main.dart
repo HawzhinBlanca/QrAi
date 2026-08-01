@@ -32,8 +32,30 @@ const String _gatewayUrl =
     String.fromEnvironment('QRAI_GATEWAY_URL', defaultValue: 'http://127.0.0.1:8081');
 const String _learnerId = String.fromEnvironment('QRAI_LEARNER_ID', defaultValue: 'learner-1');
 
-void main() {
+/// Out-of-band provisioning. Empty by default, which is the honest default: a build with no token
+/// reaches the API unauthenticated and every learner route answers 401 — measured, not assumed.
+///
+/// This is NOT a sign-in. The device is configured by whoever hands it to the learner, the value
+/// never appears in a UI, and it is moved into platform secure storage at first launch so it is not
+/// read back out of the build. Whether a pilot should instead redeem an invitation code in-app is
+/// an owner decision, not this file's.
+const String _bearerToken = String.fromEnvironment('QRAI_BEARER_TOKEN');
+
+Future<void> main() async {
+  // Required before touching a platform channel — `TokenStore` reaches Keychain/Keystore.
+  WidgetsFlutterBinding.ensureInitialized();
+
   final TokenStore tokens = TokenStore();
+  if (_bearerToken.isNotEmpty) {
+    try {
+      await tokens.write(_bearerToken);
+    } on Object {
+      // Secure storage can fail (a locked keychain, an unprovisioned emulator). That must not stop
+      // the app from launching: the reader works unauthenticated, and every other screen already
+      // says honestly that the device is not set up.
+    }
+  }
+
   runApp(
     QrAiApp(
       client: ApiClient(baseUrl: Uri.parse(_apiBaseUrl), tokenProvider: tokens.read),

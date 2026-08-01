@@ -45,9 +45,16 @@ class Failed<T> extends LoadState<T> {
 }
 
 /// Human-readable, and honest about what the user can do next.
+///
+/// `unauthorized` deliberately does NOT say "sign in again". There is no sign-in screen — the owner
+/// removed it and it stays removed — so a device reaches this state only when its provisioned token
+/// is missing, wrong or expired, and nothing the learner can do in this app will fix it. Telling
+/// them to sign in would send them looking for a screen that does not exist. Measured against the
+/// running service: `GET /v1/learner/progress` with no credential returns
+/// `401 {"error":"missing or invalid authorization"}`.
 String messageFor(ApiException e) => switch (e.kind) {
       ApiErrorKind.offline => "You're offline. This may not be up to date.",
-      ApiErrorKind.unauthorized => 'Please sign in again.',
+      ApiErrorKind.unauthorized => "This device isn't set up for a learner yet. Ask your teacher.",
       ApiErrorKind.forbidden => "You don't have access to this.",
       ApiErrorKind.notFound => "That isn't available.",
       ApiErrorKind.badRequest => 'Something about that request was wrong.',

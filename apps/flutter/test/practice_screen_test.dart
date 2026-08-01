@@ -73,13 +73,20 @@ ApiClient stubClient(List<http.Request> seen) {
   );
 }
 
-Widget host(ApiClient client, AudioRecorder Function(RealtimeTicket)? recorder) => MaterialApp(
+Widget host(
+  ApiClient client,
+  AudioRecorder Function(RealtimeTicket)? recorder, {
+  bool micGranted = true,
+}) =>
+    MaterialApp(
       home: Scaffold(
         body: PracticeScreen(
           client: client,
           gatewayBase: Uri.parse('http://127.0.0.1:8081'),
           learnerId: 'learner-1',
           recorderOverride: recorder,
+          // There is no platform channel under `flutter test`; the REAL check is what ships.
+          micPermission: () async => micGranted,
         ),
       ),
     );
@@ -180,4 +187,23 @@ void main() {
 
     expect(built!.stopped, isTrue, reason: 'the microphone was left open');
   });
+
+  testWidgets('a denied microphone refuses, and says so', (WidgetTester tester) async {
+    // The branch that was unreachable while `requestMicPermission` was hardcoded to true. Consent
+    // passes here; the OS is what refuses, and the learner is told which of the two it was.
+    SpyRecorder? built;
+    await tester.pumpWidget(
+      host(stubClient(<http.Request>[]), (RealtimeTicket _) => built = SpyRecorder(),
+          micGranted: false),
+    );
+
+    await tapKey(tester, 'consent-guardian');
+    await tapKey(tester, 'practice-toggle');
+
+    expect(statusText(tester), contains('microphone'));
+    // A recorder IS constructed before the permission check?  No: the gate asks the OS first and
+    // only then calls the factory. If this ever fails, that ordering has regressed.
+    expect(built, isNull, reason: 'a recorder existed despite the OS refusing the microphone');
+  });
 }
+
