@@ -47,9 +47,13 @@ test("fastifyPath converts axum {param} to fastify :param", () => {
     fastifyPath("/v1/quran/ayahs/{surah_number}/{ayah_number}"),
     "/v1/quran/ayahs/:surah_number/:ayah_number",
   );
-  // A path with no parameters must survive untouched — including the `:` in an axum action route
-  // like `/v1/ml/alignments:predict`, which is NOT a parameter and must not become one.
-  assert.equal(fastifyPath("/v1/ml/alignments:predict"), "/v1/ml/alignments:predict");
+  // A LITERAL colon must be ESCAPED, not passed through. find-my-way reads `:name` as a parameter,
+  // so `/v1/ml/alignments:predict` registered verbatim also matches `/v1/ml/alignmentsXYZ` — the
+  // real handler serving a path the contract never mentions. `::` is the escape.
+  assert.equal(fastifyPath("/v1/ml/alignments:predict"), "/v1/ml/alignments::predict");
+  assert.equal(fastifyPath("/v1/ml/tajweed-findings:predict"), "/v1/ml/tajweed-findings::predict");
+  // …and a path that has BOTH a parameter and a literal colon keeps them distinct.
+  assert.equal(fastifyPath("/v1/x/{id}/y:go"), "/v1/x/:id/y::go");
 });
 
 test("cutover-readiness can still PARSE the PORTABLE literal out of server.mjs", () => {

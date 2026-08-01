@@ -72,6 +72,10 @@ export const PORTABLE = [
   "GET /v1/teacher-review-queue",
   "GET /v1/scholar-approvals",
   "POST /v1/scholar-approvals",
+  "POST /v1/ml/alignments:predict",
+  "POST /v1/ml/tajweed-findings:predict",
+  "POST /v1/asr/transcribe",
+  "POST /v1/asr/force-align",
   "POST /v1/realtime-session-tickets",
 ];
 
@@ -86,6 +90,11 @@ export function buildServer(config) {
     ticketSecret = "smoke-secret",
     metricsToken = null,
     metricsDevOpen = false,
+    // lib.rs:79-82 — same names, same defaults.
+    mlInferenceUrl = "http://127.0.0.1:8090",
+    mlApiKey = "smoke-ml-api-key",
+    asrInferenceUrl = "http://127.0.0.1:8091",
+    asrApiKey = "smoke-asr-api-key",
     logger = false,
   } = config;
 
@@ -178,6 +187,7 @@ export function buildServer(config) {
     db, jwtSecret, allowHeaderAuth, ticketSecret, upstream,
     metrics, metricsToken, metricsDevOpen,
     pilotAllowedOrigins: allowList,
+    mlInferenceUrl, mlApiKey, asrInferenceUrl, asrApiKey,
   };
   for (const route of ROUTES) {
     if (!ported.has(route.key)) continue;
@@ -186,7 +196,12 @@ export function buildServer(config) {
     // second, differently-named series for the same endpoint on a scrape of the two processes.
     app[route.method](
       fastifyPath(route.path),
-      { config: { axumPath: route.path } },
+      {
+        config: { axumPath: route.path },
+        // Per-route override; the two ASR routes carry audio and raise the 2 MB default to 16 MB,
+        // exactly as lib.rs does with DefaultBodyLimit on those two and nothing else.
+        ...(route.bodyLimit ? { bodyLimit: route.bodyLimit } : {}),
+      },
       (req, reply) => route.handler(req, reply, ctx),
     );
   }
@@ -276,6 +291,10 @@ if (isMain) {
     // compare against the empty string and open on a header nobody sent.
     metricsToken: process.env.METRICS_TOKEN ? process.env.METRICS_TOKEN : null,
     metricsDevOpen: relaxed("METRICS_DEV_OPEN", LEGACY_ONE_ONLY),
+    mlInferenceUrl: process.env.ML_INFERENCE_URL || "http://127.0.0.1:8090",
+    mlApiKey: process.env.ML_API_KEY || "smoke-ml-api-key",
+    asrInferenceUrl: process.env.ASR_INFERENCE_URL || "http://127.0.0.1:8091",
+    asrApiKey: process.env.ASR_API_KEY || "smoke-asr-api-key",
   });
   app.listen({ host, port: Number(port) }).catch((e) => {
     console.error(e);

@@ -16,6 +16,7 @@
  */
 import { issueToken } from "./auth.mjs";
 import { health, metrics, ready } from "./infra.mjs";
+import { asrForceAlign, asrTranscribe, predictAlignment, predictTajweed } from "./ml-proxy.mjs";
 import { bootstrap, logout, mintInvitation } from "./pilot.mjs";
 import { getLearnerProgress, getWeeklyProgress, updateProgress } from "./progress.mjs";
 import { getAyah, getSurah, listSurahs } from "./quran.mjs";
@@ -25,9 +26,30 @@ import { createScholarApproval, createTeacherReview, listScholarApprovals, listT
 import { createSession, persistSessionAlignments, requestTeacherReview } from "./session-writes.mjs";
 import { getSession, listActiveLearners, listSessionAlignments, listSessions } from "./sessions.mjs";
 
-/** `/v1/x/{id}/y` → `/v1/x/:id/y`. Axum 0.8 → Fastify. */
+/**
+ * Axum 0.8 path → Fastify path.
+ *
+ * Two transformations, and the second one is not cosmetic:
+ *
+ * 1. `{id}` → `:id`. The parameter syntax differs between the routers.
+ * 2. A LITERAL colon → `::`. `/v1/ml/alignments:predict` is an axum action route where the colon is
+ *    part of the path. Fastify's router (find-my-way) reads `:name` as a PARAMETER, so registering
+ *    that path verbatim ALSO matches `/v1/ml/alignmentsXYZ` — the real handler serving a path the
+ *    contract never mentions. Measured: the near-miss test in `ml-asr-proxy-parity` went red on the
+ *    first ported run, and `::` is find-my-way's escape for a literal colon.
+ *
+ * Order matters: the parameter substitution runs FIRST, so the `:` it introduces is not then
+ * escaped as a literal.
+ */
 export function fastifyPath(axumPath) {
-  return axumPath.replace(/\{([^}]+)\}/g, ":$1");
+  const parts = axumPath.split(/(\{[^}]+\})/);
+  return parts
+    .map((part) =>
+      part.startsWith("{") && part.endsWith("}")
+        ? `:${part.slice(1, -1)}`
+        : part.replaceAll(":", "::"),
+    )
+    .join("");
 }
 
 /**
@@ -145,6 +167,35 @@ export const ROUTES = [
   },
   { key: "GET /v1/scholar-approvals", method: "get", path: "/v1/scholar-approvals", handler: listScholarApprovals },
   { key: "POST /v1/scholar-approvals", method: "post", path: "/v1/scholar-approvals", handler: createScholarApproval },
+  // ── N16: ML/ASR proxies. The two ASR routes carry audio, so they raise the body limit. ──────
+  {
+    key: "POST /v1/ml/alignments:predict",
+    method: "post",
+    path: "/v1/ml/alignments:predict",
+    handler: predictAlignment,
+  },
+  {
+    key: "POST /v1/ml/tajweed-findings:predict",
+    method: "post",
+    path: "/v1/ml/tajweed-findings:predict",
+    handler: predictTajweed,
+  },
+  {
+    key: "POST /v1/asr/transcribe",
+    method: "post",
+    path: "/v1/asr/transcribe",
+    handler: asrTranscribe,
+    // lib.rs:283 — DefaultBodyLimit::max(16 MB). A few minutes of 16 kHz mono base64 WAV. Every
+    // other route keeps the 2 MB default.
+    bodyLimit: 16 * 1024 * 1024,
+  },
+  {
+    key: "POST /v1/asr/force-align",
+    method: "post",
+    path: "/v1/asr/force-align",
+    handler: asrForceAlign,
+    bodyLimit: 16 * 1024 * 1024,
+  },
   {
     key: "POST /v1/realtime-session-tickets",
     method: "post",
