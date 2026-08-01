@@ -49,6 +49,9 @@ Every wave follows the same five steps (`plan.md §2`), and step 4 is not option
 - [x] N15 — Review gates — 5 operations; AI feedback withheld absent source + confidence + approval.
 - [x] N16 — ML/ASR proxies — 4 operations; server-side key injection, 16 MB limit.
 - [x] N17 — Privacy — `export`, `delete`; erasure verified by querying storage, not by a 200.
+- [x] N19 — **N-7's missing evidence.** The impact map named
+      `tests/node-api/no-secret-logging.test.mjs`; no such file existed, so the one general criterion
+      covering every ported route had nothing behind it. Written, and it found a real leak.
 
 ## Track F — Flutter client
 
@@ -68,6 +71,13 @@ So `dart analyze`, `flutter test`, and running the app on **macOS/Chrome** are a
 **building for iOS or Android is not**. `flutter doctor` says so in its own words, which is why the
 log is committed rather than summarized. **FL9 stays open.**
 
+> **FL2–FL8 were over-claimed, and this note is the correction.** Each row below is true as
+> written, but read together they said "client" when what existed was a component library — no entry
+> point, no host projects, no recorder, no socket. The owner's 2026-08-01 audit called it a P0 and
+> was right. `AUD1` is the row that actually delivers an application; these are its parts. `FL7` in
+> particular claims i18n, and the app has no ARB bundle: locales resolve RTL, the strings are
+> English.
+
 - [x] FL1 — Toolchain — Flutter SDK in user space; `flutter doctor` captured verbatim, gaps recorded.
 - [x] FL2 — Package + contract — `apps/flutter` skeleton, Dart models + typed client from `openapi.yaml`.
 - [x] FL3 — Secure auth — bearer tokens in Keychain/Keystore; never prefs, logs, or disk.
@@ -77,6 +87,44 @@ log is committed rather than summarized. **FL9 stays open.**
 - [x] FL7 — Privacy + i18n + a11y — export/delete, locale switching, semantics labels, contrast.
 - [x] FL8 — Offline/error states — no stale data presented as live.
 - [ ] FL9 — 🔓 Device matrix — **OPEN: needs Xcode + hardware this machine does not have.**
+- [x] FL10 — **F-7's missing evidence.** The impact map named a Dart contract test; none existed.
+      Written as a Node test instead (`verify.sh` SKIPS every Flutter step without the SDK, so a
+      Dart-side test would be skipped on CI — the one gate that matters). It found three contract
+      defects, none of them in the client.
+
+## Track AUD — the owner's audit, 2026-08-01
+
+Five findings, all confirmed against the code before any of them was touched. Four were approved for
+work; **AUD3 was not, and must not be closed by renaming fields** — see its row.
+
+- [x] AUD1 — **A runnable Flutter app.** `apps/flutter` was 8 library files: no `main.dart`, no
+      iOS/Android/web host projects, no recorder, no WebSocket. FL2–FL8 were marked done on
+      components, which over-claimed what existed.
+      **Delivered:** `main.dart` + a four-tab shell; iOS/Android/macOS/web host projects; a real
+      `AudioRecorder` (PCM16 microphone → gateway WebSocket, ADR-0026); the practice flow that
+      collects consent, creates the session, takes a ticket and streams; microphone permissions and
+      entitlements on all four platforms. 78 Flutter tests (was 63).
+      **Proven:** `flutter build web --release`, then the built bundle served and driven in a real
+      browser — the reader's offline state and the consent form both rendered.
+      **NOT proven:** anything on a phone. A web build is not device proof and `FL9` is untouched by
+      this row. The recorder's *hardware* path has never executed: every test injects the PCM
+      stream, so what is asserted is ordering and routing, not that a microphone opens.
+- [x] AUD2 — Privacy request body — the client posted `{}` to two routes whose handler requires
+      `learnerId`; both actions were a 422. The contract was wrong too: `/v1/privacy/delete` had no
+      `requestBody` at all, so a client written from it would make the same mistake.
+- [x] AUD4 — Node boot guard — port of `main.rs` `ensure_secure_config`. Node took
+      `quran-ai-dev-secret`, `smoke-secret` and `smoke-ml-api-key` as defaults where Rust panics.
+      Dormant at zero enabled routes; the point is that it is already there on enablement day.
+- [x] AUD5 — No learner in a log line — `privacy.mjs` logged `tenant=` and `learner=`. Rust does the
+      same at `privacy.rs:60` and is outside this spec's boundary, so this is a deliberate
+      log-only divergence, recorded rather than quietly matched.
+
+**AUD3 — learner tajweed feedback — BLOCKED on the owner, and not merely a field rename.**
+`list_tajweed_findings` requires teacher/scholar/admin/ops, so a learner is 403'd before any
+parsing; the field drift (`status`/`source` vs `reviewStatus`/`sources`) is the second failure
+behind the first. There is no learner-scoped endpoint for this data. Creating one is a product
+decision about what a learner may see of their own review queue, and inventing it here would be
+deciding it by writing code — the same reasoning that holds `N12b`.
 
 ## Track A — cutover artifact
 

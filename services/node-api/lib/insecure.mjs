@@ -22,6 +22,84 @@ export const LEGACY_VAR = "ALLOW_INSECURE_DEFAULTS";
 /** What the legacy variable accepted AT THE /metrics CALL SITE before the split. Not "true". */
 export const LEGACY_ONE_ONLY = ["1"];
 
+/** What it accepted at the BOOT checks before the split — insecure.rs `LEGACY_ONE_OR_TRUE`. */
+export const LEGACY_ONE_OR_TRUE = ["1", "true"];
+
+export const ALLOW_INSECURE_SECRETS = "ALLOW_INSECURE_SECRETS";
+
+/**
+ * The known-weak values `main.rs` `ensure_secure_config` refuses, transcribed exactly.
+ *
+ * `minLength` mirrors Rust's `.len() < 32`. Rust compares BYTES (`str::len`); JS `.length` counts
+ * UTF-16 code units, so a secret of 32 non-ASCII characters passes here and would pass there too
+ * (more bytes, not fewer) — the divergence can only ever be Node being stricter, never looser.
+ */
+const SECRET_RULES = [
+  {
+    name: "JWT_SECRET",
+    weak: ["quran-ai-dev-secret", "production-secret-change-me"],
+    minLength: 32,
+    why: "it signs and verifies every bearer token",
+  },
+  {
+    name: "REALTIME_GATEWAY_TICKET_SECRET",
+    weak: ["smoke-secret", "production-secret-change-me"],
+    minLength: 32,
+    why: "it is the HMAC key the realtime gateway trusts",
+  },
+  {
+    name: "ML_API_KEY",
+    weak: ["smoke-ml-api-key"],
+    minLength: 0,
+    why: "it is the only credential gating the ML inference service",
+  },
+  {
+    name: "ASR_API_KEY",
+    weak: ["smoke-asr-api-key"],
+    minLength: 0,
+    why: "it gates the ASR inference service behind the /v1/asr proxy",
+  },
+  {
+    name: "CORS_ALLOWED_ORIGINS",
+    weak: [],
+    minLength: 0,
+    why: "unset makes BOTH the pilot Origin allowlist and browser CORS permissive",
+  },
+];
+
+/**
+ * Boot-time refusal to run with missing or known-weak credentials — the port of `main.rs`
+ * `ensure_secure_config`. Returns the problems; the caller decides what to do with them.
+ *
+ * ── Why this one IS ported when `enforce_legacy_alias` is not ───────────────────────────────────
+ * The module header above declines to port the legacy-alias panic, because two processes refusing
+ * to boot over a DEPRECATED VARIABLE NAME is one operator lesson delivered twice. This is a
+ * different thing: these are the credentials **node-api itself uses** once it serves a route. It
+ * verifies bearer tokens with `JWT_SECRET` and MINTS realtime tickets with
+ * `REALTIME_GATEWAY_TICKET_SECRET`. A Node process booting on `quran-ai-dev-secret` in front of a
+ * Rust service that refused those very values would accept forged tokens the upstream would have
+ * rejected — the strangler's two halves disagreeing about who a caller is.
+ *
+ * It is dormant while `NODE_API_PORTED` is empty, and that is the point of adding it now rather
+ * than during a cutover: the guard must already be there on the day a route is first enabled.
+ */
+export function insecureSecretProblems(env) {
+  if (isRelaxed(env[ALLOW_INSECURE_SECRETS], env[LEGACY_VAR], LEGACY_ONE_OR_TRUE)) return [];
+
+  const problems = [];
+  for (const { name, weak, minLength, why } of SECRET_RULES) {
+    const value = env[name] ?? "";
+    if (value.trim() === "") {
+      problems.push(`${name} must be set in production — ${why}.`);
+    } else if (weak.includes(value)) {
+      problems.push(`${name} is a known default (${value}) — ${why}.`);
+    } else if (value.length < minLength) {
+      problems.push(`${name} must be at least ${minLength} characters — ${why}.`);
+    }
+  }
+  return problems;
+}
+
 /** Pure decision — insecure.rs `is_relaxed`. */
 export function isRelaxed(specific, legacy, legacyValues) {
   if (specific !== undefined && specific !== null && truthy(specific)) return true;

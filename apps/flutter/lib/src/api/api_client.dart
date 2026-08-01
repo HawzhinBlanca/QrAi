@@ -102,6 +102,30 @@ class ApiClient {
         .toList(growable: false);
   }
 
+  /// Create a recitation session. This is where consent is CAPTURED — the server stores what is
+  /// sent here and every later ML call is scoped to that stored record, not to anything the client
+  /// re-supplies. There is deliberately no default for any consent field.
+  Future<RecitationSession> createRecitationSession({
+    required String learnerId,
+    required QuranRef quranRef,
+    required String sourceChecksum,
+    required String modelVersion,
+    required String language,
+    required String mode,
+    required Consent consent,
+  }) async =>
+      RecitationSession.fromJson(
+        await _postObject('/v1/recitation-sessions', <String, Object?>{
+          'learnerId': learnerId,
+          'quranRef': quranRef.toJson(),
+          'sourceChecksum': sourceChecksum,
+          'modelVersion': modelVersion,
+          'language': language,
+          'mode': mode,
+          'consent': consent.toJson(),
+        }),
+      );
+
   Future<RealtimeTicket> createRealtimeTicket({
     required String sessionId,
     List<int> requestedSampleRates = const <int>[16000],
@@ -111,9 +135,15 @@ class ApiClient {
         'requestedSampleRates': requestedSampleRates,
       }));
 
-  Future<void> requestPrivacyExport() async => _post('/v1/privacy/export', <String, Object?>{});
+  /// Both privacy routes deserialize `PrivacyJobRequest { learner_id }` and neither has a default:
+  /// an empty body is a 422, not a self-scoped request. The learner id is the CALLER's to supply
+  /// because `requireSelfOrAny` lets admin and ops act for another learner — the server decides
+  /// whether that is allowed, and a client that could not name a learner could not express it.
+  Future<void> requestPrivacyExport({required String learnerId}) async =>
+      _post('/v1/privacy/export', <String, Object?>{'learnerId': learnerId});
 
-  Future<void> requestPrivacyDelete() async => _post('/v1/privacy/delete', <String, Object?>{});
+  Future<void> requestPrivacyDelete({required String learnerId}) async =>
+      _post('/v1/privacy/delete', <String, Object?>{'learnerId': learnerId});
 
   // ── transport ─────────────────────────────────────────────────────────────────────────────────
 

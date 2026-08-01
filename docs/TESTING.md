@@ -133,6 +133,34 @@ POSTGRES_RLS_SMOKE_URL="$DATABASE_URL" node scripts/smoke-sql.mjs
 # for the current list — it's grown since this doc was first written), transaction-rollback mode
 ```
 
+## The Flutter client (`apps/flutter`)
+
+```bash
+cd apps/flutter && flutter test        # widget + unit, no device, no network
+cd apps/flutter && dart analyze --fatal-infos
+```
+
+`verify.sh` runs both — and **SKIPS them loudly when `flutter` is not on PATH**, which is the state
+of a runner that has not installed the SDK. That skip is why the client's contract test lives in
+`tests/contract/flutter-contract.test.mjs` (Node) rather than in Dart: it compares `models.dart` and
+`api_client.dart` against `specs/flutter-client/openapi.yaml` in **both** directions — the keys the
+client reads against the response schema, and the bodies it posts against the `requestBody` — and it
+runs whether or not the SDK is present. It also pins the platform microphone declarations, because
+`flutter create` does not add them and a regeneration that dropped them would build, launch, pass
+every widget test, and record nothing.
+
+Hardware is faked at the seam, never stubbed into green:
+
+| what | how it is driven | what the test can then assert |
+|---|---|---|
+| microphone | `PcmStreamFactory` injected into `StreamingRecorder` | that the socket opens **first**, and that a refused ticket opens no microphone at all |
+| gateway socket | `SocketFactory` | that captured frames reach the sink byte-identically |
+| HTTP | `MockClient` (`package:http/testing`) | that the consent the learner gave is what reached the wire |
+| secure storage | `FlutterSecureStorage.setMockInitialValues` | that a token never lands anywhere else |
+
+**Running it on a device is `FL9` and is still open** — `flutter test` is not device proof, and the
+web build this repo can produce is not either.
+
 ## Conventions
 - Every spec.md acceptance criterion (EARS) maps to ≥1 automated test that runs in `verify.sh`.
 - Property/fuzz tests for pure logic (parsers, checksums, contracts) where cheap.
