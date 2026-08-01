@@ -21,6 +21,7 @@ import { getLearnerProgress, getWeeklyProgress, updateProgress } from "./progres
 import { getAyah, getSurah, listSurahs } from "./quran.mjs";
 import { getEvalRun, listAgentRuns, listAuditEvents } from "./reports.mjs";
 import { createRealtimeTicket } from "./recitation.mjs";
+import { createScholarApproval, createTeacherReview, listScholarApprovals, listTajweedFindings, listTeacherReviewQueue } from "./review.mjs";
 import { createSession, persistSessionAlignments, requestTeacherReview } from "./session-writes.mjs";
 import { getSession, listActiveLearners, listSessionAlignments, listSessions } from "./sessions.mjs";
 
@@ -133,6 +134,17 @@ export const ROUTES = [
     path: "/v1/recitation-sessions/{id}/request-teacher-review",
     handler: requestTeacherReview,
   },
+  // ── N15: the review gates. Two of these five are where the AI-feedback rule refuses. ────────
+  { key: "GET /v1/tajweed-findings", method: "get", path: "/v1/tajweed-findings", handler: listTajweedFindings },
+  { key: "POST /v1/teacher-reviews", method: "post", path: "/v1/teacher-reviews", handler: createTeacherReview },
+  {
+    key: "GET /v1/teacher-review-queue",
+    method: "get",
+    path: "/v1/teacher-review-queue",
+    handler: listTeacherReviewQueue,
+  },
+  { key: "GET /v1/scholar-approvals", method: "get", path: "/v1/scholar-approvals", handler: listScholarApprovals },
+  { key: "POST /v1/scholar-approvals", method: "post", path: "/v1/scholar-approvals", handler: createScholarApproval },
   {
     key: "POST /v1/realtime-session-tickets",
     method: "post",
