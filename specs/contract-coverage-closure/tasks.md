@@ -102,8 +102,13 @@ referenced entity is a 404"*, which is why `create_teacher_review` has an existe
 
 **Deliberately NOT fixed here.** `impact-map.md §1` states that a defect found by a coverage change
 becomes its own change; patching it inside a test-only commit would hide a behaviour change under a
-"test-only" label. Spun out as a separate task. Whether 404 leaks learner existence to a staff caller
-is a product decision worth making explicitly.
+"test-only" label.
+
+> **Fixed 2026-08-01** by [`specs/privacy-job-404/`](../privacy-job-404/tasks.md) — both endpoints,
+> tenant-scoped 404. The existence-leak question this raised as a product decision turned out
+> answerable from the code: `require_self_or_any` means a learner can only ever pass their own id,
+> so only admin/ops — already trusted with the whole tenant — can reach the branch. 403 still
+> beats 404, mutation-tested.
 
 ### 2. 🟠 I fabricated the same schema TWICE from samples before checking what the server enforces
 

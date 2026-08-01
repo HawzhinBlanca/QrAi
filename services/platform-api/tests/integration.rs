@@ -1408,6 +1408,80 @@ async fn spawn_mock_ml_privacy_delete() -> String {
     format!("http://{addr}")
 }
 
+/// PJ1 — a privacy job for a learner that does not exist is a clean 404, never a 500.
+/// specs/privacy-job-404/plan.md
+///
+/// `privacy_jobs.learner_id` REFERENCES users(id), so without the pre-check the INSERT violates the
+/// FK and surfaces as "a database error occurred" — on a right-to-erasure endpoint, indistinguishable
+/// from a real database failure, and an invitation to retry something that can never succeed.
+///
+/// NO MOCK ML SERVICE HERE, on purpose. The existence check runs BEFORE the audio erase, so an
+/// unknown learner must 404 even with the ML service unreachable. Point this at a mock and the test
+/// would still pass with the check in the wrong place — which is exactly the mistake the plan made
+/// and the red run caught.
+#[tokio::test]
+#[ignore = "requires live Postgres"]
+async fn privacy_job_for_unknown_learner_is_not_found() {
+    let state = test_state();
+    let router = platform_router_with_rate_limit(state.clone(), false);
+    let ghost = format!("learner-does-not-exist-{}", next_suffix());
+
+    for route in ["/v1/privacy/export", "/v1/privacy/delete"] {
+        let res = send_json(
+            &router,
+            Method::POST,
+            route,
+            Some("hikmah-pilot-erbil"),
+            Some("admin"),
+            json!({ "learnerId": ghost }),
+        )
+        .await;
+        assert_eq!(
+            res.status(),
+            StatusCode::NOT_FOUND,
+            "{route} must be 404 for a learner that does not exist"
+        );
+        let body: Value = read_json(res).await;
+        assert_eq!(body["error"], json!("record not found"));
+    }
+}
+
+/// The ordering that makes the 404 above safe: authorization is decided BEFORE existence.
+///
+/// If the existence check ever moved ahead of `require_self_or_any`, a learner could enumerate which
+/// learner ids exist by reading 404-vs-403 — the check added to fix a 500 would have created an
+/// information leak. Cross-tenant is included because RLS scopes the lookup, so a real id in another
+/// tenant would otherwise be the same probe by a different route.
+#[tokio::test]
+#[ignore = "requires live Postgres"]
+async fn privacy_job_answers_forbidden_before_not_found() {
+    let state = test_state();
+    let router = platform_router_with_rate_limit(state.clone(), false);
+
+    for (label, learner) in [
+        ("another existing learner", "learner-2"),
+        (
+            "a learner that does not exist",
+            "learner-does-not-exist-probe",
+        ),
+    ] {
+        let res = send_json(
+            &router,
+            Method::POST,
+            "/v1/privacy/delete",
+            Some("hikmah-pilot-erbil"),
+            Some("learner"),
+            json!({ "learnerId": learner }),
+        )
+        .await;
+        assert_eq!(
+            res.status(),
+            StatusCode::FORBIDDEN,
+            "a learner asking about {label} must get 403, never a 404 that reveals existence"
+        );
+    }
+}
+
 #[tokio::test]
 #[ignore = "requires live Postgres"]
 async fn privacy_delete_preserves_other_learners_teacher_reviews() {

@@ -90,8 +90,35 @@ async fn create_privacy_job(
     kind: PrivacyJobKind,
 ) -> Result<Json<PrivacyJob>, ApiError> {
     let actor = crate::auth::resolve_actor(&method, &headers, &state).await?;
+    // Authorization FIRST, and it must stay first: it is what makes the existence check below safe.
+    // A learner may only ever pass their own id, so only admin/ops — already trusted with every row
+    // in the tenant — can reach a 404 at all. Inverting these two would turn the 404 into a learner
+    // enumeration oracle.
     actor.require_self_or_any(&req.learner_id, &[ActorRole::Admin, ActorRole::Ops])?;
     let trace_id = crate::auth::extract_trace_id(&headers);
+
+    // The learner must exist in this tenant. `privacy_jobs.learner_id` REFERENCES users(id), so
+    // without this the INSERT below violates the FK and surfaces as a 500 — indistinguishable from
+    // a real database failure on a right-to-erasure endpoint, and it invites a retry that can never
+    // succeed. A missing referenced entity is a 404, exactly as create_teacher_review already does
+    // for a dangling finding_id.
+    //
+    // BEFORE the audio erase, not inside the transaction below. The plan put it later, to keep the
+    // documented "ML first" ordering untouched; running the test red showed why that is wrong — with
+    // the ML service unreachable, an unknown learner returned 502 (transient, retry me) instead of
+    // 404 (permanent, do not). Wrong-signal-for-retry is the defect being fixed, so it must not
+    // survive in the ML-outage case. A READ touches nothing, so "an ML outage fails fast with the
+    // database untouched" still holds.
+    let mut check_tx = crate::begin_tenant_tx(&state.pool, &actor.tenant_id).await?;
+    let learner_exists = sqlx::query("SELECT 1 FROM users WHERE id = $1 AND tenant_id = $2")
+        .bind(&req.learner_id)
+        .bind(&actor.tenant_id)
+        .fetch_optional(&mut *check_tx)
+        .await?;
+    check_tx.commit().await?;
+    if learner_exists.is_none() {
+        return Err(ApiError::NotFound);
+    }
 
     // Right-to-erasure: erase the learner's recorded audio from the ML inference service BEFORE the
     // DB cascade. The DB rows are only derived records; the raw audio is the sensitive PII. Doing it

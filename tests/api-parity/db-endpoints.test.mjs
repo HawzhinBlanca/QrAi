@@ -212,6 +212,49 @@ test("POST /v1/teacher-reviews is 403 for a learner and for a scholar", async ()
   }
 });
 
+// ── POST /v1/privacy/{export,delete} — a missing learner is 404, not 500 ───────────────────────
+
+/**
+ * PJ2 — specs/privacy-job-404/plan.md §5.
+ *
+ * integration.rs:1424 — privacy_job_for_unknown_learner_is_not_found
+ * integration.rs:1457 — privacy_job_answers_forbidden_before_not_found
+ *
+ * These were written and run RED against the unfixed binary first:
+ *
+ *   not ok - privacy export/delete is 404 for a learner that does not exist
+ *     500 !== 404
+ *
+ * A test written after the fix, never seen failing, only proves the fix is present — not that it
+ * addresses the defect.
+ */
+for (const route of ["/v1/privacy/export", "/v1/privacy/delete"]) {
+  test(`POST ${route} is 404 for a learner that does not exist, not 500`, async () => {
+    // privacy_jobs.learner_id REFERENCES users(id). Without a pre-check the insert violates the FK
+    // and surfaces as "a database error occurred" — indistinguishable from a real database failure
+    // on a right-to-erasure endpoint, and it invites a retry that can never succeed.
+    const res = await request(api.baseUrl, route, {
+      method: "POST",
+      role: "admin",
+      body: { learnerId: `learner-does-not-exist-${Math.random().toString(36).slice(2, 10)}` },
+    });
+    assert.equal(res.status, 404, `expected a clean 404, got ${res.status} ${res.text}`);
+    assert.equal(res.body.error, "record not found");
+  });
+
+  test(`POST ${route} answers 403 BEFORE 404 for another learner`, async () => {
+    // Ordering, pinned. If the existence check ever moved ahead of require_self_or_any, a learner
+    // could probe which learner ids exist by reading 404-vs-403 — the check added to fix a 500
+    // would have created an enumeration oracle.
+    const res = await request(api.baseUrl, route, {
+      method: "POST",
+      role: "learner",
+      body: { learnerId: "learner-2" },
+    });
+    assert.equal(res.status, 403, "authorization must be decided before existence");
+  });
+}
+
 // ── POST /v1/pilot/session/logout ──────────────────────────────────────────────────────────────
 
 test("POST /v1/pilot/session/logout is idempotent with no cookie, and clears the cookie", async () => {
