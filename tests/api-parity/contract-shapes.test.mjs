@@ -35,15 +35,27 @@ after(async () => {
   await ml?.stop();
 });
 
-/** A session owned by learner-1, chosen by OWNER rather than recency so parallel suites cannot move it. */
+/**
+ * A DRAFT session owned by learner-1.
+ *
+ * The `review_status = 'draft'` predicate is load-bearing, not a tidy-up. This helper used to take
+ * whichever session was NEWEST for that learner, on the reasoning that choosing by owner kept
+ * parallel suites from moving it — but any suite that creates a session for learner-1 moves
+ * "newest", and one that advances a session past draft then hands this test a row that
+ * `request-teacher-review` correctly refuses with a 400. That is exactly what happened when
+ * `session-writes-parity` landed.
+ *
+ * The caller needs a session it can SEND for review. Saying so in the query makes the precondition
+ * explicit instead of ambient, and the test stops depending on what else ran first.
+ */
 async function learnerSession() {
   const [session] = await queryJson(
     `SELECT id FROM recitation_sessions
-     WHERE learner_id = 'learner-1' AND tenant_id = $1
+     WHERE learner_id = 'learner-1' AND tenant_id = $1 AND review_status = 'draft'
      ORDER BY started_at DESC LIMIT 1`,
     ["hikmah-pilot-erbil"],
   );
-  assert.ok(session, "a recitation session owned by learner-1 is required");
+  assert.ok(session, "a DRAFT recitation session owned by learner-1 is required");
   return session.id;
 }
 
