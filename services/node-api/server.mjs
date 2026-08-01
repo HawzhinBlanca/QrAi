@@ -46,6 +46,9 @@ export const PORTABLE = [
   "GET /health",
   "GET /ready",
   "GET /metrics",
+  "GET /v1/quran/surahs",
+  "GET /v1/quran/surahs/{surah_number}",
+  "GET /v1/quran/ayahs/{surah_number}/{ayah_number}",
   "GET /v1/learner/progress",
   "POST /v1/realtime-session-tickets",
 ];
@@ -100,9 +103,21 @@ export function buildServer(config) {
   //
   // `hasHeader` guard: on the proxied path the header is already there, and appending would emit it
   // twice.
+  //
+  // Second divergence in the same place: axum's `Json` responder sets `application/json` with NO
+  // charset; Fastify serializes an object as `application/json; charset=utf-8`. JSON is UTF-8 by
+  // definition (RFC 8259 §8.1) so nothing MISREADS the body — but it is a different header on every
+  // JSON route in the API, and a client with an exact content-type check sees a different service.
+  // Found by the N9 differ; like `vary`, it had been true of N4 and N5 since they landed.
+  //
+  // Rewritten here rather than per-handler so a route added later cannot forget it. The equality
+  // test is exact: a handler that deliberately sets some other type keeps it.
   const VARY = "origin, access-control-request-method, access-control-request-headers";
   app.addHook("onSend", (_req, reply, payload, done) => {
     if (!reply.hasHeader("vary")) reply.header("vary", VARY);
+    if (reply.getHeader("content-type") === "application/json; charset=utf-8") {
+      reply.header("content-type", "application/json");
+    }
     done(null, payload);
   });
 

@@ -16,6 +16,7 @@
  */
 import { health, metrics, ready } from "./infra.mjs";
 import { getLearnerProgress } from "./progress.mjs";
+import { getAyah, getSurah, listSurahs } from "./quran.mjs";
 import { createRealtimeTicket } from "./recitation.mjs";
 
 /** `/v1/x/{id}/y` → `/v1/x/:id/y`. Axum 0.8 → Fastify. */
@@ -35,6 +36,20 @@ export const ROUTES = [
   { key: "GET /health", method: "get", path: "/health", handler: health },
   { key: "GET /ready", method: "get", path: "/ready", handler: ready },
   { key: "GET /metrics", method: "get", path: "/metrics", handler: metrics },
+  // ── N9: canonical Quran. Public, and NOT tenant-scoped — these are global reference tables. ──
+  { key: "GET /v1/quran/surahs", method: "get", path: "/v1/quran/surahs", handler: listSurahs },
+  {
+    key: "GET /v1/quran/surahs/{surah_number}",
+    method: "get",
+    path: "/v1/quran/surahs/{surah_number}",
+    handler: getSurah,
+  },
+  {
+    key: "GET /v1/quran/ayahs/{surah_number}/{ayah_number}",
+    method: "get",
+    path: "/v1/quran/ayahs/{surah_number}/{ayah_number}",
+    handler: getAyah,
+  },
   {
     key: "GET /v1/learner/progress",
     method: "get",
