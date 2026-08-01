@@ -160,6 +160,17 @@ function AuthenticatedApp({ bypassLogin = false }: { bypassLogin?: boolean }) {
   // login step. Swapped for the real authenticated user once VITE_REQUIRE_LOGIN=1.
   // Memoized so the reference is stable — it's a dependency of the data-loading effect,
   // and a fresh object each render would loop it.
+  // The default identity below is a set of x-tenant-id/x-user-id/x-user-role headers, and those
+  // carry authority ONLY when the server runs with ALLOW_HEADER_AUTH=1 — dev and CI. A production
+  // deployment runs with it off (docker-compose.yml), so in a production BUILD the fabricated
+  // learner is not a working identity: every learner API call answers 401.
+  //
+  // So a production build with no pilot session has no identity to offer, and must say so instead of
+  // rendering a signed-in-looking app over a wall of 401s. This is NOT the login screen returning —
+  // it is the honest state for "you arrived without an invite".
+  const canSpoofIdentity = import.meta.env.DEV || import.meta.env.MODE === "test";
+  const needsInvite = bypassLogin && !canSpoofIdentity && !pilotIdentity && !pilotBootstrapPending;
+
   const effectiveUser = useMemo(
     () => {
       if (bypassLogin) {
@@ -420,8 +431,10 @@ function AuthenticatedApp({ bypassLogin = false }: { bypassLogin?: boolean }) {
       });
 
     // Hold learner loads until a pending pilot bootstrap settles, so they never fire with the
-    // pre-bootstrap default identity (which would 401 under header-auth-off).
-    if (effectiveUser && !pilotBootstrapPending) {
+    // pre-bootstrap default identity (which would 401 under header-auth-off) — and skip them
+    // entirely when there is no usable identity at all (`needsInvite`), rather than firing a wall of
+    // 401s behind a screen that is already telling the visitor an invite is required.
+    if (effectiveUser && !pilotBootstrapPending && !needsInvite) {
       loadWeeklyProgress(effectiveUser.tenantId, effectiveUser.userId, authToken)
         .then(setWeeklyProgress)
         .catch((err) => {
@@ -442,7 +455,7 @@ function AuthenticatedApp({ bypassLogin = false }: { bypassLogin?: boolean }) {
           }
         });
     }
-  }, [authToken, effectiveUser, t, pilotBootstrapPending]);
+  }, [authToken, effectiveUser, t, pilotBootstrapPending, needsInvite]);
 
   useEffect(() => {
     loadInitialData();
@@ -1116,6 +1129,24 @@ function AuthenticatedApp({ bypassLogin = false }: { bypassLogin?: boolean }) {
       if (err instanceof DOMException && err.name === "AbortError") return;
       stopRecordingPlayback();
     });
+  }
+
+  // No usable identity: a production build reached without an invite. Rendered AFTER every hook, so
+  // hook order is unconditional; the data-loading effect already skips on `needsInvite`, so nothing
+  // is in flight behind this.
+  //
+  // This is deliberately NOT a login screen — login stays disabled. It is the honest answer to "you
+  // arrived without an invite", replacing an app that looked signed in while every call 401'd.
+  if (needsInvite) {
+    return (
+      <div className="login-screen">
+        <div className="login-card">
+          <h1>{t("app.inviteRequired.title")}</h1>
+          <p className="login-hint">{t("app.inviteRequired.body")}</p>
+          <p className="login-hint">{t("app.inviteRequired.help")}</p>
+        </div>
+      </div>
+    );
   }
 
   return (

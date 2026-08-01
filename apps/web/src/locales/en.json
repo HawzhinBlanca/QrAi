@@ -436,6 +436,11 @@
       "recitationAudioLoadFailed": "Could not load recitation audio. Check your connection.",
       "audioPlaybackBlocked": "Audio was blocked — tap play again to allow playback.",
       "recordingPlaybackFailed": "Couldn't play that recording."
+    },
+    "inviteRequired": {
+      "title": "An invite is required",
+      "body": "This app is open to pilot learners who were sent a personal invite link. Open the link you were given to continue.",
+      "help": "If your link has expired, ask your teacher for a new one."
     }
   },
   "privacySettings": {

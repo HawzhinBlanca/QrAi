@@ -524,8 +524,17 @@ def _analyze_tajweed_words_sync(tmp_path: str, words: list[dict]) -> list["Tajwe
     this is real, potentially multi-second CPU work (autocorrelation + FFT per word), and running it
     directly on the asyncio event loop would block every other concurrent request to this process,
     including /health, for the full duration."""
-    # Load audio with soundfile (real waveform processing)
-    audio_data, sample_rate = sf.read(tmp_path, dtype="float32")
+    # Decode-time backstop. enforce_max_duration() deliberately lets an UNKNOWN duration through
+    # (ffprobe returns 0.0 for a streamed/unknown container), so a bound at the decode is required
+    # too — exactly as the force-align path does. `frames=` caps what soundfile will materialise, so
+    # an over-long file costs a bounded read instead of the whole waveform.
+    info = sf.info(tmp_path)
+    max_frames = int(MAX_AUDIO_SECONDS * info.samplerate) + 1
+    audio_data, sample_rate = sf.read(tmp_path, dtype="float32", frames=max_frames)
+    if len(audio_data) > MAX_AUDIO_SECONDS * sample_rate:
+        raise HTTPException(
+            status_code=413, detail=f"audio too long; max {int(MAX_AUDIO_SECONDS)}s"
+        )
     # Convert to mono if stereo
     if len(audio_data.shape) > 1:
         audio_data = audio_data.mean(axis=1)
@@ -714,6 +723,12 @@ async def analyze_tajweed(req: TajweedAnalysisRequest):
         tmp_path = tmp.name
 
     try:
+        # Same bound the other two audio routes already apply, and it was missing HERE. The base64
+        # cap only bounds the COMPRESSED payload: a ~12 kbps Opus clip inside the size limit decodes
+        # to hours of PCM, and `_analyze_tajweed_words_sync` calls sf.read() on the WHOLE file before
+        # looking at a single word — so an unbounded duration is a memory/CPU exhaustion with a valid
+        # ASR key, which the request-counting rate limiter does not stop.
+        enforce_max_duration(tmp_path)
         findings = await asyncio.to_thread(_analyze_tajweed_words_sync, tmp_path, req.words)
         latency_ms = max(1, int((time.time() - start) * 1000))
         return TajweedAnalysisResponse(
