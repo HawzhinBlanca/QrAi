@@ -26,6 +26,13 @@ typedef SocketFactory = WebSocketChannel Function(Uri uri);
 /// Captures PCM frames. Injected for the same reason — a test has no microphone.
 typedef PcmStreamFactory = Future<Stream<Uint8List>> Function(int sampleRate);
 
+/// Ask the OS for the microphone, prompting if it has not been asked before.
+///
+/// A free function, not a method, because the consent gate must be able to ask BEFORE any recorder
+/// exists — that ordering is the whole point of `consent_gate.dart`, and a method would require
+/// constructing the thing the gate is deciding about.
+Future<bool> requestMicrophonePermission() => StreamingRecorder.device.hasPermission();
+
 /// Builds the audio URL for a session. The ticket travels in the query string because a WebSocket
 /// handshake from a browser cannot carry an Authorization header — the gateway's own contract.
 Uri audioUriFor(Uri gatewayBase, String sessionId, String ticketToken) {
@@ -43,30 +50,44 @@ class StreamingRecorder implements AudioRecorder {
     SocketFactory? socketFactory,
     PcmStreamFactory? pcmStreamFactory,
   })  : _socketFactory = socketFactory ?? WebSocketChannel.connect,
-        _pcmStreamFactory = pcmStreamFactory ?? _microphone;
+        _injectedPcm = pcmStreamFactory;
 
   final RealtimeTicket ticket;
   final Uri gatewayBase;
   final SocketFactory _socketFactory;
-  final PcmStreamFactory _pcmStreamFactory;
 
-  static final rec.AudioRecorder _device = rec.AudioRecorder();
+  /// Null in the app; a fake in a test. Kept nullable rather than defaulted to the microphone so
+  /// `stop()` can tell whether there is a real device to stop — `identical()` against a static
+  /// tear-off happened to work, but "happened to work" is how a muted microphone ships.
+  final PcmStreamFactory? _injectedPcm;
+
+  /// One shared device. `record` holds a platform channel per instance, and two recorders competing
+  /// for the microphone is a failure with no error message.
+  static final rec.AudioRecorder device = rec.AudioRecorder();
 
   WebSocketChannel? _socket;
   StreamSubscription<Uint8List>? _subscription;
+  bool _deviceStarted = false;
+
+  Future<Stream<Uint8List>> _pcm(int sampleRate) =>
+      _injectedPcm?.call(sampleRate) ?? _microphone(sampleRate);
 
   /// The default source: the real microphone, as uncompressed PCM the gateway can align.
-  static Future<Stream<Uint8List>> _microphone(int sampleRate) => _device.startStream(
-        rec.RecordConfig(
-          // PCM, not AAC: the aligner needs samples, and a lossy codec moves the word boundaries
-          // this whole feature reports on.
-          encoder: rec.AudioEncoder.pcm16bits,
-          sampleRate: sampleRate,
-          numChannels: 1,
-          echoCancel: true,
-          noiseSuppress: true,
-        ),
-      );
+  Future<Stream<Uint8List>> _microphone(int sampleRate) async {
+    final Stream<Uint8List> stream = await device.startStream(
+      rec.RecordConfig(
+        // PCM, not AAC: the aligner needs samples, and a lossy codec moves the word boundaries
+        // this whole feature reports on.
+        encoder: rec.AudioEncoder.pcm16bits,
+        sampleRate: sampleRate,
+        numChannels: 1,
+        echoCancel: true,
+        noiseSuppress: true,
+      ),
+    );
+    _deviceStarted = true;
+    return stream;
+  }
 
   /// The rate to record at: the ticket's first allowed value.
   int get sampleRate {
@@ -94,7 +115,7 @@ class StreamingRecorder implements AudioRecorder {
       rethrow;
     }
 
-    final Stream<Uint8List> pcm = await _pcmStreamFactory(sampleRate);
+    final Stream<Uint8List> pcm = await _pcm(sampleRate);
     // No `onData` logging of any kind. These bytes are a child reciting the Qur'an; the only place
     // they belong is the sink.
     _subscription = pcm.listen(socket.sink.add, onDone: stop, cancelOnError: true);
@@ -106,7 +127,10 @@ class StreamingRecorder implements AudioRecorder {
     _subscription = null;
     // Microphone before socket: the reverse order streams captured audio into a closing sink.
     await sub?.cancel();
-    if (identical(_pcmStreamFactory, _microphone)) await _device.stop();
+    if (_deviceStarted) {
+      _deviceStarted = false;
+      await device.stop();
+    }
 
     final WebSocketChannel? socket = _socket;
     _socket = null;
