@@ -27,6 +27,27 @@ export class ApiError extends Error {
 }
 
 /**
+ * An axum EXTRACTOR rejection — a request rejected before the handler ran.
+ *
+ * These do not use the `{"error": …}` JSON body every in-handler failure uses. `Json<T>` failing to
+ * deserialize, and `Path<i32>` failing to parse, both return `text/plain; charset=utf-8` with the
+ * extractor's own message. Found twice by the differ (N9 on a path parameter, N12a on a body), so
+ * it is one type rather than a second bespoke helper each time it turns up.
+ *
+ * The message TEXT of a serde rejection is a recorded, unfixed divergence: reproducing it
+ * byte-for-byte means reimplementing serde's error formatting including line/column offsets, and it
+ * leaks deserializer internals. The STATUS and the CONTENT-TYPE are what clients branch on, and
+ * those are matched.
+ */
+export class RejectionError extends ApiError {
+  constructor(message, status) {
+    super(message, status);
+    this.name = "RejectionError";
+    this.contentType = "text/plain; charset=utf-8";
+  }
+}
+
+/**
  * The wire messages are transcribed VERBATIM from services/platform-api/src/types.rs:334-340.
  * Phase 5's differ treats an error string as contract ("FAILS when an error message string differs
  * — the messages are wire contract"), and the A/B against Rust caught three of mine that read
