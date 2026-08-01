@@ -17,6 +17,9 @@ library;
 
 import 'package:flutter/material.dart';
 import 'package:flutter_localizations/flutter_localizations.dart';
+// `show DateFormat` is not tidiness: `package:intl` also exports a `TextDirection`, which shadows
+// `dart:ui`'s and breaks every RTL widget in this file.
+import 'package:intl/intl.dart' show DateFormat;
 
 import 'src/api/api_client.dart';
 import 'src/api/models.dart';
@@ -176,6 +179,18 @@ class _LoaderState<T> extends State<Loader<T>> {
       if (mounted) setState(() => _state = Loaded<T>(value));
     } on ApiException catch (e) {
       if (mounted) setState(() => _state = Failed<T>(e));
+    } on Object catch (e) {
+      // Anything the transport did not already classify — above all `FormatException`, which every
+      // model in `models.dart` throws deliberately when a required field is missing or the wrong
+      // type. Catching only `ApiException` left that escaping the future: the state never moved off
+      // `Loading` and the learner watched a spinner forever, with no error anywhere.
+      //
+      // From the client's side a payload the contract forbids IS a server failure, so it is
+      // classified as one — which also makes retry available, since a partial deploy is the usual
+      // cause and it resolves on its own.
+      if (mounted) {
+        setState(() => _state = Failed<T>(ApiException(ApiErrorKind.server, '$e')));
+      }
     }
   }
 
@@ -236,6 +251,35 @@ class SurahScreen extends StatelessWidget {
       );
 }
 
+/// A review date a learner can read, or the server's own string if it cannot be parsed.
+///
+/// Seen on the running app: `nextReviewAt` arrived as
+/// `2026-08-03T21:48:28.922280+00:00` and was rendered verbatim — a machine timestamp in a
+/// learner's progress screen.
+///
+/// The fallback is the point. If the value does not parse, this shows it UNCHANGED rather than
+/// guessing: a wrong date on a revision schedule is worse than an ugly one, and silently rendering
+/// "today" for an unparseable value is exactly the kind of invented fact this codebase refuses.
+String friendlyReviewDate(String? iso) {
+  if (iso == null) return 'Not scheduled yet';
+  final DateTime? parsed = DateTime.tryParse(iso);
+  if (parsed == null) return iso;
+
+  // `tryParse` is not a validator: it ROLLS OVER out-of-range components rather than refusing them.
+  // Measured — `DateTime.tryParse('2026-13-45')` returns 14 February 2027, not null. Rendering that
+  // would put a confidently wrong revision date in front of a learner with nothing downstream able
+  // to tell. So the parse has to round-trip: if the calendar fields the server sent are not the
+  // fields that came back, this is not a date we can read, and the raw value is shown instead.
+  final Match? ymd = RegExp(r'^(\d{4})-(\d{2})-(\d{2})').firstMatch(iso);
+  if (ymd == null) return iso;
+  final bool roundTrips = int.parse(ymd[1]!) == parsed.year &&
+      int.parse(ymd[2]!) == parsed.month &&
+      int.parse(ymd[3]!) == parsed.day;
+  if (!roundTrips) return iso;
+
+  return DateFormat.yMMMMd().add_jm().format(parsed.toLocal());
+}
+
 class ProgressTab extends StatelessWidget {
   const ProgressTab({super.key, required this.client, required this.learnerId});
 
@@ -254,9 +298,7 @@ class ProgressTab extends StatelessWidget {
           ListTile(title: const Text('Sessions'), trailing: Text('${p.totalSessions}')),
           ListTile(
             title: const Text('Next review'),
-            // Null means SM-2 has not scheduled one yet — a learner with no reviews behind them.
-            // "Not scheduled yet" is the honest rendering; an empty subtitle reads as a bug.
-            subtitle: Text(p.nextReviewAt ?? 'Not scheduled yet'),
+            subtitle: Text(friendlyReviewDate(p.nextReviewAt)),
           ),
         ],
       ),

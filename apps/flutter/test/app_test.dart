@@ -113,4 +113,32 @@ void main() {
     );
     expect(find.byKey(const ValueKey<String>('consent-guardian')), findsOneWidget);
   });
+
+  testWidgets('a malformed payload fails visibly instead of spinning forever', (WidgetTester tester) async {
+    // The surah list is valid JSON but omits `name`, which `SurahSummary` requires. `_str` throws a
+    // FormatException — a class the transport never wraps, so before this it escaped the future and
+    // the screen stayed on its spinner with no error anywhere. A learner cannot tell that apart
+    // from a slow network, and it never resolves.
+    final ApiClient client = ApiClient(
+      baseUrl: Uri.parse('http://127.0.0.1:8080'),
+      tokenProvider: () async => null,
+      httpClient: MockClient((http.Request _) async => http.Response(
+            jsonEncode(<Map<String, Object?>>[
+              <String, Object?>{'surahNumber': 1, 'ayahCount': 7},
+            ]),
+            200,
+            headers: <String, String>{'content-type': 'application/json'},
+          )),
+    );
+
+    await tester.pumpWidget(app(client));
+    await tester.pumpAndSettle();
+
+    expect(find.byKey(const ValueKey<String>('load-failed')), findsOneWidget);
+    expect(find.byKey(const ValueKey<String>('load-loading')), findsNothing,
+        reason: 'still loading — the exception escaped instead of becoming a state');
+    // Retryable, because the usual cause is a half-finished deploy that fixes itself.
+    expect(find.byKey(const ValueKey<String>('load-retry')), findsOneWidget);
+  });
 }
+
