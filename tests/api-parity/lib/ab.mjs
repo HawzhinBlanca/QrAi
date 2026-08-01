@@ -83,3 +83,57 @@ export async function assertABTable(shellUrl, apiUrl, probes) {
   for (const probe of probes) out.push(await assertAB(shellUrl, apiUrl, probe));
   return out;
 }
+
+/**
+ * The A/B for a route that MUTATES, or whose response embeds `now()`.
+ *
+ * `assertAB` sends one identical request to both implementations. That is wrong twice over here:
+ *
+ *  1. **State.** `POST /v1/learner/progress` advances an SM-2 schedule. Sending the same request to
+ *     both would have the second call read the first's write, so the two responses would legitimately
+ *     differ and the differ would report a port bug that is really a test bug.
+ *  2. **Time.** `nextReviewAt` is `now() + interval`. Two calls a few milliseconds apart produce
+ *     different bytes no matter how correct the port is. Byte equality is simply not the property.
+ *
+ * So each side gets its OWN subject (a distinct ayahRef, learner, session), and the bodies are
+ * compared after `normalize` blanks the fields that are allowed to differ. What is left must still
+ * match exactly — including the SM-2 arithmetic, which is the whole point of the comparison.
+ *
+ * `normalize` must be explicit about what it erases. A normalizer that blanks a field the port got
+ * WRONG turns this into a test that cannot fail, so every key it touches should be one that
+ * provably varies with time or identity, never one that merely turned out to be inconvenient.
+ */
+export async function assertABMutating(shellUrl, apiUrl, { name, probeFor, normalize }) {
+  const label = name ?? "mutating A/B";
+
+  const [shell, api] = await Promise.all([
+    (async () => {
+      const p = probeFor("shell");
+      return request(shellUrl, p.path, p);
+    })(),
+    (async () => {
+      const p = probeFor("rust");
+      return request(apiUrl, p.path, p);
+    })(),
+  ]);
+
+  assert.equal(shell.status, api.status, `${label}: status differs (shell ${shell.status} vs rust ${api.status})`);
+  assert.deepEqual(
+    comparableHeaders(shell.headers),
+    comparableHeaders(api.headers),
+    `${label}: response headers differ`,
+  );
+  assert.deepEqual(
+    normalize(shell.body, "shell"),
+    normalize(api.body, "rust"),
+    `${label}: normalized response bodies differ`,
+  );
+
+  // Key ORDER is wire contract (serde_json is BTreeMap-backed) and `normalize` operates on a parsed
+  // object, which loses it. Compare it separately rather than silently dropping the guarantee.
+  if (shell.body && typeof shell.body === "object" && !Array.isArray(shell.body)) {
+    assert.deepEqual(Object.keys(shell.body), Object.keys(api.body), `${label}: key ORDER differs`);
+  }
+
+  return { shell, api };
+}

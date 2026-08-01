@@ -15,7 +15,7 @@
  * chances to typo a route into never being served, which looks exactly like a route that proxies.
  */
 import { health, metrics, ready } from "./infra.mjs";
-import { getLearnerProgress } from "./progress.mjs";
+import { getLearnerProgress, getWeeklyProgress, updateProgress } from "./progress.mjs";
 import { getAyah, getSurah, listSurahs } from "./quran.mjs";
 import { createRealtimeTicket } from "./recitation.mjs";
 
@@ -55,6 +55,19 @@ export const ROUTES = [
     method: "get",
     path: "/v1/learner/progress",
     handler: getLearnerProgress,
+  },
+  // ── N10: progress writes. The POST is the first ported route that MUTATES. ──────────────────
+  {
+    key: "POST /v1/learner/progress",
+    method: "post",
+    path: "/v1/learner/progress",
+    handler: updateProgress,
+  },
+  {
+    key: "GET /v1/learner/progress/weekly",
+    method: "get",
+    path: "/v1/learner/progress/weekly",
+    handler: getWeeklyProgress,
   },
   {
     key: "POST /v1/realtime-session-tickets",

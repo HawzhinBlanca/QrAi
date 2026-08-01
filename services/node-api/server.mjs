@@ -25,6 +25,7 @@ import cors from "@fastify/cors";
 import { ApiError } from "./lib/authz.mjs";
 import { createDb } from "./lib/db.mjs";
 import { LEGACY_ONE_ONLY, relaxed } from "./lib/insecure.mjs";
+import { stringifyRust } from "./lib/json.mjs";
 import { createMetrics } from "./lib/metrics.mjs";
 import { proxy } from "./lib/proxy.mjs";
 import { ROUTES, fastifyPath } from "./routes/index.mjs";
@@ -50,6 +51,8 @@ export const PORTABLE = [
   "GET /v1/quran/surahs/{surah_number}",
   "GET /v1/quran/ayahs/{surah_number}/{ayah_number}",
   "GET /v1/learner/progress",
+  "POST /v1/learner/progress",
+  "GET /v1/learner/progress/weekly",
   "POST /v1/realtime-session-tickets",
 ];
 
@@ -120,6 +123,12 @@ export function buildServer(config) {
     }
     done(null, payload);
   });
+
+  // serde_json keeps a float a float: a whole-number f64 serializes as `100.0`, and
+  // JSON.stringify emits `100`. One serializer for every reply, so a handler cannot forget — it
+  // only has to wrap the value in `f64()`. Strings and Buffers bypass this, so /health and the
+  // Prometheus text are untouched.
+  app.setReplySerializer((payload) => stringifyRust(payload));
 
   // Boot assertion, not a comment: `credentials: true` anywhere in this config is unshippable.
   if (config.corsCredentials === true) {

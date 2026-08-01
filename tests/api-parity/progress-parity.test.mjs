@@ -1,0 +1,195 @@
+/**
+ * N10 — `POST /v1/learner/progress` and `GET /v1/learner/progress/weekly`.
+ * specs/migration-completion/plan.md §2
+ *
+ *   NODE_API_PORTED="POST /v1/learner/progress,GET /v1/learner/progress/weekly" \
+ *     node --test tests/api-parity/progress-parity.test.mjs
+ *
+ * The POST is the first ported route that WRITES, and the first whose response embeds `now()`.
+ * `assertABMutating` exists for it — see the note there on why an identical request to both sides
+ * would be the wrong experiment.
+ */
+import assert from "node:assert/strict";
+import test, { after, before } from "node:test";
+
+import { assertAB, assertABMutating } from "./lib/ab.mjs";
+import { TENANT, queryJson, request, startApi, startShell, uniqueSuffix } from "./lib/harness.mjs";
+
+let api;
+let shell;
+
+before(async () => {
+  api = await startApi({});
+  shell = await startShell({ upstream: api.baseUrl });
+});
+
+after(async () => {
+  await shell?.stop();
+  await api?.stop();
+});
+
+const learner = { role: "learner" };
+
+/** Blank only what provably varies: the wall clock, and the per-side subject id. */
+function normalizeProgress(body) {
+  if (!body || typeof body !== "object") return body;
+  return { ...body, nextReviewAt: "<TIME>", ayahRef: "<AYAH>" };
+}
+
+test("POST /v1/learner/progress — same SM-2 result on both, for a first-ever review", async () => {
+  const suffix = uniqueSuffix();
+  await assertABMutating(shell.baseUrl, api.baseUrl, {
+    name: "POST progress (first review, quality 5)",
+    probeFor: (side) => ({
+      path: "/v1/learner/progress",
+      method: "POST",
+      ...learner,
+      body: { quality: 5, ayahRef: `2:${suffix}-${side}` },
+    }),
+    normalize: normalizeProgress,
+  });
+});
+
+test("the SM-2 progression matches Rust step for step, not just on the first review", async () => {
+  // One review proves almost nothing: SM-2's interesting behaviour is the RECURRENCE — 1, 6, then
+  // round(interval * EF), with EF itself drifting. Drive the same quality sequence into both and
+  // compare every step.
+  const suffix = uniqueSuffix();
+  const qualities = [5, 4, 5, 3, 2, 5, 5];
+  const seen = { shell: [], rust: [] };
+
+  for (const [i, quality] of qualities.entries()) {
+    for (const [side, baseUrl] of [
+      ["shell", shell.baseUrl],
+      ["rust", api.baseUrl],
+    ]) {
+      const res = await request(baseUrl, "/v1/learner/progress", {
+        method: "POST",
+        ...learner,
+        body: { quality, ayahRef: `3:${suffix}-${side}` },
+      });
+      assert.equal(res.status, 200, `${side} step ${i} (quality ${quality})`);
+      seen[side].push(res.body.sm2State);
+    }
+  }
+
+  assert.deepEqual(seen.shell, seen.rust, "the SM-2 state diverged somewhere in the sequence");
+  // Pin the shape too, so a port that returned an empty object at every step would not "match".
+  assert.deepEqual(Object.keys(seen.shell[0]), ["easinessFactor", "intervalDays", "repetitions"]);
+  assert.equal(seen.shell[0].intervalDays, 1, "first review is always a 1-day interval");
+  assert.equal(seen.shell[1].intervalDays, 6, "second review is always 6 days");
+  assert.equal(seen.shell[4].repetitions, 0, "quality 2 is a failure and RESETS repetitions");
+});
+
+test("quality is clamped to 0..5 BEFORE it is stored, not just before sm2_update", async () => {
+  // learner_progress.last_quality has CHECK (0..5). An unclamped write violates it and fails the
+  // whole request with a 500 instead of persisting the review.
+  const suffix = uniqueSuffix();
+  await assertABMutating(shell.baseUrl, api.baseUrl, {
+    name: "POST progress (quality 99)",
+    probeFor: (side) => ({
+      path: "/v1/learner/progress",
+      method: "POST",
+      ...learner,
+      body: { quality: 99, ayahRef: `4:${suffix}-${side}` },
+    }),
+    normalize: normalizeProgress,
+  });
+
+  const res = await request(shell.baseUrl, "/v1/learner/progress", {
+    method: "POST",
+    ...learner,
+    body: { quality: 99, ayahRef: `5:${suffix}` },
+  });
+  assert.equal(res.status, 200, "an out-of-range quality must not 500");
+  assert.equal(res.body.quality, 5, "the response reports the CLAMPED value, not the input");
+
+  const rows = await queryJson(
+    "SELECT last_quality FROM learner_progress WHERE tenant_id = $1 AND ayah_ref = $2",
+    [TENANT, `5:${suffix}`],
+  );
+  assert.equal(rows[0].last_quality, 5, "the stored value must satisfy the CHECK constraint");
+});
+
+/**
+ * The lost-update race, and the lock that closes it.
+ *
+ * `update_progress` READS the prior SM-2 state, computes the next state in application code, then
+ * WRITES it — two round trips. `INSERT … ON CONFLICT DO UPDATE` alone does not make that atomic:
+ * two concurrent reviews of the same ayah both read the same prior state and the second clobbers
+ * the first. The Rust handler takes `pg_advisory_xact_lock(hashtext(key))` to serialize the whole
+ * section, and the comment there records the empirical result without it — 8 concurrent quality=5
+ * submissions left repetitions=4, so half the reviews vanished.
+ *
+ * A port that omits the lock passes every single-request test in this file.
+ */
+test("concurrent reviews of the SAME ayah do not lose updates", async () => {
+  const suffix = uniqueSuffix();
+  const ayahRef = `6:${suffix}`;
+  const N = 8;
+
+  const results = await Promise.all(
+    Array.from({ length: N }, () =>
+      request(shell.baseUrl, "/v1/learner/progress", {
+        method: "POST",
+        ...learner,
+        body: { quality: 5, ayahRef },
+      }),
+    ),
+  );
+  for (const r of results) assert.equal(r.status, 200);
+
+  const rows = await queryJson(
+    "SELECT repetitions FROM learner_progress WHERE tenant_id = $1 AND ayah_ref = $2",
+    [TENANT, ayahRef],
+  );
+  assert.equal(
+    rows[0].repetitions,
+    N,
+    `${N} successful reviews must leave repetitions=${N}. A lower number means concurrent ` +
+      "read-compute-write cycles clobbered each other — the advisory lock is missing or ineffective",
+  );
+});
+
+test("GET /v1/learner/progress/weekly is byte-identical", async () => {
+  await assertAB(shell.baseUrl, api.baseUrl, { path: "/v1/learner/progress/weekly", ...learner });
+});
+
+test("weekly: a learner may not read another learner's week; staff may", async () => {
+  for (const probe of [
+    { path: "/v1/learner/progress/weekly?learnerId=learner-someone-else", ...learner },
+    { path: "/v1/learner/progress/weekly?learnerId=learner-someone-else", role: "teacher" },
+    { path: "/v1/learner/progress/weekly?learnerId=learner-someone-else", role: "scholar" },
+  ]) {
+    await assertAB(shell.baseUrl, api.baseUrl, probe);
+  }
+});
+
+test("weekly: a scholar is refused at the FIRST gate, before ownership is considered", async () => {
+  // Two gates with DIFFERENT lists: require_any([learner, teacher, admin, ops]) then
+  // require_self_or_any(id, [teacher, admin, ops]). A scholar fails the first. Collapsing them
+  // into one check would silently admit scholars to their own row.
+  const res = await request(shell.baseUrl, "/v1/learner/progress/weekly", { role: "scholar" });
+  assert.equal(res.status, 403);
+});
+
+test("the weekly day shape is pinned — accuracy is null, not 0, when no words were aligned",
+  async () => {
+    const res = await request(shell.baseUrl, "/v1/learner/progress/weekly", learner);
+    assert.equal(res.status, 200);
+    // Alphabetical, not the order the `json!` literal is written in: serde_json without
+    // preserve_order is BTreeMap-backed. Asserted from the real response, not from reading the Rust.
+    assert.deepEqual(Object.keys(res.body), ["days", "learnerId", "tenantId"]);
+    for (const day of res.body.days) {
+      assert.deepEqual(Object.keys(day), [
+        "accuracy",
+        "date",
+        "sessions",
+        "wordsMatched",
+        "wordsTotal",
+      ]);
+      if (day.wordsTotal === 0) {
+        assert.equal(day.accuracy, null, "0/0 is unknown accuracy, not 0% — rendering 0% is a lie");
+      }
+    }
+  });
