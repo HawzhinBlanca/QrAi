@@ -81,9 +81,25 @@ test("every operation declares at least one response, and error codes reference 
 });
 
 test("x-unvalidated is USED, and its count is pinned so it can only shrink deliberately", () => {
-  // 8 of the 34 pairs still have no fixture and no parity test, so their response schemas are
-  // permissive. A permissive schema that was NOT marked would validate anything and read as
-  // coverage — the exact false-green this repo keeps finding. Marking it makes the gap countable.
+  // A permissive schema that was NOT marked would validate anything and read as coverage — the
+  // exact false-green this repo keeps finding. Marking it makes the gap countable.
+  //
+  // 15 → 3 (C3). The 12 that shrank all gained a schema written from a RESPONSE OBSERVED against a
+  // running server, never from reading a Rust struct.
+  //
+  // ── Why the last 3 are NOT going to zero ───────────────────────────────────────────────────────
+  // They are the ML/ASR proxies. Each returns `Json<serde_json::Value>` straight from an upstream
+  // service: the platform API parses the body and forwards it verbatim, so the SHAPE belongs to the
+  // ML/ASR contract, not to this one. Writing a schema here would assert a shape this service does
+  // not control and cannot keep.
+  //
+  // Not even `type: object` is true — `serde_json::Value` passes an array or a scalar through just
+  // as happily. The only accurate schema is "any JSON", which validates nothing, which is precisely
+  // what x-unvalidated exists to mark.
+  //
+  // So `response-schemas-validated` in scripts/cutover-readiness.mjs stays UNMET, and closing it
+  // requires giving these routes a real contract — a PRODUCT change, not a documentation one. See
+  // specs/contract-coverage-closure/tasks.md.
   const unvalidated = [];
   for (const [path, item] of Object.entries(spec.paths)) {
     for (const [method, op] of Object.entries(item)) {
@@ -92,12 +108,15 @@ test("x-unvalidated is USED, and its count is pinned so it can only shrink delib
       }
     }
   }
-  assert.ok(unvalidated.length > 0, "if nothing is unvalidated, prove it and remove this test");
-  assert.equal(
-    unvalidated.length,
-    15,
-    `x-unvalidated count changed to ${unvalidated.length}:\n  ${unvalidated.sort().join("\n  ")}\n` +
-      `Shrinking it is good — update this number in the same commit that adds the evidence.`,
+  assert.deepEqual(
+    unvalidated.sort(),
+    [
+      "POST /v1/asr/force-align",
+      "POST /v1/asr/transcribe",
+      "POST /v1/ml/tajweed-findings:predict",
+    ],
+    "the remainder is pinned BY NAME, not by count: a different route becoming unvalidated is a " +
+      "regression even when the total stays at 3, and a count alone would not notice the swap.",
   );
 });
 

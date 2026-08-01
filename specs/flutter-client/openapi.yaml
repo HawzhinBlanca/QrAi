@@ -16,18 +16,24 @@ openapi: 3.1.0
 # edited to agree with the other: an oracle adjusted to match what it measures has stopped measuring.
 #
 # ── x-unvalidated ───────────────────────────────────────────────────────────────────────────────
-# A route marked `x-unvalidated: true` has a permissive response schema because no committed evidence
-# of its response shape exists yet — 8 of the 34 pairs still have no fixture and no parity test
-# (specs/node-backend-port/research.md §3). Marking them is the point: a permissive schema that is
-# NOT marked would silently validate anything and read as coverage. tests/contract/coverage.test.mjs
-# pins the count so it can only shrink deliberately.
+# A route marked `x-unvalidated: true` has a permissive response schema. Marking it is the point: a
+# permissive schema that is NOT marked would silently validate anything and read as coverage.
+#
+# Down from 15 to 3 (specs/contract-coverage-closure/). The remaining three are the ML/ASR proxies,
+# which forward `serde_json::Value` verbatim from an upstream service — their shape belongs to the
+# ML/ASR contract, not to this one, and even `type: object` would be a fabrication because a
+# passthrough will forward an array or a scalar just as happily. They are NOT going to zero without
+# giving those routes a real contract, which is a product change.
+#
+# tests/contract/coverage.test.mjs pins the remainder BY NAME, so swapping which route is
+# unvalidated fails even though the count is unchanged.
 
 info:
   title: QrAi platform-api
   version: 0.2.0
   summary: Quran recitation platform API — the contract every client codes against.
   description: |
-    34 method+path pairs. Enumerated from services/platform-api/src/lib.rs and asserted by
+    38 method+path pairs. Enumerated from services/platform-api/src/lib.rs and asserted by
     tests/contract/coverage.test.mjs, so adding a route fails the gate until it is contracted.
 
     Auth is one of three, resolved in this order (services/platform-api/src/auth.rs):
@@ -208,6 +214,203 @@ components:
         expiresAt: { type: string }
       additionalProperties: true
 
+    # ── Added by C3. Every schema below was written from a RESPONSE OBSERVED against a running
+    # server (specs/contract-coverage-closure/plan.md §3), never from reading a Rust struct — a
+    # struct read misses serde attributes, and a schema that describes the code rather than the wire
+    # is the same fabrication `x-unvalidated` exists to make countable.
+
+    Ayah:
+      type: object
+      required: [id, surahNumber, ayahNumber, text, sourceChecksum]
+      properties:
+        id: { type: string, minLength: 1 }
+        surahNumber: { type: integer, minimum: 1, maximum: 114 }
+        ayahNumber: { type: integer, minimum: 1 }
+        text: { type: string, minLength: 1 }
+        # Provenance of scripture. An empty checksum would mean unverifiable canonical text.
+        sourceChecksum: { type: string, minLength: 1 }
+      additionalProperties: false
+
+    SurahAyahs:
+      type: object
+      required: [surahNumber, ayahs]
+      properties:
+        surahNumber: { type: integer, minimum: 1, maximum: 114 }
+        ayahs: { type: array, minItems: 1, items: { $ref: '#/components/schemas/Ayah' } }
+      additionalProperties: false
+
+    EvalRun:
+      type: object
+      required:
+        [modelVersion, datasetVersion, wordAlignmentF1, tajweedF1, falsePositiveRate,
+         teacherAgreementRate, unsourcedLearnerOutputs, passed]
+      properties:
+        modelVersion: { type: string, minLength: 1 }
+        datasetVersion: { type: string, minLength: 1 }
+        # NUMBERS, not strings. A release gate that received these as strings would compare them as
+        # strings, and "0.9" < "0.85" is true.
+        wordAlignmentF1: { type: number }
+        tajweedF1: { type: number }
+        falsePositiveRate: { type: number }
+        teacherAgreementRate: { type: number }
+        unsourcedLearnerOutputs: { type: integer, minimum: 0 }
+        passed: { type: boolean }
+      additionalProperties: false
+
+    AuditEvent:
+      type: object
+      required: [id, tenantId, actorId, action, subjectType, subjectId, traceId]
+      properties:
+        id: { type: string, minLength: 1 }
+        tenantId: { type: string, minLength: 1 }
+        actorId: { type: string }
+        action: { type: string, minLength: 1 }
+        subjectType: { type: string }
+        subjectId: { type: string }
+        # Present but null when the originating request carried no trace header.
+        traceId: { type: [string, "null"] }
+      additionalProperties: false
+
+    TeacherReview:
+      type: object
+      required: [id, tenantId, findingId, teacherId, decision, note, auditEventId]
+      properties:
+        id: { type: string, minLength: 1 }
+        tenantId: { type: string, minLength: 1 }
+        findingId: { type: string, minLength: 1 }
+        # ALWAYS the acting user — review.rs ignores a caller-supplied teacherId. Asserted in
+        # tests/api-parity/db-endpoints.test.mjs.
+        teacherId: { type: string, minLength: 1 }
+        decision: { type: string, enum: [accepted, rejected, edited] }
+        note: { type: string }
+        auditEventId: { type: string, minLength: 1 }
+      additionalProperties: false
+
+    RegisterResult:
+      type: object
+      required: [userId, tenantId, displayName, role, token, auditEventId]
+      properties:
+        userId: { type: string, minLength: 1 }
+        tenantId: { type: string, minLength: 1 }
+        displayName: { type: string }
+        role: { type: string, enum: [learner, teacher, scholar, admin, ops] }
+        token: { type: string, minLength: 1 }
+        auditEventId: { type: string, minLength: 1 }
+      additionalProperties: false
+
+    WordAlignment:
+      type: object
+      required: [wordId, status, confidence, startMs, endMs, heardText, canonicalText]
+      properties:
+        wordId: { type: string, minLength: 1 }
+        # recitation.rs VALID_STATUS. `extra` and `needs-review` are accepted on write; only
+        # `matched` and `misread` currently appear in the staging corpus.
+        status: { type: string, enum: [matched, misread, missed, extra, needs-review] }
+        confidence: { type: number, minimum: 0, maximum: 1 }
+        startMs: { type: integer, minimum: 0 }
+        endMs: { type: integer, minimum: 0 }
+        heardText: { type: [string, "null"] }
+        canonicalText: { type: [string, "null"] }
+      additionalProperties: false
+
+    PersistAlignmentsResult:
+      type: object
+      required: [sessionId, persisted, skippedInvalidStatus, skippedUnknownWord, auditEventId]
+      properties:
+        sessionId: { type: string, minLength: 1 }
+        persisted: { type: integer, minimum: 0 }
+        # Counted SEPARATELY on purpose: a word skipped for an unrecognised status is a different
+        # problem from one skipped because its id is not canonical, and collapsing them hides which.
+        skippedInvalidStatus: { type: integer, minimum: 0 }
+        skippedUnknownWord: { type: integer, minimum: 0 }
+        auditEventId: { type: string, minLength: 1 }
+      additionalProperties: false
+
+    RequestTeacherReviewResult:
+      # TWO observed shapes, one per branch: the first request carries `auditEventId`, a repeat
+      # carries `alreadyRequested: true` instead. Both always carry sessionId and reviewStatus, so
+      # only those are required. Observed both ways rather than assumed from the summary line.
+      type: object
+      required: [sessionId, reviewStatus]
+      properties:
+        sessionId: { type: string, minLength: 1 }
+        reviewStatus:
+          type: string
+          enum: [draft, ai-suggested, teacher-review-required, teacher-reviewed, scholar-approved]
+        auditEventId: { type: string, minLength: 1 }
+        alreadyRequested: { type: boolean }
+      additionalProperties: false
+
+    Sm2State:
+      type: object
+      required: [repetitions, intervalDays, easinessFactor]
+      properties:
+        repetitions: { type: integer, minimum: 0 }
+        # Capped at 3650 — an uncapped interval overflowed `Utc::now() + Duration::days` near
+        # i32::MAX and panicked (fixed in 1675d62).
+        intervalDays: { type: integer, minimum: 0, maximum: 3650 }
+        easinessFactor: { type: number }
+      additionalProperties: false
+
+    ProgressUpdateResult:
+      type: object
+      required: [learnerId, tenantId, ayahRef, quality, sm2State, nextReviewAt]
+      properties:
+        learnerId: { type: string, minLength: 1 }
+        tenantId: { type: string, minLength: 1 }
+        ayahRef: { type: string, minLength: 1 }
+        # Clamped, never rejected — an out-of-range quality is a 200, not a 500.
+        quality: { type: integer, minimum: 0, maximum: 5 }
+        sm2State: { $ref: '#/components/schemas/Sm2State' }
+        # Same chrono format as LearnerProgress: `+00:00`, never `Z`.
+        nextReviewAt:
+          type: [string, "null"]
+          pattern: '^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{3}|\.\d{6})?\+00:00$'
+      additionalProperties: false
+
+    AgentRun:
+      type: object
+      required: [id, name, goal, status, reviewStatus, confidence, sources, learnerId, findingId, lastEvent]
+      properties:
+        id: { type: string, minLength: 1 }
+        name: { type: string }
+        goal: { type: string }
+        status: { type: string, enum: [queued, running, needs-human-review, approved, blocked] }
+        reviewStatus:
+          type: string
+          enum: [draft, ai-suggested, teacher-review-required, teacher-reviewed, scholar-approved, blocked]
+        confidence: { type: number }
+        # An approved run with no sources is refused at write time (400) — the review gate.
+        #
+        # OBJECTS, not strings. The first draft of this schema said `items: { type: string }` because
+        # the row I sampled had `sources: []`, and an empty array satisfies ANY item schema. Caught
+        # by tests/api-parity/contract-shapes.test.mjs the moment it ran against a row that had some
+        # — which is why that test refuses to pass on an empty array.
+        sources: { type: array, items: { $ref: '#/components/schemas/AgentRunSource' } }
+        learnerId: { type: [string, "null"] }
+        findingId: { type: [string, "null"] }
+        lastEvent: { type: [string, "null"] }
+      additionalProperties: false
+
+    AgentRunSource:
+      type: object
+      required: [id, title, citation, url]
+      properties:
+        id: { type: string }
+        title: { type: string }
+        citation: { type: string }
+        # Present but null for a source with no canonical link — a citation without a URL is still a
+        # source, and requiring one would push callers to invent them.
+        url: { type: [string, "null"] }
+      additionalProperties: false
+
+    LogoutResult:
+      type: object
+      required: [status]
+      properties:
+        status: { type: string, enum: [logged_out] }
+      additionalProperties: false
+
   responses:
     Unauthorized:
       description: '`missing or invalid authorization` — the string is contract.'
@@ -271,7 +474,6 @@ paths:
   /v1/auth/register:
     post:
       tags: [auth]
-      x-unvalidated: true
       summary: Create a user. An elevated role in another tenant is Forbidden.
       description: |
         A duplicate email maps a unique-violation on idx_users_tenant_email_unique to a clean 400 —
@@ -305,10 +507,10 @@ paths:
   /v1/quran/surahs/{surah_number}:
     get:
       tags: [quran]
-      x-unvalidated: true
+      summary: 'One surah with every ayah. NO AUTHENTICATION — canonical text is not tenant data.'
       parameters: [{ name: surah_number, in: path, required: true, schema: { type: integer, minimum: 1, maximum: 114 } }]
       responses:
-        '200': { description: one surah, content: { application/json: { schema: { type: object } } } }
+        '200': { description: one surah, content: { application/json: { schema: { $ref: '#/components/schemas/SurahAyahs' } } } }
         '404': { $ref: '#/components/responses/NotFound' }
   /v1/quran/ayahs/{surah_number}/{ayah_number}:
     get:
@@ -371,25 +573,22 @@ paths:
   /v1/recitation-sessions/{id}/alignments:
     get:
       tags: [recitation]
-      x-unvalidated: true
       parameters: [{ name: id, in: path, required: true, schema: { type: string } }]
       responses:
         '200':
           description: |
             Word alignments. Cross-tenant answers 200 with an EMPTY array, not 404 — the query filters
             on the ACTOR's tenant, so another tenant simply matches no rows.
-          content: { application/json: { schema: { type: array, items: { type: object } } } }
+          content: { application/json: { schema: { type: array, items: { $ref: '#/components/schemas/WordAlignment' } } } }
     post:
       tags: [recitation]
-      x-unvalidated: true
       parameters: [{ name: id, in: path, required: true, schema: { type: string } }]
       responses:
-        '200': { description: persisted, content: { application/json: { schema: { type: object } } } }
+        '200': { description: persisted, content: { application/json: { schema: { $ref: '#/components/schemas/PersistAlignmentsResult' } } } }
         '403': { $ref: '#/components/responses/Forbidden' }
   /v1/recitation-sessions/{id}/request-teacher-review:
     post:
       tags: [recitation]
-      x-unvalidated: true
       summary: Owner-gated; idempotent.
       parameters: [{ name: id, in: path, required: true, schema: { type: string } }]
       responses:
@@ -439,10 +638,9 @@ paths:
         '403': { $ref: '#/components/responses/Forbidden' }
     post:
       tags: [progress]
-      x-unvalidated: true
       summary: Submit an SM-2 review. Quality out of range is CLAMPED, not a 500.
       responses:
-        '200': { description: updated, content: { application/json: { schema: { type: object } } } }
+        '200': { description: updated, content: { application/json: { schema: { $ref: '#/components/schemas/ProgressUpdateResult' } } } }
         '401': { $ref: '#/components/responses/Unauthorized' }
   /v1/learner/progress/weekly:
     get:
@@ -465,10 +663,9 @@ paths:
   /v1/teacher-reviews:
     post:
       tags: [review]
-      x-unvalidated: true
       summary: Record a teacher decision. A dangling finding_id is a clean 404, not a 500.
       responses:
-        '200': { description: recorded, content: { application/json: { schema: { type: object } } } }
+        '200': { description: recorded, content: { application/json: { schema: { $ref: '#/components/schemas/TeacherReview' } } } }
         '404': { $ref: '#/components/responses/NotFound' }
   /v1/scholar-approvals:
     get:
@@ -488,9 +685,8 @@ paths:
   /v1/agent-runs:
     get:
       tags: [review]
-      x-unvalidated: true
       responses:
-        '200': { description: runs, content: { application/json: { schema: { type: array, items: { type: object } } } } }
+        '200': { description: runs, content: { application/json: { schema: { type: array, items: { $ref: '#/components/schemas/AgentRun' } } } } }
     post:
       tags: [review]
       summary: Record an agent run.
@@ -503,17 +699,16 @@ paths:
   /v1/audit-events:
     get:
       tags: [review]
-      x-unvalidated: true
+      summary: 'Tenant-scoped audit log, newest first, capped at 200. Admin and Ops only — NOT Teacher.'
       responses:
-        '200': { description: audit events, content: { application/json: { schema: { type: array, items: { type: object } } } } }
+        '200': { description: audit events, content: { application/json: { schema: { type: array, items: { $ref: '#/components/schemas/AuditEvent' } } } } }
         '403': { $ref: '#/components/responses/Forbidden' }
   /v1/eval-runs/{model_version}:
     get:
       tags: [review]
-      x-unvalidated: true
       parameters: [{ name: model_version, in: path, required: true, schema: { type: string } }]
       responses:
-        '200': { description: eval run, content: { application/json: { schema: { type: object } } } }
+        '200': { description: eval run, content: { application/json: { schema: { $ref: '#/components/schemas/EvalRun' } } } }
         '404': { $ref: '#/components/responses/NotFound' }
 
   # ── privacy ───────────────────────────────────────────────────────────────────────────────────
@@ -530,7 +725,6 @@ paths:
   /v1/privacy/delete:
     post:
       tags: [privacy]
-      x-unvalidated: true
       summary: Erase a learner. Scoped to ONE learner — other learners' records survive.
       description: |
         Also erases audio via the ML service and reports the exact object keys it erased. A
@@ -562,9 +756,9 @@ paths:
   /v1/pilot/session/logout:
     post:
       tags: [pilot]
-      x-unvalidated: true
+      summary: 'Idempotent — succeeds with no cookie, and always sends the clearing Set-Cookie.'
       responses:
-        '200': { description: cookie cleared, content: { application/json: { schema: { type: object } } } }
+        '200': { description: cookie cleared, content: { application/json: { schema: { $ref: '#/components/schemas/LogoutResult' } } } }
 
   # ── proxy ─────────────────────────────────────────────────────────────────────────────────────
   /v1/ml/alignments:predict:
