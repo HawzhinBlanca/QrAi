@@ -146,15 +146,32 @@ test("POST /v1/learner/progress CLAMPS an out-of-range quality rather than faili
 });
 
 test("GET /v1/agent-runs matches AgentRun[], including a run that HAS sources", async () => {
+  // SEEDS its own sourced run rather than hoping one exists. The first version asserted that some
+  // ambient row had sources — true on the machine this was written on, false on a fresh CI database,
+  // and CI is where it failed. A test whose oracle depends on what other suites happened to leave
+  // behind is not an oracle.
+  const created = await request(api.baseUrl, "/v1/agent-runs", {
+    method: "POST",
+    role: "ops",
+    body: {
+      name: `contract-shape-${uniqueSuffix()}`,
+      goal: "exercise the AgentRunSource item schema",
+      status: "needs-human-review",
+      confidence: 0.5,
+      reviewStatus: "ai-suggested",
+      sources: [{ id: "s1", title: "Tajweed rule", citation: "ref", url: null }],
+    },
+  });
+  assert.equal(created.status, 200, `seeding a sourced agent run failed: ${created.text}`);
+
   const res = await request(api.baseUrl, "/v1/agent-runs", { role: "admin" });
   assert.equal(res.status, 200);
   assert.ok(res.body.length > 0, "this test is vacuous against an empty array");
   assertMatchesContract("GET", "/v1/agent-runs", res);
 
-  // The nested-empty-array trap, stated as an assertion rather than trusted to seed data. The first
-  // AgentRunSource schema said `items: { type: string }` — written from a row whose `sources` was
-  // `[]`, which satisfies EVERY item schema. It survived until a row with real sources appeared.
-  // Without this line the same schema could silently rot back to unverified.
+  // The nested-empty-array trap, asserted rather than assumed. The first AgentRunSource schema said
+  // `items: { type: string }` — written from a row whose `sources` was `[]`, which satisfies EVERY
+  // item schema. Without this line the schema could silently go back to unexercised.
   assert.ok(
     res.body.some((run) => run.sources.length > 0),
     "no agent run has any sources, so the AgentRunSource item schema was not exercised at all",

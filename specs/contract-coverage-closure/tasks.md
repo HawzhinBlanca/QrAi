@@ -116,13 +116,34 @@ The test now asserts that **at least one run has sources**, so the item schema c
 unexercised again. This is the same class as the Kurdish import guard that passed while matching
 nothing: a check that runs but touches nothing looks identical to a check that passes.
 
-### 3. `teacherId` is required by the wire contract and then discarded
+### 3. 🔴 CI caught a contract bug my machine structurally could not — and it was pre-existing
+
+`nextReviewAt` was contracted as chrono RFC3339 with **0, 3 or 6** fractional digits. CI produced
+`2026-08-17T03:52:33.906960800+00:00` — **nine**. `SecondsFormat::AutoSi` emits whatever shows all
+non-zero sub-second digits, and the Linux runner's clock has nanosecond resolution where the macOS
+box this was written on never emitted more than six.
+
+**The same wrong pattern was already in the shipped `LearnerProgress` schema**, copied from it into
+`ProgressUpdateResult`. It had never fired because the only fixture exercising that field records
+`nextReviewAt: null`. Both are fixed.
+
+A same-machine test suite cannot find this class of bug. It is the clearest argument in this change
+for the gate running somewhere other than the author's laptop.
+
+### 4. A test that depended on what other suites left behind
+
+`GET /v1/agent-runs ... HAS sources` passed locally and failed on CI: my staging database had a
+sourced run from earlier work, a fresh CI database had none. The test now **seeds its own** sourced
+run. An oracle whose precondition is ambient state is not an oracle — it is a coincidence that has
+held so far.
+
+### 5. `teacherId` is required by the wire contract and then discarded
 
 `TeacherReviewRequest` has four required fields, and `review.rs` ignores the supplied `teacherId`,
 binding the author to the actor. A caller must send a value the server throws away. Pinned in both
 directions — a supplied `admin-1` does not become the author.
 
-### 4. The two gaps had the same cause
+### 6. The two gaps had the same cause
 
 All **8** uncovered pairs were also `x-unvalidated` — corrected from "7" in `research.md` by
 computing the set intersection instead of counting by eye. Not a coincidence: nothing had ever

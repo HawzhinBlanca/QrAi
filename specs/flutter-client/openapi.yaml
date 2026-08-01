@@ -133,11 +133,17 @@ components:
         streak: { type: integer, minimum: 0 }
         # Mean per-card min(repetitions/4, 1), rounded to 3 decimals (progress.rs:119-124).
         mastery: { type: number, minimum: 0, maximum: 1 }
-        # chrono to_rfc3339: `+00:00`, NOT `Z`, with 0/3/6 fractional digits. A client that emits
+        # chrono to_rfc3339 uses SecondsFormat::AutoSi: `+00:00`, NOT `Z`, with 0, 3, 6 OR **9**
+        # fractional digits — whichever shows all non-zero sub-second digits. A client that emits
         # toISOString() here produces a different string for the same instant.
+        #
+        # The 9-digit case is REAL and this pattern originally omitted it: the CI runner's clock has
+        # nanosecond resolution and produced `...T03:52:33.906960800+00:00`, while the macOS box this
+        # was written on only ever emitted 6. Caught by CI, not locally — a platform-dependent
+        # contract bug that a same-machine test suite cannot see.
         nextReviewAt:
           type: [string, "null"]
-          pattern: '^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{3}|\.\d{6})?\+00:00$'
+          pattern: '^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{3}|\.\d{6}|\.\d{9})?\+00:00$'
       additionalProperties: false
 
     RecitationSession:
@@ -362,10 +368,10 @@ components:
         # Clamped, never rejected — an out-of-range quality is a 200, not a 500.
         quality: { type: integer, minimum: 0, maximum: 5 }
         sm2State: { $ref: '#/components/schemas/Sm2State' }
-        # Same chrono format as LearnerProgress: `+00:00`, never `Z`.
+        # Same chrono AutoSi format as LearnerProgress: `+00:00`, never `Z`, 0/3/6/9 digits.
         nextReviewAt:
           type: [string, "null"]
-          pattern: '^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{3}|\.\d{6})?\+00:00$'
+          pattern: '^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{3}|\.\d{6}|\.\d{9})?\+00:00$'
       additionalProperties: false
 
     AgentRun:
