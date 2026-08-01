@@ -31,6 +31,13 @@ const APPROVED_MODELS = ["ml-aligner-v0.2"];
  * The underlying error can carry the internal service URL and connection details, so it is logged
  * server-side and never returned. Three distinct messages, matching the Rust, because they tell an
  * operator reading logs which stage failed: unreachable, bad status, or unparseable body.
+ *
+ * The parse branch logs NO error object, and that is not fastidiousness. Node's `JSON.parse`
+ * SyntaxError quotes the first ~10 characters of the input it choked on —
+ *   `Unexpected token 'b', "bismillah-"... is not valid JSON`
+ * — so interpolating it wrote upstream response bytes into the log. On the ASR path those bytes are
+ * a learner's transcript. The stage label already carries the operational signal the comment above
+ * claims for it; the error object only ever added the content. (N-7, `no-secret-logging.test.mjs`.)
  */
 async function forward({ url, keyHeader, keyValue, body, label, service }) {
   let response;
@@ -52,8 +59,8 @@ async function forward({ url, keyHeader, keyValue, body, label, service }) {
 
   try {
     return await response.json();
-  } catch (e) {
-    console.error(`${service} proxy ${label} parse error: ${e}`);
+  } catch {
+    console.error(`${service} proxy ${label}: upstream response was not valid JSON`);
     throw new ApiError(`${service} service returned an invalid response`, 502);
   }
 }

@@ -24,7 +24,12 @@ import cors from "@fastify/cors";
 
 import { ApiError } from "./lib/authz.mjs";
 import { createDb } from "./lib/db.mjs";
-import { LEGACY_ONE_ONLY, relaxed } from "./lib/insecure.mjs";
+import {
+  ALLOW_INSECURE_SECRETS,
+  LEGACY_ONE_ONLY,
+  insecureSecretProblems,
+  relaxed,
+} from "./lib/insecure.mjs";
 import { stringifyRust } from "./lib/json.mjs";
 import { createMetrics } from "./lib/metrics.mjs";
 import { proxy } from "./lib/proxy.mjs";
@@ -271,6 +276,17 @@ if (isMain) {
     console.error("PLATFORM_API_UPSTREAM is required and has no default.");
     process.exit(2);
   }
+  // Before anything binds. `main.rs` ensure_secure_config panics here; this exits 2, matching the
+  // other config refusals in this block rather than inventing a second convention.
+  const secretProblems = insecureSecretProblems(process.env);
+  if (secretProblems.length > 0) {
+    for (const p of secretProblems) console.error(p);
+    console.error(
+      `Set ${ALLOW_INSECURE_SECRETS}=1 for local dev only. platform-api refuses the same values.`,
+    );
+    process.exit(2);
+  }
+
   const [host, port] = (process.env.NODE_API_BIND ?? "127.0.0.1:8099").split(":");
   const ported = new Set(
     (process.env.NODE_API_PORTED ?? "").split(",").map((s) => s.trim()).filter(Boolean),

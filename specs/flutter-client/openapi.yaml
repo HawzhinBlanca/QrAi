@@ -114,14 +114,19 @@ components:
 
     Surah:
       type: object
-      required: [surahNumber, name]
+      # All six, and none nullable. `SurahInfo` (handlers/quran.rs:42) is a plain derive(Serialize)
+      # struct of non-Option fields: a null column becomes `""` or `0` via unwrap_or_default, never
+      # an absent key and never a null. Describing four of them as optional-and-nullable called a
+      # response valid that would crash any client reading them as required — which the Dart client
+      # does. Caught by tests/contract/flutter-contract.test.mjs (F-7), not by review.
+      required: [surahNumber, name, arabicName, translation, revelationType, ayahCount]
       properties:
         surahNumber: { type: integer, minimum: 1, maximum: 114 }
         name: { type: string }
-        arabicName: { type: [string, "null"] }
-        translation: { type: [string, "null"] }
-        revelationType: { type: [string, "null"] }
-        ayahCount: { type: [integer, "null"] }
+        arabicName: { type: string }
+        translation: { type: string }
+        revelationType: { type: string }
+        ayahCount: { type: integer }
 
     LearnerProgress:
       type: object
@@ -225,6 +230,18 @@ components:
     # struct read misses serde attributes, and a schema that describes the code rather than the wire
     # is the same fabrication `x-unvalidated` exists to make countable.
 
+    Word:
+      type: object
+      # One word of canonical text. `get_ayah` (handlers/quran.rs:147) emits all four unconditionally.
+      required: [id, wordIndex, text, sourceChecksum]
+      properties:
+        id: { type: string, minLength: 1 }
+        wordIndex: { type: integer, minimum: 0 }
+        # Canonical Uthmani text — never normalized, on any tier. Same rule as Ayah.text.
+        text: { type: string, minLength: 1 }
+        sourceChecksum: { type: string, minLength: 1 }
+      additionalProperties: false
+
     Ayah:
       type: object
       required: [id, surahNumber, ayahNumber, text, sourceChecksum]
@@ -235,6 +252,11 @@ components:
         text: { type: string, minLength: 1 }
         # Provenance of scripture. An empty checksum would mean unverifiable canonical text.
         sourceChecksum: { type: string, minLength: 1 }
+        # Present on GET /v1/quran/ayahs/{s}/{a}, absent on GET /v1/quran/surahs/{n} — one schema,
+        # two levels of detail, so it is a property but NOT required. It was missing entirely while
+        # `additionalProperties: false` stood, which made this contract REJECT every real
+        # single-ayah response. Nothing noticed because no validator reaches that route.
+        words: { type: array, items: { $ref: '#/components/schemas/Word' } }
       additionalProperties: false
 
     SurahAyahs:
@@ -768,6 +790,13 @@ paths:
       description: |
         Also erases audio via the ML service and reports the exact object keys it erased. A
         cross-tenant delete is Forbidden and must leave the row intact.
+      # Both privacy routes deserialize the SAME `PrivacyJobRequest { learner_id: String }`
+      # (types.rs:305), but only export documented it. A client written from this contract would
+      # have posted an empty body to delete and got a 422 — which is exactly what the Flutter
+      # client did. Caught by tests/contract/flutter-contract.test.mjs (audit finding #2).
+      requestBody:
+        required: true
+        content: { application/json: { schema: { type: object, required: [learnerId], properties: { learnerId: { type: string } } } } }
       responses:
         '200': { description: delete job, content: { application/json: { schema: { $ref: '#/components/schemas/PrivacyJob' } } } }
         # 400 also covers a NUL byte (U+0000) anywhere in a string — Postgres text/jsonb

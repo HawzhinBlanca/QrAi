@@ -959,3 +959,66 @@ not quietly change how credentials are stored.
        cross-language vectors generated **from Rust** — Rust-hashed passwords verified in Node and
        Node-hashed passwords verified in Rust. A same-implementation round trip proves nothing.
 3. [ ] Hash off the event loop, and assert it.
+
+---
+
+## ADR-0026 — The Flutter client needs a microphone and a socket, and neither is in the SDK
+
+**Status:** Accepted (2026-08-02, on the owner's instruction to build the app)
+**Deciders:** repository owner
+**Supersedes / superseded by:** none
+
+### Context
+
+The 2026-08-01 audit found `apps/flutter` was eight library files: no entry point, no host projects,
+**no recorder and no WebSocket**. `FL5` had shipped a consent gate over an `AudioRecorder` interface
+with no implementation behind it, which is why the gate could be tested and the app could not run.
+
+The owner reviewed that finding and instructed the work to proceed, in a message that named the
+recorder and the WebSocket explicitly. AGENTS.md requires an ADR for a new runtime dependency; this
+records what was added and why, so the choice is reversible by argument rather than by archaeology.
+
+### Decision
+
+Two runtime dependencies in `apps/flutter/pubspec.yaml`:
+
+| package | version | what it does | why not the SDK |
+|---|---|---|---|
+| `record` | 7.1.1 | PCM16 microphone capture via `startStream` | Flutter has **no** microphone API. There is no stdlib alternative at any rung of the ladder. |
+| `web_socket_channel` | 3.0.3 | cross-platform WebSocket | `dart:io`'s `WebSocket` would cost zero dependencies but **does not exist on web**, and web is currently the only target this machine can run and screenshot (`research.md §1`: no Xcode, no Android cmdline-tools). |
+
+`web_socket_channel` is the weaker of the two justifications and is written down as such: on a
+machine with Xcode it would be a genuine choice rather than a forced one.
+
+### Options considered
+
+**(A) Both dependencies — chosen.** The app runs on the one target available here, and the same
+code path serves iOS and Android unchanged.
+
+**(B) `record` + `dart:io` WebSocket.** One dependency instead of two, but no web build — so the
+only proof available on this machine would be `flutter test`, which is exactly the "components, not
+a client" state the audit objected to. Rejected because it would have made the fix unverifiable.
+
+**(C) Neither — keep the interface, ship no implementation.** This is the status quo the audit
+called a P0. Rejected.
+
+### Consequences
+
+- **Easier:** the practice flow exists and runs; `streaming_recorder_test.dart` drives the whole
+  transport with an injected socket and PCM stream, so ordering is asserted without a microphone.
+- **Harder:** two more packages in the supply-chain surface, both with platform channels. Neither is
+  reachable from `services/`, so the API attack surface is unchanged.
+- **Revisit if:** iOS/Android become the only shipped targets. Then (B) drops
+  `web_socket_channel` for `dart:io` at the cost of the web build.
+
+### What this ADR does NOT decide
+
+Whether the Flutter client replaces `apps/mobile` (Expo). It does not: both exist, and the owner has
+not been asked. `FL9` — the device matrix — remains open and is not satisfied by a web build.
+
+### Action items
+
+1. [x] Add both packages, with the versions pinned in `pubspec.lock`.
+2. [x] Assert transport ORDER without hardware: socket before microphone, and no microphone at all
+       when the gateway refuses the ticket.
+3. [ ] Re-evaluate `web_socket_channel` when a machine with Xcode is available.

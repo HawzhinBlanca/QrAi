@@ -1,0 +1,116 @@
+/// AUD1 — the app assembles and its tabs are reachable.
+///
+/// Every other test in this directory exercises one component. This one exists because the audit's
+/// finding was not "a component is wrong", it was "there is no application" — and a suite of green
+/// component tests is exactly what that failure looks like from the inside.
+library;
+
+import 'dart:convert';
+
+import 'package:flutter/material.dart';
+import 'package:flutter_test/flutter_test.dart';
+import 'package:http/http.dart' as http;
+import 'package:http/testing.dart';
+import 'package:qrai/main.dart';
+import 'package:qrai/src/api/api_client.dart';
+
+ApiClient offlineClient() => ApiClient(
+      baseUrl: Uri.parse('http://127.0.0.1:8080'),
+      tokenProvider: () async => null,
+      httpClient: MockClient((http.Request _) async => throw const SocketishFailure()),
+    );
+
+/// Stands in for a dead network without importing `dart:io` (which web builds cannot).
+class SocketishFailure implements Exception {
+  const SocketishFailure();
+}
+
+ApiClient listingClient() => ApiClient(
+      baseUrl: Uri.parse('http://127.0.0.1:8080'),
+      tokenProvider: () async => null,
+      httpClient: MockClient((http.Request _) async => http.Response(
+            jsonEncode(<Map<String, Object?>>[
+              <String, Object?>{
+                'surahNumber': 1,
+                'name': 'Al-Fatihah',
+                'arabicName': 'الفاتحة',
+                'translation': 'The Opening',
+                'revelationType': 'meccan',
+                'ayahCount': 7,
+              },
+            ]),
+            200,
+            headers: <String, String>{'content-type': 'application/json'},
+          )),
+    );
+
+Widget app(ApiClient client) => QrAiApp(
+      client: client,
+      gatewayBase: Uri.parse('http://127.0.0.1:8081'),
+      learnerId: 'learner-1',
+    );
+
+void main() {
+  testWidgets('the app boots and offers all four destinations', (WidgetTester tester) async {
+    await tester.pumpWidget(app(listingClient()));
+    await tester.pumpAndSettle();
+
+    expect(find.byKey(const ValueKey<String>('home-nav')), findsOneWidget);
+    for (final String label in <String>['Read', 'Practice', 'Progress', 'Privacy']) {
+      expect(find.text(label), findsOneWidget, reason: '$label is unreachable');
+    }
+  });
+
+  testWidgets('the reader lists surahs, with the Arabic name in RTL', (WidgetTester tester) async {
+    await tester.pumpWidget(app(listingClient()));
+    await tester.pumpAndSettle();
+
+    expect(find.byKey(const ValueKey<String>('surah-list')), findsOneWidget);
+    expect(find.text('Al-Fatihah'), findsOneWidget);
+
+    // The canonical-derived name carries its own direction rather than inheriting the app's — the
+    // same rule the mushaf applies to ayah text.
+    final Directionality dir = tester.widget(
+      find.ancestor(of: find.text('الفاتحة'), matching: find.byType(Directionality)).first,
+    );
+    expect(dir.textDirection, TextDirection.rtl);
+  });
+
+  testWidgets('a dead network shows the offline state, not an empty screen', (WidgetTester tester) async {
+    await tester.pumpWidget(app(offlineClient()));
+    await tester.pumpAndSettle();
+
+    // Whatever the wording, it must be the failure branch and it must offer a way forward — a blank
+    // list would be indistinguishable from "this learner has nothing".
+    expect(find.byKey(const ValueKey<String>('load-failed')), findsOneWidget);
+    expect(find.byKey(const ValueKey<String>('surah-list')), findsNothing);
+  });
+
+  testWidgets('switching to Practice reaches the consent form', (WidgetTester tester) async {
+    await tester.pumpWidget(app(listingClient()));
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.text('Practice'));
+    await tester.pumpAndSettle();
+
+    expect(find.byKey(const ValueKey<String>('practice-screen')), findsOneWidget);
+    expect(find.text('Consent'), findsOneWidget);
+
+    // Scrolled, not merely "present in the tree": the form is a lazy ListView, so a widget below
+    // the fold is not built at all. Reaching the guardian switch is the claim worth making — it is
+    // the control that unblocks recording.
+    await tester.scrollUntilVisible(
+      find.byKey(const ValueKey<String>('consent-guardian')),
+      200,
+      // Named explicitly: the screen holds more than one Scrollable, and the default "the only one"
+      // lookup throws rather than guessing.
+      scrollable: find
+          .descendant(
+            of: find.byKey(const ValueKey<String>('practice-screen')),
+            matching: find.byType(Scrollable),
+          )
+          .first,
+    );
+    expect(find.byKey(const ValueKey<String>('consent-guardian')), findsOneWidget);
+  });
+}

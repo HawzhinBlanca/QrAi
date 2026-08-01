@@ -55,8 +55,10 @@ async function eraseMlAudio(ctx, tenantId, learnerId, traceId) {
   let result;
   try {
     result = await response.json();
-  } catch (e) {
-    console.error(`privacy delete: ML audio erase parse error: ${e}`);
+  } catch {
+    // No error object: its message quotes the bytes it failed to parse, and this response lists a
+    // learner's audio object keys. Same reason as `ml-proxy.mjs`'s forward(). (N-7)
+    console.error("privacy delete: ML audio erase — upstream response was not valid JSON");
     throw new ApiError("audio erasure returned an invalid response", 502);
   }
 
@@ -71,9 +73,18 @@ async function eraseMlAudio(ctx, tenantId, learnerId, traceId) {
   // then rolls back the privacy_jobs row, this line is the authoritative audit trail that the audio
   // was in fact deleted — without it a retry (which the ML service answers with an empty list, the
   // directory now gone) would leave no record that erasure ever happened.
+  //
+  // ── It no longer names the learner, and that is a real trade ────────────────────────────────────
+  // N-7 forbids logging learner PII at any level, and a tenant-scoped learner id is a learner
+  // identifier. So the line records THAT an erasure happened and how much, not WHOSE — the identity
+  // is still recoverable from the trace id when the caller sends one, and from the ML service's own
+  // record of the delete it was asked to perform. That is weaker than it was, deliberately.
+  //
+  // `services/platform-api/src/handlers/privacy.rs:60` still logs `tenant=` and `learner=`. This is
+  // therefore a divergence from Rust, in the log only — never on the wire — and the Rust side is
+  // outside this spec's boundary (`impact-map.md` §2: no wave edits platform-api).
   console.info(
-    `privacy delete: erased ${keys.length} ML audio object(s) for tenant=${tenantId} ` +
-      `learner=${learnerId} trace=${JSON.stringify(traceId)}`,
+    `privacy delete: erased ${keys.length} ML audio object(s) trace=${JSON.stringify(traceId)}`,
   );
   return keys;
 }

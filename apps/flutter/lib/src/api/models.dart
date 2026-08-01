@@ -260,3 +260,98 @@ class RealtimeTicket {
 
   bool isExpiredAt(DateTime now) => now.millisecondsSinceEpoch ~/ 1000 >= expiresAt;
 }
+
+/// Where in the canonical text a session sits.
+///
+/// `display` is required on the create request, so the client composes it there; on a response it
+/// is whatever the server stored. `apps/web/src/lib/api.ts:208` builds the same string, and the two
+/// clients agreeing matters — a session created from the phone and one created from the browser
+/// should not read differently in a teacher's review queue.
+class QuranRef {
+  const QuranRef({
+    required this.surahNumber,
+    required this.ayahStart,
+    required this.ayahEnd,
+    required this.display,
+  });
+
+  factory QuranRef.fromJson(Map<String, dynamic> json) => QuranRef(
+        surahNumber: _int(json, 'surahNumber'),
+        ayahStart: _int(json, 'ayahStart'),
+        ayahEnd: _int(json, 'ayahEnd'),
+        display: _str(json, 'display'),
+      );
+
+  final int surahNumber;
+  final int ayahStart;
+  final int ayahEnd;
+  final String display;
+
+  Map<String, Object?> toJson() => <String, Object?>{
+        'surahNumber': surahNumber,
+        'ayahStart': ayahStart,
+        'ayahEnd': ayahEnd,
+        'display': display,
+      };
+}
+
+/// What the learner agreed to, as sent when a session is created.
+///
+/// Every field is required by the contract and none has a client-side default: a consent record
+/// with an assumed value is not consent. `audioRetention` is an enum on the wire, so the allowed
+/// values live here as constants rather than as free strings at each call site.
+class Consent {
+  const Consent({
+    required this.audioRetention,
+    required this.anonymizedLearning,
+    required this.externalAsrProcessing,
+    required this.guardianApproved,
+    required this.consentVersion,
+  });
+
+  /// The three the server accepts. `discard` is the default a UI should start from.
+  static const String retentionDiscard = 'discard';
+  static const String retentionSessionOnly = 'session-only';
+  static const String retentionTrainingOptIn = 'training-opt-in';
+
+  final String audioRetention;
+  final bool anonymizedLearning;
+  final bool externalAsrProcessing;
+  final bool guardianApproved;
+  final String consentVersion;
+
+  Map<String, Object?> toJson() => <String, Object?>{
+        'audioRetention': audioRetention,
+        'anonymizedLearning': anonymizedLearning,
+        'externalAsrProcessing': externalAsrProcessing,
+        'guardianApproved': guardianApproved,
+        'consentVersion': consentVersion,
+      };
+}
+
+/// A created recitation session. `reviewStatus` starts at `draft` and only the server moves it.
+class RecitationSession {
+  const RecitationSession({
+    required this.id,
+    required this.tenantId,
+    required this.learnerId,
+    required this.quranRef,
+    required this.reviewStatus,
+  });
+
+  factory RecitationSession.fromJson(Map<String, dynamic> json) => RecitationSession(
+        id: _str(json, 'id'),
+        tenantId: _str(json, 'tenantId'),
+        learnerId: _str(json, 'learnerId'),
+        quranRef: QuranRef.fromJson(json['quranRef'] as Map<String, dynamic>),
+        reviewStatus: _str(json, 'reviewStatus'),
+      );
+
+  final String id;
+  final String tenantId;
+  final String learnerId;
+  final QuranRef quranRef;
+
+  /// `draft` | `ai-suggested` | `teacher-review-required` | `teacher-reviewed` | `scholar-approved`.
+  final String reviewStatus;
+}
