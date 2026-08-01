@@ -1,0 +1,111 @@
+/**
+ * Recitation sessions and realtime tickets. Port of
+ * services/platform-api/src/handlers/recitation.rs.
+ *
+ * `POST /v1/realtime-session-tickets` was N5; N7 moved it here unchanged.
+ *
+ * Transcribed from handlers/recitation.rs:298-400 AFTER tests/api-parity/realtime-ticket.test.mjs
+ * existed. The first attempt was written without that oracle and failed 7 of its 9 checks while
+ * passing every pre-existing test in the repo — wrong role lists, consent from the wrong source,
+ * no sample-rate negotiation, and neither of the two rows it must persist.
+ */
+import { createHash, randomUUID } from "node:crypto";
+
+import { ApiError, NotFound, requireAnyRole, requireSelfOrAny, resolveActor } from "../lib/authz.mjs";
+import { proxy } from "../lib/proxy.mjs";
+import { issueRealtimeTicket } from "../lib/ticket.mjs";
+
+/** services/platform-api/src/lib.rs:19 */
+const REALTIME_TICKET_TTL_SECONDS = 300;
+
+/** POST /v1/realtime-session-tickets — handlers/recitation.rs:298 */
+export async function createRealtimeTicket(req, reply, ctx) {
+  const resolved = await resolveActor(req, ctx);
+  if (resolved.delegate) return proxy(req, reply, ctx.upstream);
+  const { actor } = resolved;
+
+  // NOT the usual staff list: teacher and scholar are refused outright. A ticket is a live
+  // audio credential, and reusing the read-route allowlist would hand one to every teacher.
+  requireAnyRole(actor, ["learner", "admin", "ops"]);
+
+  // 422, not 400: axum's `Json<T>` extractor rejects a body that fails to deserialize BEFORE
+  // the handler runs, and serde's rejection is 422. The A/B against Rust caught this — the
+  // status is what clients branch on, so it is matched.
+  //
+  // RECORDED DIVERGENCE, not fixed: Rust's body is serde's own text, e.g.
+  //   "Failed to deserialize the JSON body into the target type: missing field `sessionId` at
+  //    line 1 column 2"
+  // Reproducing that byte-for-byte would mean reimplementing serde's error formatting, including
+  // line/column offsets. It also leaks deserializer internals, so copying it is not obviously
+  // desirable. Named in the N6 report rather than silently smoothed over.
+  const sessionId = req.body?.sessionId;
+  if (typeof sessionId !== "string" || sessionId === "") {
+    throw new ApiError("sessionId is required", 422);
+  }
+
+  const body = await ctx.db.withTenant(actor.tenantId, async (tx) => {
+    const [row] = await tx`
+      SELECT id, tenant_id, learner_id, external_processing_allowed
+      FROM recitation_sessions
+      WHERE id = ${sessionId} AND tenant_id = ${actor.tenantId}`;
+    if (!row) throw NotFound();
+
+    requireSelfOrAny(actor, row.learner_id, ["admin", "ops"]);
+
+    // The gateway trusts this flag to decide whether audio may leave for external ASR, so it
+    // comes from the session's SERVER-SIDE column — never from the request, and never from the
+    // consent snapshot JSON (which is the learner's stated preference, not the resolved gate).
+    const externalAsr = row.external_processing_allowed === true;
+
+    const requested = Array.isArray(req.body?.requestedSampleRates)
+      ? req.body.requestedSampleRates.filter((sr) => [16000, 24000, 48000].includes(sr))
+      : [];
+    const allowedSampleRates = requested.length > 0 ? requested : [16000];
+
+    const auditId = `audit-${randomUUID()}`;
+    const ticketId = `rt-ticket-${randomUUID()}`;
+    const expiresAt = Math.floor(Date.now() / 1000) + REALTIME_TICKET_TTL_SECONDS;
+    const token = issueRealtimeTicket(
+      {
+        sessionId: row.id,
+        tenantId: actor.tenantId,
+        learnerId: row.learner_id,
+        externalAsrProcessing: externalAsr,
+        expiresAtUnixSeconds: expiresAt,
+        nonce: randomUUID(),
+      },
+      ctx.ticketSecret,
+    );
+
+    await tx`
+      INSERT INTO audit_events (id, tenant_id, actor_id, action, subject_type, subject_id, metadata)
+      VALUES (${auditId}, ${actor.tenantId}, ${actor.userId},
+              'recitation.realtime-ticket.issued', 'realtime_session_ticket', ${ticketId},
+              ${tx.json({ trace_id: req.headers["x-trace-id"] ?? null })})`;
+
+    // Only the HASH is stored. Persisting the raw token would put a live credential in a table
+    // that privacy exports and operator queries both read.
+    await tx`
+      INSERT INTO realtime_session_tickets
+        (id, tenant_id, session_id, learner_id, token_hash, expires_at,
+         allowed_sample_rates, external_asr_processing, audit_event_id)
+      VALUES (${ticketId}, ${actor.tenantId}, ${row.id}, ${row.learner_id},
+              ${createHash("sha256").update(token).digest("hex")},
+              ${new Date(expiresAt * 1000)}, ${allowedSampleRates}, ${externalAsr}, ${auditId})`;
+
+    return {
+      sessionId: row.id,
+      tenantId: actor.tenantId,
+      learnerId: row.learner_id,
+      // `expires_at.to_string()` on a u64 — a DECIMAL STRING of unix seconds. Serializing a Date
+      // here would put RFC3339 on the wire and break every client that parses it as a number.
+      expiresAt: String(expiresAt),
+      allowedSampleRates,
+      externalAsrProcessing: externalAsr,
+      token,
+      auditEventId: auditId,
+    };
+  });
+
+  return reply.send(body);
+}

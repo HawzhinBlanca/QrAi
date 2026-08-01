@@ -1,0 +1,45 @@
+/**
+ * N7 — the route table.
+ * specs/migration-completion/plan.md §2
+ *
+ * Before this, every ported route was its own `if (ported.has("...")) { app.get(...) }` block inside
+ * `buildServer`. That is fine for two routes and unmaintainable for thirty-eight: the registration,
+ * the `PORTABLE` allowlist and the handler body all had to be kept in agreement by hand, in three
+ * places, with nothing checking that they were.
+ *
+ * ── `path` is NOT `key.split(" ")[1]` ───────────────────────────────────────────────────────────
+ * Axum 0.8 writes path parameters `{id}`; Fastify writes them `:id`. The `key` is the AXUM/contract
+ * form, because that is what `NODE_API_PORTED`, `PORTABLE`, `specs/flutter-client/openapi.yaml` and
+ * `scripts/cutover-readiness.mjs`'s route pairs all speak. `path` is the Fastify form, derived once
+ * here by `fastifyPath()` rather than transcribed — a hand-written second copy of 38 paths is 38
+ * chances to typo a route into never being served, which looks exactly like a route that proxies.
+ */
+import { getLearnerProgress } from "./progress.mjs";
+import { createRealtimeTicket } from "./recitation.mjs";
+
+/** `/v1/x/{id}/y` → `/v1/x/:id/y`. Axum 0.8 → Fastify. */
+export function fastifyPath(axumPath) {
+  return axumPath.replace(/\{([^}]+)\}/g, ":$1");
+}
+
+/**
+ * Every route this service is CAPABLE of serving locally.
+ *
+ * Being in this table does not serve it: `NODE_API_PORTED` must name the key, and its default is
+ * empty. Handlers are `(req, reply, ctx)`; `ctx` carries `{ db, jwtSecret, allowHeaderAuth,
+ * ticketSecret, upstream }`.
+ */
+export const ROUTES = [
+  {
+    key: "GET /v1/learner/progress",
+    method: "get",
+    path: "/v1/learner/progress",
+    handler: getLearnerProgress,
+  },
+  {
+    key: "POST /v1/realtime-session-tickets",
+    method: "post",
+    path: "/v1/realtime-session-tickets",
+    handler: createRealtimeTicket,
+  },
+];
