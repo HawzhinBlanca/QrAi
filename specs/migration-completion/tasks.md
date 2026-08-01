@@ -80,7 +80,7 @@ log is committed rather than summarized. **FL9 stays open.**
 
 ## Track A — cutover artifact
 
-- [ ] AR1 — Rollback artifact — ADR-0022 Accepted (local digest-pinned tags) + a workflow that builds, pins and retains images.
+- [x] AR1 — Rollback artifact — ADR-0022 Accepted (local digest-pinned tags) + a workflow that builds, pins and retains images.
 
 ---
 
