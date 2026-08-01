@@ -78,3 +78,40 @@ log is committed rather than summarized. **FL9 stays open.**
 ## Progress log
 
 *(appended as tasks land; each entry states what was proven, not what was written)*
+
+### 2026-08-01 — N7–N11 and FL1–FL2
+
+**Track N: 11 of 36 routes ported, 13 of 38 portable, 0 enabled.**
+`cutover-readiness.mjs` reports `Node serves 0 of 38 routes by default (13 portable)`.
+
+Five wire divergences found by the A/B differ, every one of them **already shipping** in the two
+routes ported before this spec (N4, N5) because nothing had ever compared a locally-served
+response's headers or bytes against Rust's:
+
+| # | divergence | wave |
+|---|---|---|
+| 1 | tower-http emits `vary` on every response; `@fastify/cors` only on preflights | N8 |
+| 2 | axum's `Json` sets `application/json`; Fastify adds `; charset=utf-8` | N9 |
+| 3 | `serde_json` writes a whole f64 as `100.0`; `JSON.stringify` writes `100` | N10 |
+| 4 | a jsonb column round-trips through a **BTreeMap**, so its keys come back alphabetized | N11 |
+| 5 | `EvalRun`'s metrics are **f32**: narrowed, then printed shortest-for-a-single | N11 |
+
+Three bugs in **my own** work, each caught by the test written for it rather than by review:
+
+- the f64 fix used a fixed sentinel → a learner-supplied string could be unwrapped into a JSON
+  number (content injection). Now a per-call random nonce: impossible by construction.
+- that nonce first contained a literal `U+0001`, which `JSON.stringify` escapes, so the unwrap
+  regex could never match and the marker leaked onto the wire.
+- two test expectations were fabricated rather than measured (a guessed f32 string, and an
+  exact-representability premise that was the wrong discriminator). Both now assert properties.
+
+**Mutations that ran GREEN, recorded as gaps rather than counted as coverage:**
+
+- N9 — `??` instead of a truthiness check on `english_name`: no surah in this corpus has an
+  *empty* name, so Rust's `.filter(|n| !n.is_empty())` branch is unreachable here.
+- N11 — `f32()` replaced by `f64()`: for every seeded eval value the two formatters print the same
+  string. Each has a premise test that fires the moment the data makes the branch live.
+
+**Track F: the app compiles and is tested; it has never run on a phone.**
+`dart analyze --fatal-infos` clean, 22 tests green, both wired into `verify.sh`. That gate covers
+**analysis and headless tests only** — `FL9` is open and no device or simulator evidence exists.
