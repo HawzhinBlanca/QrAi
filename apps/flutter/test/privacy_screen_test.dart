@@ -7,6 +7,7 @@ library;
 
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:qrai/src/api/api_client.dart';
 import 'package:qrai/src/privacy/privacy_screen.dart';
 
 void main() {
@@ -116,8 +117,12 @@ void main() {
     await tester.tap(find.byKey(const ValueKey<String>('privacy-delete-confirm')));
     await tester.pumpAndSettle();
 
-    expect(find.textContaining('did not complete'), findsOneWidget);
+    // A non-ApiException still produces a learner-facing message rather than a dumped object, and
+    // still leads with the outcome. The success claim must NOT appear — that is the assertion this
+    // case has always existed for, and it is unchanged.
+    expect(find.textContaining('Nothing was deleted'), findsOneWidget);
     expect(find.textContaining('has been deleted'), findsNothing);
+    expect(find.textContaining('StateError'), findsNothing, reason: 'the exception reached the UI');
   });
 
   testWidgets('the dialog SAYS what will be destroyed, not merely "are you sure?"', (tester) async {
@@ -138,4 +143,39 @@ void main() {
     // And it is NOT merely asking whether the learner is sure.
     expect(find.descendant(of: dialog, matching: find.textContaining('consent records')), findsOneWidget);
   });
+
+  testWidgets('a FAILED delete says nothing was deleted, and leaks no exception',
+      (WidgetTester tester) async {
+    // Measured against the running service with the ML service down: platform-api answers
+    // 502 {"error":"audio erasure service unavailable"} and — verified by querying the tables —
+    // leaves sessions, progress and tickets untouched, because erasure is attempted BEFORE the
+    // database cascade. So "nothing was deleted" is a claim we can actually make, and it is the
+    // only thing a learner staring at a failed erasure needs to know.
+    await tester.pumpWidget(MaterialApp(
+      home: Scaffold(
+        body: PrivacyScreen(
+          onExport: () async {},
+          onDelete: () async =>
+              throw ApiException(ApiErrorKind.server, 'audio erasure service unavailable',
+                  statusCode: 502),
+        ),
+      ),
+    ));
+
+    await tester.tap(find.byKey(const ValueKey<String>('privacy-delete')));
+    await tester.pumpAndSettle();
+    await tester.enterText(find.byKey(const ValueKey<String>('privacy-delete-input')), 'DELETE');
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const ValueKey<String>('privacy-delete-confirm')));
+    await tester.pumpAndSettle();
+
+    final String shown = (tester.widget(find.byKey(const ValueKey<String>('privacy-message'))) as Text)
+        .data!;
+    expect(shown, contains('Nothing was deleted'));
+    expect(shown, contains('still here'));
+    // The regression: it used to interpolate the exception object straight into the screen.
+    expect(shown, isNot(contains('ApiException')));
+    expect(shown, isNot(contains('502')));
+  });
 }
+
