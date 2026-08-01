@@ -42,7 +42,10 @@ Every wave follows the same five steps (`plan.md §2`), and step 4 is not option
 - [x] N13a — Pilot cookie AUTH path — the credential path every ported route shares; `__Host-` cookie
       parsing, Origin + CSRF gates, and the idle roll inside a tenant transaction.
 - [x] N13b — Pilot ROUTES — `bootstrap`, `logout`, `invitations`; cookie attributes on the wire.
-- [ ] N14 — Recitation — 6 operations; the 805-line handler, FK 404s, gateway-verified tickets.
+- [x] N14a — Recitation READS — `GET` sessions, session, alignments, active-learners; one jsonb column
+      with TWO serialization rules in the same handler file.
+- [ ] N14b — Recitation WRITES — `create-session`, `persist-alignments`, `request-teacher-review`;
+      consent capture, the FK-skip policy, and model-version provenance.
 - [ ] N15 — Review gates — 5 operations; AI feedback withheld absent source + confidence + approval.
 - [ ] N16 — ML/ASR proxies — 4 operations; server-side key injection, 16 MB limit.
 - [ ] N17 — Privacy — `export`, `delete`; erasure verified by querying storage, not by a 200.

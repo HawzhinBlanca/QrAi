@@ -81,6 +81,37 @@ test("the SM-2 progression matches Rust step for step, not just on the first rev
   assert.equal(seen.shell[4].repetitions, 0, "quality 2 is a failure and RESETS repetitions");
 });
 
+/**
+ * The gap the normalizer left open.
+ *
+ * `normalizeProgress` replaces `nextReviewAt` with a placeholder, because two calls a millisecond
+ * apart legitimately differ. That is correct — and it meant the A/B could not see that the port was
+ * emitting `.384` where Rust emits `.366908`: three fractional digits against six, on EVERY
+ * response, because a JS `Date` holds milliseconds. The bug was found later in N14a, where nothing
+ * was normalized, and traced back here.
+ *
+ * A timestamp's VALUE cannot be compared. Its PRECISION can. Four calls are enough: the odds of
+ * four consecutive timestamps landing on a whole millisecond are about 1e-12.
+ */
+test("nextReviewAt carries microsecond precision, like chrono — not millisecond", async () => {
+  const suffix = uniqueSuffix();
+  const digits = [];
+  for (let i = 0; i < 4; i += 1) {
+    const res = await request(shell.baseUrl, "/v1/learner/progress", {
+      method: "POST",
+      ...learner,
+      body: { quality: 5, ayahRef: `7:${suffix}-${i}` },
+    });
+    assert.equal(res.status, 200, res.text);
+    digits.push((res.body.nextReviewAt.match(/\.(\d+)/) ?? [, ""])[1].length);
+  }
+  assert.ok(
+    digits.some((d) => d > 3),
+    `every nextReviewAt had <=3 fractional digits (${digits.join(",")}). A JS Date holds ` +
+      "milliseconds; the timestamp must be generated and formatted by Postgres.",
+  );
+});
+
 test("quality is clamped to 0..5 BEFORE it is stored, not just before sm2_update", async () => {
   // learner_progress.last_quality has CHECK (0..5). An unclamped write violates it and fails the
   // whole request with a 500 instead of persisting the review.

@@ -60,6 +60,10 @@ export const PORTABLE = [
   "GET /v1/agent-runs",
   "GET /v1/audit-events",
   "GET /v1/eval-runs/{model_version}",
+  "GET /v1/recitation-sessions",
+  "GET /v1/recitation-sessions/{id}",
+  "GET /v1/recitation-sessions/{id}/alignments",
+  "GET /v1/learners/active",
   "POST /v1/realtime-session-tickets",
 ];
 
