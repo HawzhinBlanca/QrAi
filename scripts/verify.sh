@@ -161,6 +161,14 @@ if [[ "$FAST" != "yes" ]]; then
   run "test: rust gateway"        "cargo test --manifest-path $GW"
   run "test: rust platform-api"   "cargo test --manifest-path $API"
 
+  # G3 — the gateway's WebSocket surface, against a REAL process. Needs no database, so it belongs
+  # here rather than in the DB-gated block below. `cargo build` is explicit for the same reason the
+  # parity block gives: `cargo test` above builds the test harness, not the binary this spawns, and
+  # every gateway test that already exists drives the router in-process via `oneshot`, which never
+  # performs a WebSocket upgrade at all.
+  run "test: gateway websocket (real process)" \
+    "cargo build --manifest-path $GW && node --test tests/gateway/ws-hostile-input.test.mjs"
+
   # DB-gated integration tests — only when a live Postgres answers and allows authentication. Skipped, not faked.
   can_auth="no"
   if command -v psql >/dev/null 2>&1; then

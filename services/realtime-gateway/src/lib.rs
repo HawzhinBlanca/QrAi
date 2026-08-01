@@ -42,6 +42,40 @@ pub struct AudioChunk {
 // of malicious/buggy connections sending nearly-max-size frames could exhaust gateway memory.
 const MAX_CHUNK_BYTES: usize = 2 * 1024 * 1024;
 
+/// Transport-level frame cap, DERIVED from `MAX_CHUNK_BYTES` rather than chosen separately.
+///
+/// The comment above closed the *unbounded* case, but not the materialization it describes: without
+/// this, axum/tungstenite's default `max_frame_size` applies and the transport accepts **16 MiB** —
+/// 8x what the application will ever keep. Measured (specs/gateway-ws-sweep/research.md §4): frames
+/// of 4/8/12/15/16 MiB were received IN FULL and `to_vec()`-copied before `AudioChunk::new` refused
+/// them; only 17 MiB was stopped by the transport. The 10 MB frame that motivated `MAX_CHUNK_BYTES`
+/// was therefore still being assembled in memory, just refused a step later.
+///
+/// The +64 KiB slack is deliberate. An exact cap would turn every 2 MiB + 1 frame from a clean
+/// `audio chunk too large` ack into an abrupt transport close — replacing a precise application
+/// error with a worse one. Near-miss frames keep reaching the application; only absurd ones are
+/// stopped at the transport.
+///
+/// Honest sizing: the measured memory impact of the old gap was ~1 MiB of RSS across twelve rejected
+/// 8 MiB frames. This is hardening, not a fix for an observed leak.
+const MAX_WS_FRAME_BYTES: usize = MAX_CHUNK_BYTES + 64 * 1024;
+
+/// Largest ticket lifetime this gateway will honour, as `expires_at - now`.
+///
+/// `platform-api` mints with `REALTIME_TICKET_TTL_SECONDS = 300`, so an hour is ~12x any legitimate
+/// ticket — generous enough that clock skew or a slow handshake can never refuse a real learner.
+///
+/// This is NOT an auth control: a ticket carrying a far-future expiry is validly signed, so producing
+/// one already requires the signing secret. It is a bound on the damage such a ticket does, and the
+/// damage is concrete rather than theoretical: `consumed_tickets` maps a ticket to its expiry and
+/// `evict_expired` retains anything with `expires_at > now`, so a `u64::MAX` entry is **never
+/// evicted** — each one is a permanent map entry. That defeats the per-entry eviction introduced in
+/// `55c872e` precisely to stop this map growing without bound.
+///
+/// The same clamp already exists one file over, for the sibling credential: `MintInvitationRequest`
+/// clamps invitation TTL to [1, 720] hours "so an admin cannot mint an effectively immortal invite".
+const MAX_TICKET_LIFETIME_SECONDS: u64 = 3600;
+
 impl AudioChunk {
     pub fn new(
         session_id: impl Into<String>,
@@ -761,6 +795,7 @@ async fn validate_origin(
 
 /// Outcome of validating a realtime ticket for a WebSocket upgrade attempt, decided BEFORE any
 /// actual upgrade is attempted.
+#[derive(Debug)]
 enum TicketCheckOutcome {
     Accepted {
         learner_id: String,
@@ -797,6 +832,25 @@ async fn check_ticket(
         Ok(claims) => claims,
         Err(_) => return TicketCheckOutcome::Rejected(StatusCode::UNAUTHORIZED),
     };
+
+    // G2 — refuse an implausible lifetime, AFTER signature verification so this answers identically
+    // for signed and unsigned tickets and distinguishes nothing to a caller.
+    //
+    // `validate_realtime_ticket` already rejects an EXPIRED ticket; nothing bounded how far in the
+    // future the expiry could be. A `u64::MAX` expiry is permanently unexpired, so its entry in
+    // `consumed_tickets` is never evicted (`evict_expired` retains `expires_at > now`) — one
+    // permanent map entry per ticket, defeating the per-entry eviction added in `55c872e` to keep
+    // that map bounded. The lifetime is also handed to Redis as the dedup key's TTL below.
+    let lifetime = claims
+        .expires_at_unix_seconds
+        .saturating_sub(unix_now_seconds());
+    if lifetime > MAX_TICKET_LIFETIME_SECONDS {
+        tracing::warn!(
+            "realtime ticket lifetime {lifetime}s exceeds the maximum {MAX_TICKET_LIFETIME_SECONDS}s; \
+             platform-api mints 300s tickets, so this ticket was not minted by a healthy issuer"
+        );
+        return TicketCheckOutcome::Rejected(StatusCode::UNAUTHORIZED);
+    }
 
     // Tenant binding: a gateway instance serves exactly one tenant (GATEWAY_TENANT_ID). The HMAC
     // ticket secret is shared across services, so a ticket validly signed for ANOTHER tenant must not
@@ -864,6 +918,11 @@ async fn audio_ws(
             learner_id,
             trace_id,
         } => upgrade
+            // G1 — stop absurd frames at the TRANSPORT rather than assembling them first. Without
+            // these the tungstenite defaults apply (16 MiB frame / 64 MiB message), 8x what
+            // MAX_CHUNK_BYTES will ever keep. See MAX_WS_FRAME_BYTES for the measurement.
+            .max_frame_size(MAX_WS_FRAME_BYTES)
+            .max_message_size(MAX_WS_FRAME_BYTES)
             .on_upgrade(move |socket| {
                 handle_audio_socket(socket, session_id, learner_id, trace_id, state)
             })
@@ -1146,10 +1205,10 @@ mod tests {
 
     use super::{
         AudioChunk, GatewayError, GatewayMetrics, GatewayServerConfig, GatewayServerState,
-        MAX_CHUNK_BYTES, RealtimeGateway, TicketCheckOutcome, TicketDedup, TicketError,
-        check_ticket, evict_expired, gateway_router, gateway_router_with_rate_limit,
-        issue_realtime_ticket, metrics_access_allowed, render_prometheus, ticket_hash,
-        unix_now_seconds, validate_realtime_ticket,
+        MAX_CHUNK_BYTES, MAX_TICKET_LIFETIME_SECONDS, RealtimeGateway, TicketCheckOutcome,
+        TicketDedup, TicketError, check_ticket, evict_expired, gateway_router,
+        gateway_router_with_rate_limit, issue_realtime_ticket, metrics_access_allowed,
+        render_prometheus, ticket_hash, unix_now_seconds, validate_realtime_ticket,
     };
 
     fn metrics_headers(token: Option<&str>) -> axum::http::HeaderMap {
@@ -1775,6 +1834,89 @@ mod tests {
             http_client: reqwest::Client::new(),
             chaos_drops: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
         }
+    }
+
+    /// G2 — the ticket-lifetime bound, tested ON THE BOUNDARY rather than only end to end.
+    /// specs/gateway-ws-sweep/plan.md §4
+    ///
+    /// A far-future expiry is not an auth bypass — producing one needs the signing secret. What it
+    /// does is permanent: `consumed_tickets` maps a ticket to its expiry and `evict_expired` retains
+    /// anything with `expires_at > now`, so a `u64::MAX` entry is NEVER evicted. Each such ticket is
+    /// a permanent map entry, defeating the per-entry eviction added in `55c872e` specifically to
+    /// keep that map bounded.
+    #[tokio::test]
+    async fn check_ticket_refuses_an_implausible_lifetime() {
+        let secret = "lifetime-secret";
+        let tenant_id = "tenant-lifetime";
+        let state = state_for_ticket_tests(GatewayServerConfig {
+            ticket_secret: secret.to_owned(),
+            tenant_id: tenant_id.to_owned(),
+            ..GatewayServerConfig::default()
+        });
+        let now = unix_now_seconds();
+
+        let ticket_expiring_at = |expires_at: u64, nonce: &str| {
+            let mut query = HashMap::new();
+            query.insert(
+                "ticket".to_owned(),
+                issue_realtime_ticket(
+                    "session-1",
+                    tenant_id,
+                    "learner-1",
+                    false,
+                    expires_at,
+                    nonce,
+                    secret,
+                ),
+            );
+            query
+        };
+
+        // Both sides of the boundary, so the constant is pinned rather than the direction.
+        for (label, expires_at, should_accept) in [
+            ("the 300s platform-api mints", now + 300, true),
+            (
+                "exactly at the cap",
+                now + MAX_TICKET_LIFETIME_SECONDS,
+                true,
+            ),
+            (
+                "one second past the cap",
+                now + MAX_TICKET_LIFETIME_SECONDS + 1,
+                false,
+            ),
+            ("u64::MAX — permanently unevictable", u64::MAX, false),
+        ] {
+            let query = ticket_expiring_at(expires_at, label);
+            let outcome = check_ticket(&state, "session-1", &query).await;
+            let accepted = matches!(outcome, TicketCheckOutcome::Accepted { .. });
+            assert_eq!(
+                accepted, should_accept,
+                "{label}: unexpected outcome {outcome:?}"
+            );
+            // A refusal must be indistinguishable from any other bad ticket, or the new check
+            // becomes an oracle for what a valid signature looks like.
+            if let TicketCheckOutcome::Rejected(status) = outcome {
+                assert_eq!(status, StatusCode::UNAUTHORIZED, "{label}");
+            }
+        }
+    }
+
+    /// The consequence the bound exists to prevent, asserted directly on the eviction it defeats.
+    #[test]
+    fn an_unbounded_expiry_would_never_be_evicted() {
+        let mut consumed = HashMap::new();
+        consumed.insert("normal".to_owned(), 1_000_u64);
+        consumed.insert("immortal".to_owned(), u64::MAX);
+
+        // Far past both "now" values a real deployment will ever see.
+        let removed = evict_expired(&mut consumed, u64::MAX - 1);
+        assert_eq!(removed, 1, "the normal entry must be evicted");
+        assert!(
+            consumed.contains_key("immortal"),
+            "a u64::MAX expiry survives every eviction pass — which is why check_ticket must refuse \
+             it at the door rather than relying on the sweep to clean up"
+        );
     }
 
     #[tokio::test]
