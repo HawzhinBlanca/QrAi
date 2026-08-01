@@ -106,7 +106,13 @@ components:
       properties:
         # `discard` is the fail-safe default. A missing consent snapshot resolves to the MOST
         # RESTRICTIVE value (recitation.rs:216-225) — a client must never assume the permissive one.
-        audioRetention: { type: string, enum: [discard, session-only, training-opt-in] }
+        # The variants are `AudioRetention` in types.rs:103, kebab-cased by serde. This list used to
+        # read `[discard, session-only, training-opt-in]`: `session-only` DOES NOT EXIST server-side
+        # and `teacher-review` was missing. A client written from the contract offered a consent
+        # option the API rejects with a 422 — which is exactly what the Flutter client did, and what
+        # no test caught, because every check compared property NAMES and none compared values.
+        # `apps/web` was right all along; it was written against the running service.
+        audioRetention: { type: string, enum: [discard, training-opt-in, teacher-review] }
         anonymizedLearning: { type: boolean }
         externalAsrProcessing: { type: boolean }
         guardianApproved: { type: boolean }
@@ -161,7 +167,10 @@ components:
         quranRef: { $ref: '#/components/schemas/QuranRef' }
         reviewStatus:
           type: string
-          enum: [draft, ai-suggested, teacher-review-required, teacher-reviewed, scholar-approved]
+          # `blocked` is a real `ReviewStatus` variant (types.rs:111) and was missing here while
+          # `AgentRun.reviewStatus` listed it — the contract disagreeing with itself. A client
+          # built from this could not reason about a session a scholar had blocked.
+          enum: [draft, ai-suggested, teacher-review-required, teacher-reviewed, scholar-approved, blocked]
         language: { type: [string, "null"] }
         mode: { type: [string, "null"] }
         externalProcessingAllowed: { type: [boolean, "null"] }
@@ -364,7 +373,10 @@ components:
         sessionId: { type: string, minLength: 1 }
         reviewStatus:
           type: string
-          enum: [draft, ai-suggested, teacher-review-required, teacher-reviewed, scholar-approved]
+          # `blocked` is a real `ReviewStatus` variant (types.rs:111) and was missing here while
+          # `AgentRun.reviewStatus` listed it — the contract disagreeing with itself. A client
+          # built from this could not reason about a session a scholar had blocked.
+          enum: [draft, ai-suggested, teacher-review-required, teacher-reviewed, scholar-approved, blocked]
         auditEventId: { type: string, minLength: 1 }
         alreadyRequested: { type: boolean }
       additionalProperties: false

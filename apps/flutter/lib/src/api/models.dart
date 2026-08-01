@@ -309,10 +309,15 @@ class Consent {
     required this.consentVersion,
   });
 
-  /// The three the server accepts. `discard` is the default a UI should start from.
+  /// The three the server accepts — `AudioRetention` in `types.rs:103`, kebab-cased by serde.
+  /// `discard` is the fail-safe default a UI should start from.
+  ///
+  /// There is no `session-only`. The contract claimed one, this class copied it, and the practice
+  /// flow offered a learner a choice the API answers with a 422 — found by creating a real session
+  /// against the running service, not by any test.
   static const String retentionDiscard = 'discard';
-  static const String retentionSessionOnly = 'session-only';
   static const String retentionTrainingOptIn = 'training-opt-in';
+  static const String retentionTeacherReview = 'teacher-review';
 
   final String audioRetention;
   final bool anonymizedLearning;

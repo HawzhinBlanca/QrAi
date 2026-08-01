@@ -76,6 +76,14 @@ void main() {
     expect(audioUriFor(Uri.parse('http://127.0.0.1:8081'), 's', 't').scheme, 'ws');
   });
 
+  test('no stray fragment — Uri.replace carries an empty one over', () {
+    // `Uri.parse('http://host:port')` has an empty-but-present fragment, and `replace` keeps it, so
+    // the URL used to end in a bare `#`. Seen in a real handshake error against the live gateway.
+    final Uri uri = audioUriFor(Uri.parse('http://127.0.0.1:8086'), 'session-1', 'tok');
+    expect(uri.hasFragment, isFalse);
+    expect(uri.toString(), isNot(endsWith('#')));
+  });
+
   test('the sample rate comes from the ticket, not from a constant', () {
     final StreamingRecorder r = StreamingRecorder(
       ticket: ticketWith(rates: <int>[48000, 16000]),

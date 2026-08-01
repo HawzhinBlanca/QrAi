@@ -150,7 +150,7 @@ void main() {
     await tester.pumpWidget(host(stubClient(seen), (RealtimeTicket _) => built = SpyRecorder()));
 
     await tapKey(tester, 'consent-guardian');
-    await tapKey(tester, 'retention-session-only');
+    await tapKey(tester, 'retention-teacher-review');
     await tapKey(tester, 'practice-toggle');
 
     expect(built, isNotNull);
@@ -162,7 +162,7 @@ void main() {
     final Map<String, Object?> body = jsonDecode(create.body) as Map<String, Object?>;
     final Map<String, Object?> consent = body['consent']! as Map<String, Object?>;
     expect(consent['guardianApproved'], isTrue);
-    expect(consent['audioRetention'], 'session-only');
+    expect(consent['audioRetention'], 'teacher-review');
     expect(consent['externalAsrProcessing'], isFalse);
     expect(consent['consentVersion'], 'pilot-v1');
 

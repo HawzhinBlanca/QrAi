@@ -36,11 +36,17 @@ Future<bool> requestMicrophonePermission() => StreamingRecorder.device.hasPermis
 /// Builds the audio URL for a session. The ticket travels in the query string because a WebSocket
 /// handshake from a browser cannot carry an Authorization header — the gateway's own contract.
 Uri audioUriFor(Uri gatewayBase, String sessionId, String ticketToken) {
-  return gatewayBase.replace(
-    scheme: gatewayBase.scheme == 'https' ? 'wss' : 'ws',
-    path: '/v1/recitation-sessions/$sessionId/audio',
-    queryParameters: <String, String>{'ticket': ticketToken},
-  );
+  return gatewayBase
+      .replace(
+        scheme: gatewayBase.scheme == 'https' ? 'wss' : 'ws',
+        path: '/v1/recitation-sessions/$sessionId/audio',
+        queryParameters: <String, String>{'ticket': ticketToken},
+      )
+      // `replace` CARRIES THE FRAGMENT OVER, and `Uri.parse('http://host:port')` has an empty-but-
+      // present one — so the URL came out ending in a bare `#`. Seen in a real handshake error
+      // message. Harmless to this gateway, which never sees a fragment, but a URL nobody meant to
+      // build is one nobody has reasoned about.
+      .removeFragment();
 }
 
 class StreamingRecorder implements AudioRecorder {
