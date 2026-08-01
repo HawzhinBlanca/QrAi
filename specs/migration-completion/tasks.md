@@ -126,6 +126,26 @@ behind the first. There is no learner-scoped endpoint for this data. Creating on
 decision about what a learner may see of their own review queue, and inventing it here would be
 deciding it by writing code — the same reasoning that holds `N12b`.
 
+**2026-08-02 — measured against the running service, and it is wider than one route.** Probed with a
+real learner bearer token:
+
+| route | learner gets | gate |
+|---|---|---|
+| `GET /v1/tajweed-findings?sessionId=…` | **403** | teacher/scholar/admin/ops (`review.rs:253`) |
+| `GET /v1/recitation-sessions/{id}/alignments` | **403** | teacher/admin/ops (`recitation.rs:445`) |
+
+Both refuse with `{"error":"actor is not allowed to perform this action"}`. So **the practice flow
+is write-only for a learner**: they consent, record and stream — the gateway acks every frame, see
+[`evidence/live-gateway-e2e.md`](evidence/live-gateway-e2e.md) — and then there is no route by which
+they can ever see what was heard. The app is honest about it today (the panel says "No reviewed
+feedback yet"; the practice screen says the recitation was sent for review), but honest is not
+complete.
+
+Adding a client method for either route was considered and **rejected**: it would put a 403 in front
+of every learner. `api_client.listTajweedFindings` carries that warning in its doc comment rather
+than being deleted, so the learner-visibility gate in `tajweed_panel.dart` still has a caller the
+day this is decided.
+
 ## Track A — cutover artifact
 
 - [x] AR1 — Rollback artifact — ADR-0022 Accepted (local digest-pinned tags) + a workflow that builds, pins and retains images.

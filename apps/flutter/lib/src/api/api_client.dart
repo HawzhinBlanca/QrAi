@@ -93,6 +93,19 @@ class ApiClient {
     return LearnerProgress.fromJson(await _getObject(path));
   }
 
+  /// ⚠️ STAFF ONLY. A learner calling this gets **403**, measured against the running service:
+  /// `{"error":"actor is not allowed to perform this action"}`. `list_tajweed_findings`
+  /// (`review.rs:253`) requires teacher/scholar/admin/ops.
+  ///
+  /// It is deliberately NOT wired into any screen, and wiring it in would put a 403 in front of
+  /// every learner. `GET /v1/recitation-sessions/{id}/alignments` is the same — teacher/admin/ops
+  /// only, also 403 for a learner, also measured.
+  ///
+  /// So there is **no path by which a learner can see any feedback on their own recitation**: the
+  /// practice flow is write-only for them. That is a product gap, not a bug in this file — see
+  /// `AUD3` in `specs/migration-completion/tasks.md`, which is blocked on an owner decision about
+  /// what a learner may see of their own review queue. This method stays so the model and the
+  /// learner-visibility gate in `tajweed_panel.dart` have a caller the day that decision is made.
   Future<List<TajweedFinding>> listTajweedFindings({required String sessionId}) async {
     final Object? body =
         await _get('/v1/tajweed-findings?sessionId=${Uri.encodeQueryComponent(sessionId)}');
