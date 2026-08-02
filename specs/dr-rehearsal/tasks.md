@@ -16,15 +16,21 @@ incident landed squarely on the gap this phase exists to close.
 |---|---|---|
 | **T1** restore | **PASS** — full corpus restored, all counts matched source, `<1s` | `evidence/T1-restore-drill.log` |
 | **T3** kill-switch | **PASS** — app routes 503, health/ready/metrics 200, control confirms | `evidence/T3-killswitch-drill.log` |
-| T2 audio volume | not run | — |
+| **T2** audio volume | **PASS** — pre-erasure backup restored; erased audio did NOT come back, control did | `evidence/T2-audio-drill.log` |
 | T4 rollback | **still impossible** — no artifact exists (ADR-0022 unresolved) | — |
 | T5 runbook | partially closed — T1/T3 numbers filled in, rollback still UNMEASURED | — |
 
 The principle still holds for what did NOT run: **delivering a script is not the same as proving
-recovery works.** T2 and T4 have scripts or analysis but no drill, so their rows stay open.
+recovery works.** T4 has analysis but no drill, so its row stays open.
+
+T2 closed on 2 August 2026 by a drill that used the real components rather than fixtures:
+ml-inference stored the chunks through its own audio path, platform-api's real
+`POST /v1/privacy/delete` erased them and wrote `privacy_jobs`, and the two committed scripts did
+the backup and the restore. A second learner's file is the control — without one, "the erased file
+is absent" is also true of a restore that restored nothing.
 
 - [x] T1 restore script + timed drill — DONE, drill PASSED with controls
-- [ ] T2 audio-volume round trip + erasure re-application — **BLOCKED, not started**
+- [ ] T2 audio-volume round trip + erasure re-application — drill PASSED, awaiting verify.sh + CI
 - [x] T3 kill-switch drill — DONE (native binary over real HTTP, not compose — stated in the log)
 - [ ] T4 rollback artifact — **ADR written (proposed), rehearsal BLOCKED**
 - [ ] T5 runbook sections — T1/T3 numbers now measured and filled in; rollback still UNMEASURED, so not closed

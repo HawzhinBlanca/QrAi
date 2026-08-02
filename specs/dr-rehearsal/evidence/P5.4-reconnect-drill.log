@@ -1,0 +1,126 @@
+P5.4 — reconnect / partial-loss drill, and a chunk-loss bug it found
+specs/readiness-recovery-10-10/tasks.md P5.4
+
+date (UTC): 2026-08-02
+commit:     e7d18e8
+setup:      real realtime-gateway with REALTIME_CHAOS_DROP_AFTER_CHUNKS=3, MAX_DROPS=2,
+            real ml-inference behind it, scripts/chaos-realtime-reconnect.mjs as the client
+
+────────────────────────────────────────────────────────────────────────────────────────────────────
+RECONNECT: PASS
+
+  connect #1 (fresh single-use ticket) -> 3 chunks -> DROPPED by chaos
+  backoff 456ms (equal jitter)
+  connect #2 (fresh single-use ticket) -> 3 chunks -> DROPPED by chaos
+  backoff 267ms
+  connect #3 (fresh single-use ticket) -> 6 chunks -> clean close
+
+  RESULT sent=12/12 acked=12 drops=2 tickets=3
+
+  The reconnect contract holds: a fresh single-use ticket per connect, equal-jitter backoff,
+  buffer-and-resume from the right chunk index. The client is told the session survived.
+
+────────────────────────────────────────────────────────────────────────────────────────────────────
+AUDIO INTEGRITY: FAIL — half the recitation was acknowledged and then overwritten by its own
+                        second half
+
+  chunks on disk:  6 of 12
+  present:         ws-0000 ws-0001 ws-0002 ws-0003 ws-0004 ws-0005
+  absent:          ws-0006 .. ws-0011  (these ids were never MINTED — see the root cause below)
+
+  Sampled at +0s, +1s, +2s, +5s and +10s with the gateway STILL RUNNING: 6 every time. Not a
+  teardown artifact, and not a race that settles.
+
+  This heading first read "half the recitation was acknowledged and never stored", which was the
+  wrong shape of the problem. Nothing is lost in transit — all twelve chunks reach the ML service.
+  Six of them are written over the other six.
+
+  ── ROOT CAUSE: chunk ids COLLIDE across reconnects, and storage silently overwrites ──────────
+
+  Nothing is lost in transit. A recording proxy between the gateway and ml-inference counted every
+  POST /v1/audio-chunks and saw all TWELVE. What it also saw was the ids:
+
+    drops=2, ids the gateway forwarded, in order:
+      0000 0000 0000  0001 0001 0001  0002 0002 0002  0003 0004 0005
+
+  Twelve chunks of DIFFERENT audio, six distinct ids. `services/realtime-gateway/src/lib.rs`:
+
+    :1101   let mut sequence = 0_u64;                          <- per CONNECTION
+    :1106   let chunk_id = format!("{session_id}-ws-{sequence:04}");
+
+  `sequence` is declared inside the per-connection socket handler and restarts at zero on every
+  reconnect, while `session_id` is deliberately the SAME across reconnects — that is what makes it
+  one session. So connection 2's first chunk is handed the id connection 1's first chunk already
+  used, ml-inference stores chunks under `<chunkId>.bin`, and the later write silently replaces the
+  earlier audio.
+
+  The arithmetic falls straight out and matches every run: distinct ids = 12 - 3*drops, and
+  3 = REALTIME_CHAOS_DROP_AFTER_CHUNKS = how many ids each dropped connection burns through before
+  the next one starts reusing them from zero.
+
+    drops=0 -> 12 distinct -> 12/12 stored
+    drops=1 ->  9 distinct ->  9/12 stored
+    drops=2 ->  6 distinct ->  6/12 stored
+
+  THE SAME COUNTER ALSO PRODUCES THE TIMESTAMP — which makes this worse than an id collision
+
+    :1108   sequence * state.config.chunk_duration_ms          <- the chunk's startMs
+
+    `sequence` restarting at zero restarts the SESSION CLOCK at zero. Connection 2's first chunk is
+    not merely stored under connection 1's key; it claims to have been spoken at the same moment.
+
+    That matters because ordering is by startMs, not by id (services/ml-inference assembles a
+    session's audio sorted by startMs — see session-transcript.test.mjs, whose whole point is that
+    filename order is arbitrary and spoken order is not). So making ids unique WITHOUT fixing the
+    clock would stop the overwriting and leave a session whose chunks all claim overlapping
+    timestamps: the recitation would be reassembled interleaved rather than in the order it was
+    spoken, and the aligner would score a scrambled recitation.
+
+    A per-connection nonce in the id is therefore NOT a sufficient fix. The gateway needs the
+    session's high-water mark to survive the connection that produced it.
+
+  WHAT IT MEANS FOR A LEARNER
+    A learner whose connection blips mid-recitation OVERWRITES THEIR OWN EARLIER AUDIO. Not a
+    dropped packet — the first part of the recitation is destroyed by the second, under the same
+    key, with an ack for both and no error anywhere. The stored metadata (startMs/endMs) is
+    replaced too, so what remains is not even a coherent prefix.
+
+    Everything downstream then behaves correctly on corrupt input: transcription assembles what is
+    there, and the aligner scores it against the FULL canonical passage. Words the learner did
+    recite are recorded as words they missed.
+
+  THE FIX IS NOT A ONE-LINER, which is why it is not in this commit
+    `chunk_id` is not a local detail. It is the filename in audio storage, it is what
+    `privacy_jobs.audio_object_keys_deleted` records for right-to-erasure, and it appears in the
+    ack contract. And because the same counter produces startMs, the fix cannot be a per-connection
+    nonce — the session's chunk high-water mark has to OUTLIVE the connection that produced it,
+    which is a design choice with real options and real trade-offs:
+
+      - an in-process map on Gateway keyed by session_id (needs eviction, like the ticket cache)
+      - Redis, which the gateway already uses for session-state reconciliation
+      - the client supplying its own resume index, which hands storage keys and the session clock
+        to the client and should probably be refused on that basis alone
+
+    Picking among those, keeping the erasure key contract intact, and proving it with the drill is
+    a piece of work, not a patch. The erasure path is the one that must not be got wrong twice.
+
+  ── three wrong hypotheses, recorded on purpose ──
+  Before the proxy, this file successively blamed (1) the detached forwarder not draining on a clean
+  close, (2) the socket handler returning early, (3) something shared consuming a fixed quantum per
+  drop. All three were plausible, none was true, and the first would have sent someone to patch the
+  close path. What settled it was not a better guess but an instrument: counting what actually
+  crossed the wire.
+
+  ── on the reliability of these measurements ──
+  An earlier run read 0/12 and was a HARNESS ARTIFACT: the gateway had panicked at startup
+  (ALLOW_INSECURE_DEFAULTS combined with METRICS_DEV_OPEN is refused) and the client had connected
+  to a stale gateway from a previous run, still holding the port. Every run quoted here uses a
+  unique port set, a fresh mktemp storage dir, and asserts a gateway OF THAT RUN is listening first.
+
+NOT FIXED IN THIS RUN. The cause is understood rather than guessed and the repro takes ten seconds,
+so the fix can be written against a red test — but it changes an identifier that is simultaneously
+the storage filename, the right-to-erasure key in `privacy_jobs`, and part of the ack contract, and
+it needs the session clock to survive a reconnect as well. See the options above; that is a design
+decision, not a patch, and the erasure path is the one that must not be got wrong twice.
+
+STILL NOT RUN for P5.4: long-audio, timeout, duplicate-delivery, recovery.
