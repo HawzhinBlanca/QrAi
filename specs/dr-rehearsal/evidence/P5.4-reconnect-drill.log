@@ -21,14 +21,19 @@ RECONNECT: PASS
   buffer-and-resume from the right chunk index. The client is told the session survived.
 
 ────────────────────────────────────────────────────────────────────────────────────────────────────
-PARTIAL LOSS: FAIL — half the recitation was acknowledged and never stored
+AUDIO INTEGRITY: FAIL — half the recitation was acknowledged and then overwritten by its own
+                        second half
 
   chunks on disk:  6 of 12
   present:         ws-0000 ws-0001 ws-0002 ws-0003 ws-0004 ws-0005
-  missing:         ws-0006 .. ws-0011
+  absent:          ws-0006 .. ws-0011  (these ids were never MINTED — see the root cause below)
 
-  Sampled at +0s, +1s, +2s, +5s and +10s with the gateway STILL RUNNING: 6 every time. This is not
-  a teardown artifact and it is not a race that settles — the chunks never arrive.
+  Sampled at +0s, +1s, +2s, +5s and +10s with the gateway STILL RUNNING: 6 every time. Not a
+  teardown artifact, and not a race that settles.
+
+  This heading first read "half the recitation was acknowledged and never stored", which was the
+  wrong shape of the problem. Nothing is lost in transit — all twelve chunks reach the ML service.
+  Six of them are written over the other six.
 
   ── ROOT CAUSE: chunk ids COLLIDE across reconnects, and storage silently overwrites ──────────
 
@@ -112,8 +117,10 @@ PARTIAL LOSS: FAIL — half the recitation was acknowledged and never stored
   to a stale gateway from a previous run, still holding the port. Every run quoted here uses a
   unique port set, a fresh mktemp storage dir, and asserts a gateway OF THAT RUN is listening first.
 
-NOT FIXED IN THIS RUN, deliberately. A drain fix on a detached task is the kind of concurrency
-change that goes wrong when rushed at the end of a session. The reproduction is deterministic and
-takes 20 seconds, so the fix can be written against a red test rather than against a hypothesis.
+NOT FIXED IN THIS RUN. The cause is understood rather than guessed and the repro takes ten seconds,
+so the fix can be written against a red test — but it changes an identifier that is simultaneously
+the storage filename, the right-to-erasure key in `privacy_jobs`, and part of the ack contract, and
+it needs the session clock to survive a reconnect as well. See the options above; that is a design
+decision, not a patch, and the erasure path is the one that must not be got wrong twice.
 
 STILL NOT RUN for P5.4: long-audio, timeout, duplicate-delivery, recovery.
