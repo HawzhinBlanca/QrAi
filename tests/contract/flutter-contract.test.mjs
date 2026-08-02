@@ -63,8 +63,16 @@ const UNCONTRACTED = {
   TajweedFinding:
     "comes from POST /v1/ml/tajweed-findings:predict, one of the three `x-unvalidated` proxy " +
     "operations. The shape belongs to the ML upstream and the contract says so rather than " +
-    "inventing one — see specs/contract-coverage-closure. The learner-visibility gate this model " +
-    "enforces is covered by apps/flutter/test/tajweed_gate_test.dart instead.",
+    "inventing one — see specs/contract-coverage-closure. This model now HAS a production caller " +
+    "(practice_screen renders it), so the absence of a response schema is load-bearing: what " +
+    "stands in for one is that reviewStatus, confidence and sources are REQUIRED reads, so an " +
+    "upstream shape change fails to parse loudly instead of rendering an ungated judgement. " +
+    "The learner-visibility gate is covered by apps/flutter/test/tajweed_gate_test.dart and " +
+    "pinned to the web client's by tests/contract/tajweed-gate-parity.test.mjs.",
+  SourceReference:
+    "the `sources` elements of the same `x-unvalidated` response, so it has no schema for the " +
+    "same reason. Its fields are required reads for the same reason too: a half-built source " +
+    "would render as provenance that is not there.",
 };
 
 /** The body of one `fromJson`, from the factory to the field declarations that follow it. */

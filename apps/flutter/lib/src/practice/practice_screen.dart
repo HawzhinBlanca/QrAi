@@ -17,6 +17,7 @@ import 'package:flutter/material.dart';
 
 import '../api/api_client.dart';
 import '../api/models.dart';
+import '../feedback/tajweed_panel.dart';
 import '../shell/load_state.dart';
 import 'consent_gate.dart';
 import 'streaming_recorder.dart';
@@ -71,6 +72,11 @@ class _PracticeScreenState extends State<PracticeScreen> {
   RecitationSession? _session;
   String? _status;
   bool _busy = false;
+
+  /// Feedback on the recitation that just ended. `null` means none has been recorded this session —
+  /// nothing renders. Anything else renders, including a failure: a learner who is shown nothing
+  /// cannot tell "no feedback" apart from "we could not fetch it", and only one of those is true.
+  LoadState<List<TajweedFinding>>? _findings;
 
   bool get _recording => _gate?.isRecording ?? false;
 
@@ -208,6 +214,9 @@ class _PracticeScreenState extends State<PracticeScreen> {
 
   Future<void> _stop() async {
     final ConsentGatedRecorder? gate = _gate;
+    // Captured before the `finally` below clears the fields, and before any await: the analysis
+    // request needs this session, not whatever `_session` holds by the time the request is made.
+    final RecitationSession? recorded = _session;
     if (gate == null) return;
     setState(() => _busy = true);
     try {
@@ -231,6 +240,40 @@ class _PracticeScreenState extends State<PracticeScreen> {
           _gate = null;
           _busy = false;
         });
+      }
+    }
+
+    // Outside the try/finally above, deliberately. A failure to ANALYSE is not a failure to RECORD:
+    // the recitation has already been sent, and folding this into the block above would let a 500
+    // from the ML proxy overwrite "Stopped. Your recitation was sent for review." with a message
+    // telling the learner their recording may not have arrived. It did.
+    if (recorded != null) await _loadFindings(recorded);
+  }
+
+  /// Ask for the analysis of the session that just ended.
+  ///
+  /// Never throws: every outcome becomes a `LoadState` the panel can render. `_stop` has already
+  /// completed by the time this runs, so an escaping error here would be an unhandled async failure
+  /// with no way left to report it.
+  Future<void> _loadFindings(RecitationSession session) async {
+    if (!mounted) return;
+    setState(() => _findings = const Loading<List<TajweedFinding>>());
+    try {
+      final List<TajweedFinding> found = await widget.client.predictTajweed(
+        sessionId: session.id,
+        quranRef: session.quranRef,
+      );
+      if (mounted) setState(() => _findings = Loaded<List<TajweedFinding>>(found));
+    } on ApiException catch (e) {
+      if (mounted) setState(() => _findings = Failed<List<TajweedFinding>>(e));
+    } on Object {
+      // A parse failure is the case that matters here: `TajweedFinding` requires reviewStatus,
+      // confidence and sources precisely so a malformed finding cannot render, and this is where
+      // that refusal has to land as a visible failure rather than an empty panel.
+      if (mounted) {
+        setState(() => _findings = Failed<List<TajweedFinding>>(
+              ApiException(ApiErrorKind.server, 'feedback could not be read'),
+            ));
       }
     }
   }
@@ -336,6 +379,21 @@ class _PracticeScreenState extends State<PracticeScreen> {
               'Review status: ${_session!.reviewStatus}',
               key: const ValueKey<String>('practice-review-status'),
               style: Theme.of(context).textTheme.labelSmall,
+            ),
+          ),
+        // The learner-facing end of the loop. Before this the practice flow was write-only: a
+        // recitation went up and nothing ever came back, so the panel and its gate had no caller.
+        if (_findings != null)
+          Padding(
+            padding: const EdgeInsets.only(top: 16),
+            child: LoadStateView<List<TajweedFinding>>(
+              key: const ValueKey<String>('practice-findings'),
+              state: _findings!,
+              // Only offered when there is still a session to ask about; `LoadStateView` decides on
+              // its own whether a retry could plausibly help (it does not offer one on a 403).
+              onRetry: _session == null ? null : () => _loadFindings(_session!),
+              builder: (BuildContext _, List<TajweedFinding> found) =>
+                  TajweedPanel(findings: found),
             ),
           ),
       ],

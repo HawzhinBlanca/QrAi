@@ -31,8 +31,40 @@ class SpyRecorder implements AudioRecorder {
   Future<void> dispose() async {}
 }
 
-/// The two responses the flow needs, shared by the stub client and by tests that drive their own.
-http.Response stubResponseFor(http.Request req) {
+/// One tajweed finding as the ML proxy actually returns them.
+///
+/// `reviewStatus` defaults to `ai-suggested` because that is what `services/ml-inference` stamps on
+/// EVERY finding, on both its branches. A stub that defaulted to `scholar-approved` would test a
+/// response the service has never produced.
+Map<String, Object?> stubFinding({
+  String rule = 'ghunnah',
+  String reviewStatus = 'ai-suggested',
+  double confidence = 0.9,
+}) =>
+    <String, Object?>{
+      'wordId': '1:1:1',
+      'rule': rule,
+      'severity': 'practice',
+      'explanation': 'Apply ghunnah on the noon sakina.',
+      'reviewStatus': reviewStatus,
+      'confidence': confidence,
+      'sources': <Map<String, Object?>>[
+        <String, Object?>{'id': 's1', 'title': 'Tajweed rules', 'citation': 'Ch. 4'},
+      ],
+    };
+
+/// The responses the flow needs, shared by the stub client and by tests that drive their own.
+http.Response stubResponseFor(http.Request req, {List<Map<String, Object?>>? findings}) {
+  if (req.url.path == '/v1/ml/tajweed-findings:predict') {
+    return http.Response(
+      jsonEncode(<String, Object?>{
+        'findings': findings ?? <Map<String, Object?>>[stubFinding()],
+        'confidence': 0.9,
+      }),
+      200,
+      headers: <String, String>{'content-type': 'application/json'},
+    );
+  }
   if (req.url.path == '/v1/recitation-sessions') {
     return http.Response(
       jsonEncode(<String, Object?>{
@@ -331,6 +363,137 @@ void main() {
     expect(built!.stopped, isTrue,
         reason: 'the microphone was left running with no owner after the screen was disposed');
   });
+
+  // ── The learner-facing end of the loop (FL6 wiring) ───────────────────────────────────────────────
+  // Before this, practice was write-only: a recitation went up and nothing came back. `TajweedPanel`
+  // and its gate existed, fully tested, wired to nothing. These cases assert the wiring itself.
+
+  testWidgets('stopping asks for feedback on THAT session', (WidgetTester tester) async {
+    final List<http.Request> seen = <http.Request>[];
+    await tester.pumpWidget(host(stubClient(seen), (RealtimeTicket _) => SpyRecorder()));
+
+    await tapKey(tester, 'consent-guardian');
+    await tapKey(tester, 'practice-toggle');
+    await tapKey(tester, 'practice-toggle');
+    await tester.pumpAndSettle();
+
+    final Iterable<http.Request> predicts =
+        seen.where((http.Request r) => r.url.path == '/v1/ml/tajweed-findings:predict');
+    expect(predicts, hasLength(1), reason: 'the analysis was never requested');
+
+    final Map<String, dynamic> body =
+        jsonDecode(predicts.single.body) as Map<String, dynamic>;
+    expect(body['sessionId'], 'session-1', reason: 'analysis must name the session that was recorded');
+      // tenantId and consent are the server's to decide (proxy_ml overwrites both). A client that
+      // sent them would be claiming something it is not entitled to claim.
+    expect(body.containsKey('tenantId'), isFalse);
+    expect(body.containsKey('consent'), isFalse);
+  });
+
+  testWidgets('unreviewed findings are WITHHELD, and the learner is told they exist',
+      (WidgetTester tester) async {
+      // The honest default: ml-inference returns ai-suggested, so nothing is shown — but "nothing to
+      // show" and "nothing found" are different facts and the learner gets the true one.
+    await tester.pumpWidget(host(stubClient(<http.Request>[]), (RealtimeTicket _) => SpyRecorder()));
+
+    await tapKey(tester, 'consent-guardian');
+    await tapKey(tester, 'practice-toggle');
+    await tapKey(tester, 'practice-toggle');
+    await tester.pumpAndSettle();
+
+    expect(find.byKey(const ValueKey<String>('practice-findings')), findsOneWidget);
+    expect(find.byKey(const ValueKey<String>('tajweed-none')), findsOneWidget);
+    expect(find.textContaining('waiting for a teacher'), findsOneWidget);
+    expect(find.byKey(const ValueKey<String>('tajweed-list')), findsNothing,
+        reason: 'an ai-suggested finding must never render as feedback');
+  });
+
+  testWidgets('an APPROVED finding does reach the learner, with its source',
+      (WidgetTester tester) async {
+      // The gate is not a wall: once a human has approved a confident, sourced finding, it shows.
+      // Without this case the panel could be permanently broken and every other test would still pass.
+    final MockClient mock = MockClient((http.Request req) async => stubResponseFor(
+          req,
+          findings: <Map<String, Object?>>[
+            stubFinding(rule: 'ghunnah', reviewStatus: 'scholar-approved', confidence: 0.95),
+          ],
+        ));
+    final ApiClient client = ApiClient(
+      baseUrl: Uri.parse('http://127.0.0.1:8080'),
+      tokenProvider: () async => null,
+      httpClient: mock,
+    );
+    await tester.pumpWidget(host(client, (RealtimeTicket _) => SpyRecorder()));
+
+    await tapKey(tester, 'consent-guardian');
+    await tapKey(tester, 'practice-toggle');
+    await tapKey(tester, 'practice-toggle');
+    await tester.pumpAndSettle();
+
+    expect(find.byKey(const ValueKey<String>('tajweed-list')), findsOneWidget);
+    expect(find.textContaining('Tajweed rules'), findsOneWidget, reason: 'no source shown');
+    expect(find.textContaining('95%'), findsOneWidget, reason: 'no confidence shown');
+  });
+
+  testWidgets('a failed ANALYSIS never says the recording failed', (WidgetTester tester) async {
+      // The bug this exists to prevent: folding the analysis into _stop's try block, so a 500 from the
+      // ML proxy overwrites "sent for review" and tells a learner their recitation may not have
+      // arrived. It did arrive — the analysis is a separate step and a separate failure.
+    final MockClient mock = MockClient((http.Request req) async =>
+        req.url.path == '/v1/ml/tajweed-findings:predict'
+            ? http.Response('{"error":"upstream exploded"}', 500,
+                headers: <String, String>{'content-type': 'application/json'})
+            : stubResponseFor(req));
+    final ApiClient client = ApiClient(
+      baseUrl: Uri.parse('http://127.0.0.1:8080'),
+      tokenProvider: () async => null,
+      httpClient: mock,
+    );
+    await tester.pumpWidget(host(client, (RealtimeTicket _) => SpyRecorder()));
+
+    await tapKey(tester, 'consent-guardian');
+    await tapKey(tester, 'practice-toggle');
+    await tapKey(tester, 'practice-toggle');
+    await tester.pumpAndSettle();
+
+    expect(statusText(tester), 'Stopped. Your recitation was sent for review.',
+        reason: 'an analysis failure must not be reported as a recording failure');
+    expect(find.byKey(const ValueKey<String>('load-failed')), findsOneWidget,
+        reason: 'the learner must not be shown an empty panel when the request failed');
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('feedback that lands after the screen is gone does not throw',
+      (WidgetTester tester) async {
+      // The same class of bug as the P0 above, one layer out: _loadFindings runs AFTER _stop has
+      // returned, so its setState can land on a disposed widget.
+    final Completer<http.Response> analysis = Completer<http.Response>();
+    final MockClient mock = MockClient((http.Request req) async =>
+        req.url.path == '/v1/ml/tajweed-findings:predict'
+            ? analysis.future
+            : stubResponseFor(req));
+    final ApiClient client = ApiClient(
+      baseUrl: Uri.parse('http://127.0.0.1:8080'),
+      tokenProvider: () async => null,
+      httpClient: mock,
+    );
+    await tester.pumpWidget(host(client, (RealtimeTicket _) => SpyRecorder()));
+
+    await tapKey(tester, 'consent-guardian');
+    await tapKey(tester, 'practice-toggle');
+    await tapKey(tester, 'practice-toggle');
+    await tester.pump();
+
+      // The screen goes away while the analysis is still in flight.
+    await tester.pumpWidget(const MaterialApp(home: Scaffold(body: SizedBox.shrink())));
+    analysis.complete(stubResponseFor(
+      http.Request('POST', Uri.parse('http://x/v1/ml/tajweed-findings:predict')),
+    ));
+    await tester.pumpAndSettle();
+
+    expect(tester.takeException(), isNull,
+        reason: 'setState after dispose, or an unhandled async failure');
+  });
 }
 
 /// A recorder whose stop() fails, as a platform channel can.
@@ -342,4 +505,3 @@ class _StopThrows implements AudioRecorder {
   @override
   Future<void> dispose() async {}
 }
-

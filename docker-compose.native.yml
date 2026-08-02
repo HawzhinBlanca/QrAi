@@ -1,0 +1,32 @@
+# Native-client stack. OPT-IN overlay, same reasoning as docker-compose.tls.yml: deliberately NOT
+# named docker-compose.override.yml, which docker compose auto-loads.
+#
+#   docker compose -f docker-compose.yml -f docker-compose.native.yml up -d --build
+#
+# Use this when the deployment serves the Flutter/native client (apps/flutter). Without it, EVERY
+# recitation from a native client returns 403 and the gateway logs "CSWSH check failed: missing
+# Origin header" — measured against the running stack, see
+# specs/migration-completion/evidence/live-gateway-e2e.md.
+#
+# ── Why this is an overlay and not the base default ────────────────────────────────────────────
+# The base stack serves the browser app (the `web` service) and nothing else. In a browser-only
+# deployment there is no legitimate client that omits Origin, so failing closed there is correct and
+# the base keeps doing it. This file states the one thing that is different about a native
+# deployment, in a place a deployer can grep for.
+#
+# ── Why this is not a security relaxation in the usual sense ───────────────────────────────────
+# GATEWAY_ALLOW_MISSING_ORIGIN is the purpose-built native switch from
+# specs/insecure-defaults-split (§3.2), not a blunt instrument:
+#
+#   - It relaxes ONLY the "no Origin header at all" branch. A request that DOES carry an Origin is
+#     still checked against CORS_ALLOWED_ORIGINS (services/realtime-gateway/src/lib.rs:756).
+#   - Browsers ALWAYS send Origin on a cross-origin WebSocket upgrade, so browser CSWSH protection
+#     is untouched — a malicious page cannot produce a no-Origin upgrade.
+#   - Authentication is unaffected: the upgrade still requires a valid signed realtime ticket.
+#
+# That is why tests/security/legacy-insecure-flag.test.mjs deliberately does NOT list it among the
+# relaxations that must never ship enabled — read that file's comment before adding it there.
+services:
+  realtime-gateway:
+    environment:
+      GATEWAY_ALLOW_MISSING_ORIGIN: "1"

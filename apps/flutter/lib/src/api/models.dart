@@ -232,41 +232,99 @@ class LearnerProgress {
 /// REQUIRED fields here, so a payload missing any of them fails to parse rather than rendering as a
 /// confident-looking judgement about someone's recitation. `isLearnerVisible` is the only thing the
 /// UI is allowed to branch on.
-class TajweedFinding {
-  const TajweedFinding({
+/// A citation behind a finding. `url` is genuinely optional in the contract; the rest are not.
+class SourceReference {
+  const SourceReference({
     required this.id,
-    required this.rule,
-    required this.status,
-    required this.confidence,
-    required this.source,
-    required this.detail,
+    required this.title,
+    required this.citation,
+    required this.url,
   });
 
-  factory TajweedFinding.fromJson(Map<String, dynamic> json) => TajweedFinding(
+  factory SourceReference.fromJson(Map<String, dynamic> json) => SourceReference(
         id: _str(json, 'id'),
-        rule: _str(json, 'rule'),
-        status: _str(json, 'status'),
-        confidence: _num(json, 'confidence'),
-        source: _str(json, 'source'),
-        detail: _strOrNull(json, 'detail'),
+        title: _str(json, 'title'),
+        citation: _str(json, 'citation'),
+        url: _strOrNull(json, 'url'),
       );
 
   final String id;
-  final String rule;
+  final String title;
+  final String citation;
+  final String? url;
+}
 
-  /// Server-side review state. Only `scholar-approved` is learner-visible.
-  final String status;
+/// Review states allowed to reach a learner.
+///
+/// An ALLOWLIST, deliberately. `reviewStatus` arrives as a bare JSON string — `services/ml-inference`
+/// sets it with a string literal and no schema enforcement, unlike platform-api's Rust enum — so a
+/// denylist of the unapproved states would fail OPEN on a typo or on a status added upstream without
+/// updating this line, and unreviewed judgement about someone's recitation would reach them. An
+/// allowlist fails closed.
+const Set<String> learnerApprovedReviewStatuses = <String>{
+  'teacher-reviewed',
+  'scholar-approved',
+};
+
+/// The confidence floor a finding must clear before a learner sees it.
+const double learnerMinConfidence = 0.82;
+
+class TajweedFinding {
+  const TajweedFinding({
+    required this.wordId,
+    required this.rule,
+    required this.severity,
+    required this.explanation,
+    required this.confidence,
+    required this.reviewStatus,
+    required this.sources,
+    required this.arabicName,
+  });
+
+  factory TajweedFinding.fromJson(Map<String, dynamic> json) => TajweedFinding(
+        wordId: _str(json, 'wordId'),
+        rule: _str(json, 'rule'),
+        severity: _str(json, 'severity'),
+        explanation: _str(json, 'explanation'),
+        confidence: _num(json, 'confidence'),
+        reviewStatus: _str(json, 'reviewStatus'),
+        sources: objectsIn(json['sources'], 'tajweed finding sources')
+            .map(SourceReference.fromJson)
+            .toList(growable: false),
+        arabicName: _strOrNull(json, 'arabicName'),
+      );
+
+  /// There is no `id` on the wire: `services/ml-inference/tajweed.js` builds findings without one,
+  /// which is why the web panel keys on wordId+rule. A required `id` here made every response fail
+  /// to parse.
+  final String wordId;
+  final String rule;
+  final String severity;
+  final String explanation;
   final double confidence;
 
-  /// Where the judgement came from — a model version, a rule id, or a human reviewer.
-  final String source;
-  final String? detail;
+  /// Server-side review state. See [learnerApprovedReviewStatuses].
+  final String reviewStatus;
+
+  /// Citations. Plural on the wire — an earlier singular `source` here never matched any response.
+  final List<SourceReference> sources;
+
+  /// The rule's Arabic name. Canonical text: rendered as sent, never transformed, never translated.
+  final String? arabicName;
 
   /// The ONLY predicate the UI may use to decide whether a learner sees this.
   ///
-  /// Not "confidence is high enough". A model's confidence is not a scholar's approval, and letting
-  /// a threshold stand in for one is exactly the substitution this gate refuses.
-  bool get isLearnerVisible => status == 'scholar-approved';
+  /// Mirrors `canShowLearnerFacingAiOutput` in `packages/contracts/src/index.ts` term for term —
+  /// human approval, a confidence floor, and at least one citation. The two are pinned together by
+  /// `tests/contract/tajweed-gate-parity.test.mjs`, because two clients holding different opinions
+  /// about what is safe to show a learner is precisely the drift that gate exists to prevent.
+  ///
+  /// Note what this is NOT: "confidence is high enough" on its own. A model's confidence is not a
+  /// human's approval, and letting the threshold stand in for one is the substitution this refuses.
+  bool get isLearnerVisible =>
+      learnerApprovedReviewStatuses.contains(reviewStatus) &&
+      confidence >= learnerMinConfidence &&
+      sources.isNotEmpty;
 }
 
 /// `POST /v1/realtime-session-tickets`.
