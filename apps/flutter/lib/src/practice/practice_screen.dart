@@ -186,6 +186,18 @@ class _PracticeScreenState extends State<PracticeScreen> {
     try {
       await gate.stop();
       if (mounted) setState(() => _status = 'Stopped. Your recitation was sent for review.');
+    } on Object {
+      // Without this the success line was simply skipped and `_status` kept its last value — so the
+      // button flipped back to "Start reciting" while the screen still read "Recording Surah 1 1-7",
+      // and the error escaped as an unhandled async failure. A learner was told they were recording
+      // when they were not.
+      //
+      // The microphone IS released: `ConsentGatedRecorder.stop` disposes in a `finally`. What is
+      // uncertain is whether everything reached the gateway, and the message says only that.
+      if (mounted) {
+        setState(() => _status =
+            'Recording stopped. Some of it may not have been sent — check with your teacher.');
+      }
     } finally {
       if (mounted) {
         setState(() {
