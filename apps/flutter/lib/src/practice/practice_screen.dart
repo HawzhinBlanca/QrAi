@@ -11,6 +11,8 @@
 /// have nothing to overwrite it with.
 library;
 
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 
 import '../api/api_client.dart';
@@ -218,7 +220,11 @@ class _PracticeScreenState extends State<PracticeScreen> {
 
   @override
   void dispose() {
-    _gate?.stop();
+    // `dispose` cannot await, so this is fire-and-forget by necessity — but never UNHANDLED. An
+    // error escaping here becomes an unhandled async failure at a moment when there is no widget
+    // left to show it, and the microphone release is exactly the thing you do not want failing
+    // silently. `stop()` itself now runs every release step regardless (see StreamingRecorder).
+    unawaited(_gate?.stop().catchError((Object _) {}) ?? Future<void>.value());
     super.dispose();
   }
 

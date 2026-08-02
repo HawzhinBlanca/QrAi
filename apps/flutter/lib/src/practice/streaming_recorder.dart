@@ -117,7 +117,14 @@ class StreamingRecorder implements AudioRecorder {
       await socket.ready;
     } on Object {
       _socket = null;
-      await socket.sink.close();
+      // The close must NOT replace the handshake error. That error is the one the caller needs —
+      // "the gateway refused this ticket" is the most diagnostic failure in the whole flow, and a
+      // bare `await close()` here would swap it for whatever the socket said on the way down.
+      try {
+        await socket.sink.close();
+      } on Object {
+        // Deliberately swallowed: the handshake failure below is the real cause.
+      }
       rethrow;
     }
 

@@ -184,6 +184,24 @@ void main() {
     // …and the release that came after it still happened.
     expect(channel.closed, isTrue, reason: 'the socket was left open by a failing cancel');
   });
+  test('a close that also fails does not hide why the handshake failed', () async {
+    // The gateway refusing a ticket is the most diagnostic failure in this flow. A bare
+    // `await socket.sink.close()` in the catch would swap it for whatever the socket said on the
+    // way down, and the caller would chase the wrong thing.
+    final StreamingRecorder r = StreamingRecorder(
+      ticket: ticketWith(),
+      gatewayBase: Uri.parse('http://127.0.0.1:8081'),
+      socketFactory: (Uri _) => _RefusesThenFailsToClose(),
+      pcmStreamFactory: (int _) async => const Stream<Uint8List>.empty(),
+    );
+
+    await expectLater(
+      r.start(),
+      throwsA(isA<StateError>().having((StateError e) => e.message, 'message',
+          contains('gateway refused'))),
+      reason: 'the close error replaced the handshake error',
+    );
+  });
 }
 
 /// A socket whose handshake fails, like a gateway rejecting an expired or foreign ticket.
@@ -191,3 +209,27 @@ class _RefusingChannel extends FakeChannel {
   @override
   Future<void> get ready async => throw StateError('gateway refused the ticket');
 }
+
+/// Refuses the handshake AND fails to close — the case where a naive catch reports the wrong cause.
+class _RefusesThenFailsToClose extends FakeChannel {
+  @override
+  Future<void> get ready async => throw StateError('gateway refused the ticket');
+
+  @override
+  WebSocketSink get sink => _ThrowingSink();
+}
+
+class _ThrowingSink implements WebSocketSink {
+  @override
+  void add(Object? data) {}
+  @override
+  Future<void> close([int? closeCode, String? closeReason]) async =>
+      throw StateError('socket close also failed');
+  @override
+  void addError(Object error, [StackTrace? stackTrace]) {}
+  @override
+  Future<void> addStream(Stream<Object?> stream) async {}
+  @override
+  Future<void> get done async {}
+}
+
