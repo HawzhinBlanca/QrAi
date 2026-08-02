@@ -171,7 +171,7 @@ if [[ "$FAST" != "yes" ]]; then
   # fastapi and shells out to ffmpeg (verified: system python3 has numpy but not fastapi), so it
   # needs the service venv. It stays ungated until CI installs the asr-inference requirements —
   # a named gap, not a silent one.
-  run "test: python (asr-inference)" "cd services/asr-inference && { command -v python3 >/dev/null || { echo 'python3 not found — required, not optional'; exit 1; }; } && python3 test_eval_metrics.py && python3 test_forced_align_normalization.py"
+  run "test: python (asr-inference)" "cd services/asr-inference && { command -v python3 >/dev/null || { echo 'python3 not found — required, not optional'; exit 1; }; } && python3 test_eval_metrics.py && python3 test_forced_align_normalization.py && python3 test_force_align_unavailable.py"
   # shared-ticket is only ever BUILT as a dependency of the two services, so `cargo test` on them
   # never ran its own 14 tests — including the cross-language ticket vectors, which pin the one
   # credential that crosses a service boundary. Same class of gap as MIG5's ungated Python.
