@@ -117,7 +117,13 @@ class ConsentGatedRecorder {
     } on Object {
       // A recorder that failed to start must not be left holding the microphone.
       _recorder = null;
-      await recorder.dispose();
+      // …and disposing it must not replace the reason it failed to start, which is what the caller
+      // acts on. Same rule as `streaming_recorder.dart`'s handshake path.
+      try {
+        await recorder.dispose();
+      } on Object {
+        // Deliberately swallowed: the start failure below is the real cause.
+      }
       rethrow;
     }
   }
