@@ -30,45 +30,43 @@ PARTIAL LOSS: FAIL — half the recitation was acknowledged and never stored
   Sampled at +0s, +1s, +2s, +5s and +10s with the gateway STILL RUNNING: 6 every time. This is not
   a teardown artifact and it is not a race that settles — the chunks never arrive.
 
-  The pattern is the tell. Connections 1 and 2 were killed mid-stream by chaos and BOTH stored
-  their chunks. Connection 3 closed NORMALLY and stored none of its six.
-
   The chunks were ACCEPTED, not rejected. The client counts only `ack.accepted === true` and
   counted 12, so `forward_chunk` returned Ok for all of them and they entered the session's mpsc
-  channel. The forwarding task then delivered six of them and logged nothing about the other six —
-  no `ML service rejected`, no retry exhaustion, no backpressure counter.
+  channel. The forwarding task then delivered a subset and logged nothing about the rest — no
+  `ML service rejected`, no retry exhaustion, no backpressure counter.
 
-  MECHANISM NOT YET CONFIRMED. lib.rs:1033 spawns the forwarding task detached and lib.rs:1180
-  breaks the read loop on `Message::Close`, which is where to start — but "the handler returns
-  before the task drains" is a hypothesis that does not by itself explain why the two ABORTED
-  connections drained and the cleanly-closed one did not. The next step is a run with tracing on
-  the forward path, not another guess.
+  ── WHAT THE LOSS ACTUALLY TRACKS ───────────────────────────────────────────────────────────────
+  Varying ONLY the forced-drop count, everything else identical:
+
+    drops  connections  stored   chunk ids stored
+      0         1        12/12   0000..0011      <- no loss at all
+      1         2         9/12   0000..0008
+      2         3         6/12   0000..0005
+
+  Two things follow, and the first corrects an earlier reading in this file:
+
+  1. A CLEAN CLOSE LOSES NOTHING. With no drops, one connection delivers all twelve. "The handler
+     returns before the detached forwarder drains" was the wrong explanation, and it was wrong in
+     the direction that would have sent someone to patch the close path.
+
+  2. The loss is exactly 3 x drops, always at the TAIL of the session, and 3 is
+     REALTIME_CHAOS_DROP_AFTER_CHUNKS. So the count is coupled to the dropped connections, but the
+     chunks that go missing are the last ones sent on the FINAL connection — not the ones that were
+     in flight when the socket died.
+
+  That coupling is the actual thing to explain, and it is not explained yet. Something shared across
+  connections is consuming or discarding a fixed quantum per drop. The next step is tracing on the
+  forward path and on `try_send`, with the per-connection channel capacity in view — not a fourth
+  hypothesis written up as a cause.
 
   ── on the reliability of this measurement ──
-  Three runs said 6/12, 6/12, then 0/12. The 0/12 was a HARNESS ARTIFACT: the gateway had panicked
-  at startup (ALLOW_INSECURE_DEFAULTS combined with METRICS_DEV_OPEN is refused) and the client had
-  connected to a stale gateway from the previous run, still holding the port and forwarding into a
-  deleted directory.
+  Three earlier runs said 6/12, 6/12, then 0/12. The 0/12 was a HARNESS ARTIFACT: the gateway had
+  panicked at startup (ALLOW_INSECURE_DEFAULTS combined with METRICS_DEV_OPEN is refused) and the
+  client had connected to a stale gateway from the previous run, still holding the port and
+  forwarding into a deleted directory.
 
-  The run recorded above was therefore re-done on unique ports (8431/8492) with an assertion that a
-  gateway OF THIS RUN is listening before any measurement is taken. It reports 6/12 with the same
-  missing set. The finding survived the check; it is recorded here because a number that moves
-  between runs is worth nothing until you know why, and the first two runs happened to be right for
-  reasons I had not verified.
-
-WHY THIS MATTERS MORE THAN A DROPPED PACKET
-
-  The gateway ACKed all 12. The client has no way to know. The session then finalizes,
-  transcription reads storage, and the aligner scores SIX chunks of audio against the FULL
-  canonical passage — so every word the learner did recite, in the half that was lost, is recorded
-  as a word they missed.
-
-  That is a false judgement about how a person recited the Quran, produced silently, with an audit
-  trail that says the recording was delivered. It is the exact failure the review gates exist to
-  prevent, arriving underneath them.
-
-  It also confirms the standing audit finding that gateway acknowledgements mean "queued", not
-  "stored" — measured here rather than inferred.
+  Every run in the table above therefore uses a unique port pair, a fresh mktemp storage dir, and an
+  assertion that a gateway OF THAT RUN is listening before anything is measured.
 
 NOT FIXED IN THIS RUN, deliberately. A drain fix on a detached task is the kind of concurrency
 change that goes wrong when rushed at the end of a session. The reproduction is deterministic and
