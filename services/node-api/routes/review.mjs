@@ -30,6 +30,9 @@ const RISK_LEVELS = ["low", "medium", "high"];
 /** types.rs:341-344 — thiserror Display strings, which ARE the wire messages. */
 const MISSING_SOURCES = "source references are required for scholar-approved content";
 const HIGH_RISK_APPROVAL = "high-risk content cannot be auto-approved";
+/** review.rs — the ApiError::BadRequest string, which IS the wire message. */
+const UNSOURCED_ACCEPTANCE =
+  "a finding with no source cannot be released to a learner; reject it, or have a source added first";
 
 /** POST /v1/teacher-reviews — review.rs:9 */
 export async function createTeacherReview(req, reply, ctx) {
@@ -51,8 +54,18 @@ export async function createTeacherReview(req, reply, ctx) {
     // The finding must exist IN THIS TENANT. Without it a dangling findingId fails the FK and
     // surfaces as a 500; a missing referenced entity is a 404.
     const [finding] = await tx`
-      SELECT 1 FROM tajweed_findings WHERE id = ${b.findingId} AND tenant_id = ${actor.tenantId}`;
+      SELECT jsonb_array_length(source_refs) AS source_count
+      FROM tajweed_findings WHERE id = ${b.findingId} AND tenant_id = ${actor.tenantId}`;
     if (!finding) throw NotFound();
+
+    // Accepting an UNSOURCED finding is refused, mirroring review.rs and the scholar path's
+    // MISSING_SOURCES check below. A teacher acceptance releases content to a learner (ADR-0027),
+    // and `canShowLearnerFacingAiOutput` in the client was the only thing withholding one.
+    // Refused before any write. Only `accepted` — rejecting or editing an unsourced finding is
+    // exactly what a teacher should be able to do with it.
+    if (b.decision === "accepted" && Number(finding.source_count ?? 0) === 0) {
+      throw new ApiError(UNSOURCED_ACCEPTANCE, 400);
+    }
 
     await tx`
       INSERT INTO audit_events (id, tenant_id, actor_id, action, subject_type, subject_id, metadata)

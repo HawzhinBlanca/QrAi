@@ -202,15 +202,33 @@ void main() {
     expect(tester.takeException(), isNull);
   });
 
-  testWidgets('a finding with no source says it cannot be released', (WidgetTester tester) async {
-    // `canShowLearnerFacingAiOutput` requires sources.length > 0, so accepting a sourceless finding
-    // could never reach a learner. A teacher deserves to know that before spending judgement on it.
+  testWidgets('a sourceless finding says why, and Accept is not tappable',
+      (WidgetTester tester) async {
+    // The server REFUSES an unsourced acceptance (ADR-0027 item 6). Leaving the button live would
+    // spend a teacher's judgement and answer 400; the rule is knowable before they tap. Reject
+    // stays live — an unsourced finding must not be trapped in the queue forever.
     await pump(
       tester,
       clientFor(<http.Request>[],
           findings: <Map<String, Object?>>[stubFinding(sources: <Map<String, Object?>>[])]),
     );
     expect(find.byKey(const ValueKey<String>('review-nosource-finding-1')), findsOneWidget);
+
+    final FilledButton accept =
+        tester.widget(find.byKey(const ValueKey<String>('review-accept-finding-1')));
+    expect(accept.onPressed, isNull, reason: 'Accept must be disabled without a source');
+
+    final OutlinedButton reject =
+        tester.widget(find.byKey(const ValueKey<String>('review-reject-finding-1')));
+    expect(reject.onPressed, isNotNull, reason: 'rejecting an unsourced finding is the way out');
+  });
+
+  testWidgets('a SOURCED finding keeps Accept live', (WidgetTester tester) async {
+    // The other direction: a guard that disabled Accept everywhere would be safe and useless.
+    await pump(tester, clientFor(<http.Request>[]));
+    final FilledButton accept =
+        tester.widget(find.byKey(const ValueKey<String>('review-accept-finding-1')));
+    expect(accept.onPressed, isNotNull);
   });
 
   testWidgets('every finding shows its provenance before a decision is asked for',

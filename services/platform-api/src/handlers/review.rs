@@ -20,14 +20,35 @@ pub async fn create_teacher_review(
     // The finding must exist in this tenant. Without this check a dangling finding_id
     // fails the FK constraint and surfaces as a 500; a missing referenced entity is a
     // 404. RLS scopes the lookup to the caller's tenant.
-    let finding_exists =
-        sqlx::query("SELECT 1 FROM tajweed_findings WHERE id = $1 AND tenant_id = $2")
-            .bind(&req.finding_id)
-            .bind(&actor.tenant_id)
-            .fetch_optional(&mut *tx)
-            .await?;
-    if finding_exists.is_none() {
-        return Err(ApiError::NotFound);
+    let finding = sqlx::query(
+        "SELECT jsonb_array_length(source_refs) AS source_count
+         FROM tajweed_findings WHERE id = $1 AND tenant_id = $2",
+    )
+    .bind(&req.finding_id)
+    .bind(&actor.tenant_id)
+    .fetch_optional(&mut *tx)
+    .await?;
+    let finding = finding.ok_or(ApiError::NotFound)?;
+
+    // ── Accepting an UNSOURCED finding is refused ───────────────────────────────────────────────
+    // `create_scholar_approval` already refuses the same hazard (`ApiError::MissingSources`) and a
+    // teacher acceptance is now the other way content reaches a learner (ADR-0027), so it needed the
+    // same server-side answer. Until this, the only thing withholding an unsourced acceptance was
+    // `canShowLearnerFacingAiOutput` in the CLIENT — one laxer future client away from showing a
+    // learner a judgement about their recitation with nothing standing behind it.
+    //
+    // Refused BEFORE anything is written, as the scholar path is, so a rejected acceptance leaves no
+    // row and no audit trail implying one was considered.
+    //
+    // Only `accepted`. Rejecting or editing an unsourced finding is exactly what a teacher SHOULD be
+    // able to do with one, and refusing those would trap it in the queue forever.
+    let source_count: i32 = finding.try_get("source_count").unwrap_or(0);
+    if req.decision == TeacherDecision::Accepted && source_count == 0 {
+        return Err(ApiError::BadRequest(
+            "a finding with no source cannot be released to a learner; reject it, or have a source \
+             added first"
+                .to_owned(),
+        ));
     }
 
     let review_id = next_id("teacher-review");

@@ -106,7 +106,7 @@ test("every ported entry points at a parity file that exists and names its Rust 
   }
 });
 
-test("the ported count matches the approved scope: 32", () => {
+test("the ported count matches the approved scope: 33", () => {
   // Scope B was approved for exactly 26 incident-class tests (plan.md §4). Growing the suite is
   // good — but it should be a visible decision, not a number that drifts.
   //
@@ -126,6 +126,9 @@ test("the ported count matches the approved scope: 32", () => {
   //
   // 30 -> 32 (2026-08-02, ADR-0027 item 5): the two finalize tests. That route decides what a
   // person is recorded as having recited, so its ownership boundary is not optional coverage.
-  assert.equal(coverage.totals.ported, 32);
+  //
+  // 32 -> 33 (2026-08-02, ADR-0027 item 6): the unsourced-acceptance refusal. It is the server-side
+  // half of a rule the client was enforcing alone, and its message is wire contract.
+  assert.equal(coverage.totals.ported, 33);
   assert.equal(coverage.totals["deferred-to-phase-7"], 5);
 });
