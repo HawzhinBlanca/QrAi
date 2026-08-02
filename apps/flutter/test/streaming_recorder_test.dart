@@ -163,6 +163,27 @@ void main() {
     await r.stop();
     expect(channel.closed, isTrue, reason: 'the socket was left open after stop');
   });
+  test('a cancel that throws still stops the device and closes the socket', () async {
+    // The same defect `consent_gate.dart` had one level up, in code written the same day: a plain
+    // sequence of awaits, where the first failure skipped every release after it. A `cancel()` that
+    // throws used to leave the microphone open AND the socket connected.
+    final FakeChannel channel = FakeChannel();
+    final StreamController<Uint8List> pcm =
+        StreamController<Uint8List>(onCancel: () => throw StateError('cancel failed'));
+
+    final StreamingRecorder r = StreamingRecorder(
+      ticket: ticketWith(),
+      gatewayBase: Uri.parse('http://127.0.0.1:8081'),
+      socketFactory: (Uri _) => channel,
+      pcmStreamFactory: (int _) async => pcm.stream,
+    );
+
+    await r.start();
+    // The error is NOT swallowed — a caller must not be told the stop was clean.
+    await expectLater(r.stop(), throwsA(isA<StateError>()));
+    // …and the release that came after it still happened.
+    expect(channel.closed, isTrue, reason: 'the socket was left open by a failing cancel');
+  });
 }
 
 /// A socket whose handshake fails, like a gateway rejecting an expired or foreign ticket.
