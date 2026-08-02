@@ -129,18 +129,38 @@ class StreamingRecorder implements AudioRecorder {
 
   @override
   Future<void> stop() async {
+    // Every handle is taken and cleared FIRST, so a throwing release cannot leave this object
+    // pointing at something it no longer owns.
     final StreamSubscription<Uint8List>? sub = _subscription;
+    final WebSocketChannel? socket = _socket;
+    final bool startedDevice = _deviceStarted;
     _subscription = null;
-    // Microphone before socket: the reverse order streams captured audio into a closing sink.
-    await sub?.cancel();
-    if (_deviceStarted) {
-      _deviceStarted = false;
-      await device.stop();
+    _socket = null;
+    _deviceStarted = false;
+
+    // ── Every step runs, whatever the earlier ones did ────────────────────────────────────────
+    // This was a plain sequence of awaits, which is the same defect `consent_gate.dart` had one
+    // level up: a `cancel()` that threw skipped `device.stop()` — leaving a child's microphone
+    // open — and skipped the socket close too. The first error still propagates, so a caller is
+    // never told a clean stop happened when it did not.
+    Object? firstError;
+    StackTrace? firstTrace;
+    Future<void> release(Future<void> Function() step) async {
+      try {
+        await step();
+      } on Object catch (e, st) {
+        firstError ??= e;
+        firstTrace ??= st;
+      }
     }
 
-    final WebSocketChannel? socket = _socket;
-    _socket = null;
-    await socket?.sink.close();
+    // Order is unchanged and still matters: microphone before socket, or captured audio is
+    // streamed into a closing sink.
+    await release(() async => sub?.cancel());
+    if (startedDevice) await release(device.stop);
+    await release(() async => socket?.sink.close());
+
+    if (firstError != null) Error.throwWithStackTrace(firstError!, firstTrace!);
   }
 
   @override
