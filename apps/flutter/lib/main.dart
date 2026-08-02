@@ -11,10 +11,12 @@
 ///   flutter run --dart-define=QRAI_API_BASE_URL=https://api.example.com \
 ///               --dart-define=QRAI_GATEWAY_URL=https://rt.example.com \
 ///               --dart-define=QRAI_LEARNER_ID=learner-1
+/// `QRAI_DEV_BEARER_TOKEN` is accepted in debug builds only — see below for why.
 /// The defaults point at localhost, so a misconfigured build reaches nothing rather than someone
 /// else's tenant.
 library;
 
+import 'package:flutter/foundation.dart' show kReleaseMode;
 import 'package:flutter/material.dart';
 import 'package:flutter_localizations/flutter_localizations.dart';
 // `show DateFormat` is not tidiness: `package:intl` also exports a `TextDirection`, which shadows
@@ -35,23 +37,38 @@ const String _gatewayUrl =
     String.fromEnvironment('QRAI_GATEWAY_URL', defaultValue: 'http://127.0.0.1:8081');
 const String _learnerId = String.fromEnvironment('QRAI_LEARNER_ID', defaultValue: 'learner-1');
 
-/// Out-of-band provisioning. Empty by default, which is the honest default: a build with no token
-/// reaches the API unauthenticated and every learner route answers 401 — measured, not assumed.
+/// **Development only.** Empty by default, and ignored outright in a release build.
 ///
-/// This is NOT a sign-in. The device is configured by whoever hands it to the learner, the value
-/// never appears in a UI, and it is moved into platform secure storage at first launch so it is not
-/// read back out of the build. Whether a pilot should instead redeem an invitation code in-app is
-/// an owner decision, not this file's.
-const String _bearerToken = String.fromEnvironment('QRAI_BEARER_TOKEN');
+/// ── The claim this used to make was false ───────────────────────────────────────────────────────
+/// It read "moved into platform secure storage at first launch so it is not read back out of the
+/// build". That is wrong. `--dart-define` values are COMPILED INTO the artifact — `strings` on an
+/// APK or an extracted IPA finds them — and copying one into the Keychain at launch does not remove
+/// it from the binary. A pilot build shipped this way hands every recipient a working bearer token.
+///
+/// So it is now dev-only and release builds refuse it (`shouldProvisionDevToken`). It exists to
+/// drive the app against a local stack, which is how the authenticated paths in
+/// `specs/migration-completion/evidence/app-auth-states.md` were verified.
+///
+/// **Real provisioning is an owner decision and is not implemented.** Device-bound enrolment, MDM
+/// delivery, or a one-time code redeemed in-app are the options; the last one is credential entry
+/// and touches the standing instruction that login stays removed, so it is not this file's call.
+const String _devBearerToken = String.fromEnvironment('QRAI_DEV_BEARER_TOKEN');
+
+/// Whether a build-time token may be written to secure storage.
+///
+/// Pure and exported so the rule is testable: `kReleaseMode` cannot be varied inside a test, and a
+/// rule that only exists inside an `if` in `main()` is a rule with no test.
+bool shouldProvisionDevToken({required bool releaseMode, required String token}) =>
+    !releaseMode && token.isNotEmpty;
 
 Future<void> main() async {
   // Required before touching a platform channel — `TokenStore` reaches Keychain/Keystore.
   WidgetsFlutterBinding.ensureInitialized();
 
   final TokenStore tokens = TokenStore();
-  if (_bearerToken.isNotEmpty) {
+  if (shouldProvisionDevToken(releaseMode: kReleaseMode, token: _devBearerToken)) {
     try {
-      await tokens.write(_bearerToken);
+      await tokens.write(_devBearerToken);
     } on Object {
       // Secure storage can fail (a locked keychain, an unprovisioned emulator). That must not stop
       // the app from launching: the reader works unauthenticated, and every other screen already

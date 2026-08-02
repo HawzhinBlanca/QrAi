@@ -80,5 +80,24 @@ void main() {
 
     test('no scheduled review is null', () => expect(withDate(null).nextReviewAtUtc, isNull));
   });
+
+  group('shouldProvisionDevToken — a release build must not carry a credential', () {
+    // `--dart-define` values are compiled into the artifact. `strings` on an APK, or an extracted
+    // IPA, finds them; copying one into the Keychain at launch does not remove it from the binary.
+    // The comment in main.dart used to claim otherwise, which is why this rule is now a tested
+    // function rather than an `if` nobody can reach.
+    test('a release build refuses a build-time token, however it was set', () {
+      expect(shouldProvisionDevToken(releaseMode: true, token: 'a-real-looking-jwt'), isFalse);
+      expect(shouldProvisionDevToken(releaseMode: true, token: ''), isFalse);
+    });
+
+    test('a debug build accepts one, which is how the live stack is driven', () {
+      expect(shouldProvisionDevToken(releaseMode: false, token: 'a-real-looking-jwt'), isTrue);
+    });
+
+    test('no token means no provisioning, in either mode', () {
+      expect(shouldProvisionDevToken(releaseMode: false, token: ''), isFalse);
+    });
+  });
 }
 
