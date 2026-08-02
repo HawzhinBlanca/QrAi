@@ -32,6 +32,28 @@ double _num(Map<String, dynamic> json, String key) {
   throw FormatException('expected num at "$key", got ${v.runtimeType}');
 }
 
+/// A required nested object. `json['x'] as Map<String, dynamic>` on a missing key throws
+/// `type 'Null' is not a subtype of type 'Map<String, dynamic>' in type cast` — measured — which
+/// names neither the field nor the model. Every other read in this file names the field, and a
+/// contract mismatch is exactly when that matters: this session found three of them.
+Map<String, dynamic> _object(Map<String, dynamic> json, String key) {
+  final Object? v = json[key];
+  if (v is Map<String, dynamic>) return v;
+  throw FormatException('expected an object at "$key", got ${v.runtimeType}');
+}
+
+/// An optional String. Absent is null; present-but-not-a-String is a contract violation, not a null.
+String? _strOrNull(Map<String, dynamic> json, String key) {
+  final Object? v = json[key];
+  if (v == null || v is String) return v as String?;
+  throw FormatException('expected String or null at "$key", got ${v.runtimeType}');
+}
+
+/// Elements of a list, each required to be an object. Public because `api_client.dart` decodes
+/// top-level arrays and was doing `e! as Map<String, dynamic>` — the same cast, the same unhelpful
+/// message, in a second place.
+List<Map<String, dynamic>> objectsIn(Object? v, String what) => _objects(v, what);
+
 List<Map<String, dynamic>> _objects(Object? v, String what) {
   if (v is! List) throw FormatException('expected a List for $what, got ${v.runtimeType}');
   return v.map((Object? e) {
@@ -187,7 +209,7 @@ class LearnerProgress {
         // chrono's `+00:00` offset rather than `Z`, and 0/3/6/9 fractional digits — both of which
         // DateTime.parse accepts. Kept as the raw string as well so nothing re-serializes a
         // different spelling of the same instant back to the server.
-        nextReviewAt: json['nextReviewAt'] as String?,
+        nextReviewAt: _strOrNull(json, 'nextReviewAt'),
       );
 
   final String learnerId;
@@ -226,7 +248,7 @@ class TajweedFinding {
         status: _str(json, 'status'),
         confidence: _num(json, 'confidence'),
         source: _str(json, 'source'),
-        detail: json['detail'] as String?,
+        detail: _strOrNull(json, 'detail'),
       );
 
   final String id;
@@ -268,7 +290,10 @@ class RealtimeTicket {
         // Parsing it as a date silently yields null and the ticket looks permanently valid.
         expiresAt: int.parse(_str(json, 'expiresAt')),
         allowedSampleRates: (json['allowedSampleRates'] as List<Object?>? ?? <Object?>[])
-            .map((Object? e) => (e as num).toInt())
+            .map((Object? e) => e is num
+                ? e.toInt()
+                : throw FormatException(
+                    'expected a number in "allowedSampleRates", got ${e.runtimeType}'))
             .toList(growable: false),
         externalAsrProcessing: json['externalAsrProcessing'] == true,
       );
@@ -376,7 +401,7 @@ class RecitationSession {
         id: _str(json, 'id'),
         tenantId: _str(json, 'tenantId'),
         learnerId: _str(json, 'learnerId'),
-        quranRef: QuranRef.fromJson(json['quranRef'] as Map<String, dynamic>),
+        quranRef: QuranRef.fromJson(_object(json, 'quranRef')),
         reviewStatus: _str(json, 'reviewStatus'),
       );
 

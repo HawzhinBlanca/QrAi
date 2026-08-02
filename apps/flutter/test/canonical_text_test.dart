@@ -95,4 +95,66 @@ void main() {
       reason: 'defaulting canonical text to "" would render a blank ayah as if it were scripture',
     );
   });
+
+  group('a contract mismatch names the field it was reading', () {
+    // Measured before this change: `type 'Null' is not a subtype of type 'Map<String, dynamic>' in
+    // type cast` — no field, no model, nothing to grep the server for. Three real contract
+    // mismatches surfaced during this session's live runs, so the message is what someone will
+    // actually be holding when the next one happens.
+
+    test('a missing nested object names the key', () {
+      expect(
+        () => RecitationSession.fromJson(<String, dynamic>{
+          'id': 'x',
+          'tenantId': 't',
+          'learnerId': 'l',
+          'reviewStatus': 'draft',
+        }),
+        throwsA(isA<FormatException>()
+            .having((FormatException e) => e.message, 'message', contains('quranRef'))),
+      );
+    });
+
+    test('a wrongly-typed list element names the list', () {
+      expect(
+        () => RealtimeTicket.fromJson(<String, dynamic>{
+          'token': 't',
+          'sessionId': 's',
+          'tenantId': 'te',
+          'learnerId': 'l',
+          'expiresAt': '1',
+          'allowedSampleRates': <Object?>['16000'],
+          'externalAsrProcessing': false,
+        }),
+        throwsA(isA<FormatException>()
+            .having((FormatException e) => e.message, 'message', contains('allowedSampleRates'))),
+      );
+    });
+
+    test('a wrongly-typed optional string is a violation, not a silent null', () {
+      // `as String?` would have turned a number into a TypeError; returning null instead would have
+      // been worse — a contract violation rendered as "no review scheduled".
+      expect(
+        () => LearnerProgress.fromJson(<String, dynamic>{
+          'learnerId': 'l',
+          'tenantId': 't',
+          'mastery': 1,
+          'streak': 0,
+          'totalSessions': 0,
+          'nextReviewAt': 12345,
+        }),
+        throwsA(isA<FormatException>()
+            .having((FormatException e) => e.message, 'message', contains('nextReviewAt'))),
+      );
+    });
+
+    test('a non-object in a decoded list names the list', () {
+      expect(
+        () => objectsIn(<Object?>[<String, dynamic>{}, 'not an object'], 'surahs'),
+        throwsA(isA<FormatException>()
+            .having((FormatException e) => e.message, 'message', contains('surahs'))),
+      );
+    });
+  });
 }
+
