@@ -124,6 +124,81 @@ test("the Dart gate still applies all three terms", () => {
   }
 });
 
+/**
+ * P3.2 — the gate is now FOUR implementations, not two.
+ *
+ * `list_session_tajweed_findings` redacts a withheld finding server-side (review.rs
+ * `clears_learner_gate`), so Rust holds a copy of the same rule, and `handlers/agent.rs` +
+ * `services/node-api/routes/agent-write.mjs` hold a third and fourth for the agent-run gate. Four
+ * copies of a safety threshold across three languages is exactly what drifts, and the direction it
+ * drifts in is somebody lowering one of them alone.
+ *
+ * Source-extracted, like the Dart side: Rust cannot be executed from Node either. This asserts the
+ * VALUE is the same everywhere, which is the part that silently rots. The behaviour of the Rust
+ * predicate is covered by integration.rs, which builds findings on each side of the floor.
+ */
+const RUST_FILES = [
+  ["services", "platform-api", "src", "handlers", "review.rs"],
+  ["services", "platform-api", "src", "handlers", "agent.rs"],
+];
+const NODE_FILES = [
+  ["services", "node-api", "routes", "agent-write.mjs"],
+  ["services", "node-api", "routes", "ml-proxy.mjs"],
+];
+
+test("every implementation of the learner gate uses the same confidence floor", () => {
+  const repo = join(here, "..", "..");
+  const found = [];
+
+  // The confidence term of the gate, identified by what it is CONJOINED WITH rather than by where
+  // it sits in the line: a floor that is not immediately followed by a source term is not this gate.
+  // That distinction is load-bearing — `agent-write.mjs` also contains `confidence >= 0 &&
+  // confidence <= 1`, a range validation, and an oracle that just skipped the literal `0` would be
+  // blind to the single most dangerous mutation there is here, someone setting the floor to zero.
+  const GATE = /confidence\s*>=\s*([A-Za-z_0-9.]+)\s*&&\s*(?:source|has_source)/g;
+
+  for (const parts of [...RUST_FILES, ...NODE_FILES]) {
+    const file = parts.at(-1);
+    const src = readFileSync(join(repo, ...parts), "utf8");
+    const consts = Object.fromEntries(
+      [...src.matchAll(/const LEARNER_MIN_CONFIDENCE: f64 = ([0-9.]+);/g)].map((m) => [
+        "LEARNER_MIN_CONFIDENCE",
+        Number(m[1]),
+      ]),
+    );
+    for (const m of src.matchAll(GATE)) {
+      const raw = m[1];
+      const value = /^[0-9.]+$/.test(raw) ? Number(raw) : consts[raw];
+      assert.ok(
+        value !== undefined,
+        `${file}: the gate compares confidence against \`${raw}\`, which this test cannot resolve ` +
+          "to a number — declare it as LEARNER_MIN_CONFIDENCE or inline the literal",
+      );
+      found.push([file, value]);
+    }
+  }
+
+  // Per FILE, not a total count: a file may legitimately mention the shape twice (a comment naming
+  // it, a second call site). What must never happen is a listed implementation contributing NOTHING
+  // — that is the case where this test passes while the gate it was written to pin has been deleted.
+  const silent = [...RUST_FILES, ...NODE_FILES]
+    .map((parts) => parts.at(-1))
+    .filter((file) => !found.some(([f]) => f === file));
+  assert.deepEqual(
+    silent,
+    [],
+    `${JSON.stringify(silent)} contain no recognisable learner gate. Either the comparison was ` +
+      "rewritten in a shape this cannot see, or it is gone — and a gate this test cannot find is " +
+      "a gate it is not pinning.",
+  );
+  const wrong = found.filter(([, value]) => value !== FLOOR);
+  assert.deepEqual(
+    wrong,
+    [],
+    `a server-side confidence floor disagrees with the clients' ${FLOOR}: ` + JSON.stringify(wrong),
+  );
+});
+
 test("the approval allowlist is an allowlist, in both languages", () => {
   // The failure mode this prevents is specific: a DENYLIST fails open. Any status nobody thought of
   // — a typo, a new one added upstream — would reach a learner. Assert the shape by construction:

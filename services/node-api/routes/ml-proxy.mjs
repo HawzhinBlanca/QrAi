@@ -65,6 +65,50 @@ async function forward({ url, keyHeader, keyValue, body, label, service }) {
   }
 }
 
+/**
+ * Who may analyse a session that is not their own, and therefore who receives the findings
+ * unredacted. ONE list for both, mirroring `ANALYSIS_STAFF` in ml_proxy.rs. Teacher is deliberately
+ * absent: reviewing a stored finding is `/v1/teacher-reviews`, not re-running the analyser.
+ */
+const ANALYSIS_STAFF = ["admin", "ops"];
+
+/**
+ * The learner-facing gate — `clears_learner_gate` (review.rs), `canShowLearnerFacingAiOutput`
+ * (packages/contracts). An ALLOWLIST of statuses: a denylist fails open on anything this code has
+ * not heard of, and failing open here hands a learner an unreviewed judgement.
+ * tests/contract/tajweed-gate-parity.test.mjs pins the floor across every implementation.
+ */
+function clearsLearnerGate(finding) {
+  const approved =
+    finding?.reviewStatus === "teacher-reviewed" || finding?.reviewStatus === "scholar-approved";
+  const confidence = typeof finding?.confidence === "number" ? finding.confidence : 0;
+  const sources = Array.isArray(finding?.sources) ? finding.sources : [];
+  // Term order is deliberate — the parity test recognises this gate by the provenance check
+  // following the confidence floor, so every implementation of it reads the same way.
+  return approved && confidence >= 0.82 && sources.length > 0;
+}
+
+/**
+ * Strip, in place, the content of every finding a learner may not be shown.
+ *
+ * The array keeps its length and each finding keeps its `reviewStatus`, because both clients render
+ * "N notes are waiting for a teacher" from a count and a count is not a judgement about how the
+ * person recited. `confidence: 0` and `sources: []` are not filler — they make the redacted finding
+ * fail the client gate on its own merits.
+ */
+function redactWithheldFindings(result) {
+  if (!Array.isArray(result?.findings)) return;
+  for (const finding of result.findings) {
+    if (finding === null || typeof finding !== "object" || clearsLearnerGate(finding)) continue;
+    for (const field of ["rule", "arabicName", "category", "severity", "explanation", "wordId"]) {
+      if (field in finding) finding[field] = "";
+    }
+    finding.confidence = 0;
+    finding.sources = [];
+    finding.withheld = true;
+  }
+}
+
 /** The shared ML path — `proxy_ml` (ml_proxy.rs:19). */
 async function proxyMl(req, reply, ctx, label, path) {
   const resolved = await resolveActor(req, ctx);
@@ -103,7 +147,7 @@ async function proxyMl(req, reply, ctx, label, path) {
     // A learner may only analyse their OWN session; admin/ops may analyse any in-tenant session.
     // Without this a learner passes another in-tenant learner's sessionId and has THAT session's
     // stored consent applied to their own forwarded audio.
-    requireSelfOrAny(actor, row.learner_id, ["admin", "ops"]);
+    requireSelfOrAny(actor, row.learner_id, ANALYSIS_STAFF);
 
     // Server-authoritative CONSENT, from the record captured at session creation.
     forwarded.consent = {
@@ -121,6 +165,13 @@ async function proxyMl(req, reply, ctx, label, path) {
     label,
     service: "ML",
   });
+
+  // The learner gate applies to the RESPONSE — ml_proxy.rs `redact_withheld_findings`. Everything
+  // this route returns is freshly computed and `ai-suggested`, so for a learner the whole set is
+  // withheld; it was being sent to their device in full with the client trusted to hide it.
+  if (label === "tajweed" && !ANALYSIS_STAFF.includes(actor.role)) {
+    redactWithheldFindings(result);
+  }
 
   return reply.send(result);
 }

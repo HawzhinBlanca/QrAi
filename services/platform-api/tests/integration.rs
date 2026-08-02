@@ -4402,10 +4402,14 @@ async fn tajweed_findings_persist_and_the_learner_can_read_their_own() {
     let body: Value = read_json(mine).await;
     assert_eq!(body.as_array().unwrap().len(), 1);
     assert_eq!(body[0]["reviewStatus"], "ai-suggested");
-    assert_eq!(
-        body[0]["sources"][0]["id"], "s1",
-        "provenance must survive the round trip"
-    );
+    // PENDING, and pending is ALL the learner learns. This assertion used to read
+    // `sources[0]["id"] == "s1"` — it pinned the whole unreviewed finding arriving on the learner's
+    // device, provenance and explanation and all, with the client trusted to hide it. That premise
+    // was the bug ADR-0028 fixes; the test's purpose is step (4), where the loop closes and the
+    // provenance assertion belongs.
+    assert_eq!(body[0]["withheld"], json!(true));
+    assert_eq!(body[0]["explanation"], json!(""));
+    assert_eq!(body[0]["sources"], json!([]));
 
     // (4) THE LOOP. A teacher accepts; the learner reads it back as reviewed.
     let review = send_json(
@@ -4795,4 +4799,363 @@ async fn accepting_an_unsourced_finding_is_refused_but_rejecting_it_is_not() {
             .await
             .unwrap();
     assert_eq!(promoted, "teacher-reviewed");
+}
+
+// ── P3.2 — withheld feedback and provenance ────────────────────────────────────────────────────
+
+/// Seed one finding on `session_id` with an exact review status, confidence and provenance.
+///
+/// `seed_reviewed_finding` above always produces the same shape; these tests need the FOUR ways a
+/// finding fails the learner gate, one per row, so they can prove each is withheld on its own merits
+/// rather than on some other row's.
+async fn seed_finding_for_gate(
+    pool: &sqlx::PgPool,
+    session_id: &str,
+    label: &str,
+    word_id: &str,
+    review_status: &str,
+    confidence: f64,
+    sources: &str,
+) -> String {
+    let suffix = next_suffix();
+    let alignment_id = format!("wa-p32-{label}-{suffix}");
+    let finding_id = format!("tf-p32-{label}-{suffix}");
+    let alignment_audit = format!("audit-wa-p32-{label}-{suffix}");
+    let finding_audit = format!("audit-tf-p32-{label}-{suffix}");
+
+    sqlx::query(
+        "INSERT INTO audit_events (id, tenant_id, actor_id, action, subject_type, subject_id)
+         VALUES ($1, 'hikmah-pilot-erbil', 'ops-1', 'test.seed', 'word_alignment', $2),
+                ($3, 'hikmah-pilot-erbil', 'ops-1', 'test.seed', 'tajweed_finding', $4)",
+    )
+    .bind(&alignment_audit)
+    .bind(&alignment_id)
+    .bind(&finding_audit)
+    .bind(&finding_id)
+    .execute(pool)
+    .await
+    .unwrap();
+
+    sqlx::query(
+        "INSERT INTO word_alignments
+           (id, tenant_id, session_id, word_id, heard_text, start_ms, end_ms, confidence, status,
+            model_version_id, audit_event_id)
+         VALUES ($1, 'hikmah-pilot-erbil', $2, $3, 'heard', 0, 100, 0.9, 'matched', 'model-v0.3', $4)",
+    )
+    .bind(&alignment_id)
+    .bind(session_id)
+    .bind(word_id)
+    .bind(&alignment_audit)
+    .execute(pool)
+    .await
+    .unwrap();
+
+    // `$6::float8::numeric` — a bare f64 bind against a `numeric` column fails to encode.
+    sqlx::query(
+        "INSERT INTO tajweed_findings
+           (id, tenant_id, alignment_id, rule, severity, confidence, explanation, review_status,
+            source_refs, model_version_id, audit_event_id)
+         VALUES ($1, 'hikmah-pilot-erbil', $2, 'Makhraj', 'warning', $3::float8::numeric,
+                 'the throat letter drifted', $4, $5::jsonb, 'model-v0.3', $6)",
+    )
+    .bind(&finding_id)
+    .bind(&alignment_id)
+    .bind(confidence)
+    .bind(review_status)
+    .bind(sources)
+    .bind(&finding_audit)
+    .execute(pool)
+    .await
+    .unwrap();
+
+    finding_id
+}
+
+/// Create an empty session owned by `learner-1`, and return its id.
+async fn seed_session_for(router: &axum::Router, checksum: &str) -> String {
+    let created = send_json(
+        router,
+        Method::POST,
+        "/v1/recitation-sessions",
+        Some("hikmah-pilot-erbil"),
+        Some("learner"),
+        json!({
+            "learnerId": "learner-1",
+            "quranRef": {"surahNumber": 1, "ayahStart": 1, "ayahEnd": 7, "display": "Al-Fatihah 1:1-7"},
+            "sourceChecksum": format!("fnv1a32:{checksum}"),
+            "modelVersion": "model-v0.3", "language": "ckb",
+            "mode": "guided-recite", "practicePlanId": "fatihah-mastery-v1",
+            "consent": {"audioRetention": "discard", "anonymizedLearning": true,
+                        "externalAsrProcessing": false, "guardianApproved": true,
+                        "consentVersion": "pilot-v1"}
+        }),
+    )
+    .await;
+    read_json::<Value>(created).await["id"]
+        .as_str()
+        .unwrap()
+        .to_string()
+}
+
+/// P3.2 — a learner receives the EXISTENCE of a withheld finding, never its content.
+///
+/// The route's own doc comment used to argue that returning everything was safe because "a COUNT of
+/// pending notes is not a judgement about the recitation". The argument was sound; the code did not
+/// implement it. It shipped `rule`, `severity`, `explanation` and `wordId` — the judgement itself —
+/// and left the withholding to `canShowLearnerFacingAiOutput` in the client. That is a display
+/// choice, not a control: `curl` with the learner's own token read every unreviewed AI opinion about
+/// their recitation.
+///
+/// Three of the four ways a finding fails the gate get a row each, so no one row can carry the test.
+#[tokio::test]
+#[ignore = "requires live Postgres"]
+async fn learner_gets_withheld_findings_redacted_and_staff_get_them_intact() {
+    let state = test_state();
+    let router = platform_router_with_rate_limit(test_state(), false);
+    let session_id = seed_session_for(&router, "p32redact").await;
+
+    const SOURCED: &str = r#"[{"id":"s1","title":"Scholar Board","citation":"policy"}]"#;
+
+    // Clears the gate: reviewed, confident, sourced.
+    let visible = seed_finding_for_gate(
+        &state.pool,
+        &session_id,
+        "ok",
+        "1:1:1",
+        "teacher-reviewed",
+        0.90,
+        SOURCED,
+    )
+    .await;
+    // Fails on STATUS — raw model output no human has looked at.
+    let unreviewed = seed_finding_for_gate(
+        &state.pool,
+        &session_id,
+        "ai",
+        "1:1:2",
+        "ai-suggested",
+        0.95,
+        SOURCED,
+    )
+    .await;
+    // Fails on PROVENANCE — reviewed, but nothing stands behind it.
+    let unsourced = seed_finding_for_gate(
+        &state.pool,
+        &session_id,
+        "nosrc",
+        "1:1:3",
+        "teacher-reviewed",
+        0.90,
+        "[]",
+    )
+    .await;
+    // Fails on CONFIDENCE — reviewed and sourced, but below the shared floor.
+    let low = seed_finding_for_gate(
+        &state.pool,
+        &session_id,
+        "low",
+        "1:1:4",
+        "teacher-reviewed",
+        0.50,
+        SOURCED,
+    )
+    .await;
+
+    let response = send_json(
+        &router,
+        Method::GET,
+        &format!("/v1/recitation-sessions/{session_id}/tajweed-findings"),
+        Some("hikmah-pilot-erbil"),
+        Some("learner"),
+        json!({}),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = read_json::<Vec<Value>>(response).await;
+
+    let by_id = |id: &str| -> Value {
+        body.iter()
+            .find(|f| f["id"] == id)
+            .unwrap_or_else(|| panic!("finding {id} is missing from the learner's response"))
+            .clone()
+    };
+
+    // The approved one arrives whole — withholding everything would be safe and useless.
+    let shown = by_id(&visible);
+    assert_eq!(shown["withheld"], json!(false));
+    assert_eq!(shown["rule"], json!("Makhraj"));
+    assert_eq!(shown["explanation"], json!("the throat letter drifted"));
+    assert_eq!(shown["wordId"], json!("1:1:1"));
+    assert_eq!(shown["sources"].as_array().unwrap().len(), 1);
+
+    for (label, id) in [
+        ("unreviewed", &unreviewed),
+        ("unsourced", &unsourced),
+        ("low-confidence", &low),
+    ] {
+        let f = by_id(id);
+        // Present, so the panel can still say notes are waiting for a teacher.
+        assert_eq!(
+            f["withheld"],
+            json!(true),
+            "{label} must be marked withheld"
+        );
+        assert!(
+            f["reviewStatus"].as_str().is_some_and(|s| !s.is_empty()),
+            "{label} keeps its review status — that is the part the learner may know"
+        );
+        // And nothing that is a judgement about the recitation.
+        for field in ["rule", "severity", "explanation", "wordId"] {
+            assert_eq!(
+                f[field],
+                json!(""),
+                "{label} leaked `{field}` to the learner"
+            );
+        }
+        assert_eq!(f["confidence"], json!(0.0), "{label} leaked a confidence");
+        assert_eq!(f["sources"], json!([]), "{label} leaked its sources");
+    }
+
+    // Staff must see everything: reviewing the unreviewed ones is the teacher queue's whole job.
+    let staff = send_json(
+        &router,
+        Method::GET,
+        &format!("/v1/recitation-sessions/{session_id}/tajweed-findings"),
+        Some("hikmah-pilot-erbil"),
+        Some("teacher"),
+        json!({}),
+    )
+    .await;
+    assert_eq!(staff.status(), StatusCode::OK);
+    let staff_body = read_json::<Vec<Value>>(staff).await;
+    let staff_view = staff_body
+        .iter()
+        .find(|f| f["id"] == json!(unreviewed.as_str()))
+        .expect("staff must see the unreviewed finding");
+    assert_eq!(
+        staff_view["explanation"],
+        json!("the throat letter drifted"),
+        "a teacher cannot review a finding whose text was redacted from them"
+    );
+    assert_eq!(
+        staff_view["withheld"],
+        json!(true),
+        "`withheld` means the same thing to staff: still not visible to the learner"
+    );
+}
+
+/// P3.2 — fixture data. `0006_seed_internal.sql` plants `finding-seed-1`, which is
+/// `teacher-reviewed`, sourced and 0.84 confident — it CLEARS the learner gate. That is fine only
+/// because it is anchored to the seed session; the thing that must never happen is a real learner's
+/// session picking up demo findings and presenting them as feedback on their own recitation.
+#[tokio::test]
+#[ignore = "requires live Postgres"]
+async fn seed_findings_cannot_surface_in_a_real_learners_session() {
+    let router = platform_router_with_rate_limit(test_state(), false);
+    let session_id = seed_session_for(&router, "p32fixture").await;
+
+    let response = send_json(
+        &router,
+        Method::GET,
+        &format!("/v1/recitation-sessions/{session_id}/tajweed-findings"),
+        Some("hikmah-pilot-erbil"),
+        Some("learner"),
+        json!({}),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = read_json::<Vec<Value>>(response).await;
+
+    assert!(
+        body.is_empty(),
+        "a fresh session must start with no findings at all, got {body:?}"
+    );
+    for f in &body {
+        assert!(
+            !f["id"].as_str().unwrap_or_default().contains("seed"),
+            "seed fixture data reached a real learner's session: {f:?}"
+        );
+    }
+}
+
+/// P3.2 — the gate on the PREDICT response, not only on the stored copy.
+///
+/// `POST /v1/ml/tajweed-findings:predict` is learner-reachable and returns freshly computed findings
+/// — `ai-suggested` by construction, so no human has seen any of them. They were being sent to the
+/// learner's device in full, with the browser trusted to hide them. `curl` with the learner's own
+/// token read every unreviewed judgement about their recitation; a client that forgot the gate
+/// displayed them.
+#[tokio::test]
+#[ignore = "requires live Postgres"]
+async fn ml_tajweed_predict_redacts_unreviewed_findings_for_a_learner() {
+    let mock_ml = spawn_mock_ml_tajweed("1:1:1").await;
+    let router =
+        platform_router_with_rate_limit(test_state().with_ml_inference_url(mock_ml), false);
+    let session_id = seed_session_for(&router, "p32predict").await;
+
+    let analysis = json!({
+        "sessionId": session_id,
+        "quranRef": {"surahNumber": 1, "ayahStart": 1, "ayahEnd": 7, "display": "Al-Fatihah 1:1-7"}
+    });
+
+    let learner = send_json(
+        &router,
+        Method::POST,
+        "/v1/ml/tajweed-findings:predict",
+        Some("hikmah-pilot-erbil"),
+        Some("learner"),
+        analysis.clone(),
+    )
+    .await;
+    assert_eq!(learner.status(), StatusCode::OK);
+    let body = read_json::<Value>(learner).await;
+
+    let findings = body["findings"].as_array().expect("findings array");
+    assert!(
+        !findings.is_empty(),
+        "the mock returns findings; the count must survive"
+    );
+    for f in findings {
+        assert_eq!(
+            f["withheld"],
+            json!(true),
+            "every ai-suggested finding is withheld"
+        );
+        for field in ["rule", "severity", "explanation", "wordId"] {
+            assert_eq!(
+                f[field],
+                json!(""),
+                "predict leaked `{field}` to the learner"
+            );
+        }
+        assert_eq!(f["confidence"], json!(0.0));
+        assert_eq!(f["sources"], json!([]));
+        // Kept: this is the part that lets the panel say a note is waiting, and it is not a
+        // judgement about the recitation.
+        assert_eq!(f["reviewStatus"], json!("ai-suggested"));
+    }
+
+    // Ops analysing the same session get it whole. NOT "teacher": proxy_ml allows only the session
+    // owner or ANALYSIS_STAFF (admin/ops), so a teacher is 403 here long before redaction matters.
+    let staff = send_json(
+        &router,
+        Method::POST,
+        "/v1/ml/tajweed-findings:predict",
+        Some("hikmah-pilot-erbil"),
+        Some("ops"),
+        analysis,
+    )
+    .await;
+    assert_eq!(staff.status(), StatusCode::OK);
+    let staff_body = read_json::<Value>(staff).await;
+    let first = &staff_body["findings"][0];
+    assert_eq!(
+        first["rule"],
+        json!("ghunnah"),
+        "staff cannot review what was redacted from them"
+    );
+    assert_eq!(
+        first["explanation"],
+        json!("Apply ghunnah on the noon sakina.")
+    );
 }

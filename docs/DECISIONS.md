@@ -1135,3 +1135,87 @@ real service and someone who can judge Quranic recitation; it is not a test this
        teacher should be able to do with one, and refusing those would trap it in the queue. The
        Flutter review card disables Accept for the same case rather than letting a teacher spend
        judgement on a 400.
+
+---
+
+## ADR-0028 — The learner gate is enforced on the wire, not in the client
+
+**Status:** Accepted
+**Date:** 2026-08-02
+**Context:** readiness-recovery-10-10 P3.2 (withheld-feedback and provenance tests)
+
+### Context
+
+The platform rule is that no AI judgement about someone's recitation reaches them before a human
+approves it, with a source and enough confidence. That rule had four implementations — TypeScript
+(`canShowLearnerFacingAiOutput`), Dart (`isLearnerVisible`), and two Rust/Node copies for agent runs
+— and `tests/contract/tajweed-gate-parity.test.mjs` kept the first two honest with each other.
+
+Every one of them was a **client-side filter**. Both learner-facing routes returned unreviewed
+findings in full — `rule`, `severity`, `explanation`, `wordId`, `confidence`, `sources` — and relied
+on the browser or the app to hide them:
+
+- `GET /v1/recitation-sessions/{id}/tajweed-findings`
+- `POST /v1/ml/tajweed-findings:predict` — where *everything* is `ai-suggested` by construction
+
+The route's own doc comment defended this: "a COUNT of pending notes is not a judgement about the
+recitation". The argument is right. The code did not implement it — it shipped the judgement and
+counted on the UI not to render it. `curl` with the learner's own token read all of it, and so would
+any client that forgot the rule. This is the same shape as ADR-0027 item 6, found the same way.
+
+### Decision
+
+Both routes redact server-side for a learner. A finding that does not clear the gate **keeps its row
+and its `reviewStatus`** and loses everything that is a judgement: `rule`, `severity`, `explanation`
+and `wordId` become empty, `confidence` becomes `0`, `sources` becomes `[]`, and `withheld` is
+`true`. Staff receive every finding intact — reviewing the unreviewed ones is the entire job.
+
+Three things fall out of that shape:
+
+1. **The count survives.** Both clients render "N notes are waiting for a teacher" from the array
+   length (`hasWithheldFindings` in apps/web, the `isLearnerVisible` filter in apps/flutter). Neither
+   needed changing.
+2. **The redacted values fail the client gate on their own merits.** `confidence: 0` and
+   `sources: []` are not placeholders — a client that has never heard of `withheld` still cannot
+   display one as feedback. The two gates cannot disagree about a redacted row.
+3. **`withheld` means the same thing to both audiences** — "not learner-visible" — so staff read it
+   as "still pending" rather than needing a second field.
+
+Each route's staff list is a single constant used for BOTH the authorization check and the redaction
+decision (`STAFF` in review.rs, `ANALYSIS_STAFF` in ml_proxy.rs). Two copies would drift, and the
+direction they would drift in is a learner reading an unreviewed judgement.
+
+`ANALYSIS_STAFF` is admin/ops and deliberately excludes teachers: `proxy_ml` never allowed a teacher
+to re-run the analyser against someone's session, and unifying the lists surfaced that a redaction
+branch written for `Teacher` was unreachable.
+
+### Consequences
+
+**Easier:** the rule is now enforced where it can be relied on. A new client — a script, a partner
+integration, a future native app — gets the safe behaviour without knowing the rule exists.
+
+**Harder:** four implementations became six. `tests/contract/tajweed-gate-parity.test.mjs` now pins
+the confidence floor across every one of them, recognising a gate by its provenance check following
+the floor, so all six read the same way. Writing a seventh in a different shape fails the test.
+
+**Newly proven:** `PARITY_THROUGH_SHELL=1` has existed since Phase 7 N2 and **no gate had ever run
+it** — every gate exercised the Rust binary, so a Node handler could disagree with its Rust original
+in any way and stay green. `verify.sh` now runs the ML-proxy parity suite through the Node port, and
+the mirror was confirmed by disabling it and watching the suite go red.
+
+### What this does NOT fix
+
+- **`POST /v1/ml/tajweed-findings:predict` analyses CANONICAL text, not the learner's audio.**
+  `predictTajweed` calls `getCanonicalWords(...)` and runs rule detection over the Quran passage. It
+  inspects no audio, no heard text, no pitch and no timing. What it returns is "rules that apply to
+  this passage", presented as findings about a recitation. Redaction makes the *withholding* honest;
+  it does not make the *feature* honest. That is P3.4–P3.6 and a scholar's call, not an engineering
+  one.
+- **The web client still submits a learner-controlled transcript** (`recognizedText` in
+  apps/web/src/App.tsx) which becomes persisted alignments and measured progress. The Flutter path
+  derives it server-side; the web path does not.
+- **The gateway does not forward `audioRetention`** to ml-inference, so a "teacher review" or
+  "training opt-in" choice is not honoured downstream.
+
+All three were found while closing this and are recorded here rather than fixed here, because each
+is a product or architectural decision rather than a bug with an obvious right answer.

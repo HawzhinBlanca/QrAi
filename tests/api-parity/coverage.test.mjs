@@ -106,7 +106,7 @@ test("every ported entry points at a parity file that exists and names its Rust 
   }
 });
 
-test("the ported count matches the approved scope: 33", () => {
+test("the ported count matches the approved scope: 36", () => {
   // Scope B was approved for exactly 26 incident-class tests (plan.md §4). Growing the suite is
   // good — but it should be a visible decision, not a number that drifts.
   //
@@ -129,6 +129,15 @@ test("the ported count matches the approved scope: 33", () => {
   //
   // 32 -> 33 (2026-08-02, ADR-0027 item 6): the unsourced-acceptance refusal. It is the server-side
   // half of a rule the client was enforcing alone, and its message is wire contract.
-  assert.equal(coverage.totals.ported, 33);
+  //
+  // 33 -> 35 (2026-08-02, P3.2): withheld-feedback redaction and the fixture-data boundary. Same
+  // shape as item 6 and found the same way — a rule the CLIENTS were enforcing alone while the
+  // response carried the unreviewed judgement to the learner's device. A black-box test is the only
+  // kind that can tell those two apart, so these are not optional coverage either.
+  //
+  // 35 -> 36 (2026-08-02, P3.2): the redaction on POST /v1/ml/tajweed-findings:predict. This one is
+  // ALSO run through the Node port (verify.sh's "api parity THROUGH the Node port" line), because
+  // that route has a Node handler holding its own copy of the learner rule.
+  assert.equal(coverage.totals.ported, 36);
   assert.equal(coverage.totals["deferred-to-phase-7"], 5);
 });
