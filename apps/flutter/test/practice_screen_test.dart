@@ -209,5 +209,32 @@ void main() {
     // only then calls the factory. If this ever fails, that ordering has regressed.
     expect(built, isNull, reason: 'a recorder existed despite the OS refusing the microphone');
   });
+
+  testWidgets('a transport failure leaks no errno, address or URI', (WidgetTester tester) async {
+    // Measured against a dead server, `ApiException.message` is:
+    //   request did not reach the server: ClientException with SocketException: Connection refused
+    //   (OS Error: Connection refused, errno = 61), address = 127.0.0.1, port = 59493, uri=http://…
+    // That used to be interpolated straight into the screen.
+    final ApiClient dead = ApiClient(
+      baseUrl: Uri.parse('http://127.0.0.1:8080'),
+      tokenProvider: () async => null,
+      httpClient: MockClient((http.Request _) async =>
+          throw ApiException(ApiErrorKind.offline,
+              'request did not reach the server: SocketException: Connection refused '
+              '(OS Error: Connection refused, errno = 61), address = 127.0.0.1, port = 59493')),
+    );
+
+    await tester.pumpWidget(host(dead, (RealtimeTicket _) => SpyRecorder()));
+    await tapKey(tester, 'consent-guardian');
+    await tapKey(tester, 'practice-toggle');
+
+    final String shown = statusText(tester)!;
+    expect(shown, contains('Could not start'));
+    // The learner is told what it means for them, in the same words every other screen uses.
+    expect(shown, contains("You're offline"));
+    for (final String leak in <String>['errno', 'address =', 'port =', 'SocketException', 'uri=']) {
+      expect(shown, isNot(contains(leak)), reason: '$leak reached the learner');
+    }
+  });
 }
 

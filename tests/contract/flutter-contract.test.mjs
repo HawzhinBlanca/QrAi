@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { globSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
@@ -186,6 +186,7 @@ for (const [dartClass, schemaName] of Object.entries(MODELS)) {
 // model to disagree about. A contract test that only checks what comes BACK checks half the wire.
 
 const client = readFileSync(join(repoRoot, "apps/flutter/lib/src/api/api_client.dart"), "utf8");
+const flutterRootForLeakScan = join(repoRoot, "apps/flutter");
 
 /** Every `_post('/path', <String, Object?>{ 'k': … })` in the client, as {path, keys}. */
 function postedBodies() {
@@ -223,6 +224,45 @@ for (const { path, keys } of postedBodies()) {
     assert.deepEqual(unknown, [], `the client sends ${JSON.stringify(unknown)}, undeclared on ${path}`);
   });
 }
+
+// ── no exception text on a learner's screen ─────────────────────────────────────────────────────
+// Three times now the same shape has shipped: an exception interpolated into a string a learner
+// reads. `privacy_screen.dart` showed `ApiException(ApiErrorKind.server, 502): audio erasure
+// service unavailable`; `practice_screen.dart` showed a SocketException with `errno`, an internal
+// address and port, and the full URI. Each was fixed where it was found and the sibling was missed.
+//
+// So the rule is pinned instead of remembered. Every learner-facing string goes through
+// `messageFor`, which maps an `ApiErrorKind` to words a person can act on. `api_client.dart` is the
+// one file allowed to interpolate — it AUTHORS the message that the rest of the app must not show.
+//
+// A regression pin for a known shape, not a general proof: a new way to spell the same mistake
+// would slip past. The behavioural cases in `apps/flutter/test/` are the load-bearing ones.
+
+test("no learner-facing string interpolates an exception", () => {
+  const offenders = [];
+  const files = globSync("**/*.dart", { cwd: join(flutterRootForLeakScan, "lib/src") }).sort();
+  assert.ok(files.length > 5, "the glob found nothing; this test would pass vacuously");
+
+  for (const rel of files) {
+    const src = readFileSync(join(flutterRootForLeakScan, "lib/src", rel), "utf8");
+    // Scoped to files that can actually render. `models.dart` and `api_client.dart` AUTHOR
+    // exception messages — `'expected objects in $what, got ${e.runtimeType}'` is a
+    // FormatException's own text, not something a learner sees — and neither imports Flutter, so
+    // neither can put anything on a screen. Deriving the exemption from that fact rather than from
+    // a filename list means a new non-UI helper is covered without being remembered.
+    if (!src.includes("package:flutter/")) continue;
+    // `$e`, `${e}`, `${e.message}`, `${error}` … inside a quoted string.
+    for (const m of src.matchAll(/'[^'\n]*\$\{?(e|err|error|ex)(\.message)?\}?[^'\n]*'/g)) {
+      offenders.push(`${rel}: ${m[0].trim().slice(0, 70)}`);
+    }
+  }
+  assert.deepEqual(
+    offenders,
+    [],
+    `these put exception text where a learner can read it:\n  ${offenders.join("\n  ")}\n` +
+      `Use messageFor(e) — see privacy_screen.dart and practice_screen.dart.`,
+  );
+});
 
 // ── platform permission declarations ────────────────────────────────────────────────────────────
 // Same family as everything above — what the client DECLARES against what it actually does — so it

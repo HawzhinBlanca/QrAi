@@ -15,6 +15,7 @@ import 'package:flutter/material.dart';
 
 import '../api/api_client.dart';
 import '../api/models.dart';
+import '../shell/load_state.dart';
 import 'consent_gate.dart';
 import 'streaming_recorder.dart';
 
@@ -157,11 +158,22 @@ class _PracticeScreenState extends State<PracticeScreen> {
     } on CaptureNotPermitted catch (e) {
       setState(() => _status = _refusalMessage(e.reason));
     } on ApiException catch (e) {
-      setState(() => _status = 'Could not start: ${e.message}');
-    } on Object catch (e) {
+      // `messageFor`, NOT `e.message`. The latter carries the transport's own words, and measured
+      // against a dead server that is:
+      //   request did not reach the server: ClientException with SocketException: Connection
+      //   refused (OS Error: Connection refused, errno = 61), address = 127.0.0.1, port = 59493,
+      //   uri=http://127.0.0.1:8083/v1/quran/surahs
+      // errno, an internal address and port, in front of a child. `privacy_screen.dart` was fixed
+      // for exactly this and the fix was not carried across; every learner-facing screen now goes
+      // through the same mapping.
+      setState(() => _status = 'Could not start. ${messageFor(e)}');
+    } on Object catch (_) {
       // Includes a gateway that refused the ticket. Shown, never swallowed — a practice session
       // that silently is not recording is the failure a learner discovers only afterwards.
-      setState(() => _status = 'Could not start: $e');
+      //
+      // The detail is deliberately dropped rather than interpolated: there is nowhere safe to put
+      // it in a learner-facing screen, and the thing they need is that recording did not start.
+      setState(() => _status = 'Could not start. Something went wrong on this device.');
     } finally {
       if (mounted) setState(() => _busy = false);
     }
