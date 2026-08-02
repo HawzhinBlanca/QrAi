@@ -47,7 +47,12 @@ export function aotAbis(entries) {
  * build can be in, and the caller decides whether it matters.
  */
 export function parseSignerDn(output) {
-  const found = output.match(/Signer #1 certificate DN:\s*(.+)/);
+  // Two formats, because apksigner versions disagree and BOTH are in play here:
+  //   build-tools 36 (macOS dev machine):  "Signer #1 certificate DN: C=US, …"
+  //   the GitHub runner's SDK:             "V2 Signer: certificate DN: C=US, …"
+  // Matching only the first is what made the android job red on its first run while the build
+  // itself was fine — the artifact was correctly signed and the reader could not read it.
+  const found = output.match(/(?:Signer #\d+|V\d+ Signer:)\s+certificate DN:\s*(.+)/);
   return found ? found[1].trim() : null;
 }
 

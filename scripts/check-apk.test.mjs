@@ -64,7 +64,21 @@ test("isDebugSigned does NOT flag a real signing identity", () => {
   assert.equal(isDebugSigned("C=IQ, O=Debug Studios, CN=QrAi Release"), false);
 });
 
-test("parseSignerDn reads the DN from real apksigner output", () => {
+test("parseSignerDn reads BOTH apksigner output formats", () => {
+  // These two are verbatim from the two apksigners this project actually runs against, and they
+  // disagree. Handling only the first made CI red on a correctly-signed artifact.
+  const runnerFormat = [
+    "V2 Signer: certificate DN: C=US, O=Android, CN=Android Debug",
+    "V2 Signer: certificate SHA-256 digest: 75860d735df094ee3452a3da46cf23db",
+  ].join("\n");
+  assert.equal(parseSignerDn(runnerFormat), "C=US, O=Android, CN=Android Debug");
+  assert.equal(
+    parseSignerDn("V3 Signer: certificate DN: C=IQ, O=QrAi, CN=QrAi Release"),
+    "C=IQ, O=QrAi, CN=QrAi Release",
+  );
+});
+
+test("parseSignerDn reads the build-tools 36 output format", () => {
   const output = [
     "Verifies",
     "Verified using v1 scheme (JAR signing): false",
