@@ -106,13 +106,18 @@ test("every ported entry points at a parity file that exists and names its Rust 
   }
 });
 
-test("the ported count matches the approved scope: 28", () => {
+test("the ported count matches the approved scope: 29", () => {
   // Scope B was approved for exactly 26 incident-class tests (plan.md §4). Growing the suite is
   // good — but it should be a visible decision, not a number that drifts.
   //
   // 26 -> 28 (2026-08-01, specs/privacy-job-404/ PJ2): the two privacy-job 404 tests. That is what
   // "a visible decision" means in practice — this line had to be edited, in the same commit, by
   // someone who could say which tests and why.
-  assert.equal(coverage.totals.ported, 28);
+  //
+  // 28 -> 29 (2026-08-02, ADR-0027): teacher_decision_promotes_the_finding_and_edited_promotes_nothing.
+  // A teacher decision now UPDATEs tajweed_findings.review_status, in Rust and in the Node port. A
+  // port that recorded the review and skipped the promotion would pass every other assertion in
+  // db-endpoints.test.mjs, so this one is not optional coverage — it is the behaviour.
+  assert.equal(coverage.totals.ported, 29);
   assert.equal(coverage.totals["deferred-to-phase-7"], 5);
 });

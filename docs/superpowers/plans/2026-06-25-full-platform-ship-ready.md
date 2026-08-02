@@ -1,5 +1,12 @@
 # Quran AI Full Platform Ship-Ready Implementation Plan
 
+> **Historical planning record — superseded for release decisions on 2026-07-25.**
+> This document preserves prior plans and evidence only. Its completion labels and
+> readiness assertions are not proof for the current candidate. Do not use it to
+> declare the app engineering-ship-ready or launch-ready. The authoritative
+> release record is `specs/readiness-recovery-10-10/tasks.md` and its
+> candidate-bound evidence requirements.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Ship a full-platform institution pilot where learners complete a calm mastery recitation loop backed by real ML alignment/tajweed feedback, teacher/scholar review, privacy controls, and smoke-tested managed-cloud infrastructure.

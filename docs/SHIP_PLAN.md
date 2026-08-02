@@ -1,5 +1,12 @@
 # SHIP PLAN — QrAi to 10/10, A → Z
 
+> **Historical planning record — superseded for release decisions on 2026-07-25.**
+> This document preserves prior plans and evidence only. Its completion labels and
+> readiness assertions are not proof for the current candidate. Do not use it to
+> declare the app engineering-ship-ready or launch-ready. The authoritative
+> release record is `specs/readiness-recovery-10-10/tasks.md` and its
+> candidate-bound evidence requirements.
+
 > **What this is.** The complete, ordered plan from today's state to a genuinely finished,
 > 10/10 launch: best-in-class learner UX, honest UI everywhere, reliability at every point,
 > and a production deployment a school pilot can trust. Grounded in a 7-agent recon

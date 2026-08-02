@@ -171,6 +171,58 @@ test("POST /v1/teacher-reviews records a review against a real finding", async (
   assert.ok(res.body.auditEventId, "a review is an accountable act — it must carry its audit row");
 });
 
+/**
+ * ADR-0027 — the decision reaches the finding.
+ *
+ * integration.rs:4076 — teacher_decision_promotes_the_finding_and_edited_promotes_nothing
+ *
+ * Black-box, against whichever implementation is under test, which is the point: `review.rs` and
+ * `node-api/routes/review.mjs` both promote, and a port that recorded the review without promoting
+ * would pass every other assertion in this file while quietly leaving the teacher's decision
+ * without effect.
+ *
+ * Each case SETS the starting status first rather than relying on the seed, so the three are
+ * order-independent and do not inherit whatever the tests above left behind.
+ */
+test("POST /v1/teacher-reviews promotes the finding, and `edited` promotes nothing", async () => {
+  const [finding] = await queryJson("SELECT id FROM tajweed_findings ORDER BY id LIMIT 1");
+  assert.ok(finding, "0006_seed_internal.sql must have seeded a tajweed finding");
+
+  const statusOf = async () =>
+    (await queryJson("SELECT review_status FROM tajweed_findings WHERE id = $1", [finding.id]))[0]
+      .review_status;
+  const reset = () =>
+    queryJson("UPDATE tajweed_findings SET review_status = 'ai-suggested' WHERE id = $1", [
+      finding.id,
+    ]);
+  const decide = async (decision) => {
+    const res = await request(api.baseUrl, "/v1/teacher-reviews", {
+      method: "POST",
+      role: "teacher",
+      body: reviewBody({ findingId: finding.id, decision }),
+    });
+    assert.equal(res.status, 200, `${decision} was not recorded`);
+  };
+
+  await reset();
+  await decide("accepted");
+  assert.equal(await statusOf(), "teacher-reviewed", "accepted must clear the learner gate's status term");
+
+  await reset();
+  await decide("rejected");
+  assert.equal(await statusOf(), "blocked", "rejected must be distinguishable from unreviewed");
+
+  await reset();
+  await decide("edited");
+  assert.equal(
+    await statusOf(),
+    "ai-suggested",
+    "edited has nowhere to store the rewrite, so promoting would publish the original wording",
+  );
+
+  await reset();
+});
+
 test("POST /v1/teacher-reviews cannot forge authorship by supplying another teacherId", async () => {
   // review.rs binds the author to the ACTOR, never to the caller-supplied field — the authorship
   // forgery fixed in 1675d62. Sending admin-1 while acting as teacher-1 must not be honoured.

@@ -17,7 +17,7 @@
 | **Learning progress** | Postgres `learner_progress` (SM-2 spaced-repetition state) | Per-learner mastery/scheduling. |
 | **Tajweed findings** | Postgres `tajweed_findings` | Assessment of the learner's recitation. |
 | **Audit events** | Postgres `audit_events` | Actor id + action for accountability. |
-| **Agent-run records** | Postgres `agent_runs` (`goal` and `trace` JSON) | **Open right-to-erasure gap:** the current checkout has no `learner_id` column or privacy-delete cascade for this table. Learner identifiers may occur in free text/JSON, which is not a safe erasure key. A new versioned migration must add a tenant-scoped nullable `learner_id`, agents/API writers must populate it for individual runs, and privacy export/delete must use that structured key. Until that work and its CI migration wiring are complete, agent-run data prevents a full deletion-readiness claim. |
+| **Agent-run records** | Postgres `agent_runs` (`goal`, `trace`, and nullable structured `learner_id`) | The agent-run API accepts and persists `learner_id` for learner-specific runs; privacy export/delete enumerates and removes these rows by tenant + learner key. Cohort-level runs may omit the key. The service deliberately does not infer an individual from free text/JSON, so any legacy or unstructured record must not be represented as erased for a learner without a structured link. |
 
 ## 2. Who can access it (isolation)
 
@@ -40,11 +40,14 @@
 
 - **Erasure:** `POST /v1/privacy/delete` runs a single tenant-scoped transaction that cascades
   teacher_reviews → tajweed_findings → word_alignments → audio_chunks/alignment_runs → tickets →
-  sessions → consent_records, **and** calls ml-inference `/v1/privacy/delete` to erase the raw audio
-  blobs first (`erase_ml_audio`, `services/platform-api/src/handlers/privacy.rs`). An ML failure aborts
-  with the DB untouched — no "success while audio survives". It does **not** yet erase
-  learner-linked `agent_runs`; see the open gap in §1.
-- **Access/portability:** a privacy **export** endpoint returns the subject's data.
+  sessions → consent records → pilot sessions/invitations → structured learner-linked `agent_runs`,
+  **and** calls ml-inference `/v1/privacy/delete` to erase raw audio blobs first
+  (`erase_ml_audio`, `services/platform-api/src/handlers/privacy.rs`). An ML failure aborts with the
+  DB untouched — no "success while audio survives". The same structured agent-run key is included in
+  privacy export; the integration suite proves both target deletion and preservation of another
+  learner's record.
+- **Access/portability:** a privacy **export** endpoint returns the subject's data, including
+  structured learner-linked agent-run record identifiers.
 
 ## 5. Children's data (COPPA / age) — decisions the lawyer must make
 

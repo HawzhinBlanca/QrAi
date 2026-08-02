@@ -1,5 +1,12 @@
 # Quran AI — 10/10 True Implementation Plan
 
+> **Historical planning record — superseded for release decisions on 2026-07-25.**
+> This document preserves prior plans and evidence only. Its completion labels and
+> readiness assertions are not proof for the current candidate. Do not use it to
+> declare the app engineering-ship-ready or launch-ready. The authoritative
+> release record is `specs/readiness-recovery-10-10/tasks.md` and its
+> candidate-bound evidence requirements.
+
 **Goal:** Transform from text-processing demo (4.2/10) to real recitation intelligence platform (10/10).
 
 **Principle:** Zero stubs. Zero fake data. Zero mock imports. Everything real, everything proven.

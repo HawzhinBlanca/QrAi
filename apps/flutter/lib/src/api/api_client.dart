@@ -120,12 +120,13 @@ class ApiClient {
   /// review to another user — even a cross-tenant one. It is sent because the struct demands a
   /// field, not because it decides anything.
   ///
-  /// ── What this does NOT do ──────────────────────────────────────────────────────────────────────
-  /// It records the decision in `teacher_reviews` and writes an audit event. It does **not** change
-  /// the finding's `reviewStatus`: no code path in platform-api updates `tajweed_findings`
-  /// (verified — `grep "UPDATE tajweed_findings"` finds nothing). So an accepted finding stays
-  /// `ai-suggested` and remains withheld from the learner. `docs/readiness/TRUE_READINESS.md`
-  /// records the same gap. The review screen says so rather than implying the learner will see it.
+  /// ── What a decision does ───────────────────────────────────────────────────────────────────────
+  /// Since ADR-0027 the handler promotes the finding in the SAME transaction as the review row and
+  /// the audit event: `accepted` -> `teacher-reviewed`, `rejected` -> `blocked`, `edited` ->
+  /// unchanged (the rewrite has nowhere to live, so promoting would publish the original wording).
+  ///
+  /// Promotion is necessary, not sufficient. `canShowLearnerFacingAiOutput` also requires at least
+  /// one source and confidence >= 0.82, so accepting a sourceless finding still leaves it withheld.
   Future<TeacherReview> submitTeacherReview({
     required String findingId,
     required String teacherId,

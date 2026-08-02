@@ -1,5 +1,12 @@
 # ROAD TO #1 — Agent Task Backlog
 
+> **Historical planning record — superseded for release decisions on 2026-07-25.**
+> This document preserves prior plans and evidence only. Its completion labels and
+> readiness assertions are not proof for the current candidate. Do not use it to
+> declare the app engineering-ship-ready or launch-ready. The authoritative
+> release record is `specs/readiness-recovery-10-10/tasks.md` and its
+> candidate-bound evidence requirements.
+
 **Strategy of record** (from the July 2026 architecture audit + market research): QrAi will not beat
 Tarteel head-on in consumer hifz. It wins two empty categories: **(1) the Quran-learning platform
 for Kurdish speakers** and **(2) the AI-feedback + teacher-in-the-loop madrasa platform**. Every

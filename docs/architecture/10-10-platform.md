@@ -21,10 +21,10 @@
   bcrypt, JWT), recitation sessions, learner progress (real SM-2 spaced repetition), privacy
   export/delete (with ML-service audio erasure), teacher reviews, scholar approvals, agent-run
   recording, eval-run lookup, audit events, and realtime ticket issuance. Tenant isolation is
-  enforced by Postgres RLS on every tenant-owned table. Privacy deletion does **not** yet cover
-  learner-linked `agent_runs`: the current schema lacks a structured learner key, so a versioned
-  migration plus writer/cascade/export coverage remains release-critical. See
-  `docs/DATA_INVENTORY.md` §1.
+  enforced by Postgres RLS on every tenant-owned table. Migration 0018 adds a structured optional
+  `agent_runs.learner_id`; the agent-run API can persist it and privacy export/deletion use it for
+  learner-linked runs. Cohort-level or legacy runs without that structured key are not attributed
+  by free-text inference. See `docs/DATA_INVENTORY.md` §1.
 - `services/realtime-gateway`: Rust/Tokio/Axum realtime gateway — ticket-authenticated (HMAC,
   single-use, tenant-bound) WebSocket audio ingress, origin-checked (CSWSH-resistant), bounded
   per-session channel with backpressure, forwards chunks to ml-inference, metrics endpoint.
@@ -47,8 +47,8 @@
   place.
 - `infra/sql`: Postgres schema, full Quran seed, tenant RLS policies (every tenant-owned table),
   restricted app role, learner-progress RLS, eval-run tenant isolation, superuser-only RLS bypass
-  guard, per-tenant email uniqueness, and an open requirement for the `agent_runs.learner_id`
-  erasure-support column.
+  guard, per-tenant email uniqueness, and migration 0018's structured agent-run learner key for
+  privacy export/delete.
 - `scripts/verify.sh`: canonical local/CI gate — Rust fmt/clippy, TS typecheck, TS/Rust/Node
   tests, live Postgres integration tests when reachable, production build, and web bundle secret
   scan.

@@ -4,9 +4,10 @@
 ///
 ///  * **the wire** — a decision reaches `POST /v1/teacher-reviews` with the right body, and the
 ///    server's answer is what gets displayed; and
-///  * **the honesty** — the screen does not imply a decision released anything to a learner, because
-///    it did not. Nothing in platform-api updates `tajweed_findings.review_status`, so a reviewed
-///    finding is still pending and must still look pending.
+///  * **the honesty** — the screen states what a decision actually did, in both directions. Since
+///    ADR-0027 accepting DOES release a note to the learner, so the pre-ADR wording ("unchanged")
+///    would now understate it; and promotion is necessary but not sufficient, so claiming a plain
+///    "released" would overstate it. Both failures are asserted against.
 library;
 
 import 'dart:convert';
@@ -151,10 +152,10 @@ void main() {
     expect(body['teacherId'], 'teacher-1');
   });
 
-  testWidgets('the recorded decision says the status is UNCHANGED', (WidgetTester tester) async {
-    // The claim this test defends: nothing in platform-api updates tajweed_findings.review_status,
-    // so a screen that reported "released to the learner" — or just quietly removed the row —
-    // would be telling a teacher their evening's work reached someone. It did not.
+  testWidgets('the recorded decision names what it did, and the audit id', (WidgetTester tester) async {
+    // ADR-0027: accepting promotes the finding to `teacher-reviewed`, so the wording must not
+    // repeat the pre-ADR claim that nothing reaches the learner — and must not overclaim either,
+    // because promotion is necessary, not sufficient (sources and the 0.82 floor still apply).
     await pump(tester, clientFor(<http.Request>[]));
 
     await tester.tap(find.byKey(const ValueKey<String>('review-accept-finding-1')));
@@ -164,11 +165,29 @@ void main() {
     expect(recorded, findsOneWidget);
     final String text = (tester.widget(recorded) as Text).data!;
     expect(text, contains('accepted'));
+    expect(text, contains('cleared for learners'));
+    expect(text, contains('sources and confidence permitting'),
+        reason: 'promotion alone does not make a finding visible');
     expect(text, contains('audit-9'), reason: 'the audit id is what makes a decision traceable');
-    expect(text.toLowerCase(), contains('unchanged'));
+    expect(text.toLowerCase(), isNot(contains('unchanged')),
+        reason: 'the pre-ADR-0027 wording; a teacher would be told their work did nothing');
 
-    // Still in the queue, because as far as the platform is concerned it is still unreviewed.
+    // Still on screen: the list is not refetched, so the teacher can see the tap registered.
     expect(find.byKey(const ValueKey<String>('review-finding-finding-1')), findsOneWidget);
+  });
+
+  testWidgets('rejecting says blocked, and an unknown verdict does not guess',
+      (WidgetTester tester) async {
+    // The `_ => ...` branch covers `edited` and anything this client has never heard of. Describing
+    // an unknown verdict's effect would be a guess presented to a teacher as fact.
+    await pump(tester, clientFor(<http.Request>[]));
+    await tester.tap(find.byKey(const ValueKey<String>('review-reject-finding-1')));
+    await tester.pumpAndSettle();
+    final String text = (tester.widget(
+            find.byKey(const ValueKey<String>('review-recorded-finding-1'))) as Text)
+        .data!;
+    expect(text, contains('rejected'));
+    expect(text, contains('blocked'));
   });
 
   testWidgets('a failed submission says so and does not claim a decision', (WidgetTester tester) async {

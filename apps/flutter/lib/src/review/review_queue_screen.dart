@@ -1,20 +1,26 @@
 /// The teacher's review queue — the Flutter counterpart of `apps/web/src/components/TeacherSurface.tsx`.
 ///
-/// ── What a decision here actually does, today ───────────────────────────────────────────────────
-/// It writes a row in `teacher_reviews` and an audit event. It does **not** change the finding's
-/// `reviewStatus`: nothing in platform-api updates `tajweed_findings` (verified —
-/// `grep "UPDATE tajweed_findings" services/platform-api/src` returns nothing), and no database
-/// trigger does it either. So an accepted finding stays `ai-suggested`, stays below
-/// `canShowLearnerFacingAiOutput`, and the learner keeps seeing "waiting for a teacher to review".
+/// ── What a decision here actually does ─────────────────────────────────────────────────────────
+/// Since ADR-0027, `create_teacher_review` promotes the finding in the same transaction as the
+/// review row and the audit event:
 ///
-/// `docs/readiness/TRUE_READINESS.md` already records this: "a learner gets the *scaffold*, not the
-/// *coach*". This screen therefore does two things that a normal review console would not:
+///   accepted -> `teacher-reviewed`   rejected -> `blocked`   edited -> unchanged
 ///
-///   * it says so, once, at the top — a teacher spending an evening on this queue is entitled to
-///     know their decisions are not yet reaching anyone; and
-///   * a reviewed finding STAYS in the queue, showing the decision that was recorded against it.
-///     Removing it would be the more satisfying interaction and a false one: as far as the platform
-///     is concerned the finding is still unreviewed, and a refresh would bring it back anyway.
+/// Promotion is necessary but NOT sufficient in two separate ways, and the notice says both:
+///
+///  1. `canShowLearnerFacingAiOutput` also requires a source and confidence >= 0.82, so an accepted
+///     but unsourced finding is still withheld — the card flags that case before it is decided.
+///  2. **Nothing learner-facing reads the promoted row yet.** The learner's screen calls
+///     `POST /v1/ml/tajweed-findings:predict`, which re-analyses the recitation and returns fresh
+///     `ai-suggested` findings; it never reads `tajweed_findings`. Nor does production ever write
+///     that table — only `0006_seed_internal.sql` does. ADR-0027 §Consequences records both gaps.
+///
+/// A teacher whose evening's work cannot reach anyone yet is entitled to be told so plainly.
+///
+/// A decided finding stays on screen for the rest of the session, showing what was recorded and its
+/// audit id, rather than vanishing the instant it is tapped. On the next load it is gone:
+/// `pendingForReview` excludes both approved and blocked. That is deliberate — a row that disappears
+/// under your finger is how a teacher loses track of whether the tap registered.
 ///
 /// ── Why there is no "edited" button ─────────────────────────────────────────────────────────────
 /// `TeacherDecision` has three variants and this offers two. `edited` means the teacher rewrote the
@@ -61,9 +67,11 @@ class ReviewQueueScreen extends StatefulWidget {
 class _ReviewQueueScreenState extends State<ReviewQueueScreen> {
   LoadState<List<TajweedFinding>> _queue = const Loading<List<TajweedFinding>>();
 
-  /// Decisions recorded in THIS session, by finding id. The server will not reflect them (see the
-  /// library comment), so holding them here is the only way the screen can show a teacher what they
-  /// have already done without claiming the finding's status changed.
+  /// Decisions recorded in THIS session, by finding id.
+  ///
+  /// The list on screen is not refetched after a decision, so this is what lets a decided card show
+  /// what happened to it. Refetching instead would make the row vanish mid-tap — correct, and the
+  /// fastest way for a teacher to lose track of whether the tap registered.
   final Map<String, TeacherReview> _recorded = <String, TeacherReview>{};
 
   /// The finding currently being submitted, so only its own buttons disable.
@@ -182,13 +190,27 @@ class _WhatThisDoesNotice extends StatelessWidget {
         borderRadius: BorderRadius.circular(8),
       ),
       child: Text(
-        'Decisions are recorded and audited, but they do not yet release feedback to the learner — '
-        'the platform does not change a finding’s status when you review it. Your work is saved; '
-        'the learner still sees “waiting for a teacher to review”.',
+        'Accepting clears a note for learners; rejecting blocks it; editing leaves it pending. '
+        'Every decision is audited. Note that learners cannot see these notes yet even once '
+        'accepted — their screen re-analyses each recitation instead of reading reviewed notes. '
+        'Your decisions are recorded and will apply when that is connected.',
         style: TextStyle(color: theme.colorScheme.onSecondaryContainer),
       ),
     );
   }
+}
+
+/// What to tell the teacher a decision did. Mirrors ADR-0027's mapping; a pure function so the
+/// wording is asserted directly rather than through three widget pumps.
+String _recordedSummary(TeacherReview review) {
+  final String effect = switch (review.decision) {
+    'accepted' => 'cleared for learners (sources and confidence permitting)',
+    'rejected' => 'blocked',
+    // Includes `edited` AND any decision string this client does not recognise: describing an
+    // unknown verdict's effect would be a guess, and the audit id below is the honest pointer.
+    _ => 'recorded — this note stays pending',
+  };
+  return 'Recorded: ${review.decision} — $effect. Audit ${review.auditEventId}.';
 }
 
 class _FindingCard extends StatefulWidget {
@@ -269,8 +291,7 @@ class _FindingCardState extends State<_FindingCard> {
             const SizedBox(height: 12),
             if (recorded != null)
               Text(
-                'Recorded: ${recorded.decision}. Audit ${recorded.auditEventId}. '
-                'The finding’s status is unchanged.',
+                _recordedSummary(recorded),
                 key: ValueKey<String>('review-recorded-$key'),
                 style: TextStyle(color: theme.colorScheme.primary),
               )
