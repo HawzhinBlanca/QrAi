@@ -96,6 +96,18 @@ class _PracticeScreenState extends State<PracticeScreen> {
       ).refusalFor(state);
       if (refusal != null) throw CaptureNotPermitted(refusal);
 
+      // The OS prompt comes BEFORE anything is created, for the same reason the consent check comes
+      // before it. A learner who declines the microphone was otherwise left with a session row
+      // carrying their consent and a live gateway ticket, for a recitation that never happened —
+      // the guardian bug one layer down. `consent_gate.dart`'s ordering rule is unchanged: consent
+      // first, THEN the OS prompt.
+      //
+      // `gate.start` asks again below, and that redundancy is deliberate — the gate owns the
+      // decision. `hasPermission()` returns the stored answer without re-prompting.
+      if (!await widget.micPermission()) {
+        throw const CaptureNotPermitted(CaptureRefusal.micPermissionDenied);
+      }
+
       final Consent consent = Consent(
         audioRetention: _retention,
         anonymizedLearning: _anonymizedLearning,

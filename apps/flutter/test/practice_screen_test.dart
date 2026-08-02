@@ -192,15 +192,19 @@ void main() {
     // The branch that was unreachable while `requestMicPermission` was hardcoded to true. Consent
     // passes here; the OS is what refuses, and the learner is told which of the two it was.
     SpyRecorder? built;
+    final List<http.Request> seen = <http.Request>[];
     await tester.pumpWidget(
-      host(stubClient(<http.Request>[]), (RealtimeTicket _) => built = SpyRecorder(),
-          micGranted: false),
+      host(stubClient(seen), (RealtimeTicket _) => built = SpyRecorder(), micGranted: false),
     );
 
     await tapKey(tester, 'consent-guardian');
     await tapKey(tester, 'practice-toggle');
 
     expect(statusText(tester), contains('microphone'));
+    // Nothing was CREATED either. The OS prompt now comes before the session, so a learner who
+    // declines the microphone leaves behind no session row carrying their consent and no live
+    // gateway ticket — the same assertion the guardian case makes, one layer down.
+    expect(seen, isEmpty, reason: 'a session or ticket was created despite the OS refusing the mic');
     // A recorder IS constructed before the permission check?  No: the gate asks the OS first and
     // only then calls the factory. If this ever fails, that ordering has regressed.
     expect(built, isNull, reason: 'a recorder existed despite the OS refusing the microphone');
