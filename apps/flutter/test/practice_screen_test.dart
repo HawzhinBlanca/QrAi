@@ -31,41 +31,46 @@ class SpyRecorder implements AudioRecorder {
   Future<void> dispose() async {}
 }
 
-/// Answers both POSTs the flow makes, and keeps every request body for inspection.
-ApiClient stubClient(List<http.Request> seen) {
-  final MockClient mock = MockClient((http.Request req) async {
-    seen.add(req);
-    if (req.url.path == '/v1/recitation-sessions') {
-      return http.Response(
-        jsonEncode(<String, Object?>{
-          'id': 'session-1',
-          'tenantId': 'tenant-1',
-          'learnerId': 'learner-1',
-          'quranRef': <String, Object?>{
-            'surahNumber': 1,
-            'ayahStart': 1,
-            'ayahEnd': 7,
-            'display': 'Surah 1 1-7',
-          },
-          'reviewStatus': 'draft',
-        }),
-        200,
-        headers: <String, String>{'content-type': 'application/json'},
-      );
-    }
+/// The two responses the flow needs, shared by the stub client and by tests that drive their own.
+http.Response stubResponseFor(http.Request req) {
+  if (req.url.path == '/v1/recitation-sessions') {
     return http.Response(
       jsonEncode(<String, Object?>{
-        'token': 'rt_v1.session-1.tenant-1.learner-1.false.9999999999.n.${'0' * 64}',
-        'sessionId': 'session-1',
+        'id': 'session-1',
         'tenantId': 'tenant-1',
         'learnerId': 'learner-1',
-        'expiresAt': '9999999999',
-        'allowedSampleRates': <int>[16000],
-        'externalAsrProcessing': false,
+        'quranRef': <String, Object?>{
+          'surahNumber': 1,
+          'ayahStart': 1,
+          'ayahEnd': 7,
+          'display': 'Surah 1 1-7',
+        },
+        'reviewStatus': 'draft',
       }),
       200,
       headers: <String, String>{'content-type': 'application/json'},
     );
+  }
+  return http.Response(
+    jsonEncode(<String, Object?>{
+      'token': 'rt_v1.session-1.tenant-1.learner-1.false.9999999999.n.${'0' * 64}',
+      'sessionId': 'session-1',
+      'tenantId': 'tenant-1',
+      'learnerId': 'learner-1',
+      'expiresAt': '9999999999',
+      'allowedSampleRates': <int>[16000],
+      'externalAsrProcessing': false,
+    }),
+    200,
+    headers: <String, String>{'content-type': 'application/json'},
+  );
+}
+
+/// Answers both POSTs the flow makes, and keeps every request body for inspection.
+ApiClient stubClient(List<http.Request> seen) {
+  final MockClient mock = MockClient((http.Request req) async {
+    seen.add(req);
+    return stubResponseFor(req);
   });
   return ApiClient(
     baseUrl: Uri.parse('http://127.0.0.1:8080'),
@@ -287,6 +292,44 @@ void main() {
 
     // No exception. `tester.takeException()` returns null when nothing was thrown.
     expect(tester.takeException(), isNull, reason: 'setState ran on a disposed State');
+  });
+  testWidgets('P0: a SUCCESS that lands after dispose does not leave the mic running',
+      (WidgetTester tester) async {
+    // The sibling of the late-FAILURE case above, and the one that mattered. The session and ticket
+    // calls SUCCEED — this is the happy path — but slowly, and the learner switches tabs while they
+    // are in flight. `_gate` used to be assigned only AFTER start(), so dispose() found null,
+    // start() then opened the microphone, and the early `!mounted` return dropped the only
+    // reference to it. Recording, on a child's device, with nothing able to stop it.
+    final Completer<void> inFlight = Completer<void>();
+    SpyRecorder? built;
+
+    final ApiClient slowSuccess = ApiClient(
+      baseUrl: Uri.parse('http://127.0.0.1:8080'),
+      tokenProvider: () async => null,
+      httpClient: MockClient((http.Request req) async {
+        await inFlight.future;
+        return stubResponseFor(req);
+      }),
+    );
+
+    await tester.pumpWidget(
+      host(slowSuccess, (RealtimeTicket _) => built = SpyRecorder()),
+    );
+    await tapKey(tester, 'consent-guardian');
+    await tester.tap(find.byKey(const ValueKey<String>('practice-toggle')));
+    await tester.pump();
+
+    // The learner navigates away while the session/ticket calls are still open.
+    await tester.pumpWidget(const MaterialApp(home: Scaffold(body: SizedBox())));
+    inFlight.complete();
+    await tester.pumpAndSettle();
+
+    expect(tester.takeException(), isNull);
+    expect(built, isNotNull, reason: 'the recorder was never constructed; the race is untested');
+    expect(built!.started, isTrue, reason: 'start() did not run; the race is untested');
+    // The assertion the P0 is about.
+    expect(built!.stopped, isTrue,
+        reason: 'the microphone was left running with no owner after the screen was disposed');
   });
 }
 
