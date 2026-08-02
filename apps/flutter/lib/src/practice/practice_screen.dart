@@ -147,13 +147,31 @@ class _PracticeScreenState extends State<PracticeScreen> {
         requestMicPermission: widget.micPermission,
       );
 
+      // ── Ownership BEFORE the microphone can open ──────────────────────────────────────────────
+      // `_gate` used to be assigned inside the setState BELOW, after `start()`. Between the two
+      // sat `if (!mounted) return;`, and that was a P0: if the learner switched tabs while the
+      // session and ticket calls were in flight — they SUCCEED, this is the happy path — then
+      // `dispose()` ran while `_gate` was still null, so its `stop()` was a no-op; `start()` then
+      // opened the microphone and the socket; and the early return dropped the only reference to
+      // the recorder. A child's microphone, recording, with nothing left able to stop it.
+      //
+      // Assigned here, plainly and not through setState (this is not a UI change and the widget
+      // may already be gone), so `dispose()` can always find it.
+      _gate = gate;
+
       // The same state the pre-check used. The gate re-evaluates it rather than trusting the check
       // above — that redundancy is the whole point of `consent_gate.dart` owning the decision.
       await gate.start(state);
 
-      if (!mounted) return;
+      if (!mounted) {
+        // The screen went away WHILE the microphone was opening. `dispose()` has already run and
+        // found a gate whose recorder did not exist yet, so its stop() did nothing. Nothing else
+        // will ever stop this one.
+        _gate = null;
+        await gate.stop();
+        return;
+      }
       setState(() {
-        _gate = gate;
         _session = session;
         _status = 'Recording ${session.quranRef.display}.';
       });
