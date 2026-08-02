@@ -262,21 +262,11 @@ class SurahScreen extends StatelessWidget {
 /// "today" for an unparseable value is exactly the kind of invented fact this codebase refuses.
 String friendlyReviewDate(String? iso) {
   if (iso == null) return 'Not scheduled yet';
-  final DateTime? parsed = DateTime.tryParse(iso);
+  // One parser, shared with `LearnerProgress.nextReviewAtUtc` — see `parseServerTimestamp`. When it
+  // refuses, the server's own string is shown UNCHANGED rather than guessed: a wrong date on a
+  // revision schedule is worse than an ugly one.
+  final DateTime? parsed = parseServerTimestamp(iso);
   if (parsed == null) return iso;
-
-  // `tryParse` is not a validator: it ROLLS OVER out-of-range components rather than refusing them.
-  // Measured — `DateTime.tryParse('2026-13-45')` returns 14 February 2027, not null. Rendering that
-  // would put a confidently wrong revision date in front of a learner with nothing downstream able
-  // to tell. So the parse has to round-trip: if the calendar fields the server sent are not the
-  // fields that came back, this is not a date we can read, and the raw value is shown instead.
-  final Match? ymd = RegExp(r'^(\d{4})-(\d{2})-(\d{2})').firstMatch(iso);
-  if (ymd == null) return iso;
-  final bool roundTrips = int.parse(ymd[1]!) == parsed.year &&
-      int.parse(ymd[2]!) == parsed.month &&
-      int.parse(ymd[3]!) == parsed.day;
-  if (!roundTrips) return iso;
-
   return DateFormat.yMMMMd().add_jm().format(parsed.toLocal());
 }
 

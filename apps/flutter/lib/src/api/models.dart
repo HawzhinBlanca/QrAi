@@ -40,6 +40,32 @@ List<Map<String, dynamic>> _objects(Object? v, String what) {
   }).toList(growable: false);
 }
 
+/// Parse a server timestamp, or null if it cannot be read as the calendar date it claims to be.
+///
+/// ── `parse`/`tryParse` are not validators ───────────────────────────────────────────────────────
+/// Both ROLL OVER out-of-range components instead of refusing them. Measured:
+/// `DateTime.tryParse('2026-13-45')` returns **14 February 2027** — month 13 becomes January of the
+/// next year, day 45 walks into February. `DateTime.parse` does the same; it only throws on input it
+/// cannot lex at all.
+///
+/// On a revision schedule that is a confidently wrong date with nothing downstream able to notice,
+/// so the parse has to round-trip: if the calendar fields the server sent are not the fields that
+/// came back, this is not a date we can read.
+///
+/// One function, used by both the model accessor and the display path. They were two, and the two
+/// disagreed — the display path was guarded and the accessor was not.
+DateTime? parseServerTimestamp(String? iso) {
+  if (iso == null) return null;
+  final DateTime? parsed = DateTime.tryParse(iso);
+  if (parsed == null) return null;
+  final Match? ymd = RegExp(r'^(\d{4})-(\d{2})-(\d{2})').firstMatch(iso);
+  if (ymd == null) return null;
+  final bool roundTrips = int.parse(ymd[1]!) == parsed.year &&
+      int.parse(ymd[2]!) == parsed.month &&
+      int.parse(ymd[3]!) == parsed.day;
+  return roundTrips ? parsed : null;
+}
+
 /// One entry of `GET /v1/quran/surahs`.
 class SurahSummary {
   const SurahSummary({
@@ -171,8 +197,10 @@ class LearnerProgress {
   final int totalSessions;
   final String? nextReviewAt;
 
-  DateTime? get nextReviewAtUtc =>
-      nextReviewAt == null ? null : DateTime.parse(nextReviewAt!).toUtc();
+  /// Null when there is no review scheduled OR when the server's string does not round-trip —
+  /// see `parseServerTimestamp`. It used to be a bare `DateTime.parse`, which both threw on junk
+  /// and silently rolled `2026-13-45` over to February 2027.
+  DateTime? get nextReviewAtUtc => parseServerTimestamp(nextReviewAt)?.toUtc();
 }
 
 /// A tajweed finding as the learner may see it.
