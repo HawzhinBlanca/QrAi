@@ -57,6 +57,23 @@ PARTIAL LOSS: FAIL — half the recitation was acknowledged and never stored
     drops=1 ->  9 distinct ->  9/12 stored
     drops=2 ->  6 distinct ->  6/12 stored
 
+  THE SAME COUNTER ALSO PRODUCES THE TIMESTAMP — which makes this worse than an id collision
+
+    :1108   sequence * state.config.chunk_duration_ms          <- the chunk's startMs
+
+    `sequence` restarting at zero restarts the SESSION CLOCK at zero. Connection 2's first chunk is
+    not merely stored under connection 1's key; it claims to have been spoken at the same moment.
+
+    That matters because ordering is by startMs, not by id (services/ml-inference assembles a
+    session's audio sorted by startMs — see session-transcript.test.mjs, whose whole point is that
+    filename order is arbitrary and spoken order is not). So making ids unique WITHOUT fixing the
+    clock would stop the overwriting and leave a session whose chunks all claim overlapping
+    timestamps: the recitation would be reassembled interleaved rather than in the order it was
+    spoken, and the aligner would score a scrambled recitation.
+
+    A per-connection nonce in the id is therefore NOT a sufficient fix. The gateway needs the
+    session's high-water mark to survive the connection that produced it.
+
   WHAT IT MEANS FOR A LEARNER
     A learner whose connection blips mid-recitation OVERWRITES THEIR OWN EARLIER AUDIO. Not a
     dropped packet — the first part of the recitation is destroyed by the second, under the same
@@ -70,9 +87,17 @@ PARTIAL LOSS: FAIL — half the recitation was acknowledged and never stored
   THE FIX IS NOT A ONE-LINER, which is why it is not in this commit
     `chunk_id` is not a local detail. It is the filename in audio storage, it is what
     `privacy_jobs.audio_object_keys_deleted` records for right-to-erasure, and it appears in the
-    ack contract. Making it unique per connection (a ticket nonce, a connection counter, or seeding
-    `sequence` from the session's high-water mark) has to keep all three working, and the erasure
-    path is the one that must not be got wrong twice.
+    ack contract. And because the same counter produces startMs, the fix cannot be a per-connection
+    nonce — the session's chunk high-water mark has to OUTLIVE the connection that produced it,
+    which is a design choice with real options and real trade-offs:
+
+      - an in-process map on Gateway keyed by session_id (needs eviction, like the ticket cache)
+      - Redis, which the gateway already uses for session-state reconciliation
+      - the client supplying its own resume index, which hands storage keys and the session clock
+        to the client and should probably be refused on that basis alone
+
+    Picking among those, keeping the erasure key contract intact, and proving it with the drill is
+    a piece of work, not a patch. The erasure path is the one that must not be got wrong twice.
 
   ── three wrong hypotheses, recorded on purpose ──
   Before the proxy, this file successively blamed (1) the detached forwarder not draining on a clean
