@@ -2,7 +2,7 @@
   "$comment": "PAR6 \u2014 every Rust integration test accounted for. coverage.test.mjs FAILS if a #[test] in services/platform-api/tests/integration.rs has no entry here. If that is why your build is red: add an entry with a status of ported | deferred-to-phase-7 | mechanical-remainder. Do not delete the check. rustLine is informational and NOT asserted \u2014 it drifts on every edit above it, and a gate that fails on unrelated line shifts gets disabled.",
   "scope": "specs/api-parity-suite/plan.md option B (approved 2026-07-31)",
   "totals": {
-    "ported": 30,
+    "ported": 32,
     "mechanical-remainder": 46,
     "deferred-to-phase-7": 5
   },
@@ -490,6 +490,18 @@
     {
       "rustTest": "tajweed_findings_persist_and_the_learner_can_read_their_own",
       "rustLine": 4270,
+      "status": "ported",
+      "parityFile": "db-endpoints.test.mjs"
+    },
+    {
+      "rustTest": "finalize_persists_a_server_derived_alignment_and_refuses_without_consent",
+      "rustLine": 4541,
+      "status": "ported",
+      "parityFile": "db-endpoints.test.mjs"
+    },
+    {
+      "rustTest": "finalize_without_a_transcript_stores_nothing",
+      "rustLine": 4609,
       "status": "ported",
       "parityFile": "db-endpoints.test.mjs"
     }

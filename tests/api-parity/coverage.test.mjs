@@ -106,7 +106,7 @@ test("every ported entry points at a parity file that exists and names its Rust 
   }
 });
 
-test("the ported count matches the approved scope: 30", () => {
+test("the ported count matches the approved scope: 32", () => {
   // Scope B was approved for exactly 26 incident-class tests (plan.md §4). Growing the suite is
   // good — but it should be a visible decision, not a number that drifts.
   //
@@ -123,6 +123,9 @@ test("the ported count matches the approved scope: 30", () => {
   // covers, GET /v1/recitation-sessions/{id}/tajweed-findings, is the first learner-facing read of
   // recitation ANALYSIS — the boundary is ownership, not role, and a role-only check would let any
   // learner in the tenant read any other learner's mistakes.
-  assert.equal(coverage.totals.ported, 30);
+  //
+  // 30 -> 32 (2026-08-02, ADR-0027 item 5): the two finalize tests. That route decides what a
+  // person is recorded as having recited, so its ownership boundary is not optional coverage.
+  assert.equal(coverage.totals.ported, 32);
   assert.equal(coverage.totals["deferred-to-phase-7"], 5);
 });

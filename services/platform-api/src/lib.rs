@@ -205,6 +205,12 @@ pub fn platform_router_with_rate_limit(state: AppState, rate_limit: bool) -> Rou
         // The learner's own findings. `/v1/tajweed-findings` is the tenant-wide STAFF queue; this is
         // ownership-scoped, and it is what makes a promoted finding reachable by the person it is
         // about (ADR-0027 action item 4).
+        // Turns a gateway-streamed recitation into a reviewable one: transcript -> alignment ->
+        // persisted word_alignments, all server-side so the client never supplies the transcript.
+        .route(
+            "/v1/recitation-sessions/{id}/finalize",
+            axum::routing::post(handlers::recitation::finalize_session),
+        )
         .route(
             "/v1/recitation-sessions/{id}/tajweed-findings",
             axum::routing::get(handlers::review::list_session_tajweed_findings),

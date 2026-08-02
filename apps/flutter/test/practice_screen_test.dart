@@ -64,6 +64,18 @@ http.Response stubResponseFor(
   List<Map<String, Object?>>? findings,
   List<Map<String, Object?>>? stored,
 }) {
+  if (req.url.path.endsWith('/finalize')) {
+    return http.Response(
+      jsonEncode(<String, Object?>{
+        'sessionId': 'session-1',
+        'finalized': true,
+        'reason': 'consent-granted',
+        'persisted': 2,
+      }),
+      200,
+      headers: <String, String>{'content-type': 'application/json'},
+    );
+  }
   if (req.url.path.endsWith('/tajweed-findings')) {
     return http.Response(
       jsonEncode(stored ?? findings ?? <Map<String, Object?>>[stubFinding()]),
@@ -586,6 +598,59 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(find.textContaining('3 notes are waiting'), findsOneWidget);
+  });
+
+  testWidgets('finalise runs BEFORE the analysis, or every finding is unanchored',
+      (WidgetTester tester) async {
+    // A tajweed finding is persisted against a `word_alignments` row. Finalising is what creates
+    // those rows, so analysing first would leave every finding with nothing to anchor to: computed,
+    // shown to the learner as pending, and never written down for a teacher. The ORDER is the
+    // feature here, not the two calls.
+    final List<http.Request> seen = <http.Request>[];
+    await tester.pumpWidget(host(stubClient(seen), (RealtimeTicket _) => SpyRecorder()));
+
+    await tapKey(tester, 'consent-guardian');
+    await tapKey(tester, 'practice-toggle');
+    await tapKey(tester, 'practice-toggle');
+    await tester.pumpAndSettle();
+
+    final List<String> paths = seen.map((http.Request r) => r.url.path).toList();
+    final int finalize = paths.indexWhere((String p) => p.endsWith('/finalize'));
+    final int analyse = paths.indexOf('/v1/ml/tajweed-findings:predict');
+    final int read = paths.indexWhere((String p) => p.endsWith('/tajweed-findings'));
+
+    expect(finalize, isNonNegative, reason: 'the recitation was never finalised');
+    expect(analyse, isNonNegative, reason: 'the recitation was never analysed');
+    expect(finalize, lessThan(analyse), reason: 'analysing first leaves findings unanchored');
+    expect(analyse, lessThan(read), reason: 'reading before analysing returns last run\'s findings');
+  });
+
+  testWidgets('a finalise failure does not stop the learner seeing their pending notes',
+      (WidgetTester tester) async {
+    // Deliberately non-fatal: what is lost is the teacher's copy, not the learner's screen. A
+    // learner whose ML service is down must still be told their notes are waiting.
+    final MockClient mock = MockClient((http.Request req) async =>
+        req.url.path.endsWith('/finalize')
+            ? http.Response('{"error":"ML service unavailable"}', 502,
+                headers: <String, String>{'content-type': 'application/json'})
+            : stubResponseFor(req, stored: <Map<String, Object?>>[]));
+    await tester.pumpWidget(host(
+      ApiClient(
+        baseUrl: Uri.parse('http://127.0.0.1:8080'),
+        tokenProvider: () async => null,
+        httpClient: mock,
+      ),
+      (RealtimeTicket _) => SpyRecorder(),
+    ));
+
+    await tapKey(tester, 'consent-guardian');
+    await tapKey(tester, 'practice-toggle');
+    await tapKey(tester, 'practice-toggle');
+    await tester.pumpAndSettle();
+
+    expect(statusText(tester), 'Stopped. Your recitation was sent for review.');
+    expect(find.textContaining('waiting for a teacher'), findsOneWidget);
+    expect(tester.takeException(), isNull);
   });
 }
 

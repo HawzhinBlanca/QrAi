@@ -259,9 +259,23 @@ class _PracticeScreenState extends State<PracticeScreen> {
     if (!mounted) return;
     setState(() => _findings = const Loading<List<TajweedFinding>>());
     try {
-      // Analyse first: this is what computes the findings AND, server-side, persists them so a
-      // teacher can review them. Its own answer is always `ai-suggested` — it re-analyses rather
-      // than reading — so it can never tell a learner a finding was approved.
+      // Finalise FIRST. This is what turns the streamed audio into a transcript and a stored
+      // alignment; a tajweed finding anchors to an alignment, so analysing before this would leave
+      // every finding unanchored and unpersisted — computed, shown as pending, and gone.
+      //
+      // Deliberately not fatal. It answers `false` for a learner who declined external-ASR
+      // processing, and it can fail outright if the ML service is down. Either way the analysis
+      // below still runs and the panel still says how many notes are waiting; what is lost is the
+      // teacher's copy, not the learner's screen.
+      try {
+        await widget.client.finalizeSession(sessionId: session.id);
+      } on Object {
+        // Swallowed on purpose, and only here: the learner's own view is unaffected and correct.
+      }
+
+      // Analyse: this is what computes the findings AND, server-side, persists them so a teacher
+      // can review them. Its own answer is always `ai-suggested` — it re-analyses rather than
+      // reading — so it can never tell a learner a finding was approved.
       final List<TajweedFinding> computed = await widget.client.predictTajweed(
         sessionId: session.id,
         quranRef: session.quranRef,

@@ -1117,8 +1117,11 @@ Flutter client an alignment step is a separate piece of work and is action item 
 4. [x] Persist computed tajweed findings, and give a learner a route that reads their own session's
        persisted findings. Both landed 2026-08-02; the chain is covered end to end against live
        Postgres.
-5. [ ] Give the Flutter practice flow an alignment step, or have the gateway produce alignments.
-       Until then a Flutter session has nothing to anchor findings to and item 4 writes nothing
-       for it.
+5. [x] Give the Flutter practice flow an alignment step, or have the gateway produce alignments.
+       Done 2026-08-02 as the latter, on the owner's instruction. The gateway's audio is transcribed
+       where it already lands (`ml-inference /v1/session-transcript`) and
+       `POST /v1/recitation-sessions/{id}/finalize` derives and persists the alignment server-side.
+       The client supplies nothing about what was said — whoever supplies the recognised words
+       decides what the learner is recorded as having recited.
 6. [ ] Decide whether teacher acceptance should refuse a sourceless finding, as scholar approval
        does. Owner/scholar call.
