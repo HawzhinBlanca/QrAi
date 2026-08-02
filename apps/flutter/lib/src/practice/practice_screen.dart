@@ -158,7 +158,12 @@ class _PracticeScreenState extends State<PracticeScreen> {
         _status = 'Recording ${session.quranRef.display}.';
       });
     } on CaptureNotPermitted catch (e) {
-      setState(() => _status = _refusalMessage(e.reason));
+      // `mounted` on every failure path, not just the success one. The screen is removed from the
+      // tree when the learner switches tabs (`HomeShell` builds `tabs[_tab]`), so a request still
+      // in flight lands on a disposed State and Flutter throws
+      // "setState() called after dispose()". The success path at the top of this method already
+      // returns early on `!mounted`; these three did not.
+      if (mounted) setState(() => _status = _refusalMessage(e.reason));
     } on ApiException catch (e) {
       // `messageFor`, NOT `e.message`. The latter carries the transport's own words, and measured
       // against a dead server that is:
@@ -168,14 +173,16 @@ class _PracticeScreenState extends State<PracticeScreen> {
       // errno, an internal address and port, in front of a child. `privacy_screen.dart` was fixed
       // for exactly this and the fix was not carried across; every learner-facing screen now goes
       // through the same mapping.
-      setState(() => _status = 'Could not start. ${messageFor(e)}');
+      if (mounted) setState(() => _status = 'Could not start. ${messageFor(e)}');
     } on Object catch (_) {
       // Includes a gateway that refused the ticket. Shown, never swallowed — a practice session
       // that silently is not recording is the failure a learner discovers only afterwards.
       //
       // The detail is deliberately dropped rather than interpolated: there is nowhere safe to put
       // it in a learner-facing screen, and the thing they need is that recording did not start.
-      setState(() => _status = 'Could not start. Something went wrong on this device.');
+      if (mounted) {
+        setState(() => _status = 'Could not start. Something went wrong on this device.');
+      }
     } finally {
       if (mounted) setState(() => _busy = false);
     }

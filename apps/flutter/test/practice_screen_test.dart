@@ -5,6 +5,7 @@
 /// recorder exists — not after, and not by disabling a button.
 library;
 
+import 'dart:async';
 import 'dart:convert';
 
 import 'package:flutter/material.dart';
@@ -257,6 +258,35 @@ void main() {
     expect(shown, contains('Recording stopped'));
     // Never claims the recitation was delivered, because that is not known.
     expect(shown, isNot(contains('sent for review')));
+  });
+  testWidgets('a failure that lands after the screen is gone does not throw',
+      (WidgetTester tester) async {
+    // Reachable: HomeShell builds `tabs[_tab]`, so switching tabs disposes this screen. Tap Start,
+    // switch away while createRecitationSession is still in flight, and the catch block used to
+    // call setState on a disposed State — "setState() called after dispose()". The success path
+    // was guarded; the three failure paths were not.
+    final Completer<void> inFlight = Completer<void>();
+    final ApiClient slowFailure = ApiClient(
+      baseUrl: Uri.parse('http://127.0.0.1:8080'),
+      tokenProvider: () async => null,
+      httpClient: MockClient((http.Request _) async {
+        await inFlight.future;
+        throw ApiException(ApiErrorKind.offline, 'gone');
+      }),
+    );
+
+    await tester.pumpWidget(host(slowFailure, (RealtimeTicket _) => SpyRecorder()));
+    await tapKey(tester, 'consent-guardian');
+    await tester.tap(find.byKey(const ValueKey<String>('practice-toggle')));
+    await tester.pump();
+
+    // The learner navigates away while the request is still open.
+    await tester.pumpWidget(const MaterialApp(home: Scaffold(body: SizedBox())));
+    inFlight.complete();
+    await tester.pumpAndSettle();
+
+    // No exception. `tester.takeException()` returns null when nothing was thrown.
+    expect(tester.takeException(), isNull, reason: 'setState ran on a disposed State');
   });
 }
 
