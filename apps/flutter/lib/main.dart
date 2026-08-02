@@ -92,11 +92,16 @@ class QrAiApp extends StatelessWidget {
         useMaterial3: true,
       ),
       localizationsDelegates: GlobalMaterialLocalizations.delegates,
-      // Arabic and Sorani Kurdish resolve RTL through these. The reader sets `Directionality` on the
-      // canonical text itself regardless, because scripture must not depend on the app locale.
-      // The UI strings are still English: this app has no ARB bundle yet, and claiming otherwise by
-      // listing locales would be the decoration `FL7` was already too generous about.
-      supportedLocales: const <Locale>[Locale('en'), Locale('ar'), Locale('ckb')],
+      // ── English only, deliberately ────────────────────────────────────────────────────────────
+      // `ar` and `ckb` were listed here while every UI string in the app is English. That is not a
+      // harmless aspiration: Flutter RESOLVES against this list, so an Arabic device got an RTL
+      // layout full of English text — worse than the LTR English it would otherwise have had, and
+      // a support claim the app cannot honour.
+      //
+      // This list grows when an ARB bundle does, and `main_locales_test.dart` fails if it grows
+      // first. The mushaf is unaffected: it sets `Directionality` on the canonical text itself
+      // precisely so scripture never depends on the app locale.
+      supportedLocales: const <Locale>[Locale('en')],
       home: HomeShell(client: client, gatewayBase: gatewayBase, learnerId: learnerId),
     );
   }

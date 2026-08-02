@@ -46,6 +46,18 @@ jobs:
           workspaces: |
             services/realtime-gateway
             services/platform-api
+      # `verify.sh` SKIPS `dart analyze` and `flutter test` when the SDK is absent, and it says so
+      # loudly — but a skip on CI is not a pass. Every Dart fix merged before this step existed was
+      # proven only on the machine that wrote it. Installing the SDK here is what turns those into
+      # gate-enforced claims.
+      #
+      # Pinned to the version `apps/flutter/pubspec.yaml` requires, so CI and a developer's machine
+      # agree. A floating `stable` would let a Flutter release change the meaning of a green run.
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: "3.44.8"
+          channel: stable
+          cache: true
 
       # --- Bootstrap ---
       - run: pnpm install --frozen-lockfile

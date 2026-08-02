@@ -507,6 +507,20 @@ async def force_align(req: ForceAlignRequest):
         # align_words raises ValueError when the transcript needs more CTC tokens than the audio has
         # emission frames (transcript longer than the audio supports) — a client input problem, 400.
         raise HTTPException(status_code=400, detail="transcript is longer than the audio supports")
+    except ImportError:
+        # 501, not 500. `forced_align._load` imports `transformers` lazily and the shipped image
+        # deliberately does not install it (see Dockerfile) — so in that deployment this endpoint
+        # CANNOT work, ever. A 500 says "the server broke, a retry may help" and sends an operator
+        # looking for a fault; 501 says the capability is absent from this build, which is a
+        # decision someone made and can reverse.
+        logger.warning(
+            "force alignment unavailable: the alignment model's dependencies are not installed "
+            "in this image (see services/asr-inference/Dockerfile)"
+        )
+        raise HTTPException(
+            status_code=501,
+            detail="force alignment is not available in this deployment",
+        )
     except Exception:
         logger.exception("force alignment failed")
         raise HTTPException(status_code=500, detail="force alignment failed")
