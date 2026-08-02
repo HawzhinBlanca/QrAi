@@ -14,7 +14,9 @@ import { join } from "node:path";
 // run is hermetic — no accumulation across runs, no writes into the repo's audio-storage/.
 process.env.AUDIO_STORAGE_DIR = mkdtempSync(join(tmpdir(), "ml-inference-test-"));
 
-const { predictAlignment, predictTajweed, createEvalRun, getAuditEvents, safeStorageSegment, route } =
+const { predictAlignment,
+  transcribeSession,
+  wavFromPcm16, predictTajweed, createEvalRun, getAuditEvents, safeStorageSegment, route } =
   await import("./server.mjs");
 
 // Minimal mock of the http.IncomingMessage/ServerResponse pair route() needs. GET requests never
@@ -312,4 +314,75 @@ test("a real transcript still aligns normally — the fix does not blunt recogni
   });
   assert.equal(res.confidence, 1, "a correct recitation still scores 1");
   assert.ok(res.alignments.every((a) => a.status === "matched"));
+});
+
+// ── Session transcription from the gateway's stored chunks ──────────────────────────────────────
+
+test("wavFromPcm16 writes a header that DESCRIBES the samples and changes none of them", () => {
+  // The gateway forwards raw PCM16; the ASR service accepts only container formats. A wrong header
+  // is not a crash — the ASR reads the samples at the wrong rate and transcribes a recitation that
+  // sounds nothing like what was recorded.
+  const pcm = Buffer.from([0x01, 0x00, 0x02, 0x00, 0x03, 0x00]);
+  const wav = wavFromPcm16(pcm, 16000);
+
+  assert.equal(wav.toString("ascii", 0, 4), "RIFF");
+  assert.equal(wav.toString("ascii", 8, 12), "WAVE");
+  assert.equal(wav.readUInt16LE(20), 1, "audio format 1 = uncompressed PCM");
+  assert.equal(wav.readUInt16LE(22), 1, "mono");
+  assert.equal(wav.readUInt32LE(24), 16000, "sample rate");
+  assert.equal(wav.readUInt32LE(28), 16000 * 2, "byte rate = rate * channels * bytesPerSample");
+  assert.equal(wav.readUInt16LE(34), 16, "bits per sample");
+  assert.equal(wav.readUInt32LE(40), pcm.length, "data size must equal the PCM length");
+  assert.equal(wav.length, 44 + pcm.length, "44-byte header, then the samples verbatim");
+  assert.deepEqual(wav.subarray(44), pcm, "the samples must be byte-identical");
+});
+
+test("a 48kHz stream is described as 48kHz, not assumed to be 16k", () => {
+  // The rate comes from the chunk metadata. Hardcoding 16000 would make every other rate play back
+  // at the wrong speed and transcribe as gibberish.
+  const wav = wavFromPcm16(Buffer.alloc(4), 48000);
+  assert.equal(wav.readUInt32LE(24), 48000);
+  assert.equal(wav.readUInt32LE(28), 48000 * 2);
+});
+
+test("no ASR consent means no transcription, and the refusal is audited", async () => {
+  const tenantId = "test-transcript-denied";
+  const res = await transcribeSession({
+    tenantId,
+    learnerId: "learner-1",
+    sessionId: "s-denied",
+    consent: { externalAsrProcessing: false, guardianApproved: true },
+  });
+
+  assert.equal(res.transcribed, false);
+  assert.equal(res.reason, "consent-revoked-or-insufficient");
+  assert.deepEqual(res.recognizedText, [], "no words may be claimed");
+  const ev = lastEvent(tenantId, "privacy.external-asr.denied");
+  assert.ok(ev, "a refusal to process someone's audio is an accountable act");
+});
+
+test("consent is required to be SUPPLIED, not merely absent-and-assumed", async () => {
+  // The stored chunk metadata carries no consent — the gateway does not send any — so a caller that
+  // forgot to pass it must be refused rather than defaulted to permitted.
+  const res = await transcribeSession({
+    tenantId: "test-transcript-noconsent",
+    learnerId: "learner-1",
+    sessionId: "s",
+  });
+  assert.equal(res.transcribed, false);
+  assert.equal(res.reason, "consent-revoked-or-insufficient");
+});
+
+test("a session with no stored audio says so, rather than returning an empty transcript", async () => {
+  // "no-audio" and "the learner said nothing" are different facts, and only one of them is a
+  // statement about the recitation.
+  const res = await transcribeSession({
+    tenantId: "test-transcript-empty",
+    learnerId: "learner-1",
+    sessionId: "s-none",
+    consent: { externalAsrProcessing: true, guardianApproved: true },
+  });
+  assert.equal(res.transcribed, false);
+  assert.equal(res.reason, "no-audio");
+  assert.deepEqual(res.recognizedText, []);
 });
