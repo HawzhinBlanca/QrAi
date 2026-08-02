@@ -30,43 +30,62 @@ PARTIAL LOSS: FAIL — half the recitation was acknowledged and never stored
   Sampled at +0s, +1s, +2s, +5s and +10s with the gateway STILL RUNNING: 6 every time. This is not
   a teardown artifact and it is not a race that settles — the chunks never arrive.
 
-  The chunks were ACCEPTED, not rejected. The client counts only `ack.accepted === true` and
-  counted 12, so `forward_chunk` returned Ok for all of them and they entered the session's mpsc
-  channel. The forwarding task then delivered a subset and logged nothing about the rest — no
-  `ML service rejected`, no retry exhaustion, no backpressure counter.
+  ── ROOT CAUSE: chunk ids COLLIDE across reconnects, and storage silently overwrites ──────────
 
-  ── WHAT THE LOSS ACTUALLY TRACKS ───────────────────────────────────────────────────────────────
-  Varying ONLY the forced-drop count, everything else identical:
+  Nothing is lost in transit. A recording proxy between the gateway and ml-inference counted every
+  POST /v1/audio-chunks and saw all TWELVE. What it also saw was the ids:
 
-    drops  connections  stored   chunk ids stored
-      0         1        12/12   0000..0011      <- no loss at all
-      1         2         9/12   0000..0008
-      2         3         6/12   0000..0005
+    drops=2, ids the gateway forwarded, in order:
+      0000 0000 0000  0001 0001 0001  0002 0002 0002  0003 0004 0005
 
-  Two things follow, and the first corrects an earlier reading in this file:
+  Twelve chunks of DIFFERENT audio, six distinct ids. `services/realtime-gateway/src/lib.rs`:
 
-  1. A CLEAN CLOSE LOSES NOTHING. With no drops, one connection delivers all twelve. "The handler
-     returns before the detached forwarder drains" was the wrong explanation, and it was wrong in
-     the direction that would have sent someone to patch the close path.
+    :1101   let mut sequence = 0_u64;                          <- per CONNECTION
+    :1106   let chunk_id = format!("{session_id}-ws-{sequence:04}");
 
-  2. The loss is exactly 3 x drops, always at the TAIL of the session, and 3 is
-     REALTIME_CHAOS_DROP_AFTER_CHUNKS. So the count is coupled to the dropped connections, but the
-     chunks that go missing are the last ones sent on the FINAL connection — not the ones that were
-     in flight when the socket died.
+  `sequence` is declared inside the per-connection socket handler and restarts at zero on every
+  reconnect, while `session_id` is deliberately the SAME across reconnects — that is what makes it
+  one session. So connection 2's first chunk is handed the id connection 1's first chunk already
+  used, ml-inference stores chunks under `<chunkId>.bin`, and the later write silently replaces the
+  earlier audio.
 
-  That coupling is the actual thing to explain, and it is not explained yet. Something shared across
-  connections is consuming or discarding a fixed quantum per drop. The next step is tracing on the
-  forward path and on `try_send`, with the per-connection channel capacity in view — not a fourth
-  hypothesis written up as a cause.
+  The arithmetic falls straight out and matches every run: distinct ids = 12 - 3*drops, and
+  3 = REALTIME_CHAOS_DROP_AFTER_CHUNKS = how many ids each dropped connection burns through before
+  the next one starts reusing them from zero.
 
-  ── on the reliability of this measurement ──
-  Three earlier runs said 6/12, 6/12, then 0/12. The 0/12 was a HARNESS ARTIFACT: the gateway had
-  panicked at startup (ALLOW_INSECURE_DEFAULTS combined with METRICS_DEV_OPEN is refused) and the
-  client had connected to a stale gateway from the previous run, still holding the port and
-  forwarding into a deleted directory.
+    drops=0 -> 12 distinct -> 12/12 stored
+    drops=1 ->  9 distinct ->  9/12 stored
+    drops=2 ->  6 distinct ->  6/12 stored
 
-  Every run in the table above therefore uses a unique port pair, a fresh mktemp storage dir, and an
-  assertion that a gateway OF THAT RUN is listening before anything is measured.
+  WHAT IT MEANS FOR A LEARNER
+    A learner whose connection blips mid-recitation OVERWRITES THEIR OWN EARLIER AUDIO. Not a
+    dropped packet — the first part of the recitation is destroyed by the second, under the same
+    key, with an ack for both and no error anywhere. The stored metadata (startMs/endMs) is
+    replaced too, so what remains is not even a coherent prefix.
+
+    Everything downstream then behaves correctly on corrupt input: transcription assembles what is
+    there, and the aligner scores it against the FULL canonical passage. Words the learner did
+    recite are recorded as words they missed.
+
+  THE FIX IS NOT A ONE-LINER, which is why it is not in this commit
+    `chunk_id` is not a local detail. It is the filename in audio storage, it is what
+    `privacy_jobs.audio_object_keys_deleted` records for right-to-erasure, and it appears in the
+    ack contract. Making it unique per connection (a ticket nonce, a connection counter, or seeding
+    `sequence` from the session's high-water mark) has to keep all three working, and the erasure
+    path is the one that must not be got wrong twice.
+
+  ── three wrong hypotheses, recorded on purpose ──
+  Before the proxy, this file successively blamed (1) the detached forwarder not draining on a clean
+  close, (2) the socket handler returning early, (3) something shared consuming a fixed quantum per
+  drop. All three were plausible, none was true, and the first would have sent someone to patch the
+  close path. What settled it was not a better guess but an instrument: counting what actually
+  crossed the wire.
+
+  ── on the reliability of these measurements ──
+  An earlier run read 0/12 and was a HARNESS ARTIFACT: the gateway had panicked at startup
+  (ALLOW_INSECURE_DEFAULTS combined with METRICS_DEV_OPEN is refused) and the client had connected
+  to a stale gateway from a previous run, still holding the port. Every run quoted here uses a
+  unique port set, a fresh mktemp storage dir, and asserts a gateway OF THAT RUN is listening first.
 
 NOT FIXED IN THIS RUN, deliberately. A drain fix on a detached task is the kind of concurrency
 change that goes wrong when rushed at the end of a session. The reproduction is deterministic and
