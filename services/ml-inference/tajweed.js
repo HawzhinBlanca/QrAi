@@ -19,7 +19,7 @@ export function analyzeWord(wordId, word) {
   const normalized = word.replace(/\s+/g, "");
 
   // Madd Tabii
-  if (/َا/.test(word) || /ُو/.test(word) || /ِي/.test(word)) {
+  if (/\u064E\u0627/.test(word) || /\u064F\u0648/.test(word) || /\u0650\u064A/.test(word)) {
     findings.push({
       wordId, rule: "madd-tabii", arabicName: "مد طبيعي", category: "madd",
       severity: "practice",
@@ -39,7 +39,7 @@ export function analyzeWord(wordId, word) {
   }
 
   // Ghunnah
-  if (/نْ/.test(word) || /ن$/.test(word) || /[ًٌٍ]/.test(word)) {
+  if (/\u0646\u0652/.test(word) || /\u0646$/.test(word) || /[\u064B\u064C\u064D]/.test(word)) {
     findings.push({
       wordId, rule: "ghunnah", arabicName: "غنة", category: "ghunnah",
       severity: "practice",
@@ -97,14 +97,14 @@ export function analyzeAyah(ayahId, words) {
 
   // Inter-word rules
   for (let i = 0; i < words.length - 1; i++) {
-    const current = words[i].text.replace(/[ۖ-ۭ]+$/u, "");
+    const current = words[i].text.replace(/[\u06D6-\u06ED]+$/u, "");
     const next = words[i + 1].text;
-    const endsWithNoonSakin = /نْ?$/.test(current);
+    const endsWithNoonSakin = /\u0646\u0652?$/.test(current);
     // Tanween fath (ً) is almost always followed by a bare trailing alef in standard Uthmani
     // orthography (e.g. كِتَابًا) - the mark sits on the letter before the alef, not on the final
     // character, so it needs an optional trailing alef to match. Tanween damm/kasr (ٌ/ٍ) have no
     // trailing letter and already match without it.
-    const endsWithTanween = /[ًٌٍ]ا?$/.test(current);
+    const endsWithTanween = /[\u064D\u064C\u064B]\u0627?$/.test(current);
 
     if (endsWithNoonSakin || endsWithTanween) {
       const nextLetter = next.replace(/[\u064B-\u065F\u0670\u0640]/g, "").trim()[0];
