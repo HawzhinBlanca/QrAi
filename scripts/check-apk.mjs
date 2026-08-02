@@ -18,7 +18,7 @@
  * `--require-release` is what a publish pipeline runs. Without it this only reports the signer,
  * because CI has no keystore by design and a hard failure there would just be noise.
  */
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import { existsSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 
@@ -40,20 +40,36 @@ export function aotAbis(entries) {
 }
 
 /**
- * The Subject DN of the signing certificate.
+ * Pull the Subject DN out of `apksigner verify --print-certs` output.
+ *
+ * Returns null when there is no DN to find — an unsigned APK, or an apksigner whose output does not
+ * carry the line. Null is a legitimate answer, not an error: an unsigned artifact is a real state a
+ * build can be in, and the caller decides whether it matters.
+ */
+export function parseSignerDn(output) {
+  const found = output.match(/Signer #1 certificate DN:\s*(.+)/);
+  return found ? found[1].trim() : null;
+}
+
+/**
+ * The signing certificate's Subject DN, or `{ dn: null, raw }` if it cannot be read.
  *
  * Modern APKs use signature scheme v2/v3, which lives in the APK signing block rather than
- * META-INF — so unzipping and reading a .RSA finds nothing (measured). apksigner is the tool that
- * understands both.
+ * META-INF — unzipping and reading a .RSA finds nothing (measured). apksigner understands both.
+ *
+ * It does NOT throw on a non-zero exit. `apksigner verify` exits non-zero for an unsigned or
+ * unverifiable APK, and the first version of this script let that (and a missing DN) crash the CI
+ * step with no way to tell which had happened — the raw output was never captured, so the failure
+ * was undiagnosable from the log. Everything apksigner said now comes back with the answer.
  */
 export function signerDn(apk, apksigner = findApksigner()) {
-  const out = execFileSync(apksigner, ["verify", "--print-certs", apk], {
+  const result = spawnSync(apksigner, ["verify", "--print-certs", apk], {
     encoding: "utf8",
     maxBuffer: 16 << 20,
   });
-  const found = out.match(/Signer #1 certificate DN:\s*(.+)/);
-  if (!found) throw new Error(`apksigner printed no certificate DN for ${apk}`);
-  return found[1].trim();
+  if (result.error) return { dn: null, raw: `apksigner could not be run: ${result.error.message}` };
+  const raw = `${result.stdout ?? ""}${result.stderr ?? ""}`.trim();
+  return { dn: parseSignerDn(raw), raw, status: result.status };
 }
 
 /** Android's stock debug identity. Every SDK install generates the same DN. */
@@ -92,14 +108,23 @@ function main(argv) {
     process.exit(2);
   }
 
-  const entries = zipEntries(apk);
-  const abis = aotAbis(entries);
-  const dn = signerDn(apk);
-  const debugSigned = isDebugSigned(dn);
-
+  // AOT first, and printed before anything can go wrong reading the signature: it is the assertion
+  // this script exists for, and an unreadable signer must not hide it.
+  const abis = aotAbis(zipEntries(apk));
   console.log(`apk:        ${apk}`);
   console.log(`AOT (Dart): ${abis.length ? abis.join(", ") : "NONE — this is not a release build"}`);
-  console.log(`signer:     ${dn}${debugSigned ? "   ← DEBUG KEY, not distributable" : ""}`);
+
+  const { dn, raw } = signerDn(apk);
+  const debugSigned = dn !== null && isDebugSigned(dn);
+  console.log(
+    `signer:     ${dn ?? "UNKNOWN — apksigner reported no certificate"}` +
+      (debugSigned ? "   ← DEBUG KEY, not distributable" : ""),
+  );
+  if (dn === null) {
+    // Everything apksigner said, so a CI failure here is diagnosable from the log alone. The
+    // first version of this script threw with none of this and cost a full CI round-trip.
+    console.log(`\napksigner output:\n${raw || "(nothing)"}\n`);
+  }
 
   const problems = [];
   // An APK with no libapp.so is a debug artifact wearing a release name. Always a failure: the
@@ -107,10 +132,18 @@ function main(argv) {
   if (abis.length === 0) {
     problems.push("no lib/*/libapp.so — the Dart was not compiled ahead of time");
   }
+  // Only under --require-release. Without it this is a REPORT: CI holds no keystore by design, and
+  // an unreadable or absent signature there is expected, not a defect.
   if (requireRelease && debugSigned) {
     problems.push(
       "signed with the Android debug key. Play Console rejects this. " +
         "Create android/key.properties (docs/RELEASE_SIGNING.md) and rebuild.",
+    );
+  }
+  if (requireRelease && dn === null) {
+    problems.push(
+      "the signing certificate could not be read, so this artifact cannot be confirmed " +
+        "distributable. apksigner output is above.",
     );
   }
 
@@ -119,7 +152,13 @@ function main(argv) {
     for (const p of problems) console.error(`  ✗ ${p}`);
     process.exit(1);
   }
-  console.log(debugSigned ? "\nOK (compile check — NOT distributable)" : "\nOK (distributable)");
+  console.log(
+    dn === null
+      ? "\nOK (compile check — signature unread)"
+      : debugSigned
+        ? "\nOK (compile check — NOT distributable)"
+        : "\nOK (distributable)",
+  );
 }
 
 if (process.argv[1] && import.meta.url === `file://${process.argv[1]}`) {

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { DEBUG_CERT_DN, aotAbis, isDebugSigned } from "./check-apk.mjs";
+import { DEBUG_CERT_DN, aotAbis, isDebugSigned, parseSignerDn } from "./check-apk.mjs";
 
 /**
  * The parsing in `check-apk.mjs`, without an APK.
@@ -62,4 +62,26 @@ test("isDebugSigned does NOT flag a real signing identity", () => {
   assert.equal(isDebugSigned("CN=Hikmah Pilot Erbil, O=QrAi"), false);
   // "Debug" in an org name is not the debug KEY.
   assert.equal(isDebugSigned("C=IQ, O=Debug Studios, CN=QrAi Release"), false);
+});
+
+test("parseSignerDn reads the DN from real apksigner output", () => {
+  const output = [
+    "Verifies",
+    "Verified using v1 scheme (JAR signing): false",
+    "Verified using v2 scheme (APK Signature Scheme v2): true",
+    "Number of signers: 1",
+    "Signer #1 certificate DN: C=US, O=Android, CN=Android Debug",
+    "Signer #1 certificate SHA-256 digest: abc123",
+  ].join("\n");
+  assert.equal(parseSignerDn(output), "C=US, O=Android, CN=Android Debug");
+});
+
+test("parseSignerDn returns null rather than throwing when there is no DN", () => {
+  // This is the CI failure that cost a round-trip: apksigner exited 0, printed no DN line, and the
+  // script threw with none of its output captured — so the log said only "printed no certificate
+  // DN" and there was no way to tell whether the APK was unsigned, apksigner was broken, or the
+  // format had changed. null is now a reportable state and the raw output is printed alongside it.
+  assert.equal(parseSignerDn("DOES NOT VERIFY\nERROR: APK Signature Scheme v2 signature required"), null);
+  assert.equal(parseSignerDn(""), null);
+  assert.equal(parseSignerDn("Verifies\nNumber of signers: 0"), null);
 });
