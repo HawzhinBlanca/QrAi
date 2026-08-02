@@ -724,6 +724,29 @@ paths:
     post:
       tags: [review]
       summary: Record a teacher decision. A dangling finding_id is a clean 404, not a 500.
+      # Undeclared until the Flutter review queue was written — the SECOND instance of the gap
+      # audit finding #2 found on /v1/privacy/delete: a POST whose requestBody the contract never
+      # described, so a client written from this file alone could not know what to send.
+      # `TeacherReviewRequest` (types.rs:229) is camelCase and has no optional fields.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [findingId, teacherId, decision, note]
+              properties:
+                findingId: { type: string, minLength: 1 }
+                # Required by the struct and IGNORED by the handler: the review author is the
+                # authenticated actor. review.rs says why — trusting this let a teacher attribute a
+                # review to another user, including one in another tenant. Declared because the
+                # deserializer rejects a body without it, not because it decides anything.
+                teacherId: { type: string }
+                decision: { type: string, enum: [accepted, rejected, edited] }
+                # Not optional and not defaulted: serde has no default for this field, so an absent
+                # `note` is a 422 rather than an empty one. A client with nothing to say sends "".
+                note: { type: string }
+              additionalProperties: false
       responses:
         '200': { description: recorded, content: { application/json: { schema: { $ref: '#/components/schemas/TeacherReview' } } } }
         # 400 also covers a NUL byte (U+0000) anywhere in a string — Postgres text/jsonb

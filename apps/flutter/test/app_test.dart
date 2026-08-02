@@ -12,6 +12,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
 import 'package:qrai/main.dart';
+import 'package:qrai/src/auth/actor.dart';
 import 'package:qrai/src/api/api_client.dart';
 
 ApiClient offlineClient() => ApiClient(
@@ -44,10 +45,13 @@ ApiClient listingClient() => ApiClient(
           )),
     );
 
-Widget app(ApiClient client) => QrAiApp(
+Widget app(ApiClient client, {Actor? actor}) => QrAiApp(
       client: client,
       gatewayBase: Uri.parse('http://127.0.0.1:8081'),
       learnerId: 'learner-1',
+      // Null = a device with no readable token, which is the default the learner tabs are built
+      // for. Cases that need the Review tab pass a teacher explicitly.
+      actor: actor,
     );
 
 void main() {
@@ -140,5 +144,52 @@ void main() {
     // Retryable, because the usual cause is a half-finished deploy that fixes itself.
     expect(find.byKey(const ValueKey<String>('load-retry')), findsOneWidget);
   });
-}
 
+  // ── Who sees the Review tab ────────────────────────────────────────────────────────────────────
+  // Navigation only — every route behind it is gated by require_any([Teacher, Admin, Ops]) on the
+  // server, and a forged role would get a tab full of 403s rather than access. What this must not
+  // do is put a staff console in front of a learner, or hide it from the teacher it exists for.
+
+  testWidgets('a learner never sees the Review tab', (WidgetTester tester) async {
+    for (final Actor? who in <Actor?>[
+      null, // no token, or one this client cannot read
+      const Actor(userId: 'l', tenantId: 't', role: ActorRole.learner),
+      // A scholar can LIST findings but create_teacher_review refuses them, so a Review tab would
+      // be a queue they cannot act on.
+      const Actor(userId: 's', tenantId: 't', role: ActorRole.scholar),
+    ]) {
+      await tester.pumpWidget(app(listingClient(), actor: who));
+      await tester.pumpAndSettle();
+      expect(find.widgetWithText(NavigationDestination, 'Review'), findsNothing,
+          reason: '${who?.role} must not be offered the review surface');
+    }
+  });
+
+  testWidgets('a teacher, admin and ops each get it', (WidgetTester tester) async {
+    for (final ActorRole role in <ActorRole>[ActorRole.teacher, ActorRole.admin, ActorRole.ops]) {
+      await tester.pumpWidget(app(
+        listingClient(),
+        actor: Actor(userId: 'u', tenantId: 't', role: role),
+      ));
+      await tester.pumpAndSettle();
+      expect(find.widgetWithText(NavigationDestination, 'Review'), findsOneWidget,
+          reason: '$role reviews findings and must be able to reach the queue');
+    }
+  });
+
+  testWidgets('the extra destination selects the review screen, not another tab',
+      (WidgetTester tester) async {
+    // Tabs and destinations are two lists built from the same condition. If they ever disagree,
+    // tapping Review shows whatever sits at that index — which is how a staff console ends up
+    // under a learner's finger, or a teacher taps Review and gets Privacy.
+    await tester.pumpWidget(app(
+      listingClient(),
+      actor: const Actor(userId: 'u', tenantId: 't', role: ActorRole.teacher),
+    ));
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.widgetWithText(NavigationDestination, 'Review'));
+    await tester.pumpAndSettle();
+    expect(find.byKey(const ValueKey<String>('review-queue')), findsOneWidget);
+  });
+}

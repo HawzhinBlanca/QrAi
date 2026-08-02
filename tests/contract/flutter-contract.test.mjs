@@ -49,6 +49,7 @@ const MODELS = {
   SurahDetail: "SurahAyahs",
   LearnerProgress: "LearnerProgress",
   RealtimeTicket: "RealtimeSessionTicket",
+  TeacherReview: "TeacherReview",
   RecitationSession: "RecitationSession",
   QuranRef: "QuranRef",
   // Write-only: sent when a session is created, never parsed back. Checked through `toJson` below.

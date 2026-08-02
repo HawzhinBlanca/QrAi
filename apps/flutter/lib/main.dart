@@ -25,10 +25,12 @@ import 'package:intl/intl.dart' show DateFormat;
 
 import 'src/api/api_client.dart';
 import 'src/api/models.dart';
+import 'src/auth/actor.dart';
 import 'src/auth/token_store.dart';
 import 'src/practice/practice_screen.dart';
 import 'src/privacy/privacy_screen.dart';
 import 'src/reader/mushaf_page.dart';
+import 'src/review/review_queue_screen.dart';
 import 'src/shell/load_state.dart';
 
 const String _apiBaseUrl =
@@ -76,11 +78,17 @@ Future<void> main() async {
     }
   }
 
+  // Read ONCE at startup, to decide which tabs exist. Not a permission check — see `actor.dart`:
+  // the signature is unverified and every route it unlocks is gated server-side. A null actor (no
+  // token, or one this client cannot read) is a plain learner, which is the safe default.
+  final Actor? actor = Actor.fromJwt(await tokens.read());
+
   runApp(
     QrAiApp(
       client: ApiClient(baseUrl: Uri.parse(_apiBaseUrl), tokenProvider: tokens.read),
       gatewayBase: Uri.parse(_gatewayUrl),
       learnerId: _learnerId,
+      actor: actor,
     ),
   );
 }
@@ -91,11 +99,16 @@ class QrAiApp extends StatelessWidget {
     required this.client,
     required this.gatewayBase,
     required this.learnerId,
+    required this.actor,
   });
 
   final ApiClient client;
   final Uri gatewayBase;
   final String learnerId;
+
+  /// Who this device is provisioned as, or null. Decides whether the Review tab is drawn; see
+  /// `actor.dart` for why that is navigation and not authorisation.
+  final Actor? actor;
 
   @override
   Widget build(BuildContext context) {
@@ -119,7 +132,12 @@ class QrAiApp extends StatelessWidget {
       // first. The mushaf is unaffected: it sets `Directionality` on the canonical text itself
       // precisely so scripture never depends on the app locale.
       supportedLocales: const <Locale>[Locale('en')],
-      home: HomeShell(client: client, gatewayBase: gatewayBase, learnerId: learnerId),
+      home: HomeShell(
+        client: client,
+        gatewayBase: gatewayBase,
+        learnerId: learnerId,
+        actor: actor,
+      ),
     );
   }
 }
@@ -130,11 +148,13 @@ class HomeShell extends StatefulWidget {
     required this.client,
     required this.gatewayBase,
     required this.learnerId,
+    required this.actor,
   });
 
   final ApiClient client;
   final Uri gatewayBase;
   final String learnerId;
+  final Actor? actor;
 
   @override
   State<HomeShell> createState() => _HomeShellState();
@@ -145,6 +165,10 @@ class _HomeShellState extends State<HomeShell> {
 
   @override
   Widget build(BuildContext context) {
+    // Built as a pair so a tab and its destination cannot drift apart: appending to one list and
+    // forgetting the other silently shows the wrong screen, and the review surface is the one place
+    // where that would put a staff console under a learner's finger.
+    final Actor? actor = widget.actor;
     final List<Widget> tabs = <Widget>[
       ReadTab(client: widget.client),
       PracticeScreen(
@@ -154,6 +178,8 @@ class _HomeShellState extends State<HomeShell> {
       ),
       ProgressTab(client: widget.client, learnerId: widget.learnerId),
       PrivacyTab(client: widget.client, learnerId: widget.learnerId),
+      if (actor != null && actor.canReviewFindings)
+        ReviewQueueScreen(client: widget.client, actor: actor),
     ];
     return Scaffold(
       appBar: AppBar(title: const Text('QrAi')),
@@ -162,11 +188,13 @@ class _HomeShellState extends State<HomeShell> {
         key: const ValueKey<String>('home-nav'),
         selectedIndex: _tab,
         onDestinationSelected: (int i) => setState(() => _tab = i),
-        destinations: const <NavigationDestination>[
-          NavigationDestination(icon: Icon(Icons.menu_book), label: 'Read'),
-          NavigationDestination(icon: Icon(Icons.mic_none), label: 'Practice'),
-          NavigationDestination(icon: Icon(Icons.timeline), label: 'Progress'),
-          NavigationDestination(icon: Icon(Icons.privacy_tip_outlined), label: 'Privacy'),
+        destinations: <NavigationDestination>[
+          const NavigationDestination(icon: Icon(Icons.menu_book), label: 'Read'),
+          const NavigationDestination(icon: Icon(Icons.mic_none), label: 'Practice'),
+          const NavigationDestination(icon: Icon(Icons.timeline), label: 'Progress'),
+          const NavigationDestination(icon: Icon(Icons.privacy_tip_outlined), label: 'Privacy'),
+          if (actor != null && actor.canReviewFindings)
+            const NavigationDestination(icon: Icon(Icons.rule), label: 'Review'),
         ],
       ),
     );
