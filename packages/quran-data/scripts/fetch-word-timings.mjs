@@ -50,10 +50,10 @@ function isWaqfToken(tok) {
 // Diacritic/tatweel/BOM-stripped consonant skeleton, for basmala detection only (never shipped).
 function normalizeSkeleton(word) {
   return word
-    .replace(/[​-‏﻿ـ]/g, "")
-    .replace(/[ً-ٰٟۖ-ۭ࣓-ࣿ]/g, "")
-    .replace(/ٱ/g, "ا") // alef wasla → alef
-    .replace(/[آأإ]/g, "ا"); // alef variants → alef
+    .replace(/[\u200B-\u200F\uFEFF\u0640]/g, "")
+    .replace(/[\u064B-\u065F\u0670\u06D6-\u06ED\u08D3-\u08FF]/g, "")
+    .replace(/\u0671/g, "ا") // alef wasla → alef
+    .replace(/[\u0622\u0623\u0625]/g, "ا"); // alef variants → alef
 }
 
 async function fetchSegments(key, reciterId) {

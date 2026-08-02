@@ -22,6 +22,14 @@ secrets/
 *.pem
 scripts/stack.env
 
+# Android release signing. The keystore IS the app's identity: anyone holding it can publish an
+# update to com.qrai.qrai that Play will accept as genuine, and it cannot be rotated for an
+# already-published app. It lives outside the repo; `key.properties` only points at it and carries
+# its passwords. Listed before the mechanism that reads them existed, so there was never a window.
+*.jks
+*.keystore
+key.properties
+
 # Tooling / OS
 package-lock.json
 .DS_Store

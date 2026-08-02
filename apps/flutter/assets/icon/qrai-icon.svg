@@ -1,0 +1,22 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%"   stop-color="#0d8c6f"/>
+      <stop offset="55%"  stop-color="#056b56"/>
+      <stop offset="100%" stop-color="#04513f"/>
+    </linearGradient>
+  </defs>
+  <rect width="1024" height="1024" fill="url(#bg)"/>
+  <!-- The 16-point star from .brand-mark's clip-path (apps/web/src/styles.css), rendered as an
+       inner motif rather than the icon silhouette: iOS masks to a rounded rect and Android to a
+       circle/squircle, so clipping the icon itself to a star would come out chewed. Scaled about
+       the centre to sit inside the mask's safe area. -->
+  <polygon fill="#0b8066" opacity="0.75"
+    transform="translate(512,512) scale(0.84) translate(-512,-512)"
+    points="512,0 624.6,184.3 839.7,184.3 839.7,399.4 1024,512 839.7,624.6 839.7,839.7 624.6,839.7
+            512,1024 399.4,839.7 184.3,839.7 184.3,624.6 0,512 184.3,399.4 184.3,184.3 399.4,184.3"/>
+  <!-- ق — the brand mark's own glyph (BrandMark.tsx). Sized to clear the corner mask on both
+       platforms; a full-height glyph loses its dots to iOS's rounded rect. -->
+  <text x="512" y="530" fill="#f0bc4d" font-family="Noto Sans Arabic" font-weight="800"
+        font-size="440" text-anchor="middle" dominant-baseline="central">&#1602;</text>
+</svg>

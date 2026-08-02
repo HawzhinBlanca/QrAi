@@ -4,6 +4,46 @@ on:
   push: { branches: [main] }
 
 jobs:
+  # The Android client, compiled. A separate job because it shares nothing with `verify` — no
+  # Postgres, no Rust, no pnpm — so serialising them would add ~4 minutes to a gate that already
+  # takes a while.
+  #
+  # `verify` runs `flutter test`, which is a different claim: those are widget tests against a stub
+  # renderer and they pass on a project that cannot produce an APK at all. Until this job existed,
+  # nothing anywhere proved the app compiles for a phone. It was first built by hand on 2026-08-02,
+  # 52 minutes cold, 56 seconds warm.
+  android:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with: { distribution: temurin, java-version: "17" }
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: "3.44.8"
+          channel: stable
+          cache: true
+
+      # --release, not --debug. A debug APK JITs a kernel snapshot; only the release path runs the
+      # Dart AOT compiler, which is where tree-shaking and const-evaluation failures surface — the
+      # class of break that is invisible in `flutter test` and in a debug build.
+      - name: Build release APK
+        working-directory: apps/flutter
+        run: flutter build apk --release
+
+      # "Built app-release.apk" is printed whether or not the AOT compiler actually ran, so the
+      # artifact is inspected rather than trusted. Deliberately WITHOUT --require-release: CI holds
+      # no keystore, so this build is debug-signed and not distributable, and the check reports that
+      # instead of failing on it. See docs/RELEASE_SIGNING.md.
+      - name: The artifact is what it claims to be
+        run: node scripts/check-apk.mjs apps/flutter/build/app/outputs/flutter-apk/app-release.apk
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: android-release-apk
+          path: apps/flutter/build/app/outputs/flutter-apk/app-release.apk
+          retention-days: 14
+
   verify:
     runs-on: ubuntu-latest
 
