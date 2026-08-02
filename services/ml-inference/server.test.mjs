@@ -78,8 +78,8 @@ test("child-profile audio without guardian consent is NOT sent to ASR (consent/c
 
 test("alignment audit event records the REAL confidence and word counts, not the golden fixture's", async () => {
   const tenantId = "test-audit-alignment-honesty";
-  // Default quranRef (Al-Fatihah 1:1-7) intentionally matches a golden fixture, with no audio and
-  // no recognizedText → the real path scores a perfect (canonical == recognized) recitation.
+  // Default quranRef (Al-Fatihah 1:1-7) intentionally matches a golden fixture. No audio and no
+  // recognizedText, so NOTHING was recognised.
   const res = await predictAlignment({ tenantId, sessionId: "s-align" });
   const ev = lastEvent(tenantId, "ml.alignment.predicted");
 
@@ -91,10 +91,29 @@ test("alignment audit event records the REAL confidence and word counts, not the
     res.alignments.length,
     "audit wordCount must equal the number of aligned words in the response",
   );
-  assert.equal(ev.details.recognizedCount, res.alignments.length, "audit recognizedCount must match too");
-  // A perfect real recitation of the full canonical set scores 1.0 — NOT the fixture's 0.94 — and
-  // spans the real 29-word Al-Fatihah 1:1-7, NOT the fixture's 8-word abbreviation.
-  assert.equal(res.confidence, 1, "perfect default recitation scores 1.0 (real path)");
+  assert.equal(ev.details.recognizedCount, 0, "nothing was recognised, and the audit must say so");
+
+  // ── This test used to assert `res.confidence === 1` ───────────────────────────────────────────
+  // Its comment read "the real path scores a perfect (canonical == recognized) recitation", which
+  // was true and was the bug: with no audio and no transcript the service aligned the canonical
+  // text against ITSELF and reported every word matched at confidence 1. `apps/web` persisted that
+  // unconditionally, and `word_alignments` has no reviewStatus column to carry the caveat — so a
+  // learner who declined ASR consent got a stored record of a flawless recitation of the Qur'an
+  // that nobody had listened to.
+  //
+  // There is no honest alignment without recognition.
+  assert.equal(res.confidence, 0, "nothing was heard, so no confidence in any match");
+  assert.ok(
+    res.alignments.every((a) => a.status === "needs-review"),
+    "every word must be needs-review — not `matched` (a claim they said it) and not `missed` " +
+      "(a claim they did not)",
+  );
+  assert.ok(
+    res.alignments.every((a) => a.heardText === ""),
+    "heardText must be empty; echoing the canonical text is what made this look like a match",
+  );
+  // Still the REAL 29-word set, not the fixture's 8-word abbreviation — the original point of this
+  // test, and unaffected by the above.
   assert.ok(res.alignments.length > 8, `expected the real 29-word set, got ${res.alignments.length}`);
 });
 
@@ -255,4 +274,42 @@ test("GET /v1/audit-events requires tenantId and never leaks another tenant's ev
     res.body.every((event) => event.tenantId === "audit-leak-tenant-a"),
     "response must contain ONLY tenant A's events, never tenant B's",
   );
+});
+
+test("a learner who declined ASR consent gets NO alignment claims, not a perfect score", async () => {
+  // The exact production trigger, measured against the running service before the fix:
+  //   externalAsr : {"called": false, "reason": "consent-revoked-or-insufficient"}
+  //   confidence  : 1
+  //   1:1:1: status=matched conf=1 heard='بِسْمِ'   ← the canonical text, echoed back
+  //
+  // `apps/web` persists alignments unconditionally and `word_alignments` has no reviewStatus
+  // column, so this became a stored record of a flawless recitation of the Qur'an that nobody had
+  // listened to — and, once findings anchor to alignments, a teacher's review queue built on it.
+  const res = await predictAlignment({
+    tenantId: "test-asr-denied",
+    sessionId: "s-denied",
+    externalAsrRequested: true,
+    audioBase64: "AAAA",
+    consent: { guardianApproved: true, externalAsrProcessing: false },
+  });
+
+  assert.equal(res.externalAsr.called, false, "consent was declined, so no audio may be sent");
+  assert.equal(res.confidence, 0, "nothing was heard, so nothing may be scored");
+  assert.ok(
+    res.alignments.every((a) => a.status === "needs-review" && a.confidence === 0 && a.heardText === ""),
+    "no word may be reported as matched, missed, or heard as anything",
+  );
+});
+
+test("a real transcript still aligns normally — the fix does not blunt recognition", async () => {
+  // The other direction. A guard that made every alignment `needs-review` would be safe and
+  // useless; the point is that unrecognised means unrecognised, not that nothing ever matches.
+  const res = await predictAlignment({
+    tenantId: "test-asr-real",
+    sessionId: "s-real",
+    quranRef: { surahNumber: 1, ayahStart: 1, ayahEnd: 1, display: "x" },
+    recognizedTextString: "بِسْمِ ٱللَّهِ ٱلرَّحْمَٰنِ ٱلرَّحِيمِ",
+  });
+  assert.equal(res.confidence, 1, "a correct recitation still scores 1");
+  assert.ok(res.alignments.every((a) => a.status === "matched"));
 });

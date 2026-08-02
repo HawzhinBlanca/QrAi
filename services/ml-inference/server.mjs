@@ -487,9 +487,25 @@ async function predictAlignment(requestBody) {
     // Get canonical words for the requested ayah range
     const canonicalWords = getCanonicalWords(quranRef.surahNumber, quranRef.ayahStart, quranRef.ayahEnd);
 
-    // Get recognized text: either from ASR (audio), from requestBody, or perfect recitation
+    // Get recognized text: from ASR (audio), from the caller, or NOTHING.
+    //
+    // ── The fallback used to invent a perfect recitation ─────────────────────────────────────────
+    // This branch previously ended `recognizedWords = canonicalWords.map(w => w.text)` — aligning
+    // the canonical text against ITSELF. Measured against the running service, a learner who
+    // declined external-ASR consent got back `status: "matched"`, `confidence: 1`, and
+    // `heardText` equal to the canonical text for EVERY word: a claim that they recited the Qur'an
+    // perfectly, about audio nobody listened to.
+    //
+    // `apps/web` persists alignments unconditionally, and `word_alignments` has no `reviewStatus`
+    // column, so the `teacher-review-required` flag set below was dropped on the way to the
+    // database. What remained was a stored record of a flawless recitation that never happened —
+    // and, since findings anchor to alignments, a teacher's review queue built on top of it.
+    //
+    // There is no honest alignment without recognition. `needs-review` (an existing
+    // `word_alignments.status` value) is what "we did not hear this word" looks like.
     let recognizedWords;
     let asrResult = null;
+    let recognized = true;
     if (requestBody.audioBase64 && asrActuallyAllowed) {
       // Real acoustic ASR: send audio to Whisper service — ONLY when consent (and, for a child
       // profile, guardian approval) actually permits it. Without this gate the audio was sent
@@ -512,7 +528,8 @@ async function predictAlignment(requestBody) {
       }
       recognizedWords = requestBody.recognizedTextString.trim().split(/\s+/);
     } else {
-      recognizedWords = canonicalWords.map((w) => w.text);
+      recognizedWords = [];
+      recognized = false;
     }
 
     // Bound the recognized side of the O(m·n) alignment DP too (the canonical side is capped in
@@ -524,8 +541,22 @@ async function predictAlignment(requestBody) {
       );
     }
 
-    const alignmentResults = alignWords(canonicalWords, recognizedWords);
-    confidence = calculateConfidence(alignmentResults);
+    // Not `alignWords(canonical, [])`: that reports every word as `missed`, which is also a claim
+    // about the recitation — "they left these out" — and equally unfounded when nothing was heard.
+    const alignmentResults = recognized
+      ? alignWords(canonicalWords, recognizedWords)
+      : canonicalWords.map((w) => ({
+          wordId: w.id,
+          canonicalText: w.text,
+          heardText: "",
+          status: "needs-review",
+          confidence: 0,
+        }));
+    // Not `calculateConfidence` when nothing was recognised: its weights describe how well
+    // RECOGNISED words matched, and `needs-review` carries 0.8 there — "the recogniser was unsure
+    // about this word", not "nobody listened to this recitation". Run through it, a session with no
+    // recognition at all scores 0.8, a whisker under the 0.85 auto-accept line.
+    confidence = recognized ? calculateConfidence(alignmentResults) : 0;
     reviewStatus = !asrAllowed
       ? "teacher-review-required"
       : confidence >= 0.85 ? "ai-suggested" : "teacher-review-required";
