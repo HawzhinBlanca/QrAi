@@ -31,12 +31,30 @@ PARTIAL LOSS: FAIL — half the recitation was acknowledged and never stored
   a teardown artifact and it is not a race that settles — the chunks never arrive.
 
   The pattern is the tell. Connections 1 and 2 were killed mid-stream by chaos and BOTH stored
-  their chunks. Connection 3 closed NORMALLY and stored none of its six. Whatever drains the
-  forwarder on an aborted socket does not run on a clean close.
+  their chunks. Connection 3 closed NORMALLY and stored none of its six.
 
-  Where to look: lib.rs:1033 spawns the forwarding task DETACHED; lib.rs:1180 breaks the read loop
-  on `Message::Close`. The handler returns as soon as the client says goodbye, and the queued
-  chunks go with it.
+  The chunks were ACCEPTED, not rejected. The client counts only `ack.accepted === true` and
+  counted 12, so `forward_chunk` returned Ok for all of them and they entered the session's mpsc
+  channel. The forwarding task then delivered six of them and logged nothing about the other six —
+  no `ML service rejected`, no retry exhaustion, no backpressure counter.
+
+  MECHANISM NOT YET CONFIRMED. lib.rs:1033 spawns the forwarding task detached and lib.rs:1180
+  breaks the read loop on `Message::Close`, which is where to start — but "the handler returns
+  before the task drains" is a hypothesis that does not by itself explain why the two ABORTED
+  connections drained and the cleanly-closed one did not. The next step is a run with tracing on
+  the forward path, not another guess.
+
+  ── on the reliability of this measurement ──
+  Three runs said 6/12, 6/12, then 0/12. The 0/12 was a HARNESS ARTIFACT: the gateway had panicked
+  at startup (ALLOW_INSECURE_DEFAULTS combined with METRICS_DEV_OPEN is refused) and the client had
+  connected to a stale gateway from the previous run, still holding the port and forwarding into a
+  deleted directory.
+
+  The run recorded above was therefore re-done on unique ports (8431/8492) with an assertion that a
+  gateway OF THIS RUN is listening before any measurement is taken. It reports 6/12 with the same
+  missing set. The finding survived the check; it is recorded here because a number that moves
+  between runs is worth nothing until you know why, and the first two runs happened to be right for
+  reasons I had not verified.
 
 WHY THIS MATTERS MORE THAN A DROPPED PACKET
 
