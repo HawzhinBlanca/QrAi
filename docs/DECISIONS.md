@@ -1082,31 +1082,31 @@ it also carries at least one source and clears the 0.82 confidence floor
 
 - The teacher half of the loop closes: a decision now reaches the finding and changes its status.
 
-**It does NOT yet close end to end, and this ADR must not be read as claiming it does.** Two links
-are still missing, both found while writing this:
+**Both missing links are now closed** (2026-08-02, same day, on the owner's instruction "do both"):
 
-1. **Nothing in production ever writes a `tajweed_findings` row.** `grep -rn "INSERT INTO
-   tajweed_findings" services/` matches only `tests/integration.rs`; the only rows in a real
-   database come from `infra/sql/0006_seed_internal.sql`. `services/ml-inference` computes findings
-   in memory per request and has no database at all.
-2. **The learner's route recomputes rather than reads.** `POST /v1/ml/tajweed-findings:predict`
-   returns freshly analysed findings, always stamped `ai-suggested`. It never reads the persisted
-   table, so a promoted finding is not what the learner's screen asks for. The only route that
-   reads persisted findings, `GET /v1/tajweed-findings`, is staff-only.
+1. **Findings are persisted.** `proxy_ml` writes them after a tajweed prediction
+   (`ml_proxy.rs::persist_tajweed_findings`). Three constraints shape it: a finding must anchor to a
+   real `word_alignments` row (fabricating one would invent `heardText`/`startMs` for audio nobody
+   aligned, so unanchorable findings are skipped and counted); it writes **once per session**,
+   because `persist_session_alignments` cascades `teacher_reviews` away on re-write and a learner
+   tapping stop twice must not destroy a teacher's completed review; and the tajweed model is
+   resolved by `kind` rather than from the response, which reports `ml-aligner-v0.2` — an
+   *alignment* model, and not a `model_versions` row at all.
+2. **The learner can read them.** `GET /v1/recitation-sessions/{id}/tajweed-findings`, scoped by
+   `require_self_or_any(learner_id, [Teacher, Admin, Ops])` — ownership, not role. It returns
+   withheld findings too, with their status, so the client can distinguish "3 notes are waiting for
+   a teacher" from "no feedback"; `canShowLearnerFacingAiOutput` still decides what is displayed.
 
-So today a teacher can promote a **seeded** finding and the learner's practice screen will still
-show "waiting for a teacher to review", because it asked a different question. Closing this needs
-analysis results to be persisted and a learner-scoped read of their own session's findings — two
-behaviours, one of them a new route. Neither is in this ADR.
-- The last decision wins. A teacher who accepts and then rejects leaves the finding `blocked`; this
-  is deliberate, so a mistake is correctable without an admin.
-- `blocked` findings leave the review queue (`pendingForReview` excludes them). Re-opening one needs
-  a new route; nothing here provides it.
-- A **sourceless** finding can now be promoted to `teacher-reviewed`, where it is still withheld
-  from learners by the sources check. `create_scholar_approval` refuses the analogous case
-  server-side (`MissingSources`); teacher review does not, and adding that refusal would be a new
-  4xx on a route clients already use. Worth revisiting — the client-side gate is currently the only
-  thing stopping an unsourced acceptance from being displayed by a future, laxer client.
+`tajweed_findings_persist_and_the_learner_can_read_their_own` drives the whole chain against live
+Postgres: analyse → persist → teacher accepts → the learner reads it back as `teacher-reviewed`,
+satisfying every term of the gate.
+
+**What still does not close, and for whom.** The chain needs alignments, and the Flutter practice
+flow produces none — it streams to the realtime gateway, which forwards audio chunks to
+`/v1/audio-chunks` and computes no alignment. So a Flutter session persists nothing and its learner
+still sees "waiting for a teacher to review", correctly: there is no stored finding to approve. The
+web flow, which calls `/v1/ml/alignments:predict` and persists the result, closes fully. Giving the
+Flutter client an alignment step is a separate piece of work and is action item 5.
 
 ### Action items
 
@@ -1114,7 +1114,11 @@ behaviours, one of them a new route. Neither is in this ADR.
 2. [x] Mirror in `node-api/routes/review.mjs`; the parity suite keeps the two honest.
 3. [x] Integration coverage against live Postgres for all three decisions, including that `edited`
        changes nothing and that a promoted finding then passes the learner gate.
-4. [ ] Persist computed tajweed findings, and give a learner a route that reads their own session's
-       persisted findings. Without both, promotion changes a row nothing learner-facing reads.
-5. [ ] Decide whether teacher acceptance should refuse a sourceless finding, as scholar approval
+4. [x] Persist computed tajweed findings, and give a learner a route that reads their own session's
+       persisted findings. Both landed 2026-08-02; the chain is covered end to end against live
+       Postgres.
+5. [ ] Give the Flutter practice flow an alignment step, or have the gateway produce alignments.
+       Until then a Flutter session has nothing to anchor findings to and item 4 writes nothing
+       for it.
+6. [ ] Decide whether teacher acceptance should refuse a sourceless finding, as scholar approval
        does. Owner/scholar call.

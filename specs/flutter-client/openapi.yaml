@@ -616,6 +616,28 @@ paths:
         '400': { $ref: '#/components/responses/BadRequest' }
         '403': { $ref: '#/components/responses/Forbidden' }
         '404': { description: 'not found — ALSO returned cross-tenant, so existence never leaks' }
+  /v1/recitation-sessions/{id}/tajweed-findings:
+    get:
+      tags: [review]
+      summary: A learner's own tajweed findings for one session.
+      description: |
+        Ownership-scoped: `require_self_or_any(learner_id, [Teacher, Admin, Ops])`. A learner reads
+        their OWN session; staff read any session in their tenant. `/v1/tajweed-findings` is the
+        tenant-wide STAFF queue and is a different thing.
+
+        Returns EVERY finding for the session, including unreviewed and blocked ones, each with its
+        `reviewStatus`. `canShowLearnerFacingAiOutput` is what decides display — the client needs the
+        withheld ones to distinguish "3 notes are waiting for a teacher" from "no feedback", and a
+        COUNT of pending notes is not a judgement about the recitation.
+      parameters: [{ name: id, in: path, required: true, schema: { type: string } }]
+      responses:
+        '200':
+          description: findings for this session, newest-confidence first
+          content: { application/json: { schema: { type: array, items: { type: object } } } }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        # A session in ANOTHER tenant is 404 before the ownership check, so this cannot be used to
+        # probe for session ids that exist elsewhere.
+        '404': { $ref: '#/components/responses/NotFound' }
   /v1/recitation-sessions/{id}/alignments:
     get:
       tags: [recitation]

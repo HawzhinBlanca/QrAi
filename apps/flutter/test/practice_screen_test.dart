@@ -54,7 +54,23 @@ Map<String, Object?> stubFinding({
     };
 
 /// The responses the flow needs, shared by the stub client and by tests that drive their own.
-http.Response stubResponseFor(http.Request req, {List<Map<String, Object?>>? findings}) {
+///
+/// `stored` is what `GET /v1/recitation-sessions/{id}/tajweed-findings` returns and defaults to the
+/// same list as the analysis — the shape of a session whose words were aligned, so everything the
+/// analyser produced was persisted. Passing `stored: []` models the other real case: nothing could
+/// be anchored, so nothing was stored.
+http.Response stubResponseFor(
+  http.Request req, {
+  List<Map<String, Object?>>? findings,
+  List<Map<String, Object?>>? stored,
+}) {
+  if (req.url.path.endsWith('/tajweed-findings')) {
+    return http.Response(
+      jsonEncode(stored ?? findings ?? <Map<String, Object?>>[stubFinding()]),
+      200,
+      headers: <String, String>{'content-type': 'application/json'},
+    );
+  }
   if (req.url.path == '/v1/ml/tajweed-findings:predict') {
     return http.Response(
       jsonEncode(<String, Object?>{
@@ -493,6 +509,83 @@ void main() {
 
     expect(tester.takeException(), isNull,
         reason: 'setState after dispose, or an unhandled async failure');
+  });
+
+  testWidgets('the STORED findings win — that is what carries a teacher decision back',
+      (WidgetTester tester) async {
+    // The analysis route always answers `ai-suggested` (it re-analyses rather than reading), so if
+    // the screen displayed its result the learner could never be shown an approved note no matter
+    // how many teachers reviewed it. Analysis says pending; storage says scholar-approved; the
+    // learner must see the approval.
+    final List<http.Request> seen = <http.Request>[];
+    final MockClient mock = MockClient((http.Request req) async {
+      seen.add(req);
+      return stubResponseFor(
+        req,
+        findings: <Map<String, Object?>>[stubFinding(reviewStatus: 'ai-suggested')],
+        stored: <Map<String, Object?>>[
+          stubFinding(reviewStatus: 'scholar-approved', confidence: 0.95),
+        ],
+      );
+    });
+    await tester.pumpWidget(host(
+      ApiClient(
+        baseUrl: Uri.parse('http://127.0.0.1:8080'),
+        tokenProvider: () async => null,
+        httpClient: mock,
+      ),
+      (RealtimeTicket _) => SpyRecorder(),
+    ));
+
+    await tapKey(tester, 'consent-guardian');
+    await tapKey(tester, 'practice-toggle');
+    await tapKey(tester, 'practice-toggle');
+    await tester.pumpAndSettle();
+
+    expect(find.byKey(const ValueKey<String>('tajweed-list')), findsOneWidget,
+        reason: 'the approved stored finding must be shown, not the pending computed one');
+    expect(find.textContaining('95%'), findsOneWidget);
+
+    // Analysis is still requested: it is what makes the server persist the findings at all.
+    expect(
+      seen.where((http.Request r) => r.url.path == '/v1/ml/tajweed-findings:predict'),
+      hasLength(1),
+    );
+    expect(
+      seen.where((http.Request r) => r.url.path.endsWith('/tajweed-findings')),
+      hasLength(1),
+    );
+  });
+
+  testWidgets('when NOTHING could be stored, the computed findings still say notes are waiting',
+      (WidgetTester tester) async {
+    // A session whose words were never aligned persists nothing — the Flutter practice flow's shape
+    // today. Falling back to the computed set cannot overstate anything (all `ai-suggested`, all
+    // withheld) and it is the difference between "3 notes are waiting" and a false "no feedback".
+    final MockClient mock = MockClient((http.Request req) async => stubResponseFor(
+          req,
+          findings: <Map<String, Object?>>[
+            stubFinding(rule: 'a'),
+            stubFinding(rule: 'b'),
+            stubFinding(rule: 'c'),
+          ],
+          stored: <Map<String, Object?>>[],
+        ));
+    await tester.pumpWidget(host(
+      ApiClient(
+        baseUrl: Uri.parse('http://127.0.0.1:8080'),
+        tokenProvider: () async => null,
+        httpClient: mock,
+      ),
+      (RealtimeTicket _) => SpyRecorder(),
+    ));
+
+    await tapKey(tester, 'consent-guardian');
+    await tapKey(tester, 'practice-toggle');
+    await tapKey(tester, 'practice-toggle');
+    await tester.pumpAndSettle();
+
+    expect(find.textContaining('3 notes are waiting'), findsOneWidget);
   });
 }
 

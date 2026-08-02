@@ -259,10 +259,24 @@ class _PracticeScreenState extends State<PracticeScreen> {
     if (!mounted) return;
     setState(() => _findings = const Loading<List<TajweedFinding>>());
     try {
-      final List<TajweedFinding> found = await widget.client.predictTajweed(
+      // Analyse first: this is what computes the findings AND, server-side, persists them so a
+      // teacher can review them. Its own answer is always `ai-suggested` — it re-analyses rather
+      // than reading — so it can never tell a learner a finding was approved.
+      final List<TajweedFinding> computed = await widget.client.predictTajweed(
         sessionId: session.id,
         quranRef: session.quranRef,
       );
+
+      // Then read what is STORED. Only this carries a teacher's decision back. For a session whose
+      // words were aligned the two sets are the same content, and the stored one has the real
+      // statuses; when nothing could be stored (no alignments to anchor to) it is empty, and the
+      // computed set is what tells the learner notes exist and are waiting.
+      //
+      // Falling back cannot overstate anything: everything `predictTajweed` returns is
+      // `ai-suggested`, which `isLearnerVisible` withholds.
+      final List<TajweedFinding> stored =
+          await widget.client.listSessionTajweedFindings(sessionId: session.id);
+      final List<TajweedFinding> found = stored.isEmpty ? computed : stored;
       if (mounted) setState(() => _findings = Loaded<List<TajweedFinding>>(found));
     } on ApiException catch (e) {
       if (mounted) setState(() => _findings = Failed<List<TajweedFinding>>(e));

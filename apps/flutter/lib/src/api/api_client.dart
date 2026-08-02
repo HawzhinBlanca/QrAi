@@ -140,6 +140,20 @@ class ApiClient {
         'note': note,
       }));
 
+  /// The learner's own findings for one session, as STORED.
+  ///
+  /// Ownership-scoped (`require_self_or_any`), unlike the tenant-wide staff queue in
+  /// [listTajweedFindings]. This is what carries a teacher's decision back: [predictTajweed]
+  /// re-analyses and always answers `ai-suggested`, so it can never show that a finding was
+  /// approved — only this route can.
+  Future<List<TajweedFinding>> listSessionTajweedFindings({required String sessionId}) async {
+    final Object? body = await _get(
+      '/v1/recitation-sessions/${Uri.encodeComponent(sessionId)}/tajweed-findings',
+    );
+    if (body is! List) throw ApiException(ApiErrorKind.server, 'expected a list of findings');
+    return objectsIn(body, 'tajweed findings').map(TajweedFinding.fromJson).toList(growable: false);
+  }
+
   /// Analysis of the learner's OWN session. This is the route the web client has always used
   /// (`apps/web/src/lib/api.ts` `predictTajweed`), and it is learner-reachable: `proxy_ml`
   /// (`ml_proxy.rs:84`) calls `require_self_or_any(session_learner_id, [Admin, Ops])`, so a learner
