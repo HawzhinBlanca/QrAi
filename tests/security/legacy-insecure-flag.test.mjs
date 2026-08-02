@@ -154,3 +154,33 @@ test("assignedDefaults finds assignments and ignores mentions", () => {
   // A near-miss name must not match, or the gate reports the wrong variable.
   assert.deepEqual(assignedDefaults("EXTRA_ALLOW_INSECURE_DEFAULTS=1", "ALLOW_INSECURE_DEFAULTS"), []);
 });
+
+// --- the native-client overlay ---
+//
+// GATEWAY_ALLOW_MISSING_ORIGIN is exempt from NEVER_IN_PRODUCTION (see that list's comment): it is
+// the switch the insecure-defaults split was built to enable. These two tests pin the shape of that
+// exemption, because "legitimate in production" and "on everywhere" are different claims.
+
+test("the native overlay actually enables the native switch", () => {
+  // Without this the overlay is a no-op file and every recitation from apps/flutter 403s, which is
+  // precisely the bug it was added to fix. A gate that cannot fail is decorative.
+  const found = assignedDefaults(read("docker-compose.native.yml"), "GATEWAY_ALLOW_MISSING_ORIGIN");
+  assert.ok(found.length > 0, "docker-compose.native.yml does not assign GATEWAY_ALLOW_MISSING_ORIGIN at all");
+  assert.deepEqual(
+    found.filter((f) => !TRUTHY.has(f.value)),
+    [],
+    "the overlay assigns the switch a value that does not enable it",
+  );
+});
+
+test("the base stack still fails closed on a missing Origin", () => {
+  // The base serves the browser app and nothing else, so no legitimate client omits Origin there.
+  // If this ever flips to a truthy default, the browser-only deployment silently starts accepting
+  // no-Origin WebSocket upgrades and the overlay stops meaning anything.
+  for (const { line, value } of assignedDefaults(read("docker-compose.yml"), "GATEWAY_ALLOW_MISSING_ORIGIN")) {
+    assert.ok(
+      !TRUTHY.has(value),
+      `docker-compose.yml enables the native switch by default; it belongs in docker-compose.native.yml:\n  ${line}`,
+    );
+  }
+});

@@ -647,10 +647,18 @@ def _analyze_tajweed_words_sync(tmp_path: str, words: list[dict]) -> list["Tajwe
         # ml-inference/tajweed.js (noon-sakin / word-final noon / tanween) and extend to
         # meem-sakin and shadda'd noon/meem. The patterns assume the canonical
         # consonant+shadda+vowel diacritic ordering used by packages/quran-data.
+        # Escapes, never literal characters. AGENTS.md's hard boundary: a combining mark inside a
+        # `[...]` class is invisible in most editors and can be reordered or swallowed by any tool
+        # that touches the file. Not hypothetical here — a literal class in `forced_align.py` merged
+        # two ranges, deleted every Arabic letter, and passed review (PR #258).
+        # `packages/contracts/src/index.ts` writes its mushaf-annotation class this way for the same
+        # reason. Spelled out, the classes are diffable and reviewable:
+        #   U+0646 noon     U+0645 meem     U+0651 shadda   U+0652 sukoon
+        #   U+064B fathatan U+064C dammatan U+064D kasratan (tanween)
         has_ghunnah = (
-            re.search("[نم][ّْ]", word_text) is not None  # noon/meem + sukoon or shadda
-            or re.search("[ًٌٍ]", word_text) is not None       # tanween
-            or re.search("ن$", word_text) is not None                    # word-final noon (sakin at waqf)
+            re.search("[\u0646\u0645][\u0651\u0652]", word_text) is not None  # noon/meem + shadda or sukoon
+            or re.search("[\u064B\u064C\u064D]", word_text) is not None        # tanween
+            or re.search("\u0646$", word_text) is not None                       # word-final noon (sakin at waqf)
         )
 
         if has_ghunnah and f0_std > 10:

@@ -96,22 +96,41 @@ class ApiClient {
 
   /// ⚠️ STAFF ONLY. A learner calling this gets **403**, measured against the running service:
   /// `{"error":"actor is not allowed to perform this action"}`. `list_tajweed_findings`
-  /// (`review.rs:253`) requires teacher/scholar/admin/ops.
-  ///
-  /// It is deliberately NOT wired into any screen, and wiring it in would put a 403 in front of
-  /// every learner. `GET /v1/recitation-sessions/{id}/alignments` is the same — teacher/admin/ops
-  /// only, also 403 for a learner, also measured.
-  ///
-  /// So there is **no path by which a learner can see any feedback on their own recitation**: the
-  /// practice flow is write-only for them. That is a product gap, not a bug in this file — see
-  /// `AUD3` in `specs/migration-completion/tasks.md`, which is blocked on an owner decision about
-  /// what a learner may see of their own review queue. This method stays so the model and the
-  /// learner-visibility gate in `tajweed_panel.dart` have a caller the day that decision is made.
+  /// (`review.rs:253`) requires teacher/scholar/admin/ops. It reads the tenant's REVIEW QUEUE, which
+  /// is a staff surface; [predictTajweed] is the learner's own-session route.
   Future<List<TajweedFinding>> listTajweedFindings({required String sessionId}) async {
     final Object? body =
         await _get('/v1/tajweed-findings?sessionId=${Uri.encodeQueryComponent(sessionId)}');
     if (body is! List) throw ApiException(ApiErrorKind.server, 'expected a list of findings');
     return objectsIn(body, 'tajweed findings').map(TajweedFinding.fromJson).toList(growable: false);
+  }
+
+  /// Analysis of the learner's OWN session. This is the route the web client has always used
+  /// (`apps/web/src/lib/api.ts` `predictTajweed`), and it is learner-reachable: `proxy_ml`
+  /// (`ml_proxy.rs:84`) calls `require_self_or_any(session_learner_id, [Admin, Ops])`, so a learner
+  /// may analyse their own session and nobody else's.
+  ///
+  /// ── What this returns, honestly ────────────────────────────────────────────────────────────────
+  /// `services/ml-inference` stamps **every** finding `reviewStatus: "ai-suggested"` on both its
+  /// branches, and `ai-suggested` does not clear [TajweedFinding.isLearnerVisible]. So today this
+  /// yields findings that are all withheld, and the panel says so rather than showing them. That is
+  /// the intended behaviour, not a defect to route around: the platform rule is that no AI judgement
+  /// about someone's recitation reaches them before a human approves it. The web client renders the
+  /// identical "awaiting review" state from the identical response.
+  ///
+  /// `tenantId` and `consent` are deliberately NOT sent: `proxy_ml` overwrites both from the stored
+  /// session record, so anything a client claimed here would be discarded.
+  Future<List<TajweedFinding>> predictTajweed({
+    required String sessionId,
+    required QuranRef quranRef,
+  }) async {
+    final Map<String, dynamic> body = await _postObject(
+      '/v1/ml/tajweed-findings:predict',
+      <String, Object?>{'sessionId': sessionId, 'quranRef': quranRef.toJson()},
+    );
+    return objectsIn(body['findings'], 'tajweed findings')
+        .map(TajweedFinding.fromJson)
+        .toList(growable: false);
   }
 
   /// Create a recitation session. This is where consent is CAPTURED — the server stores what is
