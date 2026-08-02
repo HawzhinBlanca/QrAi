@@ -1910,7 +1910,11 @@ async fn seed_reviewed_finding(
     sqlx::query(
         "INSERT INTO tajweed_findings
            (id, tenant_id, alignment_id, rule, severity, confidence, explanation, review_status, source_refs, model_version_id, audit_event_id)
-         VALUES ($1, 'hikmah-pilot-erbil', $2, 'Ghunnah', 'warning', 0.8, 'x', 'teacher-review-required', '[]'::jsonb, 'model-v0.3', $3)",
+         -- Sourced: `create_teacher_review` refuses to ACCEPT a finding with no sources
+         -- (ADR-0027 item 6), and callers of this helper exercise all three decisions. An
+         -- unsourced fixture would make them fail on the rule rather than on what they test.
+         VALUES ($1, 'hikmah-pilot-erbil', $2, 'Ghunnah', 'warning', 0.8, 'x', 'teacher-review-required',
+                 '[{\"id\":\"s1\",\"title\":\"Board\",\"citation\":\"policy\"}]'::jsonb, 'model-v0.3', $3)",
     )
     .bind(&finding_id)
     .bind(&alignment_id)
@@ -4641,4 +4645,154 @@ async fn finalize_without_a_transcript_stores_nothing() {
         count, 0,
         "nothing was heard, so nothing may be recorded about what was said"
     );
+}
+
+/// ADR-0027 item 6 — a teacher cannot release a finding with nothing behind it.
+///
+/// `create_scholar_approval` has always refused this (`MissingSources`). Teacher acceptance became
+/// the OTHER way content reaches a learner in ADR-0027, and until this the only thing withholding an
+/// unsourced acceptance was `canShowLearnerFacingAiOutput` in the client — one laxer future client
+/// away from showing a learner a judgement with no source.
+#[tokio::test]
+#[ignore = "requires live Postgres"]
+async fn accepting_an_unsourced_finding_is_refused_but_rejecting_it_is_not() {
+    use sqlx::Row;
+    let state = test_state();
+    let router = platform_router_with_rate_limit(test_state(), false);
+
+    let created = send_json(
+        &router,
+        Method::POST,
+        "/v1/recitation-sessions",
+        Some("hikmah-pilot-erbil"),
+        Some("learner"),
+        json!({
+            "learnerId": "learner-1",
+            "quranRef": {"surahNumber": 1, "ayahStart": 1, "ayahEnd": 7, "display": "Al-Fatihah 1:1-7"},
+            "sourceChecksum": "fnv1a32:unsourced", "modelVersion": "model-v0.3", "language": "ckb",
+            "mode": "guided-recite", "practicePlanId": "fatihah-mastery-v1",
+            "consent": {"audioRetention": "discard", "anonymizedLearning": true, "externalAsrProcessing": false, "guardianApproved": true, "consentVersion": "pilot-v1"}
+        }),
+    )
+    .await;
+    let session_id = read_json::<Value>(created).await["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let persisted = send_json(
+        &router,
+        Method::POST,
+        &format!("/v1/recitation-sessions/{session_id}/alignments"),
+        Some("hikmah-pilot-erbil"),
+        Some("learner"),
+        json!({ "alignments": [{"wordId": "1:1:1", "heardText": "بسم", "confidence": 0.9, "status": "matched"}] }),
+    )
+    .await;
+    assert_eq!(persisted.status(), StatusCode::OK);
+    let align_id: String =
+        sqlx::query("SELECT id FROM word_alignments WHERE session_id = $1 LIMIT 1")
+            .bind(&session_id)
+            .fetch_one(&state.pool)
+            .await
+            .unwrap()
+            .try_get("id")
+            .unwrap();
+
+    // A finding with an EMPTY source_refs — the shape this refusal exists for.
+    let suffix = next_suffix();
+    let audit = format!("audit-tf-{suffix}");
+    let finding_id = format!("tf-unsourced-{suffix}");
+    sqlx::query("INSERT INTO audit_events (id, tenant_id, actor_id, action, subject_type, subject_id) VALUES ($1,'hikmah-pilot-erbil','ops-1','test.seed','tajweed_finding',$2)")
+        .bind(&audit).bind(&finding_id).execute(&state.pool).await.unwrap();
+    sqlx::query("INSERT INTO tajweed_findings (id, tenant_id, alignment_id, rule, severity, confidence, explanation, review_status, source_refs, model_version_id, audit_event_id) VALUES ($1,'hikmah-pilot-erbil',$2,'Ghunnah','warning',0.9,'x','ai-suggested','[]'::jsonb,'model-v0.3',$3)")
+        .bind(&finding_id).bind(&align_id).bind(&audit).execute(&state.pool).await.unwrap();
+
+    let review = |decision: &'static str| {
+        let router = router.clone();
+        let finding_id = finding_id.clone();
+        async move {
+            send_json(
+                &router,
+                Method::POST,
+                "/v1/teacher-reviews",
+                Some("hikmah-pilot-erbil"),
+                Some("teacher"),
+                json!({ "findingId": finding_id, "teacherId": "teacher-1", "decision": decision, "note": "" }),
+            )
+            .await
+        }
+    };
+
+    // (1) Accepting is refused, with a message that says what to do instead.
+    let accepted = review("accepted").await;
+    assert_eq!(accepted.status(), StatusCode::BAD_REQUEST);
+    let err: Value = read_json(accepted).await;
+    assert!(
+        err["error"].as_str().unwrap().contains("no source"),
+        "the refusal must name the reason, got {err}"
+    );
+
+    // (2) NOTHING was written — the scholar path's rule: a refused approval leaves no row and no
+    // audit trail suggesting one was considered.
+    let reviews: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM teacher_reviews WHERE finding_id = $1")
+            .bind(&finding_id)
+            .fetch_one(&state.pool)
+            .await
+            .unwrap();
+    assert_eq!(reviews, 0, "a refused acceptance must leave no review row");
+    let status: String =
+        sqlx::query_scalar("SELECT review_status FROM tajweed_findings WHERE id = $1")
+            .bind(&finding_id)
+            .fetch_one(&state.pool)
+            .await
+            .unwrap();
+    assert_eq!(
+        status, "ai-suggested",
+        "and must not have promoted the finding"
+    );
+
+    // (3) REJECTING an unsourced finding is exactly what a teacher should be able to do with one.
+    // Refusing this too would trap it in the queue forever.
+    let rejected = review("rejected").await;
+    assert_eq!(rejected.status(), StatusCode::OK);
+    let blocked: String =
+        sqlx::query_scalar("SELECT review_status FROM tajweed_findings WHERE id = $1")
+            .bind(&finding_id)
+            .fetch_one(&state.pool)
+            .await
+            .unwrap();
+    assert_eq!(blocked, "blocked");
+
+    // (4) A SOURCED finding still accepts — the guard must not block the normal path.
+    let suffix2 = next_suffix();
+    let audit2 = format!("audit-tf-{suffix2}");
+    let sourced_id = format!("tf-sourced-{suffix2}");
+    sqlx::query("INSERT INTO audit_events (id, tenant_id, actor_id, action, subject_type, subject_id) VALUES ($1,'hikmah-pilot-erbil','ops-1','test.seed','tajweed_finding',$2)")
+        .bind(&audit2).bind(&sourced_id).execute(&state.pool).await.unwrap();
+    sqlx::query("INSERT INTO tajweed_findings (id, tenant_id, alignment_id, rule, severity, confidence, explanation, review_status, source_refs, model_version_id, audit_event_id) VALUES ($1,'hikmah-pilot-erbil',$2,'Ghunnah','warning',0.9,'x','ai-suggested','[{\"id\":\"s1\",\"title\":\"Board\",\"citation\":\"policy\"}]'::jsonb,'model-v0.3',$3)")
+        .bind(&sourced_id).bind(&align_id).bind(&audit2).execute(&state.pool).await.unwrap();
+
+    let ok = send_json(
+        &router,
+        Method::POST,
+        "/v1/teacher-reviews",
+        Some("hikmah-pilot-erbil"),
+        Some("teacher"),
+        json!({ "findingId": sourced_id, "teacherId": "teacher-1", "decision": "accepted", "note": "" }),
+    )
+    .await;
+    assert_eq!(
+        ok.status(),
+        StatusCode::OK,
+        "a sourced finding must still be acceptable"
+    );
+    let promoted: String =
+        sqlx::query_scalar("SELECT review_status FROM tajweed_findings WHERE id = $1")
+            .bind(&sourced_id)
+            .fetch_one(&state.pool)
+            .await
+            .unwrap();
+    assert_eq!(promoted, "teacher-reviewed");
 }

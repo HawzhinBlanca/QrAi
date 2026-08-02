@@ -283,8 +283,8 @@ class _FindingCardState extends State<_FindingCard> {
               ),
             if (f.sources.isEmpty)
               Text(
-                'No source cited. A finding with nothing behind it cannot be released to a learner '
-                'even if you accept it.',
+                'No source cited. Accepting is disabled: the server refuses to release a finding '
+                'with nothing behind it. Reject it, or have a source added first.',
                 key: ValueKey<String>('review-nosource-$key'),
                 style: theme.textTheme.labelSmall?.copyWith(color: theme.colorScheme.error),
               ),
@@ -317,7 +317,10 @@ class _FindingCardState extends State<_FindingCard> {
                 children: <Widget>[
                   FilledButton(
                     key: ValueKey<String>('review-accept-$key'),
-                    onPressed: widget.locked
+                    // Disabled for a sourceless finding, matching the server's refusal
+                    // (ADR-0027 item 6). Letting the button through would spend a teacher's
+                    // judgement and answer 400 — the rule is knowable before they tap.
+                    onPressed: widget.locked || f.sources.isEmpty
                         ? null
                         : () => widget.onDecide(TeacherDecision.accepted, _note.text),
                     child: const Text('Accept'),

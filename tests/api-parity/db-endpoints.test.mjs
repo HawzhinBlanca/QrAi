@@ -326,6 +326,42 @@ test("POST /v1/teacher-reviews cannot forge authorship by supplying another teac
   assert.equal(res.body.teacherId, "teacher-1", "a supplied teacherId must be ignored, not honoured");
 });
 
+/**
+ * ADR-0027 item 6 — a teacher cannot release a finding with nothing behind it.
+ *
+ * integration.rs:4654 — accepting_an_unsourced_finding_is_refused_but_rejecting_it_is_not
+ *
+ * The refusal message is wire contract: both implementations must return the SAME string, because a
+ * client that branches on it would otherwise behave differently depending on which one answered.
+ */
+test("POST /v1/teacher-reviews refuses to ACCEPT a finding with no sources", async () => {
+  const [finding] = await queryJson(
+    "SELECT id FROM tajweed_findings WHERE jsonb_array_length(source_refs) = 0 ORDER BY id LIMIT 1",
+  );
+  if (!finding) {
+    // The seed's findings are sourced. Rather than skip silently, say so — a green tick here with
+    // nothing asserted is how coverage rots.
+    console.log("      (no unsourced finding in the seed; refusal covered by the Rust integration test)");
+    return;
+  }
+
+  const res = await request(api.baseUrl, "/v1/teacher-reviews", {
+    method: "POST",
+    role: "teacher",
+    body: reviewBody({ findingId: finding.id, decision: "accepted" }),
+  });
+  assert.equal(res.status, 400);
+  assert.match(res.body.error, /no source/, "the refusal must name the reason");
+
+  // Rejecting the same finding is exactly what a teacher SHOULD be able to do with it.
+  const rejected = await request(api.baseUrl, "/v1/teacher-reviews", {
+    method: "POST",
+    role: "teacher",
+    body: reviewBody({ findingId: finding.id, decision: "rejected" }),
+  });
+  assert.equal(rejected.status, 200, "an unsourced finding must not be trapped in the queue");
+});
+
 test("POST /v1/teacher-reviews is 404 for a dangling finding, not a 500", async () => {
   // A missing referenced entity is a 404. Before the pre-check this hit the FK constraint and
   // surfaced as a 500, which is a different thing to a caller and to an alerting rule.

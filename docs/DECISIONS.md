@@ -1101,12 +1101,17 @@ it also carries at least one source and clears the 0.82 confidence floor
 Postgres: analyse → persist → teacher accepts → the learner reads it back as `teacher-reviewed`,
 satisfying every term of the gate.
 
-**What still does not close, and for whom.** The chain needs alignments, and the Flutter practice
-flow produces none — it streams to the realtime gateway, which forwards audio chunks to
-`/v1/audio-chunks` and computes no alignment. So a Flutter session persists nothing and its learner
-still sees "waiting for a teacher to review", correctly: there is no stored finding to approve. The
-web flow, which calls `/v1/ml/alignments:predict` and persists the result, closes fully. Giving the
-Flutter client an alignment step is a separate piece of work and is action item 5.
+The chain needs alignments, and the Flutter practice flow produced none — it streams to the realtime
+gateway, which forwarded audio chunks and computed nothing. Closed the same day by action item 5:
+the gateway's audio is transcribed where it lands (`ml-inference /v1/session-transcript`) and
+`POST /v1/recitation-sessions/{id}/finalize` derives and persists the alignment server-side, without
+letting the client say what the learner recited.
+
+**What remains unproven.** The whole chain has only ever run against a MOCKED ASR. Assembly,
+ordering, session scoping and the consent refusal are covered
+(`services/ml-inference/session-transcript.test.mjs`), but the accuracy of a real Whisper transcript
+— and whether the alignment it yields is fair to a learner — has not been measured. That needs the
+real service and someone who can judge Quranic recitation; it is not a test this repo can write.
 
 ### Action items
 
@@ -1123,5 +1128,10 @@ Flutter client an alignment step is a separate piece of work and is action item 
        `POST /v1/recitation-sessions/{id}/finalize` derives and persists the alignment server-side.
        The client supplies nothing about what was said — whoever supplies the recognised words
        decides what the learner is recorded as having recited.
-6. [ ] Decide whether teacher acceptance should refuse a sourceless finding, as scholar approval
-       does. Owner/scholar call.
+6. [x] Decide whether teacher acceptance should refuse a sourceless finding, as scholar approval
+       does. Done 2026-08-02, on the owner's instruction: it refuses, in both implementations,
+       BEFORE any write — so a refused acceptance leaves no row and no audit trail implying one was
+       considered. Only `accepted` is refused; rejecting or editing an unsourced finding is what a
+       teacher should be able to do with one, and refusing those would trap it in the queue. The
+       Flutter review card disables Accept for the same case rather than letting a teacher spend
+       judgement on a 400.
