@@ -126,7 +126,16 @@ class ConsentGatedRecorder {
     final AudioRecorder? recorder = _recorder;
     if (recorder == null) return;
     _recorder = null;
-    await recorder.stop();
-    await recorder.dispose();
+    try {
+      await recorder.stop();
+    } finally {
+      // ALWAYS dispose — the mirror of the guard in `start()` above, which this was missing.
+      //
+      // A `stop()` that threw is precisely when the device is most likely still held: a platform
+      // channel error, a socket that would not close. Leaving `dispose()` unreached there leaves a
+      // child's microphone open after they pressed Stop, and nothing in the UI would say so.
+      // `dispose` runs even so, and the original error still propagates to the caller.
+      await recorder.dispose();
+    }
   }
 }

@@ -236,5 +236,37 @@ void main() {
       expect(shown, isNot(contains(leak)), reason: '$leak reached the learner');
     }
   });
+
+  testWidgets('a stop that fails does not leave the screen claiming to be recording',
+      (WidgetTester tester) async {
+    // The status line used to keep its last value when gate.stop() threw, so the button flipped to
+    // "Start reciting" while the screen still read "Recording Surah 1 1-7" — and the error escaped
+    // unhandled. A learner told they are recording when they are not is the failure this catches.
+    await tester.pumpWidget(
+      host(stubClient(<http.Request>[]), (RealtimeTicket _) => _StopThrows()),
+    );
+
+    await tapKey(tester, 'consent-guardian');
+    await tapKey(tester, 'practice-toggle');
+    expect(statusText(tester), contains('Recording'));
+
+    await tapKey(tester, 'practice-toggle');
+
+    final String shown = statusText(tester)!;
+    expect(shown, isNot(contains('Recording Surah')), reason: 'still claims to be recording');
+    expect(shown, contains('Recording stopped'));
+    // Never claims the recitation was delivered, because that is not known.
+    expect(shown, isNot(contains('sent for review')));
+  });
+}
+
+/// A recorder whose stop() fails, as a platform channel can.
+class _StopThrows implements AudioRecorder {
+  @override
+  Future<void> start() async {}
+  @override
+  Future<void> stop() async => throw StateError('platform channel died');
+  @override
+  Future<void> dispose() async {}
 }
 

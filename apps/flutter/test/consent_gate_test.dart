@@ -176,4 +176,37 @@ void main() {
     expect(factoryCalls, 0, reason: 'asking whether capture is allowed must construct nothing');
     expect(micPrompts, 0);
   });
+
+  test('a stop() that throws still releases the microphone', () async {
+    // The mirror of the start-failure guard above, which this file had and stop() did not.
+    // A platform channel error on stop left dispose() unreached — a child's microphone held open
+    // after they pressed Stop, with nothing in the UI saying so.
+    final _ThrowsOnStop recorder = _ThrowsOnStop();
+    final ConsentGatedRecorder gate = ConsentGatedRecorder(
+      recorderFactory: () => recorder,
+      requestMicPermission: () async => true,
+    );
+    await gate.start(const ConsentState(
+      recordingConsent: true,
+      guardianApproved: true,
+      guardianRequired: false,
+    ));
+
+    await expectLater(gate.stop(), throwsA(isA<StateError>()));
+    expect(recorder.disposed, isTrue, reason: 'the microphone was left held after a failed stop');
+    expect(gate.isRecording, isFalse);
+  });
 }
+
+/// Fails the way a platform channel does: `stop()` throws, `dispose()` still must run.
+class _ThrowsOnStop implements AudioRecorder {
+  bool disposed = false;
+
+  @override
+  Future<void> start() async {}
+  @override
+  Future<void> stop() async => throw StateError('platform channel died');
+  @override
+  Future<void> dispose() async => disposed = true;
+}
+
