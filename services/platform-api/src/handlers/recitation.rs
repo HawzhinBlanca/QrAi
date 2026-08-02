@@ -509,6 +509,177 @@ pub struct PersistAlignmentsRequest {
 /// (one query, not one per alignment). Rows skipped for an unrecognised status vs. a non-canonical
 /// word are counted separately and returned (`skippedInvalidStatus`, `skippedUnknownWord`), and an
 /// unrecognised status is logged, so incomplete feedback is visible instead of a silent gap.
+/// The write half of `persist_session_alignments`, without the HTTP shell.
+///
+/// Extracted so `finalize_session` can persist a server-derived alignment through EXACTLY this
+/// code. Duplicating it would have meant two copies of the FK-safe cascade below, and the one that
+/// drifted would silently stop deleting a teacher's review before re-aligning under it.
+///
+/// Does not commit — the caller owns the transaction, because `finalize_session` has more to do in
+/// the same one.
+#[allow(clippy::too_many_arguments)]
+async fn persist_alignments_in_tx(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    tenant_id: &str,
+    actor_user_id: &str,
+    session_id: &str,
+    req: PersistAlignmentsRequest,
+    trace_id: Option<String>,
+) -> Result<serde_json::Value, ApiError> {
+    // FK3 — model_version must satisfy the FK against model_versions(id).
+    //
+    // This used to fall back to "model-v0.3" when the requested model was unknown, and return 200.
+    // That is worse than the 500s it was avoiding: a caller says "this alignment came from model X",
+    // the row is stored as model-v0.3, and the caller is never told the label changed. Every
+    // downstream "which model produced this?" — tajweed_findings, the Command console — then has a
+    // confidently wrong answer, and unlike a 500 nothing surfaces it.
+    //
+    // ABSENT still defaults. That is a default, not a substitution: the caller asserted nothing, so
+    // nothing is being overridden. Only a PRESENT-and-unknown value is now refused.
+    let model_version = match req.model_version {
+        None => "model-v0.3".to_owned(),
+        Some(requested) => {
+            let known: Option<String> =
+                sqlx::query_scalar("SELECT id FROM model_versions WHERE id = $1")
+                    .bind(&requested)
+                    .fetch_optional(&mut **tx)
+                    .await?;
+            known.ok_or(ApiError::BadRequest(format!(
+                "unknown model version: {requested}"
+            )))?
+        }
+    };
+
+    // Replace-on-write: clear the session's prior alignment first, in FK-safe order.
+    // tajweed_findings.alignment_id and teacher_reviews.finding_id both RESTRICT, so a naked
+    // DELETE of word_alignments would raise a foreign_key_violation (→ 500) for any session
+    // that already has findings/reviews. Re-recording the alignment invalidates those old
+    // findings anyway (they point at words being re-aligned), so cascade them explicitly:
+    // teacher_reviews → tajweed_findings → word_alignments, all scoped to this session.
+    let deleted_teacher_reviews = sqlx::query(
+        "DELETE FROM teacher_reviews WHERE tenant_id = $1 AND finding_id IN (
+             SELECT tf.id FROM tajweed_findings tf
+             JOIN word_alignments wa ON wa.id = tf.alignment_id
+             WHERE wa.session_id = $2 AND wa.tenant_id = $1)",
+    )
+    .bind(tenant_id)
+    .bind(session_id)
+    .execute(&mut **tx)
+    .await?
+    .rows_affected();
+
+    let deleted_tajweed_findings = sqlx::query(
+        "DELETE FROM tajweed_findings WHERE tenant_id = $1 AND alignment_id IN (
+             SELECT id FROM word_alignments WHERE session_id = $2 AND tenant_id = $1)",
+    )
+    .bind(tenant_id)
+    .bind(session_id)
+    .execute(&mut **tx)
+    .await?
+    .rows_affected();
+
+    sqlx::query("DELETE FROM word_alignments WHERE session_id = $1 AND tenant_id = $2")
+        .bind(session_id)
+        .bind(tenant_id)
+        .execute(&mut **tx)
+        .await?;
+
+    // Audit AFTER the cascade, recording what this request ACTUALLY destroyed. The cascade above is
+    // authorized for the session OWNER (require_self_or_any), so a learner re-recording their own
+    // session silently erased any teacher_reviews a teacher had already submitted on it — with the
+    // audit event giving no hint that review history was destroyed. Whether that cascade is the right
+    // POLICY is a product decision (still open); making the erasure VISIBLE is not, so record the
+    // real deleted counts. Still ordered before the word_alignments INSERTs below, which FK-reference
+    // this audit row.
+    let audit_id = next_id("audit");
+    sqlx::query(
+        "INSERT INTO audit_events (id, tenant_id, actor_id, action, subject_type, subject_id, metadata)
+         VALUES ($1, $2, $3, 'recitation.alignment.persisted', 'recitation_session', $4, $5)",
+    )
+    .bind(&audit_id)
+    .bind(tenant_id)
+    .bind(actor_user_id)
+    .bind(session_id)
+    .bind(serde_json::json!({
+        "trace_id": trace_id,
+        "count": req.alignments.len(),
+        "deletedTeacherReviews": deleted_teacher_reviews,
+        "deletedTajweedFindings": deleted_tajweed_findings,
+    }))
+    .execute(&mut **tx)
+    .await?;
+
+    const VALID_STATUS: [&str; 5] = ["matched", "misread", "missed", "extra", "needs-review"];
+    // Partition once. An UNRECOGNISED status is a data-quality signal from the ML service (e.g. a typo
+    // like "matche"), not something to drop silently — count it, log it, and report it to the caller
+    // so incomplete feedback is visible rather than a silent gap.
+    let (valid, invalid_status): (Vec<_>, Vec<_>) = req
+        .alignments
+        .iter()
+        .partition(|a| VALID_STATUS.contains(&a.status.as_str()));
+
+    // Batch the canonical-word existence check into ONE query (was N+1 — one SELECT per alignment,
+    // e.g. 29 round-trips for Al-Fatihah). canonical_words is global reference data (not tenant-scoped).
+    let candidate_ids: Vec<String> = valid.iter().map(|a| a.word_id.clone()).collect();
+    let known_words: std::collections::HashSet<String> =
+        sqlx::query_scalar::<_, String>("SELECT id FROM canonical_words WHERE id = ANY($1)")
+            .bind(&candidate_ids)
+            .fetch_all(&mut **tx)
+            .await?
+            .into_iter()
+            .collect();
+
+    let mut persisted = 0i64;
+    let mut skipped_unknown_word = 0i64;
+    for a in valid {
+        // Only real canonical words satisfy the word_id FK; synthetic ids ("extra-N") are EXPECTED to
+        // be absent (an "extra" word the learner said that isn't in the canonical text) — not an error.
+        if !known_words.contains(&a.word_id) {
+            skipped_unknown_word += 1;
+            continue;
+        }
+        let wa_id = next_id("word-alignment");
+        sqlx::query(
+            "INSERT INTO word_alignments
+                (id, tenant_id, session_id, word_id, heard_text, start_ms, end_ms, confidence, status, model_version_id, audit_event_id)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8::float8::numeric, $9, $10, $11)",
+        )
+        .bind(&wa_id)
+        .bind(tenant_id)
+        .bind(session_id)
+        .bind(&a.word_id)
+        .bind(&a.heard_text)
+        .bind(a.start_ms)
+        .bind(a.end_ms)
+        .bind(a.confidence.clamp(0.0, 1.0))
+        .bind(&a.status)
+        .bind(&model_version)
+        .bind(&audit_id)
+        .execute(&mut **tx)
+        .await?;
+        persisted += 1;
+    }
+
+    let skipped_invalid_status = invalid_status.len() as i64;
+    if skipped_invalid_status > 0 {
+        // Log the actual offending status strings (not just a count) so a data-quality problem in the
+        // ML output is greppable/actionable without reproducing against the DB.
+        let bad_statuses: Vec<&str> = invalid_status.iter().map(|a| a.status.as_str()).collect();
+        tracing::warn!(
+            "persist_session_alignments session={session_id}: {skipped_invalid_status} alignment(s) had an \
+             unrecognised status and were skipped (ML data-quality issue): {bad_statuses:?}"
+        );
+    }
+
+    Ok(serde_json::json!({
+        "sessionId": session_id,
+        "persisted": persisted,
+        "skippedInvalidStatus": skipped_invalid_status,
+        "skippedUnknownWord": skipped_unknown_word,
+        "auditEventId": audit_id,
+    }))
+}
+
 pub async fn persist_session_alignments(
     State(state): State<AppState>,
     method: axum::http::Method,
@@ -533,161 +704,17 @@ pub async fn persist_session_alignments(
         &[ActorRole::Teacher, ActorRole::Admin, ActorRole::Ops],
     )?;
 
-    // FK3 — model_version must satisfy the FK against model_versions(id).
-    //
-    // This used to fall back to "model-v0.3" when the requested model was unknown, and return 200.
-    // That is worse than the 500s it was avoiding: a caller says "this alignment came from model X",
-    // the row is stored as model-v0.3, and the caller is never told the label changed. Every
-    // downstream "which model produced this?" — tajweed_findings, the Command console — then has a
-    // confidently wrong answer, and unlike a 500 nothing surfaces it.
-    //
-    // ABSENT still defaults. That is a default, not a substitution: the caller asserted nothing, so
-    // nothing is being overridden. Only a PRESENT-and-unknown value is now refused.
-    let model_version = match req.model_version {
-        None => "model-v0.3".to_owned(),
-        Some(requested) => {
-            let known: Option<String> =
-                sqlx::query_scalar("SELECT id FROM model_versions WHERE id = $1")
-                    .bind(&requested)
-                    .fetch_optional(&mut *tx)
-                    .await?;
-            known.ok_or(ApiError::BadRequest(format!(
-                "unknown model version: {requested}"
-            )))?
-        }
-    };
-
-    // Replace-on-write: clear the session's prior alignment first, in FK-safe order.
-    // tajweed_findings.alignment_id and teacher_reviews.finding_id both RESTRICT, so a naked
-    // DELETE of word_alignments would raise a foreign_key_violation (→ 500) for any session
-    // that already has findings/reviews. Re-recording the alignment invalidates those old
-    // findings anyway (they point at words being re-aligned), so cascade them explicitly:
-    // teacher_reviews → tajweed_findings → word_alignments, all scoped to this session.
-    let deleted_teacher_reviews = sqlx::query(
-        "DELETE FROM teacher_reviews WHERE tenant_id = $1 AND finding_id IN (
-             SELECT tf.id FROM tajweed_findings tf
-             JOIN word_alignments wa ON wa.id = tf.alignment_id
-             WHERE wa.session_id = $2 AND wa.tenant_id = $1)",
+    let out = persist_alignments_in_tx(
+        &mut tx,
+        &actor.tenant_id,
+        &actor.user_id,
+        &id,
+        req,
+        crate::auth::extract_trace_id(&headers),
     )
-    .bind(&actor.tenant_id)
-    .bind(&id)
-    .execute(&mut *tx)
-    .await?
-    .rows_affected();
-
-    let deleted_tajweed_findings = sqlx::query(
-        "DELETE FROM tajweed_findings WHERE tenant_id = $1 AND alignment_id IN (
-             SELECT id FROM word_alignments WHERE session_id = $2 AND tenant_id = $1)",
-    )
-    .bind(&actor.tenant_id)
-    .bind(&id)
-    .execute(&mut *tx)
-    .await?
-    .rows_affected();
-
-    sqlx::query("DELETE FROM word_alignments WHERE session_id = $1 AND tenant_id = $2")
-        .bind(&id)
-        .bind(&actor.tenant_id)
-        .execute(&mut *tx)
-        .await?;
-
-    // Audit AFTER the cascade, recording what this request ACTUALLY destroyed. The cascade above is
-    // authorized for the session OWNER (require_self_or_any), so a learner re-recording their own
-    // session silently erased any teacher_reviews a teacher had already submitted on it — with the
-    // audit event giving no hint that review history was destroyed. Whether that cascade is the right
-    // POLICY is a product decision (still open); making the erasure VISIBLE is not, so record the
-    // real deleted counts. Still ordered before the word_alignments INSERTs below, which FK-reference
-    // this audit row.
-    let audit_id = next_id("audit");
-    let trace_id = crate::auth::extract_trace_id(&headers);
-    sqlx::query(
-        "INSERT INTO audit_events (id, tenant_id, actor_id, action, subject_type, subject_id, metadata)
-         VALUES ($1, $2, $3, 'recitation.alignment.persisted', 'recitation_session', $4, $5)",
-    )
-    .bind(&audit_id)
-    .bind(&actor.tenant_id)
-    .bind(&actor.user_id)
-    .bind(&id)
-    .bind(serde_json::json!({
-        "trace_id": trace_id,
-        "count": req.alignments.len(),
-        "deletedTeacherReviews": deleted_teacher_reviews,
-        "deletedTajweedFindings": deleted_tajweed_findings,
-    }))
-    .execute(&mut *tx)
     .await?;
-
-    const VALID_STATUS: [&str; 5] = ["matched", "misread", "missed", "extra", "needs-review"];
-    // Partition once. An UNRECOGNISED status is a data-quality signal from the ML service (e.g. a typo
-    // like "matche"), not something to drop silently — count it, log it, and report it to the caller
-    // so incomplete feedback is visible rather than a silent gap.
-    let (valid, invalid_status): (Vec<_>, Vec<_>) = req
-        .alignments
-        .iter()
-        .partition(|a| VALID_STATUS.contains(&a.status.as_str()));
-
-    // Batch the canonical-word existence check into ONE query (was N+1 — one SELECT per alignment,
-    // e.g. 29 round-trips for Al-Fatihah). canonical_words is global reference data (not tenant-scoped).
-    let candidate_ids: Vec<String> = valid.iter().map(|a| a.word_id.clone()).collect();
-    let known_words: std::collections::HashSet<String> =
-        sqlx::query_scalar::<_, String>("SELECT id FROM canonical_words WHERE id = ANY($1)")
-            .bind(&candidate_ids)
-            .fetch_all(&mut *tx)
-            .await?
-            .into_iter()
-            .collect();
-
-    let mut persisted = 0i64;
-    let mut skipped_unknown_word = 0i64;
-    for a in valid {
-        // Only real canonical words satisfy the word_id FK; synthetic ids ("extra-N") are EXPECTED to
-        // be absent (an "extra" word the learner said that isn't in the canonical text) — not an error.
-        if !known_words.contains(&a.word_id) {
-            skipped_unknown_word += 1;
-            continue;
-        }
-        let wa_id = next_id("word-alignment");
-        sqlx::query(
-            "INSERT INTO word_alignments
-                (id, tenant_id, session_id, word_id, heard_text, start_ms, end_ms, confidence, status, model_version_id, audit_event_id)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8::float8::numeric, $9, $10, $11)",
-        )
-        .bind(&wa_id)
-        .bind(&actor.tenant_id)
-        .bind(&id)
-        .bind(&a.word_id)
-        .bind(&a.heard_text)
-        .bind(a.start_ms)
-        .bind(a.end_ms)
-        .bind(a.confidence.clamp(0.0, 1.0))
-        .bind(&a.status)
-        .bind(&model_version)
-        .bind(&audit_id)
-        .execute(&mut *tx)
-        .await?;
-        persisted += 1;
-    }
-
-    let skipped_invalid_status = invalid_status.len() as i64;
-    if skipped_invalid_status > 0 {
-        // Log the actual offending status strings (not just a count) so a data-quality problem in the
-        // ML output is greppable/actionable without reproducing against the DB.
-        let bad_statuses: Vec<&str> = invalid_status.iter().map(|a| a.status.as_str()).collect();
-        tracing::warn!(
-            "persist_session_alignments session={id}: {skipped_invalid_status} alignment(s) had an \
-             unrecognised status and were skipped (ML data-quality issue): {bad_statuses:?}"
-        );
-    }
-
     tx.commit().await?;
-
-    Ok(Json(serde_json::json!({
-        "sessionId": id,
-        "persisted": persisted,
-        "skippedInvalidStatus": skipped_invalid_status,
-        "skippedUnknownWord": skipped_unknown_word,
-        "auditEventId": audit_id,
-    })))
+    Ok(Json(out))
 }
 
 /// Learner-initiated "send to teacher": flips the caller's OWN session from draft to
@@ -802,4 +829,196 @@ mod tests {
     fn parse_review_status_rejects_an_unknown_value() {
         assert!(parse_review_status("not-a-real-status").is_err());
     }
+}
+
+/// `POST /v1/recitation-sessions/{id}/finalize` — turn a streamed recitation into a reviewable one.
+///
+/// ── The link this closes ────────────────────────────────────────────────────────────────────────
+/// A gateway-streamed recitation reached `ml-inference` as audio chunks and stopped there: no
+/// transcript, so no alignment, so no finding a teacher could review and nothing the learner could
+/// ever be shown. This is what runs the rest of the chain, server-side:
+///
+///   stored chunks → transcript → alignment → persisted `word_alignments`
+///
+/// and from there the existing path takes over: the tajweed analysis anchors findings to those
+/// alignments (`ml_proxy::persist_tajweed_findings`), a teacher promotes one (ADR-0027), and the
+/// learner reads it back.
+///
+/// ── Why the CLIENT does not supply the transcript ───────────────────────────────────────────────
+/// Whoever supplies the recognised words decides what the learner is recorded as having said. The
+/// web client passes its own `recognizedText` to `/v1/ml/alignments:predict` today, which means a
+/// client can assert a flawless recitation and have it stored. Here the transcript is fetched
+/// server-to-server from the service that holds the audio; the caller only names the session.
+///
+/// ── Consent is read from the database, never from the request ───────────────────────────────────
+/// The stored chunk metadata carries none (the gateway sends none), so this reads the session's
+/// consent record and passes it to `ml-inference`, which refuses without it. A learner who declined
+/// external-ASR processing gets `finalized: false` and NO stored alignment — not a fabricated one.
+pub async fn finalize_session(
+    State(state): State<AppState>,
+    method: axum::http::Method,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let actor = crate::auth::resolve_actor(&method, &headers, &state).await?;
+
+    // ── 1. Who owns this, what they consented to, and what they were reciting ──────────────────
+    // Read and COMMIT before the network calls below: holding a transaction (and its pooled
+    // connection) across two HTTP round-trips to another service is how a slow ASR run turns into
+    // pool exhaustion for every other request.
+    let mut tx = crate::begin_tenant_tx(&state.pool, &actor.tenant_id).await?;
+    let row = sqlx::query(
+        "SELECT s.learner_id, s.quran_ref, c.guardian_approved, c.external_asr_processing
+         FROM recitation_sessions s
+         JOIN consent_records c ON c.id = s.consent_record_id
+         WHERE s.id = $1 AND s.tenant_id = $2",
+    )
+    .bind(&id)
+    .bind(&actor.tenant_id)
+    .fetch_optional(&mut *tx)
+    .await?;
+    tx.commit().await?;
+
+    let row = row.ok_or(ApiError::NotFound)?;
+    let learner_id: String = row.try_get("learner_id")?;
+    actor.require_self_or_any(
+        &learner_id,
+        &[ActorRole::Teacher, ActorRole::Admin, ActorRole::Ops],
+    )?;
+    let quran_ref: serde_json::Value = row.try_get("quran_ref")?;
+    let consent = serde_json::json!({
+        "guardianApproved": row.try_get::<bool, _>("guardian_approved")?,
+        "externalAsrProcessing": row.try_get::<bool, _>("external_asr_processing")?,
+    });
+
+    // ── 2. The transcript, from the service that holds the audio ───────────────────────────────
+    let transcript = ml_post(
+        &state,
+        "/v1/session-transcript",
+        serde_json::json!({
+            "tenantId": actor.tenant_id,
+            "learnerId": learner_id,
+            "sessionId": id,
+            "consent": consent,
+        }),
+    )
+    .await?;
+
+    if !transcript
+        .get("transcribed")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false)
+    {
+        // No transcript, no alignment. Reported rather than swallowed: "we did not analyse this"
+        // and "you recited it perfectly" are the two answers this endpoint could give, and only one
+        // of them is true.
+        return Ok(Json(serde_json::json!({
+            "sessionId": id,
+            "finalized": false,
+            "reason": transcript.get("reason").and_then(|v| v.as_str()).unwrap_or("unknown"),
+            "persisted": 0,
+        })));
+    }
+
+    // ── 3. Align the real words against the canonical text ─────────────────────────────────────
+    let recognized = transcript
+        .get("recognizedText")
+        .cloned()
+        .unwrap_or_else(|| serde_json::json!([]));
+    let alignment = ml_post(
+        &state,
+        "/v1/alignments:predict",
+        serde_json::json!({
+            "tenantId": actor.tenant_id,
+            "sessionId": id,
+            "quranRef": quran_ref,
+            "recognizedText": recognized,
+            "consent": consent,
+        }),
+    )
+    .await?;
+
+    // ── 4. Persist, through the SAME code the client-facing route uses ─────────────────────────
+    let inputs: Vec<PersistAlignmentInput> = alignment
+        .get("alignments")
+        .and_then(|v| v.as_array())
+        .map(|rows| {
+            rows.iter()
+                .filter_map(|a| {
+                    Some(PersistAlignmentInput {
+                        word_id: a.get("wordId")?.as_str()?.to_owned(),
+                        heard_text: a
+                            .get("heardText")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or_default()
+                            .to_owned(),
+                        start_ms: a.get("startMs").and_then(|v| v.as_i64()).unwrap_or(0) as i32,
+                        end_ms: a.get("endMs").and_then(|v| v.as_i64()).unwrap_or(0) as i32,
+                        confidence: a.get("confidence").and_then(|v| v.as_f64()).unwrap_or(0.0),
+                        status: a
+                            .get("status")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("needs-review")
+                            .to_owned(),
+                    })
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+
+    let mut tx = crate::begin_tenant_tx(&state.pool, &actor.tenant_id).await?;
+    let persisted = persist_alignments_in_tx(
+        &mut tx,
+        &actor.tenant_id,
+        &actor.user_id,
+        &id,
+        PersistAlignmentsRequest {
+            alignments: inputs,
+            // Absent, not asserted: this alignment came from the ML service and the caller is not
+            // claiming a model id. `persist_alignments_in_tx` defaults; a present-but-unknown value
+            // would (correctly) be refused.
+            model_version: None,
+        },
+        crate::auth::extract_trace_id(&headers),
+    )
+    .await?;
+    tx.commit().await?;
+
+    Ok(Json(serde_json::json!({
+        "sessionId": id,
+        "finalized": true,
+        "reason": "consent-granted",
+        "chunkCount": transcript.get("chunkCount").cloned().unwrap_or(serde_json::json!(0)),
+        "persisted": persisted.get("persisted").cloned().unwrap_or(serde_json::json!(0)),
+        "auditEventId": persisted.get("auditEventId").cloned(),
+    })))
+}
+
+/// One server-to-server POST to the ML service. Upstream detail is logged, never returned — the
+/// same rule `ml_proxy` follows, for the same reason (the error text carries the internal URL).
+async fn ml_post(
+    state: &AppState,
+    path: &str,
+    body: serde_json::Value,
+) -> Result<serde_json::Value, ApiError> {
+    let response = state
+        .http_client
+        .post(format!("{}{}", state.ml_inference_url, path))
+        .header("content-type", "application/json")
+        .header("x-ml-api-key", &state.ml_api_key)
+        .json(&body)
+        .send()
+        .await
+        .map_err(|e| {
+            tracing::error!("finalize: {path} send error: {e}");
+            ApiError::Upstream("ML service unavailable".to_owned())
+        })?;
+    if !response.status().is_success() {
+        tracing::warn!("finalize: {path} upstream status {}", response.status());
+        return Err(ApiError::Upstream("ML service error".to_owned()));
+    }
+    response.json().await.map_err(|e| {
+        tracing::error!("finalize: {path} parse error: {e}");
+        ApiError::Upstream("ML service returned an invalid response".to_owned())
+    })
 }

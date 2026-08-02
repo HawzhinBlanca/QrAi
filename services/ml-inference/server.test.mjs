@@ -14,7 +14,9 @@ import { join } from "node:path";
 // run is hermetic — no accumulation across runs, no writes into the repo's audio-storage/.
 process.env.AUDIO_STORAGE_DIR = mkdtempSync(join(tmpdir(), "ml-inference-test-"));
 
-const { predictAlignment, predictTajweed, createEvalRun, getAuditEvents, safeStorageSegment, route } =
+const { predictAlignment,
+  transcribeSession,
+  wavFromPcm16, predictTajweed, createEvalRun, getAuditEvents, safeStorageSegment, route } =
   await import("./server.mjs");
 
 // Minimal mock of the http.IncomingMessage/ServerResponse pair route() needs. GET requests never
@@ -78,8 +80,8 @@ test("child-profile audio without guardian consent is NOT sent to ASR (consent/c
 
 test("alignment audit event records the REAL confidence and word counts, not the golden fixture's", async () => {
   const tenantId = "test-audit-alignment-honesty";
-  // Default quranRef (Al-Fatihah 1:1-7) intentionally matches a golden fixture, with no audio and
-  // no recognizedText → the real path scores a perfect (canonical == recognized) recitation.
+  // Default quranRef (Al-Fatihah 1:1-7) intentionally matches a golden fixture. No audio and no
+  // recognizedText, so NOTHING was recognised.
   const res = await predictAlignment({ tenantId, sessionId: "s-align" });
   const ev = lastEvent(tenantId, "ml.alignment.predicted");
 
@@ -91,10 +93,29 @@ test("alignment audit event records the REAL confidence and word counts, not the
     res.alignments.length,
     "audit wordCount must equal the number of aligned words in the response",
   );
-  assert.equal(ev.details.recognizedCount, res.alignments.length, "audit recognizedCount must match too");
-  // A perfect real recitation of the full canonical set scores 1.0 — NOT the fixture's 0.94 — and
-  // spans the real 29-word Al-Fatihah 1:1-7, NOT the fixture's 8-word abbreviation.
-  assert.equal(res.confidence, 1, "perfect default recitation scores 1.0 (real path)");
+  assert.equal(ev.details.recognizedCount, 0, "nothing was recognised, and the audit must say so");
+
+  // ── This test used to assert `res.confidence === 1` ───────────────────────────────────────────
+  // Its comment read "the real path scores a perfect (canonical == recognized) recitation", which
+  // was true and was the bug: with no audio and no transcript the service aligned the canonical
+  // text against ITSELF and reported every word matched at confidence 1. `apps/web` persisted that
+  // unconditionally, and `word_alignments` has no reviewStatus column to carry the caveat — so a
+  // learner who declined ASR consent got a stored record of a flawless recitation of the Qur'an
+  // that nobody had listened to.
+  //
+  // There is no honest alignment without recognition.
+  assert.equal(res.confidence, 0, "nothing was heard, so no confidence in any match");
+  assert.ok(
+    res.alignments.every((a) => a.status === "needs-review"),
+    "every word must be needs-review — not `matched` (a claim they said it) and not `missed` " +
+      "(a claim they did not)",
+  );
+  assert.ok(
+    res.alignments.every((a) => a.heardText === ""),
+    "heardText must be empty; echoing the canonical text is what made this look like a match",
+  );
+  // Still the REAL 29-word set, not the fixture's 8-word abbreviation — the original point of this
+  // test, and unaffected by the above.
   assert.ok(res.alignments.length > 8, `expected the real 29-word set, got ${res.alignments.length}`);
 });
 
@@ -255,4 +276,113 @@ test("GET /v1/audit-events requires tenantId and never leaks another tenant's ev
     res.body.every((event) => event.tenantId === "audit-leak-tenant-a"),
     "response must contain ONLY tenant A's events, never tenant B's",
   );
+});
+
+test("a learner who declined ASR consent gets NO alignment claims, not a perfect score", async () => {
+  // The exact production trigger, measured against the running service before the fix:
+  //   externalAsr : {"called": false, "reason": "consent-revoked-or-insufficient"}
+  //   confidence  : 1
+  //   1:1:1: status=matched conf=1 heard='بِسْمِ'   ← the canonical text, echoed back
+  //
+  // `apps/web` persists alignments unconditionally and `word_alignments` has no reviewStatus
+  // column, so this became a stored record of a flawless recitation of the Qur'an that nobody had
+  // listened to — and, once findings anchor to alignments, a teacher's review queue built on it.
+  const res = await predictAlignment({
+    tenantId: "test-asr-denied",
+    sessionId: "s-denied",
+    externalAsrRequested: true,
+    audioBase64: "AAAA",
+    consent: { guardianApproved: true, externalAsrProcessing: false },
+  });
+
+  assert.equal(res.externalAsr.called, false, "consent was declined, so no audio may be sent");
+  assert.equal(res.confidence, 0, "nothing was heard, so nothing may be scored");
+  assert.ok(
+    res.alignments.every((a) => a.status === "needs-review" && a.confidence === 0 && a.heardText === ""),
+    "no word may be reported as matched, missed, or heard as anything",
+  );
+});
+
+test("a real transcript still aligns normally — the fix does not blunt recognition", async () => {
+  // The other direction. A guard that made every alignment `needs-review` would be safe and
+  // useless; the point is that unrecognised means unrecognised, not that nothing ever matches.
+  const res = await predictAlignment({
+    tenantId: "test-asr-real",
+    sessionId: "s-real",
+    quranRef: { surahNumber: 1, ayahStart: 1, ayahEnd: 1, display: "x" },
+    recognizedTextString: "بِسْمِ ٱللَّهِ ٱلرَّحْمَٰنِ ٱلرَّحِيمِ",
+  });
+  assert.equal(res.confidence, 1, "a correct recitation still scores 1");
+  assert.ok(res.alignments.every((a) => a.status === "matched"));
+});
+
+// ── Session transcription from the gateway's stored chunks ──────────────────────────────────────
+
+test("wavFromPcm16 writes a header that DESCRIBES the samples and changes none of them", () => {
+  // The gateway forwards raw PCM16; the ASR service accepts only container formats. A wrong header
+  // is not a crash — the ASR reads the samples at the wrong rate and transcribes a recitation that
+  // sounds nothing like what was recorded.
+  const pcm = Buffer.from([0x01, 0x00, 0x02, 0x00, 0x03, 0x00]);
+  const wav = wavFromPcm16(pcm, 16000);
+
+  assert.equal(wav.toString("ascii", 0, 4), "RIFF");
+  assert.equal(wav.toString("ascii", 8, 12), "WAVE");
+  assert.equal(wav.readUInt16LE(20), 1, "audio format 1 = uncompressed PCM");
+  assert.equal(wav.readUInt16LE(22), 1, "mono");
+  assert.equal(wav.readUInt32LE(24), 16000, "sample rate");
+  assert.equal(wav.readUInt32LE(28), 16000 * 2, "byte rate = rate * channels * bytesPerSample");
+  assert.equal(wav.readUInt16LE(34), 16, "bits per sample");
+  assert.equal(wav.readUInt32LE(40), pcm.length, "data size must equal the PCM length");
+  assert.equal(wav.length, 44 + pcm.length, "44-byte header, then the samples verbatim");
+  assert.deepEqual(wav.subarray(44), pcm, "the samples must be byte-identical");
+});
+
+test("a 48kHz stream is described as 48kHz, not assumed to be 16k", () => {
+  // The rate comes from the chunk metadata. Hardcoding 16000 would make every other rate play back
+  // at the wrong speed and transcribe as gibberish.
+  const wav = wavFromPcm16(Buffer.alloc(4), 48000);
+  assert.equal(wav.readUInt32LE(24), 48000);
+  assert.equal(wav.readUInt32LE(28), 48000 * 2);
+});
+
+test("no ASR consent means no transcription, and the refusal is audited", async () => {
+  const tenantId = "test-transcript-denied";
+  const res = await transcribeSession({
+    tenantId,
+    learnerId: "learner-1",
+    sessionId: "s-denied",
+    consent: { externalAsrProcessing: false, guardianApproved: true },
+  });
+
+  assert.equal(res.transcribed, false);
+  assert.equal(res.reason, "consent-revoked-or-insufficient");
+  assert.deepEqual(res.recognizedText, [], "no words may be claimed");
+  const ev = lastEvent(tenantId, "privacy.external-asr.denied");
+  assert.ok(ev, "a refusal to process someone's audio is an accountable act");
+});
+
+test("consent is required to be SUPPLIED, not merely absent-and-assumed", async () => {
+  // The stored chunk metadata carries no consent — the gateway does not send any — so a caller that
+  // forgot to pass it must be refused rather than defaulted to permitted.
+  const res = await transcribeSession({
+    tenantId: "test-transcript-noconsent",
+    learnerId: "learner-1",
+    sessionId: "s",
+  });
+  assert.equal(res.transcribed, false);
+  assert.equal(res.reason, "consent-revoked-or-insufficient");
+});
+
+test("a session with no stored audio says so, rather than returning an empty transcript", async () => {
+  // "no-audio" and "the learner said nothing" are different facts, and only one of them is a
+  // statement about the recitation.
+  const res = await transcribeSession({
+    tenantId: "test-transcript-empty",
+    learnerId: "learner-1",
+    sessionId: "s-none",
+    consent: { externalAsrProcessing: true, guardianApproved: true },
+  });
+  assert.equal(res.transcribed, false);
+  assert.equal(res.reason, "no-audio");
+  assert.deepEqual(res.recognizedText, []);
 });

@@ -53,7 +53,7 @@ test("the contract describes no route the service does not serve", () => {
   assert.deepEqual(phantom, [], `contracted but NOT served:\n  ${phantom.join("\n  ")}`);
 });
 
-test("the pair count is 39, CORRECTING Phase 7's 34", () => {
+test("the pair count is 40, CORRECTING Phase 7's 34", () => {
   // Phase 7's research counted 34 by matching only `axum::routing::<verb>(`. Five methods are
   // registered CHAINED on an existing MethodRouter — `axum::routing::get(h).post(h2)` — on
   // /v1/recitation-sessions, /v1/recitation-sessions/{id}/alignments, /v1/scholar-approvals,
@@ -67,8 +67,12 @@ test("the pair count is 39, CORRECTING Phase 7's 34", () => {
   // A learner had no route that READ a finding — `/v1/tajweed-findings` is staff-only and the ML
   // predict route re-analyses instead of reading — so a teacher's promotion moved a row nothing
   // learner-facing could reach.
-  assert.equal(rustPairs.length, 39, "lib.rs no longer registers 39 method+path pairs");
-  assert.equal(specPairs.size, 39);
+  //
+  // 39 -> 40 (2026-08-02, ADR-0027 item 5): POST /v1/recitation-sessions/{id}/finalize. A
+  // gateway-streamed recitation had no transcript and so no alignment; this derives both
+  // server-side, without letting the client say what the learner recited.
+  assert.equal(rustPairs.length, 40, "lib.rs no longer registers 40 method+path pairs");
+  assert.equal(specPairs.size, 40);
 });
 
 test("every operation declares at least one response, and error codes reference the shared shape", () => {

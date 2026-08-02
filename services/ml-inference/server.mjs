@@ -7,7 +7,7 @@
 
 import { createServer } from "node:http";
 import { randomUUID } from "node:crypto";
-import { readFileSync, existsSync, writeFileSync, appendFileSync, mkdirSync, realpathSync } from "node:fs";
+import { readFileSync, readdirSync, existsSync, writeFileSync, appendFileSync, mkdirSync, realpathSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
@@ -487,9 +487,25 @@ async function predictAlignment(requestBody) {
     // Get canonical words for the requested ayah range
     const canonicalWords = getCanonicalWords(quranRef.surahNumber, quranRef.ayahStart, quranRef.ayahEnd);
 
-    // Get recognized text: either from ASR (audio), from requestBody, or perfect recitation
+    // Get recognized text: from ASR (audio), from the caller, or NOTHING.
+    //
+    // ── The fallback used to invent a perfect recitation ─────────────────────────────────────────
+    // This branch previously ended `recognizedWords = canonicalWords.map(w => w.text)` — aligning
+    // the canonical text against ITSELF. Measured against the running service, a learner who
+    // declined external-ASR consent got back `status: "matched"`, `confidence: 1`, and
+    // `heardText` equal to the canonical text for EVERY word: a claim that they recited the Qur'an
+    // perfectly, about audio nobody listened to.
+    //
+    // `apps/web` persists alignments unconditionally, and `word_alignments` has no `reviewStatus`
+    // column, so the `teacher-review-required` flag set below was dropped on the way to the
+    // database. What remained was a stored record of a flawless recitation that never happened —
+    // and, since findings anchor to alignments, a teacher's review queue built on top of it.
+    //
+    // There is no honest alignment without recognition. `needs-review` (an existing
+    // `word_alignments.status` value) is what "we did not hear this word" looks like.
     let recognizedWords;
     let asrResult = null;
+    let recognized = true;
     if (requestBody.audioBase64 && asrActuallyAllowed) {
       // Real acoustic ASR: send audio to Whisper service — ONLY when consent (and, for a child
       // profile, guardian approval) actually permits it. Without this gate the audio was sent
@@ -512,7 +528,8 @@ async function predictAlignment(requestBody) {
       }
       recognizedWords = requestBody.recognizedTextString.trim().split(/\s+/);
     } else {
-      recognizedWords = canonicalWords.map((w) => w.text);
+      recognizedWords = [];
+      recognized = false;
     }
 
     // Bound the recognized side of the O(m·n) alignment DP too (the canonical side is capped in
@@ -524,8 +541,22 @@ async function predictAlignment(requestBody) {
       );
     }
 
-    const alignmentResults = alignWords(canonicalWords, recognizedWords);
-    confidence = calculateConfidence(alignmentResults);
+    // Not `alignWords(canonical, [])`: that reports every word as `missed`, which is also a claim
+    // about the recitation — "they left these out" — and equally unfounded when nothing was heard.
+    const alignmentResults = recognized
+      ? alignWords(canonicalWords, recognizedWords)
+      : canonicalWords.map((w) => ({
+          wordId: w.id,
+          canonicalText: w.text,
+          heardText: "",
+          status: "needs-review",
+          confidence: 0,
+        }));
+    // Not `calculateConfidence` when nothing was recognised: its weights describe how well
+    // RECOGNISED words matched, and `needs-review` carries 0.8 there — "the recogniser was unsure
+    // about this word", not "nobody listened to this recitation". Run through it, a session with no
+    // recognition at all scores 0.8, a whisker under the 0.85 auto-accept line.
+    confidence = recognized ? calculateConfidence(alignmentResults) : 0;
     reviewStatus = !asrAllowed
       ? "teacher-review-required"
       : confidence >= 0.85 ? "ai-suggested" : "teacher-review-required";
@@ -833,7 +864,124 @@ async function storeAudioChunk(requestBody) {
 export function getAuditEvents(tenantId) {
   return tenantId ? readTenantAuditEvents(tenantId) : [];
 }
-export { predictAlignment, predictTajweed, createEvalRun, safeStorageSegment, route };
+export { predictAlignment, predictTajweed, transcribeSession, createEvalRun, safeStorageSegment, route };
+
+
+/**
+ * Wrap raw PCM16 in a WAV container.
+ *
+ * The realtime gateway forwards what the client streams, and `apps/flutter`'s recorder streams raw
+ * PCM16 — but the ASR service accepts only container formats (`ALLOWED_AUDIO_FORMATS` in
+ * `services/asr-inference/server.py`: webm, wav, mp3, m4a, ogg, flac). A 44-byte RIFF header is the
+ * whole difference: it DESCRIBES the samples (rate, channels, bit depth) and changes none of them,
+ * so this is packaging, not processing.
+ */
+export function wavFromPcm16(pcm, sampleRate = 16000, channels = 1) {
+  const header = Buffer.alloc(44);
+  const byteRate = sampleRate * channels * 2;
+  header.write("RIFF", 0);
+  header.writeUInt32LE(36 + pcm.length, 4); // file size minus the first 8 bytes
+  header.write("WAVE", 8);
+  header.write("fmt ", 12);
+  header.writeUInt32LE(16, 16); // PCM fmt chunk size
+  header.writeUInt16LE(1, 20); // audio format 1 = PCM
+  header.writeUInt16LE(channels, 22);
+  header.writeUInt32LE(sampleRate, 24);
+  header.writeUInt32LE(byteRate, 28);
+  header.writeUInt16LE(channels * 2, 32); // block align
+  header.writeUInt16LE(16, 34); // bits per sample
+  header.write("data", 36);
+  header.writeUInt32LE(pcm.length, 40);
+  return Buffer.concat([header, pcm]);
+}
+
+/**
+ * Transcribe a whole session from the chunks the realtime gateway already forwarded here.
+ *
+ * ── Why this lives in ml-inference ──────────────────────────────────────────────────────────────
+ * The gateway streams audio to `/v1/audio-chunks`, which stored it and did nothing else — so a
+ * gateway-based recitation produced no transcript, therefore no alignment, therefore no finding a
+ * teacher could ever review. The audio is already here; this is what turns it into words.
+ *
+ * ── Consent is the CALLER's to supply, and it is not optional ───────────────────────────────────
+ * The stored chunk metadata carries no consent — the gateway does not send any (see its
+ * `/v1/audio-chunks` body). The authoritative record lives in platform-api's database, which is why
+ * this refuses unless the caller passes it, exactly as `predictAlignment` does. platform-api reads
+ * it from the session row and never from the client.
+ *
+ * Whole session, not per chunk: chunk boundaries fall mid-word, and transcribing each one
+ * separately would invent word breaks the learner did not make.
+ */
+async function transcribeSession(requestBody) {
+  const tenantId = safeStorageSegment(requestBody.tenantId, "tenantId");
+  const learnerId = safeStorageSegment(requestBody.learnerId, "learnerId");
+  const sessionId = requiredString(requestBody.sessionId, "sessionId");
+  const traceId = extractTraceId(requestBody);
+
+  const consent = requestBody.consent ?? {};
+  const asrAllowed = (consent.externalAsrProcessing ?? false) && (consent.guardianApproved ?? false);
+  if (!asrAllowed) {
+    appendAudit(tenantId, "privacy.external-asr.denied", sessionId, {
+      traceId,
+      reason: "consent-revoked-or-insufficient",
+    });
+    return {
+      transcribed: false,
+      reason: "consent-revoked-or-insufficient",
+      recognizedText: [],
+      chunkCount: 0,
+    };
+  }
+
+  const dir = join(AUDIO_STORAGE_DIR, tenantId, learnerId);
+  if (!existsSync(dir)) {
+    return { transcribed: false, reason: "no-audio", recognizedText: [], chunkCount: 0 };
+  }
+
+  // startMs, not filename: chunk ids are UUIDs, so lexical order is arbitrary and would splice the
+  // recitation out of sequence — which the ASR would faithfully transcribe as a different one.
+  const chunks = readdirSync(dir)
+    .filter((f) => f.endsWith(".meta.json"))
+    .map((f) => {
+      try {
+        return JSON.parse(readFileSync(join(dir, f), "utf8"));
+      } catch {
+        return null;
+      }
+    })
+    .filter((m) => m && m.sessionId === sessionId)
+    .sort((a, b) => (a.startMs ?? 0) - (b.startMs ?? 0));
+
+  const parts = [];
+  for (const meta of chunks) {
+    const bin = join(dir, `${meta.chunkId}.bin`);
+    // A chunk whose bytes are gone (erased, or never stored) is SKIPPED rather than treated as
+    // silence: inserting nothing is more honest than inserting a gap the learner did not leave.
+    if (existsSync(bin)) parts.push(readFileSync(bin));
+  }
+  if (parts.length === 0) {
+    return { transcribed: false, reason: "no-audio", recognizedText: [], chunkCount: chunks.length };
+  }
+
+  const sampleRate = chunks[0]?.sampleRate ?? 16000;
+  const wav = wavFromPcm16(Buffer.concat(parts), sampleRate);
+  const asr = await transcribeAudio(wav.toString("base64"), "wav", "ar");
+
+  appendAudit(tenantId, "privacy.external-asr.called", sessionId, {
+    traceId,
+    reason: "consent-granted",
+    chunkCount: parts.length,
+  });
+
+  return {
+    transcribed: true,
+    reason: "consent-granted",
+    // Canonical text is never normalised here; these are the ASR's words, passed through.
+    recognizedText: (asr.words ?? []).map((w) => w.word),
+    chunkCount: parts.length,
+    sampleRate,
+  };
+}
 
 // === Router ===
 async function route(request, response) {
@@ -886,6 +1034,11 @@ async function route(request, response) {
   const body = await readJson(request);
   if (url.pathname === "/v1/alignments:predict") {
     jsonResponse(response, 200, await predictAlignment(body));
+    return;
+  }
+
+  if (url.pathname === "/v1/session-transcript") {
+    jsonResponse(response, 200, await transcribeSession(body));
     return;
   }
 

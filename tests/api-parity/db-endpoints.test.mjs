@@ -127,6 +127,45 @@ test("GET /v1/audit-events is 403 for a learner AND for a teacher", async () => 
   }
 });
 
+// ── POST /v1/recitation-sessions/{id}/finalize ─────────────────────────────────────────────────
+
+/**
+ * ADR-0027 item 5 — a gateway-streamed recitation becomes a reviewable one.
+ *
+ * integration.rs:4541 — finalize_persists_a_server_derived_alignment_and_refuses_without_consent
+ * integration.rs:4609 — finalize_without_a_transcript_stores_nothing
+ *
+ * Black-box, so it covers whichever implementation is under test. The boundary is OWNERSHIP: this
+ * writes what a person is recorded as having recited, and a role-only check would let any learner
+ * in the tenant finalize any other learner's session.
+ *
+ * The happy path needs a live ML service and is covered by the Rust integration tests above with a
+ * mock; what runs here is the authorization boundary, which needs neither.
+ */
+test("POST finalize: another learner is Forbidden", async () => {
+  const [session] = await queryJson(
+    "SELECT id FROM recitation_sessions WHERE learner_id = 'learner-1' ORDER BY id LIMIT 1",
+  );
+  assert.ok(session, "the seed must provide a learner-1 session");
+
+  const res = await request(api.baseUrl, `/v1/recitation-sessions/${session.id}/finalize`, {
+    method: "POST",
+    role: "learner",
+    userId: "learner-2",
+    body: {},
+  });
+  assert.equal(res.status, 403, "a learner must not finalize another learner's recitation");
+});
+
+test("POST finalize: an unknown session is 404, before the ownership check", async () => {
+  const res = await request(api.baseUrl, "/v1/recitation-sessions/session-nope/finalize", {
+    method: "POST",
+    role: "learner",
+    body: {},
+  });
+  assert.equal(res.status, 404);
+});
+
 // ── GET /v1/recitation-sessions/{id}/tajweed-findings ──────────────────────────────────────────
 
 /**

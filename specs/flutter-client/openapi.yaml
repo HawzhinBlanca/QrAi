@@ -616,6 +616,46 @@ paths:
         '400': { $ref: '#/components/responses/BadRequest' }
         '403': { $ref: '#/components/responses/Forbidden' }
         '404': { description: 'not found — ALSO returned cross-tenant, so existence never leaks' }
+  /v1/recitation-sessions/{id}/finalize:
+    post:
+      tags: [recitation]
+      summary: Turn a streamed recitation into a reviewable one, server-side.
+      description: |
+        `stored audio chunks -> transcript -> alignment -> persisted word_alignments`. The gateway
+        forwards audio to ml-inference and stops there; without this a streamed recitation produced
+        no transcript, so no alignment, so no finding a teacher could review.
+
+        **The client does not supply the transcript.** Whoever supplies the recognised words decides
+        what the learner is recorded as having said, so it is fetched server-to-server from the
+        service that holds the audio. The caller only names the session.
+
+        **Consent is read from the database, never from the request.** A learner who declined
+        external-ASR processing gets `finalized: false` with a reason and NO stored alignment —
+        deliberately not a fabricated "perfect recitation" one.
+
+        Ownership-scoped: `require_self_or_any(learner_id, [Teacher, Admin, Ops])`.
+      parameters: [{ name: id, in: path, required: true, schema: { type: string } }]
+      responses:
+        '200':
+          description: |
+            `finalized: true` with a persisted count, or `finalized: false` with a reason. A refusal
+            is an ANSWER, not an error — the learner's recitation happened either way.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [sessionId, finalized, reason, persisted]
+                properties:
+                  sessionId: { type: string, minLength: 1 }
+                  finalized: { type: boolean }
+                  reason: { type: string }
+                  persisted: { type: integer }
+                  chunkCount: { type: integer }
+                  auditEventId: { type: string }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        # The ML service is unreachable or answered badly. Detail is logged, never returned.
+        '502': { description: 'the ML service could not produce a transcript or an alignment' }
   /v1/recitation-sessions/{id}/tajweed-findings:
     get:
       tags: [review]

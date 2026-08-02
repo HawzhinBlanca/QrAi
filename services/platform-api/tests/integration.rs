@@ -4466,3 +4466,179 @@ async fn tajweed_findings_persist_and_the_learner_can_read_their_own() {
     .await;
     assert_eq!(missing.status(), StatusCode::NOT_FOUND);
 }
+
+/// A mock ML service for the finalize chain: the session transcript, then the alignment computed
+/// from it. Mirrors the real shapes — `transcribed`/`recognizedText` from `/v1/session-transcript`,
+/// `alignments[]` from `/v1/alignments:predict`.
+async fn spawn_mock_ml_finalize(transcribed: bool) -> String {
+    let app = axum::Router::new()
+        .route(
+            "/v1/session-transcript",
+            axum::routing::post(move || async move {
+                axum::Json(if transcribed {
+                    json!({
+                        "transcribed": true, "reason": "consent-granted", "chunkCount": 3,
+                        "recognizedText": ["بسم", "الله"]
+                    })
+                } else {
+                    json!({
+                        "transcribed": false, "reason": "consent-revoked-or-insufficient",
+                        "recognizedText": [], "chunkCount": 0
+                    })
+                })
+            }),
+        )
+        .route(
+            "/v1/alignments:predict",
+            axum::routing::post(|| async {
+                axum::Json(json!({
+                    "sessionId": "s", "confidence": 0.9,
+                    "alignments": [
+                        {"wordId": "1:1:1", "canonicalText": "بِسْمِ", "heardText": "بسم",
+                         "status": "matched", "confidence": 0.9, "startMs": 0, "endMs": 500},
+                        {"wordId": "1:1:2", "canonicalText": "ٱللَّهِ", "heardText": "الله",
+                         "status": "misread", "confidence": 0.7, "startMs": 500, "endMs": 900}
+                    ]
+                }))
+            }),
+        );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+    format!("http://{addr}")
+}
+
+async fn finalize_test_session(router: &axum::Router, checksum: &str) -> String {
+    let created = send_json(
+        router,
+        Method::POST,
+        "/v1/recitation-sessions",
+        Some("hikmah-pilot-erbil"),
+        Some("learner"),
+        json!({
+            "learnerId": "learner-1",
+            "quranRef": {"surahNumber": 1, "ayahStart": 1, "ayahEnd": 7, "display": "Al-Fatihah 1:1-7"},
+            "sourceChecksum": checksum, "modelVersion": "model-v0.3", "language": "ckb",
+            "mode": "guided-recite", "practicePlanId": "fatihah-mastery-v1",
+            "consent": {"audioRetention": "teacher-review", "anonymizedLearning": true, "externalAsrProcessing": true, "guardianApproved": true, "consentVersion": "pilot-v1"}
+        }),
+    )
+    .await;
+    read_json::<Value>(created).await["id"]
+        .as_str()
+        .unwrap()
+        .to_string()
+}
+
+/// ADR-0027 item 5 — a gateway-streamed recitation becomes a reviewable one.
+///
+/// The gateway forwards audio to ml-inference and stops. Before this route there was no transcript,
+/// so no alignment, so nothing a teacher could review and nothing a learner could ever be shown.
+#[tokio::test]
+#[ignore = "requires live Postgres"]
+async fn finalize_persists_a_server_derived_alignment_and_refuses_without_consent() {
+    use sqlx::Row;
+    let mock = spawn_mock_ml_finalize(true).await;
+    let state = test_state().with_ml_inference_url(mock.clone());
+    let router = platform_router_with_rate_limit(test_state().with_ml_inference_url(mock), false);
+
+    let session_id = finalize_test_session(&router, "fnv1a32:finalize").await;
+
+    // (1) The happy path: transcript -> alignment -> persisted rows.
+    let done = send_json(
+        &router,
+        Method::POST,
+        &format!("/v1/recitation-sessions/{session_id}/finalize"),
+        Some("hikmah-pilot-erbil"),
+        Some("learner"),
+        json!({}),
+    )
+    .await;
+    assert_eq!(done.status(), StatusCode::OK);
+    let body: Value = read_json(done).await;
+    assert_eq!(body["finalized"], true);
+    assert_eq!(body["persisted"], 2, "both aligned words must be stored");
+
+    let rows = sqlx::query(
+        "SELECT word_id, heard_text, status FROM word_alignments WHERE session_id = $1 ORDER BY word_id",
+    )
+    .bind(&session_id)
+    .fetch_all(&state.pool)
+    .await
+    .unwrap();
+    assert_eq!(rows.len(), 2);
+    // The stored text is what the ASR HEARD, not the canonical text echoed back — the distinction
+    // the fabricated-alignment fix exists to protect.
+    assert_eq!(rows[0].try_get::<String, _>("heard_text").unwrap(), "بسم");
+    assert_eq!(rows[1].try_get::<String, _>("status").unwrap(), "misread");
+
+    // (2) A different learner may not finalize someone else's session.
+    let foreign = send_with_headers(
+        &router,
+        Method::POST,
+        &format!("/v1/recitation-sessions/{session_id}/finalize"),
+        &[
+            ("content-type", "application/json"),
+            ("x-tenant-id", "hikmah-pilot-erbil"),
+            ("x-user-id", "learner-2"),
+            ("x-user-role", "learner"),
+        ],
+        Some(json!({})),
+    )
+    .await;
+    assert_eq!(foreign.status(), StatusCode::FORBIDDEN);
+
+    // (3) An unknown session is 404, before the ownership check.
+    let missing = send_json(
+        &router,
+        Method::POST,
+        "/v1/recitation-sessions/nope/finalize",
+        Some("hikmah-pilot-erbil"),
+        Some("learner"),
+        json!({}),
+    )
+    .await;
+    assert_eq!(missing.status(), StatusCode::NOT_FOUND);
+}
+
+/// The refusal path: no transcript means NO stored alignment, not a fabricated one.
+#[tokio::test]
+#[ignore = "requires live Postgres"]
+async fn finalize_without_a_transcript_stores_nothing() {
+    let mock = spawn_mock_ml_finalize(false).await;
+    let state = test_state().with_ml_inference_url(mock.clone());
+    let router = platform_router_with_rate_limit(test_state().with_ml_inference_url(mock), false);
+
+    let session_id = finalize_test_session(&router, "fnv1a32:finalize-denied").await;
+
+    let done = send_json(
+        &router,
+        Method::POST,
+        &format!("/v1/recitation-sessions/{session_id}/finalize"),
+        Some("hikmah-pilot-erbil"),
+        Some("learner"),
+        json!({}),
+    )
+    .await;
+    assert_eq!(
+        done.status(),
+        StatusCode::OK,
+        "a refusal is an answer, not an error"
+    );
+    let body: Value = read_json(done).await;
+    assert_eq!(body["finalized"], false);
+    assert_eq!(body["reason"], "consent-revoked-or-insufficient");
+
+    let count: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM word_alignments WHERE session_id = $1")
+            .bind(&session_id)
+            .fetch_one(&state.pool)
+            .await
+            .unwrap();
+    assert_eq!(
+        count, 0,
+        "nothing was heard, so nothing may be recorded about what was said"
+    );
+}

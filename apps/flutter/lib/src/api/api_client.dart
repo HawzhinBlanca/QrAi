@@ -140,6 +140,28 @@ class ApiClient {
         'note': note,
       }));
 
+  /// Turn a streamed recitation into a reviewable one: transcript -> alignment -> stored
+  /// `word_alignments`, all server-side.
+  ///
+  /// This app streams audio to the realtime gateway, which forwards it to the ML service and stops
+  /// there. Without this call the recitation produces no alignment, so a tajweed finding has nothing
+  /// to anchor to, so nothing reaches a teacher and nothing ever comes back.
+  ///
+  /// The client deliberately supplies NOTHING about what was said — no audio, no transcript. Whoever
+  /// supplies the recognised words decides what the learner is recorded as having recited; the
+  /// server fetches them from the service holding the audio and reads consent from the database.
+  ///
+  /// `finalized: false` with a reason is a normal answer, not an error: a learner who declined
+  /// external-ASR processing has no transcript, and no alignment is stored rather than a fabricated
+  /// one.
+  Future<bool> finalizeSession({required String sessionId}) async {
+    final Map<String, dynamic> body = await _postObject(
+      '/v1/recitation-sessions/${Uri.encodeComponent(sessionId)}/finalize',
+      const <String, Object?>{},
+    );
+    return body['finalized'] == true;
+  }
+
   /// The learner's own findings for one session, as STORED.
   ///
   /// Ownership-scoped (`require_self_or_any`), unlike the tenant-wide staff queue in
