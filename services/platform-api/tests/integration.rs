@@ -4209,3 +4209,260 @@ async fn teacher_decision_promotes_the_finding_and_edited_promotes_nothing() {
     review(corrected.clone(), "rejected").await;
     assert_eq!(status_of(corrected).await, "blocked");
 }
+
+/// A mock ML service that answers `/v1/tajweed-findings:predict` with the shape
+/// `services/ml-inference` actually returns — `sessionId` at the top level, findings carrying
+/// `wordId`/`rule`/`severity`/`confidence`/`explanation`/`sources`, every one `ai-suggested`.
+async fn spawn_mock_ml_tajweed(word_id: &'static str) -> String {
+    let app = axum::Router::new().route(
+        "/v1/tajweed-findings:predict",
+        axum::routing::post(move |axum::Json(body): axum::Json<Value>| async move {
+            axum::Json(json!({
+                "sessionId": body["sessionId"],
+                "tenantId": body["tenantId"],
+                "modelVersion": "ml-aligner-v0.2",
+                "reviewStatus": "ai-suggested",
+                "confidence": 0.9,
+                "findings": [
+                    {
+                        "wordId": word_id,
+                        "rule": "ghunnah",
+                        "severity": "practice",
+                        "confidence": 0.9,
+                        "explanation": "Apply ghunnah on the noon sakina.",
+                        "sources": [{"id": "s1", "title": "Board", "citation": "policy"}],
+                        "reviewStatus": "ai-suggested"
+                    },
+                    {
+                        // A word this session never aligned: unanchorable, and must be SKIPPED
+                        // rather than invented into a word_alignments row.
+                        "wordId": "114:6:3",
+                        "rule": "qalqalah",
+                        "severity": "practice",
+                        "confidence": 0.88,
+                        "explanation": "unanchored",
+                        "sources": [],
+                        "reviewStatus": "ai-suggested"
+                    }
+                ]
+            }))
+        }),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+    format!("http://{addr}")
+}
+
+/// ADR-0027 action item 4 — the last two links: findings are PERSISTED, and the learner can READ
+/// their own.
+///
+/// Before this, `ml-inference` computed findings per request and nothing wrote them down (every row
+/// in a real database came from `0006_seed_internal.sql`), and the only route that read the table
+/// was staff-only. So a teacher's promotion moved a row nothing learner-facing could reach.
+///
+/// This drives the whole chain against live Postgres: analyse → persist → teacher accepts → the
+/// LEARNER reads it back as `teacher-reviewed`.
+#[tokio::test]
+#[ignore = "requires live Postgres"]
+async fn tajweed_findings_persist_and_the_learner_can_read_their_own() {
+    use sqlx::Row;
+    let mock_ml = spawn_mock_ml_tajweed("1:1:1").await;
+    let state = test_state().with_ml_inference_url(mock_ml.clone());
+    let router =
+        platform_router_with_rate_limit(test_state().with_ml_inference_url(mock_ml), false);
+
+    let created = send_json(
+        &router,
+        Method::POST,
+        "/v1/recitation-sessions",
+        Some("hikmah-pilot-erbil"),
+        Some("learner"),
+        json!({
+            "learnerId": "learner-1",
+            "quranRef": {"surahNumber": 1, "ayahStart": 1, "ayahEnd": 7, "display": "Al-Fatihah 1:1-7"},
+            "sourceChecksum": "fnv1a32:persist", "modelVersion": "model-v0.3", "language": "ckb",
+            "mode": "guided-recite", "practicePlanId": "fatihah-mastery-v1",
+            "consent": {"audioRetention": "discard", "anonymizedLearning": true, "externalAsrProcessing": false, "guardianApproved": true, "consentVersion": "pilot-v1"}
+        }),
+    )
+    .await;
+    let session_id = read_json::<Value>(created).await["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    // (0) With NO alignments, analysis must still succeed and persist nothing. A finding with no
+    // alignment has no evidence to point at, and fabricating one would invent heardText/startMs for
+    // audio nobody aligned. This is the Flutter practice flow's shape today.
+    let early = send_json(
+        &router,
+        Method::POST,
+        "/v1/ml/tajweed-findings:predict",
+        Some("hikmah-pilot-erbil"),
+        Some("learner"),
+        json!({ "sessionId": session_id, "quranRef": {"surahNumber": 1, "ayahStart": 1, "ayahEnd": 7, "display": "x"} }),
+    )
+    .await;
+    assert_eq!(
+        early.status(),
+        StatusCode::OK,
+        "analysis must not fail because nothing could be stored"
+    );
+    let none_yet: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM tajweed_findings tf JOIN word_alignments wa ON wa.id = tf.alignment_id WHERE wa.session_id = $1",
+    )
+    .bind(&session_id).fetch_one(&state.pool).await.unwrap();
+    assert_eq!(
+        none_yet, 0,
+        "nothing to anchor to, so nothing may be written"
+    );
+
+    // Now give the session a real alignment for 1:1:1.
+    let persisted = send_json(
+        &router,
+        Method::POST,
+        &format!("/v1/recitation-sessions/{session_id}/alignments"),
+        Some("hikmah-pilot-erbil"),
+        Some("learner"),
+        json!({ "alignments": [{"wordId": "1:1:1", "heardText": "بسم", "confidence": 0.9, "status": "matched"}] }),
+    )
+    .await;
+    assert_eq!(persisted.status(), StatusCode::OK);
+
+    // (1) Analysis now persists — the anchorable finding only.
+    let analysed = send_json(
+        &router,
+        Method::POST,
+        "/v1/ml/tajweed-findings:predict",
+        Some("hikmah-pilot-erbil"),
+        Some("learner"),
+        json!({ "sessionId": session_id, "quranRef": {"surahNumber": 1, "ayahStart": 1, "ayahEnd": 7, "display": "x"} }),
+    )
+    .await;
+    assert_eq!(analysed.status(), StatusCode::OK);
+
+    let rows = sqlx::query(
+        "SELECT tf.id, tf.rule, tf.review_status FROM tajweed_findings tf
+         JOIN word_alignments wa ON wa.id = tf.alignment_id WHERE wa.session_id = $1",
+    )
+    .bind(&session_id)
+    .fetch_all(&state.pool)
+    .await
+    .unwrap();
+    assert_eq!(
+        rows.len(),
+        1,
+        "one anchorable finding; the 114:6:3 one has no alignment and must be skipped"
+    );
+    let finding_id: String = rows[0].try_get("id").unwrap();
+    assert_eq!(rows[0].try_get::<String, _>("rule").unwrap(), "ghunnah");
+    assert_eq!(
+        rows[0].try_get::<String, _>("review_status").unwrap(),
+        "ai-suggested",
+        "a model's opinion is never written as reviewed — only create_teacher_review may move it"
+    );
+
+    // (2) Idempotent. Re-analysis must not duplicate, and must NOT re-write: re-writing would
+    // cascade away any teacher review already recorded, because a learner tapped stop twice.
+    let again = send_json(
+        &router,
+        Method::POST,
+        "/v1/ml/tajweed-findings:predict",
+        Some("hikmah-pilot-erbil"),
+        Some("learner"),
+        json!({ "sessionId": session_id, "quranRef": {"surahNumber": 1, "ayahStart": 1, "ayahEnd": 7, "display": "x"} }),
+    )
+    .await;
+    assert_eq!(again.status(), StatusCode::OK);
+    let count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM tajweed_findings tf JOIN word_alignments wa ON wa.id = tf.alignment_id WHERE wa.session_id = $1",
+    )
+    .bind(&session_id).fetch_one(&state.pool).await.unwrap();
+    assert_eq!(count, 1, "re-analysis duplicated the findings");
+
+    // (3) The learner reads their OWN session and sees it pending.
+    let path = format!("/v1/recitation-sessions/{session_id}/tajweed-findings");
+    let mine = send_json(
+        &router,
+        Method::GET,
+        &path,
+        Some("hikmah-pilot-erbil"),
+        Some("learner"),
+        json!({}),
+    )
+    .await;
+    assert_eq!(mine.status(), StatusCode::OK);
+    let body: Value = read_json(mine).await;
+    assert_eq!(body.as_array().unwrap().len(), 1);
+    assert_eq!(body[0]["reviewStatus"], "ai-suggested");
+    assert_eq!(
+        body[0]["sources"][0]["id"], "s1",
+        "provenance must survive the round trip"
+    );
+
+    // (4) THE LOOP. A teacher accepts; the learner reads it back as reviewed.
+    let review = send_json(
+        &router,
+        Method::POST,
+        "/v1/teacher-reviews",
+        Some("hikmah-pilot-erbil"),
+        Some("teacher"),
+        json!({ "findingId": finding_id, "teacherId": "teacher-1", "decision": "accepted", "note": "" }),
+    )
+    .await;
+    assert_eq!(review.status(), StatusCode::OK);
+
+    let after = send_json(
+        &router,
+        Method::GET,
+        &path,
+        Some("hikmah-pilot-erbil"),
+        Some("learner"),
+        json!({}),
+    )
+    .await;
+    let after_body: Value = read_json(after).await;
+    assert_eq!(
+        after_body[0]["reviewStatus"], "teacher-reviewed",
+        "the learner must be able to READ the promotion — this is the link that was missing"
+    );
+    // canShowLearnerFacingAiOutput, term for term: the learner would now actually be shown this.
+    assert!(after_body[0]["confidence"].as_f64().unwrap() >= 0.82);
+    assert!(!after_body[0]["sources"].as_array().unwrap().is_empty());
+
+    // (5) Ownership, not role: a different learner is refused.
+    // Raw headers: send_json maps the role to a FIXED user id, so a second learner needs them.
+    let other = send_with_headers(
+        &router,
+        Method::GET,
+        &path,
+        &[
+            ("x-tenant-id", "hikmah-pilot-erbil"),
+            ("x-user-id", "learner-2"),
+            ("x-user-role", "learner"),
+        ],
+        None,
+    )
+    .await;
+    assert_eq!(
+        other.status(),
+        StatusCode::FORBIDDEN,
+        "a learner must not read another learner's findings"
+    );
+
+    // (6) An unknown session is 404 — and so is one in another tenant, before the ownership check,
+    // so this cannot be used to probe for session ids elsewhere.
+    let missing = send_json(
+        &router,
+        Method::GET,
+        "/v1/recitation-sessions/session-does-not-exist/tajweed-findings",
+        Some("hikmah-pilot-erbil"),
+        Some("learner"),
+        json!({}),
+    )
+    .await;
+    assert_eq!(missing.status(), StatusCode::NOT_FOUND);
+}

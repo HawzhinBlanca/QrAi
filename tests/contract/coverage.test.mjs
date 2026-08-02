@@ -53,7 +53,7 @@ test("the contract describes no route the service does not serve", () => {
   assert.deepEqual(phantom, [], `contracted but NOT served:\n  ${phantom.join("\n  ")}`);
 });
 
-test("the pair count is 38, CORRECTING Phase 7's 34", () => {
+test("the pair count is 39, CORRECTING Phase 7's 34", () => {
   // Phase 7's research counted 34 by matching only `axum::routing::<verb>(`. Five methods are
   // registered CHAINED on an existing MethodRouter — `axum::routing::get(h).post(h2)` — on
   // /v1/recitation-sessions, /v1/recitation-sessions/{id}/alignments, /v1/scholar-approvals,
@@ -62,8 +62,13 @@ test("the pair count is 38, CORRECTING Phase 7's 34", () => {
   // Found because the hand-authored contract listed them and this test reported them as routes the
   // service does not serve. Two independently-derived lists disagreeing is exactly what a contract
   // is for; pinning the number keeps a future under-count from passing quietly.
-  assert.equal(rustPairs.length, 38, "lib.rs no longer registers 38 method+path pairs");
-  assert.equal(specPairs.size, 38);
+  //
+  // 38 -> 39 (2026-08-02, ADR-0027 action item 4): GET /v1/recitation-sessions/{id}/tajweed-findings.
+  // A learner had no route that READ a finding — `/v1/tajweed-findings` is staff-only and the ML
+  // predict route re-analyses instead of reading — so a teacher's promotion moved a row nothing
+  // learner-facing could reach.
+  assert.equal(rustPairs.length, 39, "lib.rs no longer registers 39 method+path pairs");
+  assert.equal(specPairs.size, 39);
 });
 
 test("every operation declares at least one response, and error codes reference the shared shape", () => {

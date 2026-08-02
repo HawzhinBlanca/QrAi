@@ -4,19 +4,18 @@ Quran AI is being built into a Quran Recitation Intelligence OS: learner recitat
 
 ## Current Boundary
 
-This repo now implements the foundation slice of the 10/10 platform plan:
+This repo implements a meaningful, testable vertical slice of the 10/10 platform:
 
-- `apps/web` keeps the existing React/Vite platform command app.
-- `packages/contracts` owns shared TypeScript contracts, API routes, event subjects, core table names, canonical checksum helpers, audio-retention logic, and learner-facing AI source/review gates.
-- `packages/quran-data` owns the canonical Al-Fatihah seed, source manifests, immutable import bundles, checksum validation, and SQL seed generation.
-- `apps/web` includes a browser mic capture path that emits typed audio chunk envelopes and mocked partial alignment events until backend WebSocket streaming is connected.
-- `services/platform-api` provides the first Rust/Axum tenant-scoped platform API for recitation sessions, realtime tickets, teacher reviews, scholar approvals, eval lookup, privacy jobs, audit events, and explicit local RBAC headers.
-- `services/realtime-gateway` contains the first Rust/Tokio realtime audio gateway with bounded channels, ticket-gated WebSocket ingress, metrics counters, and async tests.
-- `services/ml-inference` provides a local fixture-backed ML inference service for Quran-constrained alignment, source-backed tajweed findings, eval thresholds, privacy export/delete, and consent-gated external ASR stubs.
-- `infra/sql/0001_core_schema.sql` defines the initial Postgres target schema, and `infra/sql/0003_tenant_rls.sql` defines tenant RLS policies with forced RLS for tenant-owned tables.
-- `docs/architecture/10-10-platform.md` and `docs/proof/10-10-proof-checklist.md` document the architecture and proof gates.
+- `apps/web` is the React/Vite learner practice app, with a pilot-invite session path and an internal review surface kept out of the default learner route.
+- `packages/contracts` owns shared API, data, canonical-checksum, retention, and learner-facing source/review gate contracts.
+- `packages/quran-data` owns immutable, checksum-validated Quran and translation import bundles plus SQL seed generation.
+- `services/platform-api` is a Rust/Axum + SQLx/Postgres tenant-scoped API for recitation, progress, reviews, approvals, privacy, audit events, pilot sessions, and realtime tickets. Its tenant-owned data paths use Postgres RLS.
+- `services/realtime-gateway` is a Rust/Tokio gateway with ticket-gated WebSocket ingress, bounded backpressure, metrics, and reconnect coverage.
+- `services/ml-inference` performs Quran-constrained alignment and rule-based tajweed finding generation, while consent-gated ASR is proxied to the self-hosted inference service.
+- `infra/sql` defines the core schema, forced tenant RLS, and structured `agent_runs.learner_id` support so privacy export/delete can include learner-linked agent runs.
+- `docs/architecture/10-10-platform.md`, `docs/readiness/`, and `specs/readiness-recovery-10-10/tasks.md` describe the architecture, proof gates, and current release status.
 
-It still does not run a real trained Quran ASR/tajweed model, enforce production identity-provider auth, move the Platform API to SQLx/Postgres repositories, provision Postgres/NATS/object storage/OpenAI Realtime/OpenAI Agents/Expo mobile, or prove object-storage tenant isolation. Those systems now have explicit contract, schema, and smoke-test targets.
+It is **not release-ready**: candidate-bound model evaluation, independent security/privacy review, live operational proof, human sign-offs, and production deployment evidence remain open. The running ASR deployment uses generic Whisper `base`, not a Quran-tuned production model; learner-facing AI feedback remains source- and review-gated.
 
 ## Stack
 

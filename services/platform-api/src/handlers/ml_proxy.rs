@@ -119,7 +119,215 @@ async fn proxy_ml(
         ApiError::Upstream("ML service returned an invalid response".to_owned())
     })?;
 
+    // Tajweed findings existed only for the length of this response until now: nothing wrote them
+    // down, so no teacher could ever review one and no learner could ever be shown one. See
+    // `persist_tajweed_findings`.
+    if label == "tajweed"
+        && let Some(session_id) = result.get("sessionId").and_then(|v| v.as_str())
+    {
+        persist_tajweed_findings(
+            state,
+            &actor.tenant_id,
+            &actor.user_id,
+            session_id,
+            &result,
+            crate::auth::extract_trace_id(headers).as_deref(),
+        )
+        .await?;
+    }
+
     Ok(Json(result))
+}
+
+/// Write the findings the ML service just computed into `tajweed_findings`.
+///
+/// ── Why this exists ─────────────────────────────────────────────────────────────────────────────
+/// `services/ml-inference` has no database. It computes findings per request and returns them, and
+/// until this function nothing ever persisted one: `grep "INSERT INTO tajweed_findings" services/`
+/// matched only tests, and every row in a real deployment came from `0006_seed_internal.sql`. So the
+/// teacher queue showed seed data, and a learner's actual mistakes were analysed and discarded in
+/// the same breath.
+///
+/// ── Three constraints, and what each forces ─────────────────────────────────────────────────────
+/// **1. A finding must anchor to a real alignment.** `tajweed_findings.alignment_id` references
+/// `word_alignments`, and a finding says "this word, in this recitation, was mispronounced" — the
+/// alignment is the evidence that the word was heard at all. Findings whose `wordId` has no
+/// alignment in this session are SKIPPED, not invented: manufacturing a `word_alignments` row would
+/// mean fabricating `heardText`, `startMs` and `endMs` for audio nobody aligned.
+///
+/// That has a consequence worth stating plainly: the Flutter practice flow does not persist
+/// alignments (it streams to the gateway, which forwards audio chunks and produces none), so today
+/// this writes nothing for a Flutter session. The count is logged rather than left silent.
+///
+/// **2. Once per session.** `persist_session_alignments` cascades `teacher_reviews` →
+/// `tajweed_findings` → `word_alignments` on re-record. If re-analysis re-wrote findings it would
+/// destroy a teacher's completed review because a learner tapped stop twice. The analyser is
+/// deterministic over canonical text, so a second run has nothing new to say: if the session
+/// already has findings, this is a no-op.
+///
+/// **3. The response's own `modelVersion` is not a usable FK.** ml-inference reports
+/// `ml-aligner-v0.2` — its global model name, an ALIGNMENT model — on a tajweed response, and no
+/// such row exists in `model_versions`. Rather than substitute silently (the failure
+/// `persist_session_alignments` documents at length), the tajweed model is resolved by kind, and
+/// anything other than exactly one match refuses rather than guesses.
+async fn persist_tajweed_findings(
+    state: &AppState,
+    tenant_id: &str,
+    actor_id: &str,
+    session_id: &str,
+    result: &serde_json::Value,
+    trace_id: Option<&str>,
+) -> Result<(), ApiError> {
+    let findings = match result.get("findings").and_then(|v| v.as_array()) {
+        Some(f) if !f.is_empty() => f,
+        _ => return Ok(()),
+    };
+
+    let mut tx = crate::begin_tenant_tx(&state.pool, tenant_id).await?;
+
+    // Constraint 2 — already analysed. Checked FIRST so the common re-run path costs one query.
+    // `sqlx::query` and not `query_scalar::<_, i64>`: Postgres types a bare `SELECT 1` as int4, so
+    // decoding it as i64 fails at runtime and surfaces as a 500 on a learner's analysis request.
+    // `create_teacher_review`'s existence check is written this way for the same reason.
+    let existing = sqlx::query(
+        "SELECT 1 FROM tajweed_findings tf
+         JOIN word_alignments wa ON wa.id = tf.alignment_id
+         WHERE wa.session_id = $1 AND wa.tenant_id = $2 LIMIT 1",
+    )
+    .bind(session_id)
+    .bind(tenant_id)
+    .fetch_optional(&mut *tx)
+    .await?;
+    if existing.is_some() {
+        tx.commit().await?;
+        return Ok(());
+    }
+
+    // Constraint 1 — word_id → alignment id, for this session only.
+    let alignment_rows = sqlx::query(
+        "SELECT id, word_id FROM word_alignments WHERE session_id = $1 AND tenant_id = $2",
+    )
+    .bind(session_id)
+    .bind(tenant_id)
+    .fetch_all(&mut *tx)
+    .await?;
+    let alignments: std::collections::HashMap<String, String> = alignment_rows
+        .into_iter()
+        .filter_map(|r| Some((r.try_get("word_id").ok()?, r.try_get("id").ok()?)))
+        .collect();
+    if alignments.is_empty() {
+        tx.commit().await?;
+        tracing::info!(
+            "tajweed findings not persisted for session {session_id}: it has no word alignments to \
+             anchor them to, so there is no evidence a finding could point at"
+        );
+        return Ok(());
+    }
+
+    // Constraint 3 — resolve the tajweed model by kind.
+    let model_versions: Vec<String> =
+        sqlx::query_scalar("SELECT id FROM model_versions WHERE kind = 'tajweed' ORDER BY id")
+            .fetch_all(&mut *tx)
+            .await?;
+    let [model_version] = model_versions.as_slice() else {
+        tracing::error!(
+            "cannot persist tajweed findings: model_versions has {} rows of kind 'tajweed', \
+             expected exactly 1 — refusing to guess which produced these findings",
+            model_versions.len()
+        );
+        return Err(ApiError::Upstream(
+            "tajweed findings could not be recorded for review".to_owned(),
+        ));
+    };
+
+    let audit_id = next_id("audit");
+    // Ordered before the findings, which FK-reference this row.
+    // `actor_id` REFERENCES users(id), so it must be a real user — a synthetic 'ml-inference'
+    // is a foreign-key violation, which surfaces as a 500 on a learner's analysis request. The
+    // authenticated caller is the honest answer anyway: they asked for the analysis.
+    sqlx::query(
+        "INSERT INTO audit_events (id, tenant_id, actor_id, action, subject_type, subject_id, metadata)
+         VALUES ($1, $2, $3, 'ml.tajweed.persisted', 'recitation_session', $4, $5)",
+    )
+    .bind(&audit_id)
+    .bind(tenant_id)
+    .bind(actor_id)
+    .bind(session_id)
+    .bind(serde_json::json!({"trace_id": trace_id, "findingCount": findings.len()}))
+    .execute(&mut *tx)
+    .await?;
+
+    // `severity` has a CHECK constraint; an unknown value would be a 500 on a learner's request.
+    const SEVERITIES: [&str; 3] = ["practice", "warning", "critical"];
+    let mut written = 0usize;
+    let mut unanchored = 0usize;
+    for finding in findings {
+        let Some(word_id) = finding.get("wordId").and_then(|v| v.as_str()) else {
+            continue;
+        };
+        let Some(alignment_id) = alignments.get(word_id) else {
+            unanchored += 1;
+            continue;
+        };
+        let severity = finding
+            .get("severity")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        if !SEVERITIES.contains(&severity) {
+            unanchored += 1;
+            continue;
+        }
+
+        sqlx::query(
+            "INSERT INTO tajweed_findings
+               (id, tenant_id, alignment_id, rule, severity, confidence, explanation,
+                review_status, source_refs, model_version_id, audit_event_id)
+             VALUES ($1, $2, $3, $4, $5, $6::float8::numeric, $7, 'ai-suggested', $8, $9, $10)",
+        )
+        .bind(next_id("tajweed-finding"))
+        .bind(tenant_id)
+        .bind(alignment_id)
+        .bind(finding.get("rule").and_then(|v| v.as_str()).unwrap_or(""))
+        .bind(severity)
+        // `ai-suggested` is not negotiable here and is written as a literal above: this is a model's
+        // opinion, and only `create_teacher_review` may move it (ADR-0027).
+        // `::float8::numeric` in the VALUES list, matching persist_session_alignments: the column
+        // is `numeric` and sqlx binds an f64 as float8, which Postgres will not coerce. Without
+        // the cast this is a 500 on a learner's analysis request.
+        .bind(
+            finding
+                .get("confidence")
+                .and_then(|v| v.as_f64())
+                .unwrap_or(0.0)
+                .clamp(0.0, 1.0),
+        )
+        .bind(
+            finding
+                .get("explanation")
+                .and_then(|v| v.as_str())
+                .unwrap_or(""),
+        )
+        .bind(
+            finding
+                .get("sources")
+                .cloned()
+                .unwrap_or_else(|| serde_json::json!([])),
+        )
+        .bind(model_version)
+        .bind(&audit_id)
+        .execute(&mut *tx)
+        .await?;
+        written += 1;
+    }
+
+    tx.commit().await?;
+    if unanchored > 0 {
+        tracing::info!(
+            "session {session_id}: persisted {written} tajweed findings, skipped {unanchored} with \
+             no matching alignment or an unknown severity"
+        );
+    }
+    Ok(())
 }
 
 /// Proxy alignment prediction through the platform API so the ML API key stays server-side.

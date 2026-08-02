@@ -127,6 +127,57 @@ test("GET /v1/audit-events is 403 for a learner AND for a teacher", async () => 
   }
 });
 
+// ── GET /v1/recitation-sessions/{id}/tajweed-findings ──────────────────────────────────────────
+
+/**
+ * ADR-0027 action item 4 — the learner's own findings.
+ *
+ * integration.rs:4270 — tajweed_findings_persist_and_the_learner_can_read_their_own
+ *
+ * The boundary is OWNERSHIP, not role: `require_self_or_any(learner_id, [Teacher, Admin, Ops])`.
+ * This is the first learner-facing route that reads another person's recitation analysis, so the
+ * refusal matters more than the happy path — a role-only check would let any learner in the tenant
+ * read any other learner's mistakes.
+ */
+test("GET session tajweed-findings: a learner reads their OWN session", async () => {
+  const [session] = await queryJson(
+    "SELECT id, learner_id FROM recitation_sessions WHERE learner_id = 'learner-1' ORDER BY id LIMIT 1",
+  );
+  assert.ok(session, "the seed must provide a learner-1 session");
+
+  const res = await request(api.baseUrl, `/v1/recitation-sessions/${session.id}/tajweed-findings`, {
+    role: "learner",
+  });
+  assert.equal(res.status, 200);
+  assert.ok(Array.isArray(res.body), "an array, even when empty");
+  // Withheld findings come back WITH their reviewStatus: the client needs them to distinguish
+  // "3 notes are waiting for a teacher" from "no feedback". Filtering here would collapse the two.
+  for (const f of res.body) {
+    assert.ok(typeof f.reviewStatus === "string" && f.reviewStatus.length > 0);
+    assert.ok(Array.isArray(f.sources), "provenance must survive the round trip");
+  }
+});
+
+test("GET session tajweed-findings: another learner is Forbidden", async () => {
+  const [session] = await queryJson(
+    "SELECT id FROM recitation_sessions WHERE learner_id = 'learner-1' ORDER BY id LIMIT 1",
+  );
+  const res = await request(api.baseUrl, `/v1/recitation-sessions/${session.id}/tajweed-findings`, {
+    role: "learner",
+    userId: "learner-2",
+  });
+  assert.equal(res.status, 403, "a learner must not read another learner's recitation analysis");
+});
+
+test("GET session tajweed-findings: an unknown session is 404, not an empty array", async () => {
+  // 404 BEFORE the ownership check, so this cannot be used to probe for session ids in another
+  // tenant — and an empty array would be indistinguishable from "you have no findings".
+  const res = await request(api.baseUrl, "/v1/recitation-sessions/session-nope/tajweed-findings", {
+    role: "learner",
+  });
+  assert.equal(res.status, 404);
+});
+
 // ── POST /v1/teacher-reviews ───────────────────────────────────────────────────────────────────
 
 /**

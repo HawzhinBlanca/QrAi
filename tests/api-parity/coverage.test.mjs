@@ -106,7 +106,7 @@ test("every ported entry points at a parity file that exists and names its Rust 
   }
 });
 
-test("the ported count matches the approved scope: 29", () => {
+test("the ported count matches the approved scope: 30", () => {
   // Scope B was approved for exactly 26 incident-class tests (plan.md §4). Growing the suite is
   // good — but it should be a visible decision, not a number that drifts.
   //
@@ -118,6 +118,11 @@ test("the ported count matches the approved scope: 29", () => {
   // A teacher decision now UPDATEs tajweed_findings.review_status, in Rust and in the Node port. A
   // port that recorded the review and skipped the promotion would pass every other assertion in
   // db-endpoints.test.mjs, so this one is not optional coverage — it is the behaviour.
-  assert.equal(coverage.totals.ported, 29);
+  //
+  // 29 -> 30 (2026-08-02, ADR-0027 action item 4): the persist + learner-read chain. The route it
+  // covers, GET /v1/recitation-sessions/{id}/tajweed-findings, is the first learner-facing read of
+  // recitation ANALYSIS — the boundary is ownership, not role, and a role-only check would let any
+  // learner in the tenant read any other learner's mistakes.
+  assert.equal(coverage.totals.ported, 30);
   assert.equal(coverage.totals["deferred-to-phase-7"], 5);
 });

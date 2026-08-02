@@ -129,6 +129,22 @@ describe("Quran AI app smoke", () => {
     document.body.innerHTML = "";
   });
 
+  async function openInternalCommand(open: () => void): Promise<HTMLButtonElement> {
+    await act(async () => {
+      open();
+    });
+
+    await vi.waitFor(
+      () => {
+        expect(document.body.textContent).toContain("Quran AI intelligence platform");
+        expect(document.querySelector<HTMLButtonElement>(".capture-button")).toBeTruthy();
+      },
+      { interval: 25, timeout: 3_000 },
+    );
+
+    return document.querySelector<HTMLButtonElement>(".capture-button")!;
+  }
+
   it("greets a brand-new learner with onboarding + an invitation, not a wall of zeros", async () => {
     // Regression test for P2.2: with no sessions yet (no backend in this smoke run), Learner Home
     // must NOT show a demotivating 0% mastery ring — it shows a first-run explainer of the loop and
@@ -528,19 +544,9 @@ describe("Quran AI app smoke", () => {
       button.textContent?.includes("Internal Command"),
     );
 
-    await act(async () => {
-      internalCommandButton?.click();
-    });
-
-    // Wait for the lazy-loaded PlatformCommand chunk to resolve (may take multiple ticks).
-    for (let i = 0; i < 10; i++) {
-      await act(async () => { await new Promise((r) => setTimeout(r, 10)); });
-      if (document.body.textContent?.includes("Quran AI intelligence platform")) break;
-    }
-
-    const startButton = document.querySelector<HTMLButtonElement>(".capture-button");
+    const startButton = await openInternalCommand(() => internalCommandButton?.click());
     expect(document.body.textContent).toContain("Quran AI intelligence platform");
-    expect(startButton?.textContent).toContain("Start live recitation");
+    expect(startButton.textContent).toContain("Start live recitation");
 
     await act(async () => {
       startButton?.click();
@@ -629,15 +635,7 @@ describe("Quran AI app smoke", () => {
     const internalCommandButton = Array.from(document.querySelectorAll<HTMLButtonElement>("button")).find((button) =>
       button.textContent?.includes("Internal Command"),
     );
-    await act(async () => {
-      internalCommandButton?.click();
-    });
-    for (let i = 0; i < 10; i++) {
-      await act(async () => {
-        await new Promise((r) => setTimeout(r, 10));
-      });
-      if (document.body.textContent?.includes("Quran AI intelligence platform")) break;
-    }
+    await openInternalCommand(() => internalCommandButton?.click());
 
     const startButton = () => document.querySelector<HTMLButtonElement>(".capture-button");
     expect(startButton()).toBeTruthy();
@@ -679,15 +677,7 @@ describe("Quran AI app smoke", () => {
     const internalCommandButton = Array.from(document.querySelectorAll<HTMLButtonElement>("button")).find((button) =>
       button.textContent?.includes("Internal Command"),
     );
-    await act(async () => {
-      internalCommandButton?.click();
-    });
-    for (let i = 0; i < 10; i++) {
-      await act(async () => {
-        await new Promise((r) => setTimeout(r, 10));
-      });
-      if (document.body.textContent?.includes("Quran AI intelligence platform")) break;
-    }
+    await openInternalCommand(() => internalCommandButton?.click());
 
     await act(async () => {
       document.querySelector<HTMLButtonElement>(".capture-button")?.click();
@@ -783,16 +773,7 @@ describe("Quran AI app smoke", () => {
     const openCommandButton = Array.from(document.querySelectorAll<HTMLButtonElement>("button")).find((button) =>
       button.textContent?.includes("Open related command tab"),
     );
-    await act(async () => {
-      openCommandButton?.click();
-    });
-
-    for (let i = 0; i < 10; i++) {
-      await act(async () => {
-        await new Promise((r) => setTimeout(r, 10));
-      });
-      if (document.body.textContent?.includes("Quran AI intelligence platform")) break;
-    }
+    await openInternalCommand(() => openCommandButton?.click());
 
     expect(document.body.textContent).toContain("Quran AI intelligence platform");
   });
@@ -809,15 +790,7 @@ describe("Quran AI app smoke", () => {
     const internalCommandButton = Array.from(document.querySelectorAll<HTMLButtonElement>("button")).find(
       (button) => button.textContent?.includes("Internal Command"),
     );
-    await act(async () => {
-      internalCommandButton?.click();
-    });
-    for (let i = 0; i < 10; i++) {
-      await act(async () => {
-        await new Promise((r) => setTimeout(r, 10));
-      });
-      if (document.body.textContent?.includes("Quran AI intelligence platform")) break;
-    }
+    await openInternalCommand(() => internalCommandButton?.click());
 
     const teacherAppButton = Array.from(document.querySelectorAll<HTMLButtonElement>(".platform-app")).find(
       (button) => button.querySelector("span")?.textContent === "Teacher",

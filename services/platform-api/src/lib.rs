@@ -202,6 +202,13 @@ pub fn platform_router_with_rate_limit(state: AppState, rate_limit: bool) -> Rou
             "/v1/teacher-reviews",
             axum::routing::post(handlers::review::create_teacher_review),
         )
+        // The learner's own findings. `/v1/tajweed-findings` is the tenant-wide STAFF queue; this is
+        // ownership-scoped, and it is what makes a promoted finding reachable by the person it is
+        // about (ADR-0027 action item 4).
+        .route(
+            "/v1/recitation-sessions/{id}/tajweed-findings",
+            axum::routing::get(handlers::review::list_session_tajweed_findings),
+        )
         .route(
             "/v1/teacher-review-queue",
             axum::routing::get(handlers::review::list_teacher_review_queue),

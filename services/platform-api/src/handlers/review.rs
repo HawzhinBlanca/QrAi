@@ -338,3 +338,83 @@ pub async fn list_tajweed_findings(
 
     Ok(Json(out))
 }
+
+/// `GET /v1/recitation-sessions/{id}/tajweed-findings` — a learner's own reviewed feedback.
+///
+/// ── Why this route exists ───────────────────────────────────────────────────────────────────────
+/// `list_tajweed_findings` reads the whole tenant's queue and is staff-only, and
+/// `POST /v1/ml/tajweed-findings:predict` RE-ANALYSES rather than reading, returning fresh
+/// `ai-suggested` findings every time. So until this route there was no way for a learner to see a
+/// finding a teacher had approved: the promotion in `create_teacher_review` moved a row nothing
+/// learner-facing ever read.
+///
+/// ── Ownership, not role ─────────────────────────────────────────────────────────────────────────
+/// `require_self_or_any(learner_id, [Teacher, Admin, Ops])` — the same predicate `proxy_ml` uses for
+/// analysis. A learner reads their OWN session and nobody else's; staff may read any session in
+/// their tenant. A session that does not exist in the caller's tenant is a 404 before the ownership
+/// check, so this cannot be used to probe for session ids belonging to another tenant.
+///
+/// ── It returns everything, and the CLIENT gates ─────────────────────────────────────────────────
+/// Unreviewed and blocked findings come back too, with their `reviewStatus`. That is deliberate and
+/// it is what the web client already does: `canShowLearnerFacingAiOutput` decides what is displayed,
+/// and the panel needs the withheld ones to say "3 notes are waiting for a teacher" rather than
+/// "no feedback". Filtering here would make those two states indistinguishable — and a count of
+/// pending notes is not a judgement about the learner's recitation, so nothing is disclosed by it.
+pub async fn list_session_tajweed_findings(
+    State(state): State<AppState>,
+    method: axum::http::Method,
+    headers: HeaderMap,
+    axum::extract::Path(id): axum::extract::Path<String>,
+) -> Result<Json<Vec<serde_json::Value>>, ApiError> {
+    let actor = crate::auth::resolve_actor(&method, &headers, &state).await?;
+
+    let mut tx = crate::begin_tenant_tx(&state.pool, &actor.tenant_id).await?;
+
+    let learner_id: String = sqlx::query_scalar(
+        "SELECT learner_id FROM recitation_sessions WHERE id = $1 AND tenant_id = $2",
+    )
+    .bind(&id)
+    .bind(&actor.tenant_id)
+    .fetch_optional(&mut *tx)
+    .await?
+    .ok_or(ApiError::NotFound)?;
+    actor.require_self_or_any(
+        &learner_id,
+        &[ActorRole::Teacher, ActorRole::Admin, ActorRole::Ops],
+    )?;
+
+    // Same columns and the same ordering as the staff queue, so the two cannot describe a finding
+    // differently. `tf.id` breaks the confidence tie for a stable order.
+    let rows = sqlx::query(
+        "SELECT tf.id, wa.word_id, tf.rule, tf.severity, tf.confidence::float8 AS confidence,
+                tf.explanation, tf.review_status, tf.source_refs
+         FROM tajweed_findings tf
+         JOIN word_alignments wa ON wa.id = tf.alignment_id
+         WHERE wa.session_id = $1 AND wa.tenant_id = $2
+         ORDER BY tf.confidence DESC, tf.id",
+    )
+    .bind(&id)
+    .bind(&actor.tenant_id)
+    .fetch_all(&mut *tx)
+    .await?;
+
+    let out = rows
+        .into_iter()
+        .map(|r| {
+            serde_json::json!({
+                "id": r.try_get::<String, _>("id").unwrap_or_default(),
+                "wordId": r.try_get::<String, _>("word_id").unwrap_or_default(),
+                "rule": r.try_get::<String, _>("rule").unwrap_or_default(),
+                "severity": r.try_get::<String, _>("severity").unwrap_or_default(),
+                "confidence": r.try_get::<f64, _>("confidence").unwrap_or(0.0),
+                "explanation": r.try_get::<String, _>("explanation").unwrap_or_default(),
+                "reviewStatus": r.try_get::<String, _>("review_status").unwrap_or_default(),
+                "sources": r.try_get::<serde_json::Value, _>("source_refs").unwrap_or(serde_json::json!([])),
+            })
+        })
+        .collect();
+
+    tx.commit().await?;
+
+    Ok(Json(out))
+}
