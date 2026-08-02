@@ -31,6 +31,38 @@ before(async () => {
   mock = await startMockUpstream(({ path, body }) => {
     // integration.rs:1393 — the privacy-delete mock reports erased object keys.
     if (path === "/v1/privacy/delete") return { status: 200, body: ERASED_KEYS };
+    // The tajweed path echoes AND carries findings, so the same mock serves both the consent
+    // assertions below and the redaction one. One unreviewed finding and one that clears the gate:
+    // a redaction test where nothing survives cannot tell "withheld correctly" from "broke the
+    // route", and one where everything survives cannot tell anything at all.
+    if (path === "/v1/tajweed-findings:predict") {
+      return {
+        status: 200,
+        body: {
+          ...body,
+          findings: [
+            {
+              wordId: "1:1:1",
+              rule: "ghunnah",
+              severity: "practice",
+              confidence: 0.9,
+              explanation: "Apply ghunnah on the noon sakina.",
+              sources: [{ id: "s1", title: "Board", citation: "policy" }],
+              reviewStatus: "ai-suggested",
+            },
+            {
+              wordId: "1:1:2",
+              rule: "madd-tabii",
+              severity: "practice",
+              confidence: 0.9,
+              explanation: "Hold the natural madd for two counts.",
+              sources: [{ id: "s2", title: "Board", citation: "policy" }],
+              reviewStatus: "teacher-reviewed",
+            },
+          ],
+        },
+      };
+    }
     // integration.rs:2275 — the echo mock returns exactly what the proxy FORWARDED, which is the
     // only way to see whether stored consent overrode the client's claim.
     return { status: 200, body };
@@ -297,4 +329,67 @@ test("privacy delete erases the learner's agent runs and preserves another learn
 
   assert.equal(await countRows("agent_runs", targetRunId), 0, "target agent run deleted");
   assert.equal(await countRows("agent_runs", otherRunId), 1, "other learner's agent run preserved");
+});
+
+// ════════════════════════════════════════════════════════════════════════════════════════════════
+// Withheld feedback — P3.2
+// ════════════════════════════════════════════════════════════════════════════════════════════════
+
+/**
+ * integration.rs:5054 — ml_tajweed_predict_redacts_unreviewed_findings_for_a_learner
+ *
+ * Black-box, and that is the whole point: the property is about what crosses the wire to a learner's
+ * device. Everything this route returns is freshly computed and `ai-suggested`, so no human has seen
+ * any of it — and it was being sent in full, with the client trusted to hide it. Client-side hiding
+ * is a display choice, not an authorization boundary.
+ *
+ * Run through the Node shell as well (PARITY_THROUGH_SHELL=1 with this route in NODE_API_PORTED) to
+ * pin `redactWithheldFindings` in services/node-api/routes/ml-proxy.mjs against the Rust original.
+ */
+test("ML tajweed predict: a learner receives no unreviewed judgement", async () => {
+  const sessionId = await createSession("learner-1");
+
+  const res = await request(api.baseUrl, "/v1/ml/tajweed-findings:predict", {
+    method: "POST",
+    role: "learner",
+    body: { sessionId, quranRef: { surahNumber: 1, ayahStart: 1, ayahEnd: 7, display: "x" } },
+  });
+  assert.equal(res.status, 200, JSON.stringify(res.body));
+
+  const findings = res.body.findings;
+  assert.equal(findings.length, 2, "the count must survive redaction — the panel renders from it");
+
+  const unreviewed = findings.find((f) => f.reviewStatus === "ai-suggested");
+  assert.ok(unreviewed, "the unreviewed finding must still be present, just empty");
+  assert.equal(unreviewed.withheld, true);
+  for (const field of ["rule", "severity", "explanation", "wordId"]) {
+    assert.equal(unreviewed[field], "", `predict leaked \`${field}\` to the learner`);
+  }
+  assert.equal(unreviewed.confidence, 0);
+  assert.deepEqual(unreviewed.sources, []);
+
+  // The reviewed, sourced, confident one is untouched: a redaction that ate everything would be
+  // safe and useless, and this is the assertion that says so.
+  const approved = findings.find((f) => f.reviewStatus === "teacher-reviewed");
+  assert.ok(approved, "the approved finding is gone; redaction is over-broad");
+  assert.equal(approved.rule, "madd-tabii");
+  assert.equal(approved.explanation, "Hold the natural madd for two counts.");
+  assert.equal(approved.confidence, 0.9);
+});
+
+test("ML tajweed predict: ops analysing a session get the findings whole", async () => {
+  // NOT "teacher": proxy_ml allows the session owner or ANALYSIS_STAFF (admin/ops) only, so a
+  // teacher is 403 here long before redaction is reached.
+  const sessionId = await createSession("learner-1");
+
+  const res = await request(api.baseUrl, "/v1/ml/tajweed-findings:predict", {
+    method: "POST",
+    role: "ops",
+    body: { sessionId, quranRef: { surahNumber: 1, ayahStart: 1, ayahEnd: 7, display: "x" } },
+  });
+  assert.equal(res.status, 200, JSON.stringify(res.body));
+
+  const unreviewed = res.body.findings.find((f) => f.reviewStatus === "ai-suggested");
+  assert.equal(unreviewed.rule, "ghunnah", "staff cannot act on what was redacted from them");
+  assert.equal(unreviewed.explanation, "Apply ghunnah on the noon sakina.");
 });

@@ -49,6 +49,20 @@ P6 supports R10; and P7 supports R11/R12.
 
 ### Local implementation evidence — not a release-status change
 
+- 2 August 2026 (P3.2, PARTIAL — the row stays open): the learner gate is now enforced
+  server-side on both learner-facing routes, not only in the clients (ADR-0028). Withheld
+  findings are REDACTED rather than removed, so the "notes are waiting for a teacher" state
+  survives while the judgement itself no longer crosses the wire. Mirrored in
+  `services/node-api` and proven there by running the parity suite through the Node port —
+  a mode that had existed since Phase 7 N2 and that **no gate had ever run**; `verify.sh`
+  now does.
+  - Covered, with failing-first tests: **missing** provenance, **rejected**/unreviewed
+    status, below-floor confidence, and **fixture** data (seed findings clear the gate on
+    their own merits and are confined only by their session anchor — asserted).
+  - NOT covered, and why the row stays open: **expired**. There is no expiry concept in the
+    schema for an approval — `model_versions.status` can become `blocked`, but whether that
+    retracts a human's approval of a specific finding is a scholar/product ruling, not an
+    engineering default. It needs a decision before it can have a test.
 - 19 July 2026: learner Tajweed rendering was changed to use the shared
   source/review/confidence gate. Unreviewed, unsourced, and low-confidence
   findings are withheld; eligible findings show their citation. Failing-first

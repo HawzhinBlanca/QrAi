@@ -121,7 +121,14 @@ if [[ "$FAST" != "yes" ]]; then
   # PAR6: tests/api-parity/coverage.test.mjs belongs HERE, not in the DB-gated block below. It only
   # reads integration.rs + coverage.json, so "is every Rust test accounted for" has nothing to do
   # with Postgres. The parity suite ITSELF is DB- and binary-gated further down.
-  run "test: node services"       "node --test scripts/fixture-normalize.test.mjs scripts/diff-api-fixtures.test.mjs scripts/fixture-coverage.test.mjs services/ml-inference/alignment.test.mjs services/ml-inference/marks-parity.test.mjs services/ml-inference/tajweed.test.mjs services/ml-inference/server.test.mjs services/ml-inference/session-transcript.test.mjs services/agents/agents.test.mjs scripts/release-manifest.test.mjs scripts/release-build-evidence.test.mjs scripts/release-evidence-summary.test.mjs scripts/smoke-evidence.test.mjs scripts/smoke-database.test.mjs scripts/release-images.test.mjs tests/api-parity/coverage.test.mjs tests/node-api/ticket-vectors.test.mjs tests/node-api/authz.test.mjs tests/node-api/shell.test.mjs tests/node-api/routes-table.test.mjs tests/node-api/metrics-render.test.mjs tests/node-api/rust-json.test.mjs tests/node-api/no-secret-logging.test.mjs tests/node-api/boot-guard.test.mjs tests/contract/coverage.test.mjs tests/contract/cutover-readiness.test.mjs tests/contract/boundary-references.test.mjs tests/contract/flutter-contract.test.mjs tests/contract/enum-parity.test.mjs tests/contract/tajweed-gate-parity.test.mjs tests/contract/store-readiness.test.mjs scripts/check-apk.test.mjs tests/security/arabic-regex-escapes.test.mjs tests/i18n/registers.test.mjs tests/i18n/locale-parity.test.mjs tests/i18n/drafts.test.mjs tests/security/legacy-insecure-flag.test.mjs"
+  # `--experimental-strip-types`: tests/contract/tajweed-gate-parity.test.mjs imports
+  # packages/contracts/src/index.ts directly, to EXECUTE the real learner gate rather than parse it.
+  # Node turns type stripping on by default from 22.18, so this line worked without the flag on a
+  # current runtime and threw ERR_UNKNOWN_FILE_EXTENSION on 22.13 — the minimum package.json
+  # declares. CI pins `node-version: "22"`, which floats to the newest, so the gate was red on a
+  # supported runtime and green on the one that tested it. tests/contract/strip-types.test.mjs pins
+  # the flag against the imports so this cannot come back.
+  run "test: node services"       "node --experimental-strip-types --test scripts/fixture-normalize.test.mjs scripts/diff-api-fixtures.test.mjs scripts/fixture-coverage.test.mjs services/ml-inference/alignment.test.mjs services/ml-inference/marks-parity.test.mjs services/ml-inference/tajweed.test.mjs services/ml-inference/server.test.mjs services/ml-inference/session-transcript.test.mjs services/agents/agents.test.mjs scripts/release-manifest.test.mjs scripts/release-build-evidence.test.mjs scripts/release-evidence-summary.test.mjs scripts/smoke-evidence.test.mjs scripts/smoke-database.test.mjs scripts/release-images.test.mjs tests/api-parity/coverage.test.mjs tests/node-api/ticket-vectors.test.mjs tests/node-api/authz.test.mjs tests/node-api/shell.test.mjs tests/node-api/routes-table.test.mjs tests/node-api/metrics-render.test.mjs tests/node-api/rust-json.test.mjs tests/node-api/no-secret-logging.test.mjs tests/node-api/boot-guard.test.mjs tests/contract/coverage.test.mjs tests/contract/cutover-readiness.test.mjs tests/contract/boundary-references.test.mjs tests/contract/flutter-contract.test.mjs tests/contract/enum-parity.test.mjs tests/contract/tajweed-gate-parity.test.mjs tests/contract/ml-findings-shape.test.mjs tests/contract/strip-types.test.mjs tests/contract/store-readiness.test.mjs scripts/check-apk.test.mjs tests/security/arabic-regex-escapes.test.mjs tests/i18n/registers.test.mjs tests/i18n/locale-parity.test.mjs tests/i18n/drafts.test.mjs tests/security/legacy-insecure-flag.test.mjs"
   # apps/mobile is NOT a pnpm workspace member, so the TS `test: ts` line above never covered it and
   # its consent/auth/audio-format helpers went unguarded (a real audioFormat bug shipped there). The
   # helpers import ONLY node builtins, so this needs no install — just Node's type-stripping to read
@@ -234,6 +241,20 @@ if [[ "$FAST" != "yes" ]]; then
     # once a month. A flaky gate is worse than a red one: it teaches everyone to re-run.
     run "test: api parity suite (live Postgres)" \
       "cargo build --manifest-path $API && node --test --test-concurrency=1 tests/api-parity/lib/harness.test.mjs tests/api-parity/default.test.mjs tests/api-parity/auth-disabled.test.mjs tests/api-parity/cors.test.mjs tests/api-parity/metrics.test.mjs tests/api-parity/ml-proxy.test.mjs tests/api-parity/realtime-ticket.test.mjs tests/api-parity/db-endpoints.test.mjs tests/api-parity/proxy-endpoints.test.mjs tests/api-parity/contract-shapes.test.mjs tests/api-parity/hostile-input.test.mjs tests/api-parity/infra-parity.test.mjs tests/api-parity/quran-parity.test.mjs tests/api-parity/progress-parity.test.mjs tests/api-parity/reports-parity.test.mjs tests/api-parity/auth-token-parity.test.mjs tests/api-parity/pilot-auth-parity.test.mjs tests/api-parity/pilot-routes-parity.test.mjs tests/api-parity/sessions-parity.test.mjs tests/api-parity/session-writes-parity.test.mjs tests/api-parity/review-parity.test.mjs tests/api-parity/ml-asr-proxy-parity.test.mjs tests/api-parity/privacy-parity.test.mjs tests/api-parity/agent-write-parity.test.mjs tests/node-api/db-tenant.test.mjs"
+
+    # The SAME black-box suite, run with the Node port serving the routes instead of proxying them.
+    #
+    # `PARITY_THROUGH_SHELL=1` has existed since Phase 7 N2 and NOTHING ever ran it: every gate
+    # exercised the Rust binary, so a Node handler could disagree with its Rust original in any way
+    # at all and stay green. That is how a port stops being a port. P3.2 made it concrete — the
+    # learner-redaction mirror in services/node-api/routes/ml-proxy.mjs was, until this line, a
+    # security control with no gate behind it.
+    #
+    # Scoped to the ML proxy routes deliberately: those are the ones whose Node handlers hold a copy
+    # of a learner-facing rule. Widening the list is how the rest of the port earns the same proof —
+    # a route added to NODE_API_PORTED here must pass the identical assertions or this goes red.
+    run "test: api parity THROUGH the Node port" \
+      "PARITY_THROUGH_SHELL=1 NODE_API_PORTED='POST /v1/ml/tajweed-findings:predict,POST /v1/ml/alignments:predict' node --test --test-concurrency=1 tests/api-parity/ml-proxy.test.mjs"
   else
     say "test: platform-api integration + api parity suite"
     if [[ "$RELEASE" == "yes" ]]; then

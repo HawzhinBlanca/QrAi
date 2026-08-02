@@ -6,6 +6,14 @@ use sqlx::Row;
 use crate::AppState;
 use crate::types::*;
 
+/// Who may run analysis against a session that is not their own — and therefore who receives the
+/// findings unredacted. ONE list, used for both: two copies would drift, and the direction they
+/// would drift in is a learner reading an unreviewed judgement about their own recitation.
+///
+/// Teacher is deliberately absent. Reviewing a stored finding is `/v1/teacher-reviews`; re-running
+/// the analyser against somebody's session is not part of that, and never was.
+const ANALYSIS_STAFF: &[ActorRole] = &[ActorRole::Admin, ActorRole::Ops];
+
 /// Proxy a prediction request to the internal ML service.
 ///
 /// Tenant isolation: the caller is authenticated and the request's `tenantId` is OVERWRITTEN with the
@@ -81,7 +89,7 @@ async fn proxy_ml(
         // pass another in-tenant learner's sessionId and have THAT session's stored consent applied
         // to their own forwarded audio. Mirrors create_realtime_ticket / persist_session_alignments.
         let session_learner_id: String = row.try_get("learner_id")?;
-        actor.require_self_or_any(&session_learner_id, &[ActorRole::Admin, ActorRole::Ops])?;
+        actor.require_self_or_any(&session_learner_id, ANALYSIS_STAFF)?;
         let guardian_approved: bool = row.try_get("guardian_approved")?;
         let external_asr_processing: bool = row.try_get("external_asr_processing")?;
         let audio_retention: String = row.try_get("audio_retention")?;
@@ -114,7 +122,7 @@ async fn proxy_ml(
         return Err(ApiError::Upstream("ML service error".to_owned()));
     }
 
-    let result: serde_json::Value = response.json().await.map_err(|e| {
+    let mut result: serde_json::Value = response.json().await.map_err(|e| {
         tracing::error!("ML proxy {label} parse error: {e}");
         ApiError::Upstream("ML service returned an invalid response".to_owned())
     })?;
@@ -136,7 +144,69 @@ async fn proxy_ml(
         .await?;
     }
 
+    // The learner gate applies to THIS response too, not only to the copy that was just stored.
+    //
+    // Everything ml-inference returns here is freshly computed and `ai-suggested` by construction —
+    // no human has looked at any of it — so for a learner the whole set is withheld. It was
+    // nonetheless being sent to their device in full: every rule, severity, explanation and
+    // confidence, with `canShowLearnerFacingAiOutput` in the browser trusted to hide it. That is a
+    // display choice, not an authorization boundary; `curl` with the learner's own token read all of
+    // it. Same reasoning, and the same redaction, as `list_session_tajweed_findings`.
+    //
+    // Staff get it whole: analysing a session in order to review it is what the route is for.
+    if label == "tajweed" && !ANALYSIS_STAFF.contains(&actor.role) {
+        redact_withheld_findings(&mut result);
+    }
+
     Ok(Json(result))
+}
+
+/// Strip, in place, the content of every finding in an ML response that a learner may not be shown.
+///
+/// The array KEEPS its length and each finding keeps its `reviewStatus`: both clients render "N
+/// notes are waiting for a teacher" from a count, and a count of pending notes says nothing about
+/// how the person recited. Everything that does say something goes.
+///
+/// The values left behind are not filler — `confidence: 0` and `sources: []` make each redacted
+/// finding fail `canShowLearnerFacingAiOutput` and `isLearnerVisible` on its own merits, so a client
+/// that ignores the redaction entirely still cannot present one as feedback.
+fn redact_withheld_findings(result: &mut serde_json::Value) {
+    let Some(findings) = result.get_mut("findings").and_then(|v| v.as_array_mut()) else {
+        return;
+    };
+    for finding in findings.iter_mut() {
+        let Some(obj) = finding.as_object_mut() else {
+            continue;
+        };
+        let status = obj
+            .get("reviewStatus")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_owned();
+        let confidence = obj
+            .get("confidence")
+            .and_then(|v| v.as_f64())
+            .unwrap_or(0.0);
+        let sources = obj
+            .get("sources")
+            .cloned()
+            .unwrap_or_else(|| serde_json::json!([]));
+        if crate::handlers::review::clears_learner_gate(&status, confidence, &sources) {
+            continue;
+        }
+
+        for field in ["rule", "arabicName", "category", "severity", "explanation"] {
+            if obj.contains_key(field) {
+                obj.insert(field.to_owned(), serde_json::json!(""));
+            }
+        }
+        if obj.contains_key("wordId") {
+            obj.insert("wordId".to_owned(), serde_json::json!(""));
+        }
+        obj.insert("confidence".to_owned(), serde_json::json!(0.0));
+        obj.insert("sources".to_owned(), serde_json::json!([]));
+        obj.insert("withheld".to_owned(), serde_json::json!(true));
+    }
 }
 
 /// Write the findings the ML service just computed into `tajweed_findings`.

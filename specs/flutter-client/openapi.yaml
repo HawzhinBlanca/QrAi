@@ -89,6 +89,27 @@ components:
         error: { type: string, minLength: 1 }
       additionalProperties: false
 
+    SessionTajweedFinding:
+      # A finding as a LEARNER's own session read returns it. Every field is always present: a
+      # withheld one is redacted, never omitted, so a client cannot mistake "not allowed to see it"
+      # for "the server forgot". See the route description for what redaction sets each field to.
+      type: object
+      required: [id, wordId, rule, severity, confidence, explanation, reviewStatus, sources, withheld]
+      properties:
+        id: { type: string, minLength: 1 }
+        # Empty string on a withheld finding — WHICH word was recited wrongly is itself a judgement.
+        wordId: { type: string }
+        rule: { type: string }
+        severity: { type: string }
+        # 0 on a withheld finding, so the row fails the shared learner gate on its own values.
+        confidence: { type: number, minimum: 0, maximum: 1 }
+        explanation: { type: string }
+        # Survives redaction: "a note is waiting for a teacher" is not a judgement about the person.
+        reviewStatus: { type: string, minLength: 1 }
+        sources: { type: array, items: { type: object } }
+        withheld: { type: boolean }
+      additionalProperties: false
+
     QuranRef:
       type: object
       required: [surahNumber, ayahStart, ayahEnd, display]
@@ -665,15 +686,28 @@ paths:
         their OWN session; staff read any session in their tenant. `/v1/tajweed-findings` is the
         tenant-wide STAFF queue and is a different thing.
 
-        Returns EVERY finding for the session, including unreviewed and blocked ones, each with its
-        `reviewStatus`. `canShowLearnerFacingAiOutput` is what decides display — the client needs the
-        withheld ones to distinguish "3 notes are waiting for a teacher" from "no feedback", and a
-        COUNT of pending notes is not a judgement about the recitation.
+        Returns EVERY finding for the session, including the ones that have not cleared review, each
+        with its `reviewStatus` and a `withheld` flag — the client needs them to distinguish "notes
+        are waiting for a teacher" from "no feedback".
+
+        **A withheld finding is REDACTED for a learner.** `rule`, `severity`, `explanation` and
+        `wordId` come back as empty strings, `confidence` as `0`, `sources` as `[]`. Only its
+        existence and its `reviewStatus` survive, because only those are not a judgement about how
+        the person recited. STAFF (teacher/admin/ops) receive every finding intact — reviewing the
+        unreviewed ones is what the teacher queue is for.
+
+        `withheld` means the same thing to both audiences: this finding is not learner-visible. The
+        redacted values are chosen so the row also fails `canShowLearnerFacingAiOutput` on its own
+        merits, so a client that ignores `withheld` still cannot present one as feedback.
       parameters: [{ name: id, in: path, required: true, schema: { type: string } }]
       responses:
         '200':
           description: findings for this session, newest-confidence first
-          content: { application/json: { schema: { type: array, items: { type: object } } } }
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/SessionTajweedFinding' }
         '403': { $ref: '#/components/responses/Forbidden' }
         # A session in ANOTHER tenant is 404 before the ownership check, so this cannot be used to
         # probe for session ids that exist elsewhere.

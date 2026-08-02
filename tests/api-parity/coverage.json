@@ -1,8 +1,8 @@
 {
-  "$comment": "PAR6 \u2014 every Rust integration test accounted for. coverage.test.mjs FAILS if a #[test] in services/platform-api/tests/integration.rs has no entry here. If that is why your build is red: add an entry with a status of ported | deferred-to-phase-7 | mechanical-remainder. Do not delete the check. rustLine is informational and NOT asserted \u2014 it drifts on every edit above it, and a gate that fails on unrelated line shifts gets disabled.",
+  "$comment": "PAR6 — every Rust integration test accounted for. coverage.test.mjs FAILS if a #[test] in services/platform-api/tests/integration.rs has no entry here. If that is why your build is red: add an entry with a status of ported | deferred-to-phase-7 | mechanical-remainder. Do not delete the check. rustLine is informational and NOT asserted — it drifts on every edit above it, and a gate that fails on unrelated line shifts gets disabled.",
   "scope": "specs/api-parity-suite/plan.md option B (approved 2026-07-31)",
   "totals": {
-    "ported": 33,
+    "ported": 36,
     "mechanical-remainder": 46,
     "deferred-to-phase-7": 5
   },
@@ -77,31 +77,31 @@
       "rustTest": "sm2_spaced_repetition_updates_correctly",
       "rustLine": 579,
       "status": "deferred-to-phase-7",
-      "reason": "calls handlers::progress::sm2_update directly \u2014 there is no Node equivalent to call until Phase 7 writes one"
+      "reason": "calls handlers::progress::sm2_update directly — there is no Node equivalent to call until Phase 7 writes one"
     },
     {
       "rustTest": "sm2_quality_three_is_a_pass_not_a_reset",
       "rustLine": 605,
       "status": "deferred-to-phase-7",
-      "reason": "calls handlers::progress::sm2_update directly \u2014 there is no Node equivalent to call until Phase 7 writes one"
+      "reason": "calls handlers::progress::sm2_update directly — there is no Node equivalent to call until Phase 7 writes one"
     },
     {
       "rustTest": "sm2_interval_never_exceeds_the_ten_year_cap",
       "rustLine": 624,
       "status": "deferred-to-phase-7",
-      "reason": "calls handlers::progress::sm2_update directly \u2014 there is no Node equivalent to call until Phase 7 writes one"
+      "reason": "calls handlers::progress::sm2_update directly — there is no Node equivalent to call until Phase 7 writes one"
     },
     {
       "rustTest": "review_status_serializes_teacher_review_required",
       "rustLine": 647,
       "status": "deferred-to-phase-7",
-      "reason": "asserts types::ReviewStatus serde directly \u2014 there is no Node equivalent to call until Phase 7 writes one"
+      "reason": "asserts types::ReviewStatus serde directly — there is no Node equivalent to call until Phase 7 writes one"
     },
     {
       "rustTest": "begin_tenant_tx_activates_rls_context",
       "rustLine": 663,
       "status": "deferred-to-phase-7",
-      "reason": "calls begin_tenant_tx directly \u2014 there is no Node equivalent to call until Phase 7 writes one"
+      "reason": "calls begin_tenant_tx directly — there is no Node equivalent to call until Phase 7 writes one"
     },
     {
       "rustTest": "learner_progress_learner_id_is_authorized",
@@ -510,6 +510,24 @@
       "rustLine": 4654,
       "status": "ported",
       "parityFile": "db-endpoints.test.mjs"
+    },
+    {
+      "rustTest": "learner_gets_withheld_findings_redacted_and_staff_get_them_intact",
+      "rustLine": 4908,
+      "status": "ported",
+      "parityFile": "db-endpoints.test.mjs"
+    },
+    {
+      "rustTest": "seed_findings_cannot_surface_in_a_real_learners_session",
+      "rustLine": 5017,
+      "status": "ported",
+      "parityFile": "db-endpoints.test.mjs"
+    },
+    {
+      "rustTest": "ml_tajweed_predict_redacts_unreviewed_findings_for_a_learner",
+      "rustLine": 5054,
+      "status": "ported",
+      "parityFile": "ml-proxy.test.mjs"
     }
   ]
 }

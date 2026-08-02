@@ -12,6 +12,40 @@ jobs:
   # renderer and they pass on a project that cannot produce an APK at all. Until this job existed,
   # nothing anywhere proved the app compiles for a phone. It was first built by hand on 2026-08-02,
   # 52 minutes cold, 56 seconds warm.
+  # The Node version package.json actually promises to support, which no other job runs.
+  #
+  # `verify` pins `node-version: "22"`, which resolves to the NEWEST 22 — the same floating-version
+  # hazard the Flutter pin below calls out. It hid a real break: Node turns type stripping on by
+  # default from 22.18, so `tests/contract/tajweed-gate-parity.test.mjs` (which imports a `.ts`
+  # module to execute the real learner gate) passed on CI and threw ERR_UNKNOWN_FILE_EXTENSION on
+  # 22.13. The gate was red on a supported runtime and green on the only runtime that tested it.
+  #
+  # Scoped to the Node suites deliberately: this is about the JS runtime, and duplicating the Rust,
+  # Postgres and Flutter toolchains to learn nothing new would buy a doubled CI bill.
+  node-min:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        # Exact, not a range: the point of this job is one specific runtime, the declared floor.
+        with: { node-version: "22.13.1", cache: "pnpm" }
+      - run: pnpm install --frozen-lockfile
+      # The same file list verify.sh runs, read FROM verify.sh rather than copied — a second copy
+      # would drift and this job would quietly stop covering the newest tests.
+      - name: Node services suite on the minimum supported runtime
+        run: |
+          files=$(python3 -c "
+          import pathlib, re
+          src = pathlib.Path('scripts/verify.sh').read_text()
+          for line in src.split('\n'):
+              if '--test scripts/fixture-normalize' in line:
+                  print(' '.join(re.findall(r'[\w./-]+\.test\.mjs', line))); break
+          ")
+          test -n "$files" || { echo "could not read the test list out of verify.sh"; exit 1; }
+          echo "$files" | tr ' ' '\n' | wc -l
+          node --experimental-strip-types --test $files
+
   android:
     runs-on: ubuntu-latest
     steps:

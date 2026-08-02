@@ -191,10 +191,88 @@ test("GET session tajweed-findings: a learner reads their OWN session", async ()
   assert.ok(Array.isArray(res.body), "an array, even when empty");
   // Withheld findings come back WITH their reviewStatus: the client needs them to distinguish
   // "3 notes are waiting for a teacher" from "no feedback". Filtering here would collapse the two.
+  // Their CONTENT does not come back — see the redaction test below.
   for (const f of res.body) {
     assert.ok(typeof f.reviewStatus === "string" && f.reviewStatus.length > 0);
     assert.ok(Array.isArray(f.sources), "provenance must survive the round trip");
+    assert.equal(typeof f.withheld, "boolean", "every finding states whether it is learner-visible");
   }
+});
+
+/**
+ * P3.2 — the learner gate is enforced on the WIRE, not just in the client.
+ *
+ * integration.rs:4908 — learner_gets_withheld_findings_redacted_and_staff_get_them_intact
+ * integration.rs:5017 — seed_findings_cannot_surface_in_a_real_learners_session
+ *
+ * Black-box, because that is the whole point of the finding this closes: the Rust test could be
+ * satisfied by a handler that returns the judgement and a client that hides it. This asserts what a
+ * learner's own HTTP response actually contains. Any finding on this route that has not cleared
+ * review must carry no rule, no severity, no explanation and no word — nothing that says anything
+ * about how the person recited.
+ */
+test("GET session tajweed-findings: a withheld finding carries no judgement", async () => {
+  const [session] = await queryJson(
+    "SELECT id FROM recitation_sessions WHERE learner_id = 'learner-1' ORDER BY id LIMIT 1",
+  );
+  const res = await request(api.baseUrl, `/v1/recitation-sessions/${session.id}/tajweed-findings`, {
+    role: "learner",
+  });
+  assert.equal(res.status, 200);
+
+  const withheld = res.body.filter((f) => f.withheld);
+  for (const f of withheld) {
+    for (const field of ["rule", "severity", "explanation", "wordId"]) {
+      assert.equal(f[field], "", `a withheld finding leaked \`${field}\` to the learner`);
+    }
+    assert.equal(f.confidence, 0, "a withheld finding leaked a confidence score");
+    assert.deepEqual(f.sources, [], "a withheld finding leaked its sources");
+  }
+
+  // The two gates must agree by construction: a redacted row fails the shared client predicate on
+  // its own values, so a client that has never heard of `withheld` still cannot display one.
+  for (const f of withheld) {
+    const clearsClientGate =
+      ["teacher-reviewed", "scholar-approved"].includes(f.reviewStatus) &&
+      f.confidence >= 0.82 &&
+      f.sources.length > 0;
+    assert.equal(clearsClientGate, false, "a redacted finding must fail the client gate too");
+  }
+
+  // Fixture data. `0006_seed_internal.sql` plants findings that CLEAR the gate — teacher-reviewed,
+  // sourced, 0.84 — so nothing about their content stops them being shown. The only thing that does
+  // is that they are anchored to the seed session's alignments. A fresh session must therefore come
+  // back empty, not populated with demo notes about a recitation that never happened.
+  const fresh = await request(api.baseUrl, "/v1/recitation-sessions", {
+    method: "POST",
+    role: "learner",
+    body: {
+      learnerId: "learner-1",
+      quranRef: { surahNumber: 1, ayahStart: 1, ayahEnd: 7, display: "Al-Fatihah 1:1-7" },
+      sourceChecksum: "fnv1a32:p32parity",
+      modelVersion: "model-v0.3",
+      language: "ckb",
+      mode: "guided-recite",
+      practicePlanId: "fatihah-mastery-v1",
+      consent: {
+        audioRetention: "discard",
+        anonymizedLearning: true,
+        externalAsrProcessing: false,
+        guardianApproved: true,
+        consentVersion: "pilot-v1",
+      },
+    },
+  });
+  // 200, not 201 — the difference Phase 5's differ recorded rather than "corrected".
+  assert.equal(fresh.status, 200, `creating the probe session failed: ${JSON.stringify(fresh.body)}`);
+
+  const empty = await request(
+    api.baseUrl,
+    `/v1/recitation-sessions/${fresh.body.id}/tajweed-findings`,
+    { role: "learner" },
+  );
+  assert.equal(empty.status, 200);
+  assert.deepEqual(empty.body, [], "a brand-new session came back with findings it cannot have");
 });
 
 test("GET session tajweed-findings: another learner is Forbidden", async () => {

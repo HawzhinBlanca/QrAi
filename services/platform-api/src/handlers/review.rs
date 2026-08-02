@@ -6,6 +6,27 @@ use sqlx::Row;
 use crate::AppState;
 use crate::types::*;
 
+/// Minimum confidence for anything a learner is shown. The same number as
+/// `canShowLearnerFacingAiOutput` (packages/contracts/src/index.ts), `learnerMinConfidence`
+/// (apps/flutter/lib/src/api/models.dart), the agent-run gate in `handlers/agent.rs`, and
+/// `services/node-api`. tests/contract/tajweed-gate-parity.test.mjs pins all of them against each
+/// other, so this cannot be lowered in one language alone.
+pub const LEARNER_MIN_CONFIDENCE: f64 = 0.82;
+
+/// The learner-facing gate, in Rust: an approved review status, enough confidence, and at least one
+/// source. An ALLOWLIST of statuses, for the reason the TypeScript original spells out — a denylist
+/// fails OPEN on any status this code has not heard of, and failing open here means handing a
+/// learner an unreviewed judgement about their recitation.
+pub(crate) fn clears_learner_gate(
+    review_status: &str,
+    confidence: f64,
+    sources: &serde_json::Value,
+) -> bool {
+    let approved = review_status == "teacher-reviewed" || review_status == "scholar-approved";
+    let has_source = sources.as_array().is_some_and(|s| !s.is_empty());
+    approved && confidence >= LEARNER_MIN_CONFIDENCE && has_source
+}
+
 pub async fn create_teacher_review(
     State(state): State<AppState>,
     method: axum::http::Method,
@@ -375,12 +396,21 @@ pub async fn list_tajweed_findings(
 /// their tenant. A session that does not exist in the caller's tenant is a 404 before the ownership
 /// check, so this cannot be used to probe for session ids belonging to another tenant.
 ///
-/// ── It returns everything, and the CLIENT gates ─────────────────────────────────────────────────
-/// Unreviewed and blocked findings come back too, with their `reviewStatus`. That is deliberate and
-/// it is what the web client already does: `canShowLearnerFacingAiOutput` decides what is displayed,
-/// and the panel needs the withheld ones to say "3 notes are waiting for a teacher" rather than
-/// "no feedback". Filtering here would make those two states indistinguishable — and a count of
-/// pending notes is not a judgement about the learner's recitation, so nothing is disclosed by it.
+/// ── Withheld findings are REDACTED for a learner, not removed ───────────────────────────────────
+/// This route used to return every finding in full and leave the gating to the client, on the
+/// reasoning that "a COUNT of pending notes is not a judgement about the recitation". The reasoning
+/// was right and the code did not implement it: both clients use only whether a withheld finding
+/// EXISTS (`hasWithheldFindings` in apps/web's TajweedPanel, the `isLearnerVisible` filter in
+/// apps/flutter's), while the response carried `rule`, `severity`, `explanation` and `wordId` — the
+/// unreviewed judgement itself — to the learner's device. A client filtering that out afterwards is
+/// a display choice, not a control: one direct API call, or one client that forgets, and a learner
+/// reads an AI opinion about their recitation that no teacher has approved.
+///
+/// So a finding that does not clear the gate keeps its row and its `reviewStatus` — the panel can
+/// still say "notes are waiting for a teacher" — and loses everything that is a judgement.
+///
+/// Staff (the `STAFF` roles below) receive every finding intact: reviewing the unreviewed ones is
+/// the entire job of the teacher queue.
 pub async fn list_session_tajweed_findings(
     State(state): State<AppState>,
     method: axum::http::Method,
@@ -399,10 +429,12 @@ pub async fn list_session_tajweed_findings(
     .fetch_optional(&mut *tx)
     .await?
     .ok_or(ApiError::NotFound)?;
-    actor.require_self_or_any(
-        &learner_id,
-        &[ActorRole::Teacher, ActorRole::Admin, ActorRole::Ops],
-    )?;
+    // One list, used for BOTH the authorization and the redaction decision below. Two copies of
+    // "who counts as staff here" would eventually disagree, and the direction they would disagree
+    // in is a learner being handed an unreviewed finding.
+    const STAFF: [ActorRole; 3] = [ActorRole::Teacher, ActorRole::Admin, ActorRole::Ops];
+    actor.require_self_or_any(&learner_id, &STAFF)?;
+    let is_staff = STAFF.contains(&actor.role);
 
     // Same columns and the same ordering as the staff queue, so the two cannot describe a finding
     // differently. `tf.id` breaks the confidence tie for a stable order.
@@ -422,15 +454,44 @@ pub async fn list_session_tajweed_findings(
     let out = rows
         .into_iter()
         .map(|r| {
+            let id = r.try_get::<String, _>("id").unwrap_or_default();
+            let review_status = r.try_get::<String, _>("review_status").unwrap_or_default();
+            let confidence = r.try_get::<f64, _>("confidence").unwrap_or(0.0);
+            let sources = r
+                .try_get::<serde_json::Value, _>("source_refs")
+                .unwrap_or_else(|_| serde_json::json!([]));
+
+            // Reported to BOTH audiences and meaning the same thing to each: staff read it as
+            // "still withheld from the learner", the learner as "a note you cannot see yet".
+            let withheld = !clears_learner_gate(&review_status, confidence, &sources);
+
+            if withheld && !is_staff {
+                // `confidence: 0` and `sources: []` are not filler. They make the redacted row fail
+                // `canShowLearnerFacingAiOutput` and `isLearnerVisible` on their own, so a client
+                // that never learns what `withheld` means still cannot display one as feedback.
+                return serde_json::json!({
+                    "id": id,
+                    "wordId": "",
+                    "rule": "",
+                    "severity": "",
+                    "confidence": 0.0,
+                    "explanation": "",
+                    "reviewStatus": review_status,
+                    "sources": [],
+                    "withheld": true,
+                });
+            }
+
             serde_json::json!({
-                "id": r.try_get::<String, _>("id").unwrap_or_default(),
+                "id": id,
                 "wordId": r.try_get::<String, _>("word_id").unwrap_or_default(),
                 "rule": r.try_get::<String, _>("rule").unwrap_or_default(),
                 "severity": r.try_get::<String, _>("severity").unwrap_or_default(),
-                "confidence": r.try_get::<f64, _>("confidence").unwrap_or(0.0),
+                "confidence": confidence,
                 "explanation": r.try_get::<String, _>("explanation").unwrap_or_default(),
-                "reviewStatus": r.try_get::<String, _>("review_status").unwrap_or_default(),
-                "sources": r.try_get::<serde_json::Value, _>("source_refs").unwrap_or(serde_json::json!([])),
+                "reviewStatus": review_status,
+                "sources": sources,
+                "withheld": withheld,
             })
         })
         .collect();
