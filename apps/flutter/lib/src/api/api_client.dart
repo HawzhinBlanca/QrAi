@@ -75,9 +75,10 @@ class ApiClient {
   Future<List<SurahSummary>> listSurahs() async {
     final Object? body = await _get('/v1/quran/surahs');
     if (body is! List) throw ApiException(ApiErrorKind.server, 'expected a list of surahs');
-    return body
-        .map((Object? e) => SurahSummary.fromJson(e! as Map<String, dynamic>))
-        .toList(growable: false);
+    // `objectsIn` rather than `e! as Map<String, dynamic>`: the cast reported
+    // "type 'Null' is not a subtype of type 'Map<String, dynamic>'" with no mention of which list
+    // or which element. One way to read a field, shared with models.dart.
+    return objectsIn(body, 'surahs').map(SurahSummary.fromJson).toList(growable: false);
   }
 
   Future<SurahDetail> getSurah(int surahNumber) async =>
@@ -110,9 +111,7 @@ class ApiClient {
     final Object? body =
         await _get('/v1/tajweed-findings?sessionId=${Uri.encodeQueryComponent(sessionId)}');
     if (body is! List) throw ApiException(ApiErrorKind.server, 'expected a list of findings');
-    return body
-        .map((Object? e) => TajweedFinding.fromJson(e! as Map<String, dynamic>))
-        .toList(growable: false);
+    return objectsIn(body, 'tajweed findings').map(TajweedFinding.fromJson).toList(growable: false);
   }
 
   /// Create a recitation session. This is where consent is CAPTURED — the server stores what is
