@@ -49,6 +49,7 @@ const MODELS = {
   SurahDetail: "SurahAyahs",
   LearnerProgress: "LearnerProgress",
   RealtimeTicket: "RealtimeSessionTicket",
+  TeacherReview: "TeacherReview",
   RecitationSession: "RecitationSession",
   QuranRef: "QuranRef",
   // Write-only: sent when a session is created, never parsed back. Checked through `toJson` below.
@@ -246,6 +247,47 @@ for (const { path, keys } of postedBodies()) {
 // A regression pin for a known shape, not a general proof: a new way to spell the same mistake
 // would slip past. The behavioural cases in `apps/flutter/test/` are the load-bearing ones.
 
+/**
+ * An exception interpolated into a quoted Dart string.
+ *
+ * The trailing lookahead is not decoration: without it, `$e` matched the first two characters of
+ * ANY identifier beginning with `e`, so an ordinary `$effect` was reported as an exception leak.
+ * A gate that cries wolf on normal variable names is a gate somebody deletes. `$e.message` still
+ * matches, because `.` is not an identifier character.
+ */
+const EXCEPTION_IN_STRING = /'[^'\n]*\$\{?(e|err|error|ex)(\.message)?\}?(?![A-Za-z0-9_])[^'\n]*'/;
+
+test("the exception scanner catches every leak shape, and no ordinary identifier", () => {
+  // Both directions, because this pattern has failed in both. Built by concatenation so the cases
+  // are not themselves Dart-interpolation-shaped inside this file.
+  const Q = String.fromCharCode(39);
+  const D = String.fromCharCode(36);
+  const q = (body) => Q + body + Q;
+  const hit = (s) => EXCEPTION_IN_STRING.test(s);
+
+  // The three shapes that actually shipped to a learner, plus their near neighbours.
+  for (const [body, label] of [
+    ["Could not start. " + D + "e", "$e"],
+    ["failed: " + D + "{e}", "${e}"],
+    ["failed: " + D + "{e.message}", "${e.message}"],
+    ["boom " + D + "e.message", "$e.message"],
+    ["oh no " + D + "error", "$error"],
+    [D + "ex happened", "$ex"],
+  ]) {
+    assert.ok(hit(q(body)), `${label} must be caught — this is the leak this gate exists for`);
+  }
+
+  // Ordinary identifiers that merely begin with `e`. Each of these was a false positive.
+  for (const [body, label] of [
+    ["Recorded: " + D + "{r.decision} - " + D + "effect.", "$effect"],
+    ["count: " + D + "errorCount", "$errorCount"],
+    ["see " + D + "example", "$example"],
+    [D + "{explanation}", "${explanation}"],
+  ]) {
+    assert.ok(!hit(q(body)), `${label} is a variable name, not an exception`);
+  }
+});
+
 test("no learner-facing string interpolates an exception", () => {
   const offenders = [];
   const files = globSync("**/*.dart", { cwd: join(flutterRootForLeakScan, "lib/src") }).sort();
@@ -260,7 +302,12 @@ test("no learner-facing string interpolates an exception", () => {
     // a filename list means a new non-UI helper is covered without being remembered.
     if (!src.includes("package:flutter/")) continue;
     // `$e`, `${e}`, `${e.message}`, `${error}` … inside a quoted string.
-    for (const m of src.matchAll(/'[^'\n]*\$\{?(e|err|error|ex)(\.message)?\}?[^'\n]*'/g)) {
+    //
+    // The trailing lookahead is not decoration: without it `$e` matched the first two characters of
+    // any identifier starting with an `e`, so `'… $effect …'` in review_queue_screen.dart was
+    // reported as an exception leak. A gate that cries wolf on ordinary variable names is a gate
+    // somebody deletes. `$e.message` still matches — `.` is not an identifier character.
+    for (const m of src.matchAll(new RegExp(EXCEPTION_IN_STRING.source, "g"))) {
       offenders.push(`${rel}: ${m[0].trim().slice(0, 70)}`);
     }
   }

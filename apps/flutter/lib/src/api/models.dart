@@ -271,6 +271,7 @@ const double learnerMinConfidence = 0.82;
 
 class TajweedFinding {
   const TajweedFinding({
+    required this.id,
     required this.wordId,
     required this.rule,
     required this.severity,
@@ -282,6 +283,7 @@ class TajweedFinding {
   });
 
   factory TajweedFinding.fromJson(Map<String, dynamic> json) => TajweedFinding(
+        id: _strOrNull(json, 'id'),
         wordId: _str(json, 'wordId'),
         rule: _str(json, 'rule'),
         severity: _str(json, 'severity'),
@@ -294,9 +296,17 @@ class TajweedFinding {
         arabicName: _strOrNull(json, 'arabicName'),
       );
 
-  /// There is no `id` on the wire: `services/ml-inference/tajweed.js` builds findings without one,
-  /// which is why the web panel keys on wordId+rule. A required `id` here made every response fail
-  /// to parse.
+  /// Present only on PERSISTED findings.
+  ///
+  /// `GET /v1/tajweed-findings` (the staff queue) selects `tf.id`; the learner's
+  /// `POST /v1/ml/tajweed-findings:predict` computes findings on the fly and
+  /// `services/ml-inference/tajweed.js` builds them without one — which is why the panel keys on
+  /// wordId+rule. Nullable rather than required for that reason: a required `id` made every
+  /// learner-side response fail to parse.
+  ///
+  /// A teacher review is keyed on this, so [canBeReviewed] is what a review action must gate on.
+  final String? id;
+
   final String wordId;
   final String rule;
   final String severity;
@@ -325,6 +335,61 @@ class TajweedFinding {
       learnerApprovedReviewStatuses.contains(reviewStatus) &&
       confidence >= learnerMinConfidence &&
       sources.isNotEmpty;
+
+  /// Whether a teacher decision can be recorded against this finding.
+  ///
+  /// `POST /v1/teacher-reviews` is keyed on `findingId` and 404s on one it cannot find, so a
+  /// computed finding (no id) has nothing to review. The review UI branches on this rather than
+  /// force-unwrapping [id].
+  bool get canBeReviewed => id != null;
+}
+
+/// A teacher's verdict on a finding. Wire values are the lowercase variant names —
+/// `TeacherDecision` in `services/platform-api/src/types.rs` derives serde's default for a unit
+/// enum, so `Accepted` serialises as `"accepted"`.
+enum TeacherDecision {
+  accepted,
+  rejected,
+  edited;
+
+  String get wire => name;
+}
+
+/// `POST /v1/teacher-reviews` response.
+class TeacherReview {
+  const TeacherReview({
+    required this.id,
+    required this.findingId,
+    required this.teacherId,
+    required this.decision,
+    required this.note,
+    required this.auditEventId,
+  });
+
+  factory TeacherReview.fromJson(Map<String, dynamic> json) => TeacherReview(
+        id: _str(json, 'id'),
+        findingId: _str(json, 'findingId'),
+        teacherId: _str(json, 'teacherId'),
+        decision: _str(json, 'decision'),
+        note: _str(json, 'note'),
+        auditEventId: _str(json, 'auditEventId'),
+      );
+
+  final String id;
+  final String findingId;
+
+  /// The AUTHENTICATED author, decided server-side. `create_teacher_review` ignores the
+  /// `teacherId` the client sends — trusting it once let a teacher attribute a review to somebody
+  /// else — so this is the server's answer, not an echo of the request.
+  final String teacherId;
+
+  /// Left as the wire string rather than re-parsed into [TeacherDecision]: this is what the server
+  /// recorded, and a value the client's enum does not know about must still be displayable.
+  final String decision;
+  final String note;
+
+  /// Every review writes an audit event. Surfacing the id is what lets a decision be traced back.
+  final String auditEventId;
 }
 
 /// `POST /v1/realtime-session-tickets`.

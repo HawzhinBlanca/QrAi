@@ -1022,3 +1022,99 @@ not been asked. `FL9` — the device matrix — remains open and is not satisfie
 2. [x] Assert transport ORDER without hardware: socket before microphone, and no microphone at all
        when the gateway refuses the ticket.
 3. [ ] Re-evaluate `web_socket_channel` when a machine with Xcode is available.
+
+---
+
+## ADR-0027 — A teacher's decision changes the finding, so the review queue is not a dead end
+
+**Status:** Accepted (2026-08-02, on the owner's instruction — "wire it")
+**Deciders:** repository owner
+**Supersedes / superseded by:** none
+
+### Context
+
+`create_teacher_review` recorded a decision in `teacher_reviews`, wrote an audit event, and stopped.
+Nothing in the platform ever updated `tajweed_findings.review_status` — verified by
+`grep -rn "UPDATE tajweed_findings" services/platform-api/src`, which returned nothing, and there
+was no database trigger either.
+
+The consequence was total and silent. `canShowLearnerFacingAiOutput` admits only `teacher-reviewed`
+and `scholar-approved`. `services/ml-inference` stamps every finding `ai-suggested`. So **no finding
+could ever become learner-visible by any path**: a teacher could accept every item in the queue,
+every evening, and no learner would see anything change. `docs/readiness/TRUE_READINESS.md` recorded
+the symptom ("a learner gets the *scaffold*, not the *coach*") without naming the missing write.
+
+Building the Flutter review queue (`apps/flutter/lib/src/review/`) forced the question, because a
+review console whose decisions provably reach nobody is a facade.
+
+### Decision
+
+`create_teacher_review` promotes the finding in the **same transaction** as the review row and the
+audit event, in both implementations (`handlers/review.rs` and `node-api/routes/review.mjs`):
+
+| decision | `tajweed_findings.review_status` becomes | why |
+|---|---|---|
+| `accepted` | `teacher-reviewed` | the status the learner gate already admits |
+| `rejected` | `blocked` | an explicit refusal, distinguishable from "not looked at yet" |
+| `edited` | **unchanged** | see below |
+
+`edited` promotes nothing. It means the teacher rewrote the explanation, and there is nowhere to put
+the rewrite: `teacher_reviews.note` is free text that no reader folds back into the finding.
+Promoting would publish the ORIGINAL wording as teacher-approved — precisely the text the teacher
+said was wrong. The finding stays pending and stays in the queue, which is the truth about it.
+
+One transaction, deliberately: a promotion without its audit trail is learner-facing content nobody
+can account for, and a review row whose promotion was lost is a teacher's decision silently dropped.
+Either half alone is worse than neither.
+
+### What this decision actually means
+
+**One teacher's acceptance is now sufficient to show AI-generated feedback about a person's
+recitation of the Qur'an.** That is the substance of this ADR, not the SQL. It was the owner's call
+and it is recorded here so it can be revisited by argument.
+
+The other three requirements are unchanged and still enforced: a promoted finding is shown only if
+it also carries at least one source and clears the 0.82 confidence floor
+(`canShowLearnerFacingAiOutput`, mirrored in `apps/flutter/lib/src/api/models.dart` and pinned by
+`tests/contract/tajweed-gate-parity.test.mjs`). Promotion is necessary, not sufficient.
+
+### Consequences
+
+- The teacher half of the loop closes: a decision now reaches the finding and changes its status.
+
+**It does NOT yet close end to end, and this ADR must not be read as claiming it does.** Two links
+are still missing, both found while writing this:
+
+1. **Nothing in production ever writes a `tajweed_findings` row.** `grep -rn "INSERT INTO
+   tajweed_findings" services/` matches only `tests/integration.rs`; the only rows in a real
+   database come from `infra/sql/0006_seed_internal.sql`. `services/ml-inference` computes findings
+   in memory per request and has no database at all.
+2. **The learner's route recomputes rather than reads.** `POST /v1/ml/tajweed-findings:predict`
+   returns freshly analysed findings, always stamped `ai-suggested`. It never reads the persisted
+   table, so a promoted finding is not what the learner's screen asks for. The only route that
+   reads persisted findings, `GET /v1/tajweed-findings`, is staff-only.
+
+So today a teacher can promote a **seeded** finding and the learner's practice screen will still
+show "waiting for a teacher to review", because it asked a different question. Closing this needs
+analysis results to be persisted and a learner-scoped read of their own session's findings — two
+behaviours, one of them a new route. Neither is in this ADR.
+- The last decision wins. A teacher who accepts and then rejects leaves the finding `blocked`; this
+  is deliberate, so a mistake is correctable without an admin.
+- `blocked` findings leave the review queue (`pendingForReview` excludes them). Re-opening one needs
+  a new route; nothing here provides it.
+- A **sourceless** finding can now be promoted to `teacher-reviewed`, where it is still withheld
+  from learners by the sources check. `create_scholar_approval` refuses the analogous case
+  server-side (`MissingSources`); teacher review does not, and adding that refusal would be a new
+  4xx on a route clients already use. Worth revisiting — the client-side gate is currently the only
+  thing stopping an unsourced acceptance from being displayed by a future, laxer client.
+
+### Action items
+
+1. [x] Promote in `handlers/review.rs`, in the existing transaction.
+2. [x] Mirror in `node-api/routes/review.mjs`; the parity suite keeps the two honest.
+3. [x] Integration coverage against live Postgres for all three decisions, including that `edited`
+       changes nothing and that a promoted finding then passes the learner gate.
+4. [ ] Persist computed tajweed findings, and give a learner a route that reads their own session's
+       persisted findings. Without both, promotion changes a row nothing learner-facing reads.
+5. [ ] Decide whether teacher acceptance should refuse a sourceless finding, as scholar approval
+       does. Owner/scholar call.

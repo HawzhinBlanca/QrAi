@@ -69,6 +69,20 @@ export async function createTeacherReview(req, reply, ctx) {
       VALUES (${reviewId}, ${actor.tenantId}, ${b.findingId}, ${actor.userId}, ${b.decision},
               ${b.note}, ${auditId})`;
 
+    // The decision reaches the finding (ADR-0027). Same transaction as the review row and the
+    // audit event: a promotion without its audit trail is learner-facing content nobody can account
+    // for, and a lost promotion is a teacher's decision silently dropped.
+    //
+    // `edited` promotes NOTHING — the rewrite has nowhere to live, so promoting would publish the
+    // original wording as teacher-approved: exactly the text the teacher said was wrong.
+    // Mirrors review.rs; tests/api-parity keeps the two honest.
+    const promoted = { accepted: "teacher-reviewed", rejected: "blocked", edited: null }[b.decision];
+    if (promoted) {
+      await tx`
+        UPDATE tajweed_findings SET review_status = ${promoted}
+        WHERE id = ${b.findingId} AND tenant_id = ${actor.tenantId}`;
+    }
+
     // `TeacherReview` struct — DECLARATION order.
     return {
       id: reviewId,

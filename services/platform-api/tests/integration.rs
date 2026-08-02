@@ -4061,3 +4061,151 @@ async fn rls_backstops_a_query_that_forgets_its_tenant_context() {
 
     tx.rollback().await.unwrap();
 }
+
+/// ADR-0027 — a teacher's decision reaches the finding.
+///
+/// Before this, `create_teacher_review` recorded a row and stopped: nothing anywhere updated
+/// `tajweed_findings.review_status`, so an accepted finding stayed `ai-suggested`, stayed below
+/// `canShowLearnerFacingAiOutput`, and no finding could become learner-visible by any path. A
+/// teacher could work the queue every evening and change nothing.
+///
+/// Asserts all three decisions, and — the claim that actually matters — that an accepted finding
+/// then satisfies every term of the learner gate, not just the status one.
+#[tokio::test]
+#[ignore = "requires live Postgres"]
+async fn teacher_decision_promotes_the_finding_and_edited_promotes_nothing() {
+    use sqlx::Row;
+    let state = test_state();
+    let router = platform_router_with_rate_limit(test_state(), false);
+
+    // A finding needs a real alignment, which needs a real session.
+    let created = send_json(
+        &router,
+        Method::POST,
+        "/v1/recitation-sessions",
+        Some("hikmah-pilot-erbil"),
+        Some("learner"),
+        json!({
+            "learnerId": "learner-1",
+            "quranRef": {"surahNumber": 1, "ayahStart": 1, "ayahEnd": 7, "display": "Al-Fatihah 1:1-7"},
+            "sourceChecksum": "fnv1a32:promote", "modelVersion": "model-v0.3", "language": "ckb",
+            "mode": "guided-recite", "practicePlanId": "fatihah-mastery-v1",
+            "consent": {"audioRetention": "discard", "anonymizedLearning": true, "externalAsrProcessing": false, "guardianApproved": true, "consentVersion": "pilot-v1"}
+        }),
+    )
+    .await;
+    let session_id = read_json::<Value>(created).await["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let persisted = send_json(
+        &router,
+        Method::POST,
+        &format!("/v1/recitation-sessions/{session_id}/alignments"),
+        Some("hikmah-pilot-erbil"),
+        Some("learner"),
+        json!({ "alignments": [{"wordId": "1:1:1", "heardText": "بسم", "confidence": 0.9, "status": "matched"}] }),
+    )
+    .await;
+    assert_eq!(persisted.status(), StatusCode::OK);
+    let align_id: String =
+        sqlx::query("SELECT id FROM word_alignments WHERE session_id = $1 LIMIT 1")
+            .bind(&session_id)
+            .fetch_one(&state.pool)
+            .await
+            .unwrap()
+            .try_get("id")
+            .unwrap();
+
+    // Seeded ai-suggested, sourced, and above the 0.82 floor — so the ONLY thing keeping it from a
+    // learner is the review status. That isolates what this test is about.
+    let seed_finding = |suffix: String| {
+        let pool = state.pool.clone();
+        let align_id = align_id.clone();
+        async move {
+            let audit = format!("audit-tf-{suffix}");
+            let id = format!("tf-promote-{suffix}");
+            sqlx::query("INSERT INTO audit_events (id, tenant_id, actor_id, action, subject_type, subject_id) VALUES ($1,'hikmah-pilot-erbil','ops-1','test.seed','tajweed_finding',$2)")
+                .bind(&audit).bind(&id).execute(&pool).await.unwrap();
+            sqlx::query("INSERT INTO tajweed_findings (id, tenant_id, alignment_id, rule, severity, confidence, explanation, review_status, source_refs, model_version_id, audit_event_id) VALUES ($1,'hikmah-pilot-erbil',$2,'Ghunnah','warning',0.9,'x','ai-suggested','[{\"id\":\"s1\",\"title\":\"Board\",\"citation\":\"policy\"}]'::jsonb,'model-v0.3',$3)")
+                .bind(&id).bind(&align_id).bind(&audit).execute(&pool).await.unwrap();
+            id
+        }
+    };
+
+    let status_of = |id: String| {
+        let pool = state.pool.clone();
+        async move {
+            sqlx::query_scalar::<_, String>(
+                "SELECT review_status FROM tajweed_findings WHERE id = $1",
+            )
+            .bind(&id)
+            .fetch_one(&pool)
+            .await
+            .unwrap()
+        }
+    };
+
+    let review = |id: String, decision: &'static str| {
+        let router = router.clone();
+        async move {
+            let r = send_json(
+                &router,
+                Method::POST,
+                "/v1/teacher-reviews",
+                Some("hikmah-pilot-erbil"),
+                Some("teacher"),
+                json!({ "findingId": id, "teacherId": "teacher-1", "decision": decision, "note": "" }),
+            )
+            .await;
+            assert_eq!(r.status(), StatusCode::OK, "{decision} was not recorded");
+        }
+    };
+
+    // (1) accepted → teacher-reviewed, and the learner gate is now satisfied in FULL.
+    let accepted = seed_finding(next_suffix().to_string()).await;
+    review(accepted.clone(), "accepted").await;
+    assert_eq!(
+        status_of(accepted.clone()).await,
+        "teacher-reviewed",
+        "an accepted finding must reach the status the learner gate admits"
+    );
+    let row = sqlx::query(
+        "SELECT review_status, confidence::float8 AS confidence, jsonb_array_length(source_refs) AS sources
+         FROM tajweed_findings WHERE id = $1",
+    )
+    .bind(&accepted)
+    .fetch_one(&state.pool)
+    .await
+    .unwrap();
+    // canShowLearnerFacingAiOutput, term for term (packages/contracts/src/index.ts:373). Asserting
+    // only the status would leave the end-to-end claim — "the learner can now see it" — untested.
+    let status: String = row.try_get("review_status").unwrap();
+    let confidence: f64 = row.try_get("confidence").unwrap();
+    let sources: i32 = row.try_get("sources").unwrap();
+    assert!(status == "teacher-reviewed" || status == "scholar-approved");
+    assert!(confidence >= 0.82, "confidence floor");
+    assert!(sources > 0, "a finding with no source is still withheld");
+
+    // (2) rejected → blocked. Distinguishable from "nobody has looked yet".
+    let rejected = seed_finding(next_suffix().to_string()).await;
+    review(rejected.clone(), "rejected").await;
+    assert_eq!(status_of(rejected).await, "blocked");
+
+    // (3) edited → UNCHANGED. The rewrite has nowhere to live, so promoting would publish the
+    // original wording as teacher-approved: exactly the text the teacher said was wrong.
+    let edited = seed_finding(next_suffix().to_string()).await;
+    review(edited.clone(), "edited").await;
+    assert_eq!(
+        status_of(edited).await,
+        "ai-suggested",
+        "edited must not release the unedited explanation to a learner"
+    );
+
+    // (4) The last decision wins, so a teacher can correct their own mistake without an admin.
+    let corrected = seed_finding(next_suffix().to_string()).await;
+    review(corrected.clone(), "accepted").await;
+    review(corrected.clone(), "rejected").await;
+    assert_eq!(status_of(corrected).await, "blocked");
+}

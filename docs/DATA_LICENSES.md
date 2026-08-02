@@ -1,9 +1,9 @@
 # External data & model licenses
 
 Every external dataset, audio source, translation, or model checkpoint that ships in this repo (or
-is required to build/serve it) is registered here BEFORE use, per `docs/ROAD_TO_1_TASKS.md` rule 5.
-Each entry records: source, license, the attribution string we must display, date fetched, and how
-integrity is checked. Religious content is never AI-generated; it is licensed or measured.
+is required to build or serve it) must be registered in this document **before first use**. Each
+entry must record its source, licence, required attribution, date fetched, and integrity check.
+Religious content is never AI-generated; it is licensed or measured.
 
 ---
 

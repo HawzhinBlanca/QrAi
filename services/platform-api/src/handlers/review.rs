@@ -69,6 +69,40 @@ pub async fn create_teacher_review(
     .execute(&mut *tx)
     .await?;
 
+    // ── The decision reaches the finding ────────────────────────────────────────────────────────
+    // Until ADR-0027 this handler recorded a review and stopped. Nothing anywhere updated
+    // `tajweed_findings.review_status`, so an ACCEPTED finding stayed `ai-suggested`, stayed below
+    // `canShowLearnerFacingAiOutput`, and the learner saw "waiting for a teacher to review"
+    // permanently. Teachers could work the queue forever and change nothing.
+    //
+    // Same transaction as the review row and the audit event, deliberately: a promotion without its
+    // audit trail is learner-facing content nobody can account for, and a review row whose
+    // promotion was lost is a teacher's decision silently dropped. Either half alone is worse than
+    // neither.
+    //
+    // `edited` promotes NOTHING. It means the teacher rewrote the explanation, and there is nowhere
+    // to store the rewrite — `teacher_reviews.note` is free text that no reader ever folds back
+    // into the finding. Promoting would publish the ORIGINAL wording as teacher-approved: precisely
+    // the text the teacher said was wrong. So the finding stays pending and stays in the queue,
+    // which is the truth about its state.
+    let promoted = match req.decision {
+        TeacherDecision::Accepted => Some("teacher-reviewed"),
+        TeacherDecision::Rejected => Some("blocked"),
+        TeacherDecision::Edited => None,
+    };
+    if let Some(status) = promoted {
+        // Tenant-scoped like every other write here: RLS already restricts the transaction, and the
+        // predicate makes the scope explicit rather than implicit in the session variable.
+        sqlx::query(
+            "UPDATE tajweed_findings SET review_status = $1 WHERE id = $2 AND tenant_id = $3",
+        )
+        .bind(status)
+        .bind(&req.finding_id)
+        .bind(&actor.tenant_id)
+        .execute(&mut *tx)
+        .await?;
+    }
+
     tx.commit().await?;
 
     Ok(Json(TeacherReview {

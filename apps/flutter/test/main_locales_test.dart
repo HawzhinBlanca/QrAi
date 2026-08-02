@@ -28,6 +28,7 @@ void main() {
       client: throwingClient(),
       gatewayBase: Uri.parse('http://127.0.0.1:8081'),
       learnerId: 'learner-1',
+      actor: null,
     ));
 
     final MaterialApp app = tester.widget(find.byType(MaterialApp));

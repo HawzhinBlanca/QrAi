@@ -98,12 +98,47 @@ class ApiClient {
   /// `{"error":"actor is not allowed to perform this action"}`. `list_tajweed_findings`
   /// (`review.rs:253`) requires teacher/scholar/admin/ops. It reads the tenant's REVIEW QUEUE, which
   /// is a staff surface; [predictTajweed] is the learner's own-session route.
-  Future<List<TajweedFinding>> listTajweedFindings({required String sessionId}) async {
-    final Object? body =
-        await _get('/v1/tajweed-findings?sessionId=${Uri.encodeQueryComponent(sessionId)}');
+  ///
+  /// No `sessionId` parameter, deliberately: the handler's query is
+  /// `WHERE tf.tenant_id = $1 ORDER BY tf.confidence DESC, tf.id LIMIT 200` and filters by nothing
+  /// else. This method used to send `?sessionId=…`, which the server silently ignored — a client
+  /// that appears to scope a request it does not scope is worse than one that admits the whole
+  /// tenant comes back. The web client filters per session in the UI for the same reason.
+  ///
+  /// The 200-row cap is the server's and there is no pagination, so a busy tenant's queue is
+  /// truncated by confidence. Nothing here can page past it.
+  Future<List<TajweedFinding>> listTajweedFindings() async {
+    final Object? body = await _get('/v1/tajweed-findings');
     if (body is! List) throw ApiException(ApiErrorKind.server, 'expected a list of findings');
     return objectsIn(body, 'tajweed findings').map(TajweedFinding.fromJson).toList(growable: false);
   }
+
+  /// Record a teacher's decision on a finding. Teacher/Admin/Ops only (`review.rs:16`).
+  ///
+  /// `teacherId` is required by the wire struct and **ignored by the server**: the review author is
+  /// the authenticated actor, because trusting the client's value once let a teacher attribute a
+  /// review to another user — even a cross-tenant one. It is sent because the struct demands a
+  /// field, not because it decides anything.
+  ///
+  /// ── What a decision does ───────────────────────────────────────────────────────────────────────
+  /// Since ADR-0027 the handler promotes the finding in the SAME transaction as the review row and
+  /// the audit event: `accepted` -> `teacher-reviewed`, `rejected` -> `blocked`, `edited` ->
+  /// unchanged (the rewrite has nowhere to live, so promoting would publish the original wording).
+  ///
+  /// Promotion is necessary, not sufficient. `canShowLearnerFacingAiOutput` also requires at least
+  /// one source and confidence >= 0.82, so accepting a sourceless finding still leaves it withheld.
+  Future<TeacherReview> submitTeacherReview({
+    required String findingId,
+    required String teacherId,
+    required TeacherDecision decision,
+    required String note,
+  }) async =>
+      TeacherReview.fromJson(await _postObject('/v1/teacher-reviews', <String, Object?>{
+        'findingId': findingId,
+        'teacherId': teacherId,
+        'decision': decision.wire,
+        'note': note,
+      }));
 
   /// Analysis of the learner's OWN session. This is the route the web client has always used
   /// (`apps/web/src/lib/api.ts` `predictTajweed`), and it is learner-reachable: `proxy_ml`
