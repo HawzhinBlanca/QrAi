@@ -1,0 +1,81 @@
+P4-T2 — audio-volume backup / restore round trip, with erasure re-application
+specs/dr-rehearsal/plan.md §P4-T2
+
+WHAT THIS IS
+  The hazard (research.md §8.4): restoring a pre-erasure backup RESURRECTS audio a learner asked to
+  have deleted. The deletion request stays satisfied in the database; only the bytes come back, and
+  nothing anywhere reports it.
+
+  This drill is the pre-erasure backup being restored on purpose, with the re-application step doing
+  its job. It is NOT a unit test with a seeded row: ml-inference stored the chunks through its real
+  audio path, platform-api's real POST /v1/privacy/delete erased them and wrote privacy_jobs, and
+  the two committed scripts did the backup and the restore.
+
+  learner-1 erases after the backup. learner-2 is the CONTROL — without a file that MUST come back,
+  "the erased file is absent" is also true of a restore that restored nothing.
+
+HOW TO RE-RUN
+  Start ml-inference with AUDIO_STORAGE_DIR set to a scratch volume and platform-api pointed at it,
+  then: backup-audio.sh -> POST /v1/privacy/delete -> restore-audio.sh -> compare.
+  psql is not on this host (Postgres runs in Docker), so PSQL_BIN="docker exec -i qrai-staging-pg psql".
+
+KNOWN CEILING
+  Re-application iterates every key in every privacy_jobs delete row (2000+ in this long-lived dev
+  database, from months of test runs) and stats each against the restored tree. Correct, and O(keys)
+  per restore. If a real deployment ever reaches a scale where that matters, scope the query by
+  tenant or by the backup's own timestamp — the keys are already indexed by neither today.
+
+────────────────────────────────────────────────────────────────────────────────────────────────────
+
+=== P4-T2 audio-volume round-trip drill ===
+date (UTC): 2026-08-02T20:58:02Z
+commit:     f7156fe
+
+ml-inference:  up (pid 76036), storage=/private/tmp/claude-501/-Users-hawzhin-Codystem/0d26d11e-e04f-4898-a02e-91481eadf192/scratchpad/t2/audio
+platform-api:  up (pid 76043)
+
+1. RECORDED (real ml-inference storage path)
+     hikmah-pilot-erbil/learner-1/chunk-erased-1.bin
+     hikmah-pilot-erbil/learner-1/chunk-erased-2.bin
+     hikmah-pilot-erbil/learner-2/chunk-kept-1.bin
+   7 files on the volume
+
+2. BACKUP
+   ==> backing up /private/tmp/claude-501/-Users-hawzhin-Codystem/0d26d11e-e04f-4898-a02e-91481eadf192/scratchpad/t2/audio (7 files)
+   OK   /private/tmp/claude-501/-Users-hawzhin-Codystem/0d26d11e-e04f-4898-a02e-91481eadf192/scratchpad/t2/backups/audio-storage-20260802T205803Z.tar.gz
+        7 files, 4.0K, 0s
+   
+        Restore with:  AUDIO_RESTORE_TARGET=<dir> bash scripts/restore-audio.sh /private/tmp/claude-501/-Users-hawzhin-Codystem/0d26d11e-e04f-4898-a02e-91481eadf192/scratchpad/t2/backups/audio-storage-20260802T205803Z.tar.gz
+        That path RE-APPLIES outstanding erasure requests. Do not untar this by hand.
+
+3. ERASURE (real POST /v1/privacy/delete through platform-api)
+   {"id":"privacy-job-3a166a42-8604-45ef-adfa-f05e3e1074fb","tenantId":"hikmah-pilot-erbil","learnerId":"learner-1","kind":"delete","includedRecords":[],"deletedRecords":[],"audioObjectKeysDeleted":["hikmah-pilot-erbil/learner-1/chunk-erased-1.bin","hikmah-pilot-erbil/learner-1/chunk-erased-2.bin","hikmah-pilot-erbil/learner-1/chunk-erased-1.meta.json","hikmah-pilot-erbil/learner-1/chunk-erased-2.met...
+
+   privacy_jobs row now in Postgres:
+     privacy-job-3a166a42-8604-45ef-adfa-f05e3e1074fb -> ["hikmah-pilot-erbil/learner-1/chunk-erased-1.bin", "hikmah-pilot-erbil/learner-1/chunk-erased-2.bin", "hikmah-pilot-erbil/learner-1/chunk-erased-1.meta.json", "hikmah-pilot-erbil/learner-1/chunk-erased-2.meta.json"]
+   volume after erasure:
+     hikmah-pilot-erbil/learner-2/chunk-kept-1.bin
+
+4. RESTORE from the backup taken BEFORE the erasure
+   ==> reading outstanding erasure requests
+       2026 object key(s) must not come back
+   ==> restoring /private/tmp/claude-501/-Users-hawzhin-Codystem/0d26d11e-e04f-4898-a02e-91481eadf192/scratchpad/t2/backups/audio-storage-20260802T205803Z.tar.gz into /private/tmp/claude-501/-Users-hawzhin-Codystem/0d26d11e-e04f-4898-a02e-91481eadf192/scratchpad/t2/restored
+       7 file(s) on disk
+   ==> re-applying erasures
+       erased again: hikmah-pilot-erbil/learner-1/chunk-erased-1.bin
+       erased again: hikmah-pilot-erbil/learner-1/chunk-erased-2.bin
+       erased again: hikmah-pilot-erbil/learner-1/chunk-erased-1.meta.json
+       erased again: hikmah-pilot-erbil/learner-1/chunk-erased-2.meta.json
+   
+   OK   restored 7 file(s), re-erased 4, 3 remain (0s)
+        Every key in privacy_jobs was checked against the restored tree and is absent.
+
+5. VERDICT
+   ok    chunk-erased-1.bin is still absent (erased before backup-restore, absent after)
+   ok    chunk-erased-2.bin is still absent (erased before backup-restore, absent after)
+   ok    chunk-kept-1.bin came back — the restore genuinely restored (control)
+
+   restored tree:
+     hikmah-pilot-erbil/learner-2/chunk-kept-1.bin
+
+=== DRILL PASSED ===

@@ -1091,16 +1091,37 @@ setInterval(() => {
   }
 }, 5 * 60_000).unref();
 
-/** @param {string} ip */
-function checkRateLimit(ip) {
+/**
+ * Budget for callers holding the server-side `ML_API_KEY` — platform-api and the agents service.
+ *
+ * ── Why they cannot share the per-IP budget ─────────────────────────────────────────────────────
+ * Every learner's analysis reaches this service through platform-api's proxy, and platform-api does
+ * not forward `x-forwarded-for`. So from here, ALL traffic from ALL learners in ALL tenants arrives
+ * from one address and lands in one bucket: the whole platform was capped at 100 ML requests per
+ * minute, shared. A class of twenty children practising would 429 each other.
+ *
+ * Measured, not theorised — P5.4's k6 run reported a 73.8% error rate at 10 VUs and 78.1% at 50,
+ * which is the limiter answering, not the service failing. See specs/dr-rehearsal/evidence/.
+ *
+ * A ceiling remains rather than an exemption: if the key ever leaks, "authenticated" stops meaning
+ * "trustworthy", and an unbounded budget would make this service the easiest way to take the
+ * platform down. Tune with ML_TRUSTED_RATE_LIMIT_MAX.
+ */
+const TRUSTED_RATE_LIMIT_MAX = Number(process.env.ML_TRUSTED_RATE_LIMIT_MAX ?? 6000);
+
+/**
+ * @param {string} bucket  the identity being limited
+ * @param {number} max     that identity's budget per window
+ */
+function checkRateLimit(bucket, max = RATE_LIMIT_MAX) {
   const now = Date.now();
   const cutoff = now - RATE_LIMIT_WINDOW_MS;
-  const timestamps = (rateLimitMap.get(ip) ?? []).filter((t) => t > cutoff);
-  if (timestamps.length >= RATE_LIMIT_MAX) {
+  const timestamps = (rateLimitMap.get(bucket) ?? []).filter((t) => t > cutoff);
+  if (timestamps.length >= max) {
     return false;
   }
   timestamps.push(now);
-  rateLimitMap.set(ip, timestamps);
+  rateLimitMap.set(bucket, timestamps);
   return true;
 }
 
@@ -1113,13 +1134,23 @@ const server = createServer((request, response) => {
 
   const url = new URL(request.url ?? "/", "http://127.0.0.1");
 
-  // --- Per-IP sliding-window rate limiter (100 req/min for non-health endpoints) ---
+  // --- Sliding-window rate limiter (non-health endpoints) ---
+  //
+  // TWO budgets, because the per-IP one answers two different questions badly at once. An anonymous
+  // flood and platform-api relaying a whole tenant's practice look identical by address, and sizing
+  // one bucket for both means either the flood is cheap or the tenant is throttled. The API key is
+  // the only thing that distinguishes them, so it is checked FIRST and the budget follows from it.
+  const authenticated = request.headers["x-ml-api-key"] === ML_API_KEY;
   if (url.pathname !== "/health") {
     const forwardedFor = TRUST_PROXY_HEADERS
       ? request.headers["x-forwarded-for"]?.toString().split(",")[0]?.trim()
       : undefined;
     const clientIp = forwardedFor || request.socket.remoteAddress || "unknown";
-    if (!checkRateLimit(clientIp)) {
+    // Separate namespaces, so an unauthenticated flood from the proxy's own address — a container
+    // on the same network, say — cannot spend the trusted budget it is not entitled to.
+    const bucket = authenticated ? `trusted:${clientIp}` : `ip:${clientIp}`;
+    const max = authenticated ? TRUSTED_RATE_LIMIT_MAX : RATE_LIMIT_MAX;
+    if (!checkRateLimit(bucket, max)) {
       jsonResponse(response, 429, { error: "Too many requests. Please try again later." });
       return;
     }

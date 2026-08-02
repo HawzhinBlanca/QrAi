@@ -1,0 +1,76 @@
+P5.4 — load and burst against the candidate
+specs/readiness-recovery-10-10/tasks.md P5.4
+
+date (UTC): 2026-08-02
+commit:     110e766 (+ the ml-inference limiter fix this run produced)
+host:       Darwin arm64, 14 cores
+k6:         v2.0.0
+targets:    platform-api 127.0.0.1:8188, ml-inference 127.0.0.1:8090
+
+READ THIS BEFORE THE NUMBERS
+  platform-api is a DEBUG build here. These latencies are a regression floor-check, NOT a capacity
+  statement about a production candidate — P5.1 (approved SLOs and a capacity model) is still open,
+  and there is no approved target to compare against.
+
+  Consecutive k6 runs against the SAME ml-inference process SHARE the limiter's 60-second sliding
+  window. A run that starts seconds after a heavy one inherits its spent budget. That is not a bug;
+  it is why run 2 below reads worse than its own load would explain, and it is recorded so nobody
+  reads these three lines as three independent measurements.
+
+────────────────────────────────────────────────────────────────────────────────────────────────────
+WHAT THE RUNS SAY
+
+  1 VU, 15s        error_rate 0.000   635 requests
+                   p95: health 1.4ms · surahs 18.0ms · alignment 1.7ms · tajweed 1.0ms
+                   Every endpoint healthy. This is the run that says the SERVICE works.
+
+  10 VUs, 30s      error_rate 0.342   13,750 requests  (~27,500 req/min, ML share ~11,000/min)
+                   p95: health 3.8ms · surahs 5.7ms · alignment 4.4ms · tajweed 2.5ms
+                   The errors are the ML limiter answering 429, not the service failing: the load
+                   generated is roughly 1.8x the configured trusted ceiling. Latency stays flat while
+                   it happens, which is the limiter doing its job rather than the service degrading.
+
+  50 VUs burst     error_rate 0.666   51,525 requests
+                   p95: health 4.7ms · surahs 3.6ms · alignment 3.9ms · tajweed 2.6ms
+                   Same story, further past the ceiling. Nothing crashed, no latency cliff, no
+                   interrupted iterations in any run.
+
+  k6's own thresholds FAIL on all three multi-VU runs, and that is correct — they assert
+  `errors < 1%`, and a run deliberately driven past the rate limiter cannot meet it. The thresholds
+  are not adjusted to make the run green; a threshold moved to fit the measurement has stopped
+  measuring.
+
+────────────────────────────────────────────────────────────────────────────────────────────────────
+WHAT THIS RUN FOUND — a production ceiling, not a test artifact
+
+  ml-inference limited requests at 100/minute PER IP. Every learner's analysis reaches it through
+  platform-api's proxy, and platform-api does not forward `x-forwarded-for` — so from ml-inference's
+  side, all traffic from all learners in all tenants arrives from ONE address and shares ONE bucket.
+
+  The whole platform was capped at 100 ML requests per minute. A class of twenty children practising
+  would have 429ed each other.
+
+  Demonstrated directly rather than inferred: with the single shared bucket restored as a mutation,
+  services/ml-inference/rate-limit.test.mjs reports 105 of 105 authenticated requests rejected.
+
+  FIXED: two budgets. Callers holding the server-side ML_API_KEY (platform-api, agents) get
+  ML_TRUSTED_RATE_LIMIT_MAX (default 6000/min); everyone else keeps the 100/min anti-abuse budget,
+  in a separate namespace so an unauthenticated flood cannot spend the trusted allowance. A ceiling
+  rather than an exemption: if the key leaks, "authenticated" stops meaning "trustworthy".
+
+────────────────────────────────────────────────────────────────────────────────────────────────────
+WHAT WAS **NOT** RUN — P5.4 stays OPEN
+
+  P5.4 names load, burst, long-audio, reconnect, timeout, duplicate-delivery, partial-loss and
+  recovery. Load and burst are above. The rest are not done, and a row that closed on two of eight
+  would be a false claim:
+
+  - reconnect / partial-loss: scripts/chaos-realtime-reconnect.mjs exists and needs the
+    realtime-gateway built with REALTIME_CHAOS_* armed. Not run here.
+  - long-audio: untested. The audit's concern is concrete — transcribeSession uses synchronous
+    readFileSync per chunk and one Buffer.concat over the whole session, so a long recitation is a
+    single large allocation on the event loop.
+  - timeout, duplicate-delivery, recovery: no harness exists yet.
+
+  And the standing precondition: P5.1 has to define SLOs, a capacity model and RTO/RPO before any of
+  these numbers can be called pass or fail. Right now they are measurements without a target.
