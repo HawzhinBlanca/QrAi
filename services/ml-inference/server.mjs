@@ -889,13 +889,14 @@ async function storeAudioChunk(requestBody) {
     objectKey: `${tenantId}/${learnerId}/${chunkId}.bin`,
   };
 
-  // Store actual audio bytes if provided
+  // Decode and FINGERPRINT first, write second. The order is the whole point: a check that runs
+  // after `storeAudioObject` can only report the overwrite it failed to prevent.
+  let audioBytes = null;
   if (requestBody.audioBase64) {
-    const audioBytes = Buffer.from(requestBody.audioBase64, "base64");
-    await storeAudioObject(tenantId, learnerId, chunkId, audioBytes);
+    audioBytes = Buffer.from(requestBody.audioBase64, "base64");
     metadata.audioSize = audioBytes.length;
-    // Cheap because the bytes are already in hand. It is what lets the check below tell a harmless
-    // retry from a chunk being replaced with DIFFERENT audio.
+    // Cheap, because the bytes are already in hand. It is what tells a harmless retry apart from a
+    // chunk being replaced with DIFFERENT audio.
     metadata.audioSha256 = createHash("sha256").update(audioBytes).digest("hex");
   }
 
@@ -911,23 +912,46 @@ async function storeAudioChunk(requestBody) {
   // long as it existed. The gateway no longer mints duplicate ids, so this should now never fire —
   // which is exactly why it is worth hearing if it does.
   //
-  // DETECT, not refuse. Refusing would be stronger, but chunk rewriting is not yet enumerated
-  // across every flow, and a 409 that breaks a legitimate one would trade a silent failure for a
-  // loud wrong one. The half that cannot break anything goes in first.
+  // REFUSED, as of the flow enumeration below. This landed as detect-and-log first, deliberately,
+  // because a 409 that broke a legitimate rewrite would have traded a silent failure for a loud
+  // wrong one. Every caller of this route has since been enumerated:
+  //
+  //   services/realtime-gateway/src/lib.rs  — the ONLY production writer
+  //   scripts/privacy-audit-run.mjs         — audit tooling
+  //   scripts/smoke-privacy.mjs             — smoke test
+  //
+  // apps/mobile does not post chunks (it goes through /v1/asr/transcribe) and apps/web streams via
+  // the gateway. Since the reconnect fix, the gateway mints ids from a per-session cursor that never
+  // repeats, so the only legitimate rewrite left is the bounded retry — same id, same bytes — which
+  // `describeChunkConflict` returns null for and which stays a silent 200.
+  //
+  // That leaves no production flow that legitimately replaces stored audio with different audio.
+  // A request that tries to is a bug somewhere upstream, and the last moment anyone can stop it
+  // from destroying a child's recitation is here, before the write.
   const conflict = describeChunkConflict(tenantDir, chunkId, metadata);
   if (conflict) {
-    log("error", "audio chunk OVERWRITTEN with different content", {
+    log("error", "REFUSED: audio chunk would be overwritten with different content", {
       tenantId,
       sessionId,
       chunkId,
       traceId: extractTraceId(requestBody),
       conflict,
     });
-    appendAudit(tenantId, "audio.chunk.overwritten", chunkId, {
+    appendAudit(tenantId, "audio.chunk.overwrite-refused", chunkId, {
       sessionId,
       traceId: extractTraceId(requestBody),
       conflict,
     });
+    // 409, not 400: the request is well-formed, it conflicts with what is already stored. Nothing
+    // has been written — the stored recitation is exactly as it was before this call.
+    throw httpError(
+      409,
+      `chunk ${chunkId} already holds different audio; refusing to replace a stored recitation`,
+    );
+  }
+
+  if (audioBytes) {
+    await storeAudioObject(tenantId, learnerId, chunkId, audioBytes);
   }
 
   writeFileSync(join(tenantDir, `${chunkId}.meta.json`), JSON.stringify(metadata, null, 2));
