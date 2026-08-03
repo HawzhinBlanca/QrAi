@@ -15,11 +15,17 @@ import { fileURLToPath } from "node:url";
  * looks right.
  *
  * ── Why a text check ─────────────────────────────────────────────────────────────────────────
- * There is no Xcode on this project's development machine (`xcodebuild` resolves to Command Line
- * Tools; `xcrun simctl` lists zero devices), so the iOS target has never been compiled and no build
- * can confirm any of this. Reading the project file is the strongest check available here. On macOS
- * it additionally lints the two files as plists, which catches the corruption that a hand-edited
- * pbxproj is actually prone to.
+ * No Xcode is SELECTED on this project's development machine — `/Applications/Xcode-beta.app` is
+ * installed, but `xcode-select` points at Command Line Tools, so `xcodebuild` and `xcrun simctl` do
+ * not resolve. The iOS target has therefore never been compiled and no build can confirm any of
+ * this. Reading the project file is the strongest check available here. On macOS it additionally
+ * lints the two files as plists, which catches the corruption that a hand-edited pbxproj is
+ * actually prone to.
+ *
+ * (Corrected 2026-08-03: this comment used to say Xcode was absent. It is installed and unselected,
+ * which is a one-command fix rather than a multi-gigabyte one — see
+ * specs/migration-completion/evidence/fl9-blocked-2026-08-03.md. The text check stays useful either
+ * way: it runs on Linux CI, where there will never be an Xcode.)
  */
 
 const here = dirname(fileURLToPath(import.meta.url));
