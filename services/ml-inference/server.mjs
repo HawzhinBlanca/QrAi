@@ -391,6 +391,38 @@ async function transcribeAudio(audioBase64, audioFormat = "webm", language = "ar
   return response.json();
 }
 
+/**
+ * The recited words from an ASR reply, whichever shape the loaded model speaks.
+ *
+ * Two shapes are both real and the service picks between them by `ASR_MODEL`:
+ *
+ *   openai-whisper       `words: [{word, start, end}, …]` plus `text`
+ *   HF Quran fine-tune   `words: []`, the whole recitation in `text`
+ *
+ * The second is the PRODUCTION default (`tarteel-ai/whisper-base-ar-quran`; its 2022 checkpoint has
+ * no timestamp config, which is why word timing comes from the separate /v1/force-align pass). Every
+ * reader here used to take `.words` and nothing else, so on the default model a session transcribed
+ * to zero words, `finalize_session` aligned that emptiness against the full passage, and a learner
+ * who recited perfectly was recorded as having missed every word. Nothing failed and nothing logged.
+ *
+ * Segments win when present: deriving from `text` unconditionally would discard the boundaries the
+ * whisper path does produce.
+ *
+ * ── Split, never normalise ──────────────────────────────────────────────────────────────────────
+ * `text` is Quranic recitation. The split is on WHITESPACE RUNS and nothing else: no diacritic
+ * stripping, no NFC/NFD, no tatweel removal, no case folding — every code point inside a word
+ * crosses this function unchanged. Trimming first stops a leading space producing an empty first
+ * "word", which the aligner would score as a real utterance the learner never made.
+ */
+function recognizedWordsFrom(asrResult) {
+  const segments = asrResult?.words;
+  if (Array.isArray(segments) && segments.length > 0) {
+    return segments.map((w) => w.word);
+  }
+  const text = typeof asrResult?.text === "string" ? asrResult.text.trim() : "";
+  return text === "" ? [] : text.split(/\s+/);
+}
+
 // === Real alignment prediction ===
 async function predictAlignment(requestBody) {
   const startedAt = performance.now();
@@ -512,7 +544,7 @@ async function predictAlignment(requestBody) {
       // regardless of the consent decision recorded above. When not allowed, we fall through to the
       // recognizedText / canonical path below and the audio is never processed.
       asrResult = await transcribeAudio(requestBody.audioBase64, requestBody.audioFormat ?? "webm", "ar");
-      recognizedWords = asrResult.words.map((w) => w.word);
+      recognizedWords = recognizedWordsFrom(asrResult);
     } else if (requestBody.recognizedText && Array.isArray(requestBody.recognizedText)) {
       // Every element must be a string; a non-string would throw inside alignWords and
       // surface as a 500. Bad input is a 400.
@@ -1114,7 +1146,7 @@ async function transcribeSession(requestBody) {
     transcribed: true,
     reason: "consent-granted",
     // Canonical text is never normalised here; these are the ASR's words, passed through.
-    recognizedText: (asr.words ?? []).map((w) => w.word),
+    recognizedText: recognizedWordsFrom(asr),
     chunkCount: parts.length,
     sampleRate,
     // Reported even when empty, so a caller can tell "no gaps" from "this build does not check".

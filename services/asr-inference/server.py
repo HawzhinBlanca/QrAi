@@ -39,7 +39,7 @@ from fastapi import Depends, FastAPI, Header, HTTPException, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
-from audio_guards import MAX_AUDIO_SECONDS, enforce_max_duration
+from audio_guards import MAX_AUDIO_SECONDS, enforce_max_duration, probe_duration_seconds
 
 # API-key gate. The browser must NOT reach this service directly — it is fronted by the platform-api
 # /v1/asr/* proxy, which holds ASR_API_KEY server-side (like ML_API_KEY for ml-inference). ml-inference
@@ -369,6 +369,17 @@ async def transcribe(req: TranscribeRequest):
         # Reject over-long audio before running the (CPU-bound, potentially multi-minute) model.
         enforce_max_duration(tmp_path)
         if asr_pipe is not None:
+            # The REAL container duration, not 0.0.
+            #
+            # This branch used to report `duration=0.0` for every request, which is a measurement the
+            # service never took presented as one it did: a caller reading it gets "this recitation
+            # is zero seconds long" for audio that plainly is not. ffprobe already ran inside
+            # enforce_max_duration above, so this costs one more metadata read and no decode.
+            #
+            # probe_duration_seconds returns 0.0 when the container will not say (streamed input, no
+            # ffprobe). That is the same value it always returned here, so this can only ever improve
+            # the answer — and 0.0 now means "unknown", which is the truth, instead of "zero".
+            hf_duration = round(probe_duration_seconds(tmp_path), 3)
             # HF Quran ASR — this checkpoint is fine-tuned for Arabic Quran, so a plain
             # call returns diacritized Quran text. (Word-level timing comes from the
             # separate /v1/force-align pass; this 2022 fine-tune lacks timestamp config.)
@@ -379,7 +390,11 @@ async def transcribe(req: TranscribeRequest):
             return TranscribeResponse(
                 text=(hf.get("text") or "").strip(),
                 language=req.language,
-                duration=0.0,
+                duration=hf_duration,
+                # Genuinely empty: this checkpoint has no timestamp config, so it emits no word
+                # segments and per-word timing comes from /v1/force-align instead. Callers must not
+                # read this as "nothing was recognised" — the recitation is in `text`, and
+                # ml-inference's recognizedWordsFrom() is what knows to look there.
                 words=[],
                 modelVersion=MODEL_NAME,
                 latencyMs=max(1, int((time.time() - start) * 1000)),

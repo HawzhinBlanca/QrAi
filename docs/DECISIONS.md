@@ -1414,3 +1414,62 @@ and it was, here, an outage.
   wording improvement.
 - Any query counting teacher reviews now sees superseded ones. `superseded_at IS NULL` is the filter
   for live reviews; the index supports it.
+
+---
+
+## ADR-0032 — The production ASR model speaks a shape nothing read
+
+**Status:** Accepted · **Date:** 2026-08-03 · **Related:** ADR-0030 (measured vs claimed evidence)
+
+### Context
+
+`services/asr-inference` picks its model from `ASR_MODEL`, and the two supported models reply in
+different shapes:
+
+| model | reply |
+|---|---|
+| `openai-whisper` (a bare size like `base`) | `words: [{word, start, end}, …]` **and** `text` |
+| `tarteel-ai/whisper-base-ar-quran` — **the default** | `words: []`, recitation in `text` |
+
+The HF Quran fine-tune is the production default and the whole point of the service: it returns
+diacritized Quranic Arabic. Its 2022 checkpoint has no timestamp config, so it emits no word
+segments — per-word timing comes from the separate `/v1/force-align` pass, which is why the service
+was built that way.
+
+Both readers in ml-inference took `.words` and nothing else:
+
+```js
+recognizedWords = asrResult.words.map((w) => w.word);        // predictAlignment
+recognizedText:  (asr.words ?? []).map((w) => w.word),       // transcribeSession
+```
+
+On the default model both resolve to `[]`. `finalize_session` then aligns an empty transcript
+against the full passage and records every word the learner recited as `missed`. Nothing throws,
+nothing logs, and the response is a well-formed alignment of a recitation that never happened.
+
+ADR-0030 had just made this the *only* kind of alignment counted as measured accuracy.
+
+### Decision
+
+One helper, `recognizedWordsFrom(asrResult)`, used by both readers. Word segments win when present —
+deriving from `text` unconditionally would discard boundaries the whisper path does produce — and
+otherwise the words come from `text`.
+
+**Split, never normalise.** The split is on whitespace runs and nothing else: no diacritic
+stripping, no NFC/NFD, no tatweel removal. Every code point inside a word crosses the function
+unchanged, because it is Quranic text.
+
+The HF branch also reported `duration: 0.0` for every request — a measurement never taken, presented
+as one that was. It now reports the real container duration from `probe_duration_seconds`, which
+ffprobe has already computed for the max-duration guard. `0.0` still means "the container would not
+say", which is the truth rather than "zero seconds".
+
+### How it was found, and a test that had to be fixed twice
+
+The existing mock ASR returned **both** `words` and `text`. Only one of the two real dialects was
+ever spoken to this code, which is why no test noticed.
+
+The first version of the new alignment-path test passed under mutation — it omitted
+`externalAsrRequested`, so `asrAllowed` was false, the ASR was never called, and the canonical
+fallback satisfied the assertion. It now asserts `externalAsr.called` before anything else. This is
+the fifth guard in this repo found to pass for the wrong reason, and the first one I wrote myself.
