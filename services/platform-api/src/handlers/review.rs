@@ -342,7 +342,14 @@ pub async fn list_tajweed_findings(
     let mut tx = crate::begin_tenant_tx(&state.pool, &actor.tenant_id).await?;
 
     let rows = sqlx::query(
-        "SELECT tf.id, tf.alignment_id, wa.word_id, tf.rule, tf.severity,
+        // `wa.transcript_source` travels with the finding because this queue is where a teacher
+        // DECIDES. A finding anchored to a `client-reported` alignment rests on words the learner's
+        // browser supplied — possibly its own Web Speech recognition, possibly nothing recited at
+        // all — while a `server-derived` one rests on audio this platform transcribed itself.
+        // Promoting the first to `teacher-reviewed` makes it learner-visible feedback (ADR-0028)
+        // about a recitation nobody can show happened, and until now the queue gave a teacher no way
+        // to tell the two apart.
+        "SELECT tf.id, tf.alignment_id, wa.word_id, wa.transcript_source, tf.rule, tf.severity,
                 tf.confidence::float8 AS confidence, tf.explanation, tf.review_status, tf.source_refs
          FROM tajweed_findings tf
          JOIN word_alignments wa ON wa.id = tf.alignment_id
@@ -366,6 +373,10 @@ pub async fn list_tajweed_findings(
             serde_json::json!({
                 "id": r.try_get::<String, _>("id").unwrap_or_default(),
                 "wordId": r.try_get::<String, _>("word_id").unwrap_or_default(),
+                // `server-derived` | `client-reported` — what this finding's evidence rests on.
+                "transcriptSource": r
+                    .try_get::<String, _>("transcript_source")
+                    .unwrap_or_else(|_| "client-reported".to_owned()),
                 "rule": r.try_get::<String, _>("rule").unwrap_or_default(),
                 "severity": r.try_get::<String, _>("severity").unwrap_or_default(),
                 "confidence": r.try_get::<f64, _>("confidence").unwrap_or(0.0),

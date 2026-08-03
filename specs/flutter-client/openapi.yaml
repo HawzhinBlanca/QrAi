@@ -376,7 +376,7 @@ components:
 
     PersistAlignmentsResult:
       type: object
-      required: [sessionId, persisted, skippedInvalidStatus, skippedUnknownWord, auditEventId]
+      required: [sessionId, persisted, skippedInvalidStatus, skippedUnknownWord, transcriptSource, auditEventId]
       properties:
         sessionId: { type: string, minLength: 1 }
         persisted: { type: integer, minimum: 0 }
@@ -384,6 +384,10 @@ components:
         # problem from one skipped because its id is not canonical, and collapsing them hides which.
         skippedInvalidStatus: { type: integer, minimum: 0 }
         skippedUnknownWord: { type: integer, minimum: 0 }
+        # ADR-0030. This route can only ever return `client-reported`: its words came from the
+        # request body. `server-derived` belongs to finalize, which takes no words from a caller.
+        # On the wire so a client is never left assuming its words became measured evidence.
+        transcriptSource: { type: string, enum: [server-derived, client-reported] }
         auditEventId: { type: string, minLength: 1 }
       additionalProperties: false
 

@@ -524,6 +524,27 @@ pub struct PersistAlignmentsRequest {
 ///
 /// Does not commit — the caller owns the transaction, because `finalize_session` has more to do in
 /// the same one.
+/// Where the words being persisted came from. Not a request field — a property of the CODE PATH,
+/// which is why it is an enum passed by the caller rather than anything a client can influence.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum TranscriptSource {
+    /// `finalize_session`: the transcript was fetched server-to-server from the service holding the
+    /// audio. The caller named a session and supplied no words.
+    ServerDerived,
+    /// The client-facing persist route: the words originate from something the caller sent, and a
+    /// caller can send anything. Practice, not evidence.
+    ClientReported,
+}
+
+impl TranscriptSource {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::ServerDerived => "server-derived",
+            Self::ClientReported => "client-reported",
+        }
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn persist_alignments_in_tx(
     tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
@@ -531,6 +552,7 @@ async fn persist_alignments_in_tx(
     actor_user_id: &str,
     session_id: &str,
     req: PersistAlignmentsRequest,
+    transcript_source: TranscriptSource,
     trace_id: Option<String>,
 ) -> Result<serde_json::Value, ApiError> {
     // FK3 — model_version must satisfy the FK against model_versions(id).
@@ -648,8 +670,8 @@ async fn persist_alignments_in_tx(
         let wa_id = next_id("word-alignment");
         sqlx::query(
             "INSERT INTO word_alignments
-                (id, tenant_id, session_id, word_id, heard_text, start_ms, end_ms, confidence, status, model_version_id, audit_event_id)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8::float8::numeric, $9, $10, $11)",
+                (id, tenant_id, session_id, word_id, heard_text, start_ms, end_ms, confidence, status, model_version_id, audit_event_id, transcript_source)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8::float8::numeric, $9, $10, $11, $12)",
         )
         .bind(&wa_id)
         .bind(tenant_id)
@@ -662,6 +684,7 @@ async fn persist_alignments_in_tx(
         .bind(&a.status)
         .bind(&model_version)
         .bind(&audit_id)
+        .bind(transcript_source.as_str())
         .execute(&mut **tx)
         .await?;
         persisted += 1;
@@ -683,6 +706,10 @@ async fn persist_alignments_in_tx(
         "persisted": persisted,
         "skippedInvalidStatus": skipped_invalid_status,
         "skippedUnknownWord": skipped_unknown_word,
+        // On the wire so a caller is never left assuming its words were recorded as measured
+        // evidence. `client-reported` here is not a failure — it is the honest label for practice
+        // the server did not witness.
+        "transcriptSource": transcript_source.as_str(),
         "auditEventId": audit_id,
     }))
 }
@@ -717,6 +744,18 @@ pub async fn persist_session_alignments(
         &actor.user_id,
         &id,
         req,
+        // ALWAYS client-reported on this route, and not negotiable through the request body.
+        //
+        // The words in `req` came from whatever the caller sent. On the web path that is either a
+        // transcript this API produced and then handed to the browser, or the browser's own Web
+        // Speech recognition — and in both cases the round trip means the server cannot vouch for
+        // what came back. A caller can also skip the audio entirely and post a flawless recitation.
+        //
+        // None of that makes the route wrong: practice a learner logs is worth recording. It makes
+        // it something other than measured evidence, and the difference now survives the write.
+        // `finalize_session` is the path that earns `ServerDerived`, by never taking words from a
+        // caller at all.
+        TranscriptSource::ClientReported,
         crate::auth::extract_trace_id(&headers),
     )
     .await?;
@@ -986,6 +1025,10 @@ pub async fn finalize_session(
             // would (correctly) be refused.
             model_version: None,
         },
+        // The one path that earns this. `inputs` was built from a transcript fetched
+        // server-to-server from the service holding the audio (step 2 above) — the caller named a
+        // session id and supplied no words at all.
+        TranscriptSource::ServerDerived,
         crate::auth::extract_trace_id(&headers),
     )
     .await?;

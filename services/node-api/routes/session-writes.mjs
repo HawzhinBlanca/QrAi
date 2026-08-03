@@ -264,13 +264,13 @@ export async function persistSessionAlignments(req, reply, ctx) {
       await tx`
         INSERT INTO word_alignments
           (id, tenant_id, session_id, word_id, heard_text, start_ms, end_ms, confidence, status,
-           model_version_id, audit_event_id)
+           model_version_id, audit_event_id, transcript_source)
         VALUES (${newId("word-alignment")}, ${actor.tenantId}, ${sessionId}, ${a.wordId},
                 ${typeof a.heardText === "string" ? a.heardText : ""},
                 ${Number.isInteger(a.startMs) ? a.startMs : 0},
                 ${Number.isInteger(a.endMs) ? a.endMs : 0},
                 ${Math.min(Math.max(Number(a.confidence) || 0, 0), 1)}::float8::numeric,
-                ${a.status}, ${modelVersion}, ${auditId})`;
+                ${a.status}, ${modelVersion}, ${auditId}, 'client-reported')`;
       persisted += 1;
     }
 
@@ -291,6 +291,10 @@ export async function persistSessionAlignments(req, reply, ctx) {
       sessionId,
       skippedInvalidStatus: invalidStatus.length,
       skippedUnknownWord,
+      // Hardcoded, matching the Rust original: this route's words come from whatever the caller
+      // sent, so it can only ever mint `client-reported`. `server-derived` belongs to
+      // finalize_session, which is not ported (Phase 7) and takes no words from a caller at all.
+      transcriptSource: "client-reported",
     };
   });
 

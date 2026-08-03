@@ -192,11 +192,26 @@ pub async fn get_weekly_progress(
 
     // word_alignments has no timestamp of its own; a word belongs to the day its session started.
     // LEFT JOIN so a day with sessions but no alignments still appears (accuracy null).
+    // `accuracy` counts ONLY words the server itself transcribed from the stored audio
+    // (`transcript_source = 'server-derived'`, written by finalize_session).
+    //
+    // The other kind is not a lesser measurement, it is a different claim. The web practice loop
+    // posts alignments computed from a transcript the CLIENT supplied — either one this API produced
+    // and handed to the browser, or the browser's own Web Speech recognition — and a caller can post
+    // a flawless recitation having recited nothing. Averaging those into a number labelled "accuracy"
+    // is the same class of untruth as the static charts P1.1 replaced, except harder to see: the
+    // figure is real arithmetic over data that means something else.
+    //
+    // Self-reported words are still returned, under their own name. Nothing is hidden and nothing is
+    // deleted — a learner's practice log stays a practice log. Whether it should ALSO count toward
+    // progress is a product decision, and it is now possible to make one.
     let rows = sqlx::query(
         "SELECT (rs.started_at AT TIME ZONE 'UTC')::date AS day,
                 COUNT(DISTINCT rs.id) AS sessions,
-                COUNT(wa.id) AS words_total,
-                COUNT(wa.id) FILTER (WHERE wa.status = 'matched') AS words_matched
+                COUNT(wa.id) FILTER (WHERE wa.transcript_source = 'server-derived') AS words_total,
+                COUNT(wa.id) FILTER (WHERE wa.transcript_source = 'server-derived'
+                                       AND wa.status = 'matched') AS words_matched,
+                COUNT(wa.id) FILTER (WHERE wa.transcript_source = 'client-reported') AS words_self_reported
          FROM recitation_sessions rs
          LEFT JOIN word_alignments wa
            ON wa.session_id = rs.id AND wa.tenant_id = rs.tenant_id
@@ -219,6 +234,10 @@ pub async fn get_weekly_progress(
             let sessions: i64 = r.try_get("sessions").unwrap_or(0);
             let words_total: i64 = r.try_get("words_total").unwrap_or(0);
             let words_matched: i64 = r.try_get("words_matched").unwrap_or(0);
+            let words_self_reported: i64 = r.try_get("words_self_reported").unwrap_or(0);
+            // Null, never 0. A day of purely self-reported practice has no measured accuracy — which
+            // is "we did not measure this", not "you got everything wrong". Same rule the endpoint
+            // already applied to a day with sessions but no alignments at all.
             let accuracy = if words_total > 0 {
                 serde_json::json!(
                     ((words_matched as f64 / words_total as f64) * 1000.0).round() / 10.0
@@ -231,6 +250,10 @@ pub async fn get_weekly_progress(
                 "sessions": sessions,
                 "wordsTotal": words_total,
                 "wordsMatched": words_matched,
+                // Words the learner practised that the server did not transcribe itself. Reported so
+                // a day of real practice never looks like an empty one, and named so it can never be
+                // mistaken for the measured figure above.
+                "wordsSelfReported": words_self_reported,
                 "accuracy": accuracy,
             })
         })

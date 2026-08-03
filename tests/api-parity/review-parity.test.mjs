@@ -129,6 +129,10 @@ test("tajweed-findings key order is alphabetical, and the sort has a unique tieb
     "rule",
     "severity",
     "sources",
+    // ADR-0030: what this finding's evidence rests on. A finding anchored to a `client-reported`
+    // alignment rests on words the learner's browser supplied; promoting it to teacher-reviewed
+    // makes it learner-visible feedback about a recitation nobody can show happened.
+    "transcriptSource",
     "wordId",
   ]);
 

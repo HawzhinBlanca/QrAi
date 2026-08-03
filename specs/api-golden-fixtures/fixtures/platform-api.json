@@ -1442,6 +1442,7 @@
               "date": "2026-07-31",
               "sessions": 1,
               "wordsMatched": 0,
+              "wordsSelfReported": 0,
               "wordsTotal": 0
             }
           ],

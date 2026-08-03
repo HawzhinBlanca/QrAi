@@ -182,7 +182,8 @@ jobs:
             infra/sql/0019_recitation_and_findings_sort_indexes.sql \
             infra/sql/0020_language_check.sql \
             infra/sql/0021_pilot_identity.sql \
-            infra/sql/0022_session_lost_chunks.sql; do
+            infra/sql/0022_session_lost_chunks.sql \
+            infra/sql/0023_alignment_transcript_source.sql; do
             echo "Applying $sql..."
             psql -v ON_ERROR_STOP=1 "$DATABASE_URL" -f "$sql"
           done

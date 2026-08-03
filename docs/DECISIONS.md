@@ -1286,3 +1286,68 @@ The unit tests were all green while this was broken, so the gate is an assertion
 `tests/gateway/audio-retention-e2e.test.mjs` runs a real gateway and a real ml-inference, streams a
 chunk over a real websocket, and reads the `.meta.json` on disk. Reinstating the bug turns it red
 with `expected: 'teacher-review', actual: 'discard'` — the original failure, verbatim.
+
+---
+
+## ADR-0030 — A learner's own claim and the platform's own measurement are different things
+
+**Status:** Accepted · **Date:** 2026-08-03 · **Related:** ADR-0028 (the learner gate), SHIP_PLAN P1.1
+
+### Context
+
+Two code paths write `word_alignments`, and once written the rows were identical.
+
+`finalize_session` fetches the transcript **server-to-server** from the service holding the audio.
+The caller names a session id and supplies no words.
+
+The web practice loop does the opposite. It obtains a transcript — either from `/v1/asr/transcribe`,
+which this API produces and then hands to the browser, or from the browser's own Web Speech API —
+splits it client-side, posts it to `/v1/ml/alignments:predict`, and posts the result back to
+`POST /v1/recitation-sessions/{id}/alignments`. Every word in that row originates from something the
+caller sent. A caller can also skip the microphone entirely and post a flawless recitation.
+
+Downstream, `/v1/learner/progress/weekly` averaged the two together and called the result
+`accuracy`. A teacher promoting a tajweed finding to learner-visible feedback could not see which
+kind of evidence it rested on. Both are the same failure: presenting a learner's claim as the
+platform's measurement.
+
+This is not a hypothetical attack. The ordinary, non-adversarial web flow produced rows the system
+could not vouch for, and reported them as measured.
+
+### Decision
+
+`word_alignments.transcript_source` — `server-derived` | `client-reported`.
+
+It is set by the **code path**, never by the request body: `finalize_session` passes
+`ServerDerived`, the client-facing route passes `ClientReported` unconditionally, and the value is a
+Rust enum rather than a string a handler could forward from input.
+
+`accuracy` in the weekly endpoint now counts only `server-derived` words. Self-reported words are
+returned as `wordsSelfReported`, so a day of real practice never renders as an empty day, and the
+staff review queue carries `transcriptSource` on every finding.
+
+The column defaults to `client-reported`. Every pre-existing row came from the web path, so the
+default has to be the weaker claim; defaulting to `server-derived` would silently promote the entire
+back catalogue to measured evidence, which is the exact failure being fixed.
+
+### What this deliberately does NOT decide
+
+**Whether self-reported practice should count toward a learner's progress.** It is recorded, it is
+returned, it is named — and it is not averaged into a figure called accuracy. Making it count, under
+its own label and with its own presentation, is a product decision for the owner. This change only
+makes the decision possible by ending the conflation.
+
+**It does not make the web path trustworthy.** It cannot: the Web Speech fallback is client-side by
+construction. Routing the web client's audio through the realtime gateway, so it can finalize like
+the Flutter client does, is the only thing that would — and that is a client architecture change,
+not a column.
+
+### Consequences
+
+- A learner who practises only on the web now sees an **empty weekly accuracy chart** rather than a
+  populated one. That is the point, and it is the same trade P1.1 made when it deleted the
+  fabricated linear "week" derived from the mastery scalar. The chart already renders `null` as "no
+  data" (`ProgressPanel.tsx:83`), so nothing breaks — but a learner will notice, and surfacing
+  `wordsSelfReported` in the UI is worth doing before this reaches them.
+- `wordsSelfReported` is a new field on a wire contract the Node port also serves; both
+  implementations changed together and `progress-parity` asserts the shape.

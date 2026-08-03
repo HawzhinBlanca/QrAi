@@ -217,10 +217,19 @@ test("the weekly day shape is pinned — accuracy is null, not 0, when no words 
         "date",
         "sessions",
         "wordsMatched",
+        "wordsSelfReported",
         "wordsTotal",
       ]);
       if (day.wordsTotal === 0) {
         assert.equal(day.accuracy, null, "0/0 is unknown accuracy, not 0% — rendering 0% is a lie");
       }
+      // ADR-0030: `wordsTotal` is server-derived words only. A day whose practice was all
+      // self-reported must therefore report accuracy: null — never a measured-looking number over
+      // words the server never heard.
+      assert.ok(
+        day.wordsMatched <= day.wordsTotal,
+        `matched (${day.wordsMatched}) exceeds measured total (${day.wordsTotal}) — the two ` +
+          `counters are reading different populations, so accuracy can exceed 100%`,
+      );
     }
   });

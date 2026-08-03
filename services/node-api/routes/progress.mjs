@@ -234,11 +234,18 @@ export async function getWeeklyProgress(req, reply, ctx) {
   const body = await ctx.db.withTenant(actor.tenantId, async (tx) => {
     // word_alignments has no timestamp of its own; a word belongs to the day its session started.
     // LEFT JOIN so a day with sessions but no alignments still appears with a null accuracy.
+    // `accuracy` counts ONLY words the server itself transcribed (`transcript_source =
+    // 'server-derived'`). The other kind comes from a transcript the CLIENT supplied and a caller
+    // can assert a flawless recitation having recited nothing — averaging the two into a figure
+    // called "accuracy" is arithmetic over data that means something else. See ADR-0030 and the
+    // Rust original in progress.rs, which this must match query-for-query.
     const rows = await tx`
       SELECT (rs.started_at AT TIME ZONE 'UTC')::date AS day,
              COUNT(DISTINCT rs.id) AS sessions,
-             COUNT(wa.id) AS words_total,
-             COUNT(wa.id) FILTER (WHERE wa.status = 'matched') AS words_matched
+             COUNT(wa.id) FILTER (WHERE wa.transcript_source = 'server-derived') AS words_total,
+             COUNT(wa.id) FILTER (WHERE wa.transcript_source = 'server-derived'
+                                    AND wa.status = 'matched') AS words_matched,
+             COUNT(wa.id) FILTER (WHERE wa.transcript_source = 'client-reported') AS words_self_reported
       FROM recitation_sessions rs
       LEFT JOIN word_alignments wa
         ON wa.session_id = rs.id AND wa.tenant_id = rs.tenant_id
@@ -260,6 +267,10 @@ export async function getWeeklyProgress(req, reply, ctx) {
           date: formatDate(r.day),
           sessions: Number(r.sessions ?? 0),
           wordsMatched,
+          // Words the learner practised that the server did not transcribe itself. Reported so a
+          // day of real practice never looks like an empty one, and named so it cannot be mistaken
+          // for the measured figure.
+          wordsSelfReported: Number(r.words_self_reported ?? 0),
           wordsTotal,
         };
       }),
