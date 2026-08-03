@@ -1215,7 +1215,74 @@ the mirror was confirmed by disabling it and watching the suite go red.
   apps/web/src/App.tsx) which becomes persisted alignments and measured progress. The Flutter path
   derives it server-side; the web path does not.
 - **The gateway does not forward `audioRetention`** to ml-inference, so a "teacher review" or
-  "training opt-in" choice is not honoured downstream.
+  "training opt-in" choice is not honoured downstream. — **FIXED, see ADR-0029.**
 
 All three were found while closing this and are recorded here rather than fixed here, because each
 is a product or architectural decision rather than a bug with an obvious right answer.
+
+---
+
+## ADR-0029 — The consent screen's retention question needed an answer nothing downstream could hear
+
+**Status:** Accepted · **Date:** 2026-08-03 · **Supersedes:** the third open item under ADR-0028
+
+### Context
+
+`consent_records.audio_retention` has been a three-value column since the first migration — `discard`,
+`teacher-review`, `training-opt-in` — and ml-inference has honoured all three since it was written:
+its eviction sweep keeps `training-opt-in` indefinitely, `teacher-review` for seven days, and
+everything else for one hour.
+
+The two halves were never connected. The realtime gateway, which is what actually posts a learner's
+audio to `POST /v1/audio-chunks`, holds no database and had no way to know the answer. So it sent a
+body with no `audioRetention` field at all, ml-inference read `requestBody.audioRetention ?? "discard"`,
+and every chunk from every session was labelled `discard` and deleted an hour later.
+
+Nothing was logged, no test failed, and no code was wrong in isolation. The consent screen asked the
+question, the database stored the answer, ml-inference was ready to act on it, and the answer never
+crossed the gap between them. A learner who chose to keep a recitation for their teacher found it
+gone; their teacher found nothing.
+
+### Decision
+
+Put the retention choice in the realtime ticket, and bump the ticket format `rt_v1` → `rt_v2`.
+
+```
+rt_v2.{session}.{tenant}.{learner}.{externalAsr}.{audioRetention}.{expiry}.{nonce}.{hmac}
+```
+
+The ticket is the only channel from platform-api to the gateway, and it is already HMAC-signed, which
+is a requirement rather than a convenience: retention is a field a client would want to rewrite.
+Upgrading `discard` to `training-opt-in` on an unsigned field would keep a child's voice forever.
+
+`platform-api` joins `consent_records` when minting and signs the STORED value. The request body has
+no say — the same rule `externalAsrProcessing` has always followed, for the same reason.
+
+### Options considered
+
+| Option | Why not |
+|---|---|
+| Give the gateway a database connection | A second service reading `consent_records` doubles the RLS surface and adds a per-chunk query to the hot path, to learn something already known at ticket time. |
+| Have ml-inference look retention up itself | It has no tenant context and no Postgres; it would need both, and a chunk POST would become a cross-service round trip. |
+| Send it unsigned as a header | A client-controllable retention field is a privacy hole, not a shortcut. |
+| Add a fourth copy of the enum in shared-ticket | `tests/contract/enum-parity.test.mjs` exists because these sets drift. The ticket carries the value as an opaque non-blank string; the closed set stays owned by the DB CHECK constraint, and an unrecognised value degrades to `discard` — shortening retention, never extending it. |
+
+### Consequences
+
+- **A two-service deploy.** Field count went 8 → 9, so v1 and v2 tickets are mutually unparseable in
+  both directions — the version tag makes that legible in a log instead of looking like corruption.
+  Tickets live 300s, so a rolling deploy costs at most one TTL of refused upgrades; the client
+  re-mints and reconnects. Deploy platform-api and realtime-gateway together.
+- The six cross-language golden vectors were regenerated **from Rust** and now cover all three
+  retention values. The generator is committed at `services/shared-ticket/tests/regenerate_vectors.rs`
+  rather than thrown away, `#[ignore]`d so it never runs in CI.
+- Two hand-rolled copies of the ticket format (`scripts/smoke-gateway.mjs`,
+  `scripts/chaos-realtime-reconnect.mjs`) were deleted in favour of importing the pinned minter. Both
+  had silently transcribed the wire format; both would have rotted on this change.
+
+### How it is held
+
+The unit tests were all green while this was broken, so the gate is an assertion on the artifact:
+`tests/gateway/audio-retention-e2e.test.mjs` runs a real gateway and a real ml-inference, streams a
+chunk over a real websocket, and reads the `.meta.json` on disk. Reinstating the bug turns it red
+with `expected: 'teacher-review', actual: 'discard'` — the original failure, verbatim.

@@ -20,7 +20,7 @@
  *
  * Exits non-zero unless the session survived the drops and delivered every chunk.
  */
-import { createHmac } from "node:crypto";
+import { issueRealtimeTicket } from "../services/node-api/lib/ticket.mjs";
 
 const GATEWAY = process.env.GATEWAY_URL ?? "ws://127.0.0.1:8081";
 const SECRET = process.env.REALTIME_GATEWAY_TICKET_SECRET ?? "chaos-secret";
@@ -30,15 +30,26 @@ const TOTAL_CHUNKS = 12;
 const EXPECTED_DROPS = Number(process.env.REALTIME_CHAOS_MAX_DROPS ?? 2);
 
 /**
- * Mint a ticket exactly as platform-api's shared-ticket crate does
- * (rt_v1.session.tenant.learner.externalAsr.expiry.nonce.hmacSha256Hex), so this script needs only
- * the gateway + the shared secret — no database, no platform-api.
+ * Mint a ticket the gateway will accept, so this script needs only the gateway + the shared secret
+ * — no database, no platform-api.
+ *
+ * Uses node-api's minter rather than a local copy of the format. This function used to hand-roll the
+ * HMAC string, which made it a third independent transcription of a wire format pinned by
+ * cross-language vectors — and it silently rotted the moment the format changed.
  */
 function issueTicket(sessionId, nonce) {
-  const expiresAt = Math.floor(Date.now() / 1000) + 300;
-  const payload = `${sessionId}.${TENANT}.learner-1.false.${expiresAt}.${nonce}`;
-  const signature = createHmac("sha256", SECRET).update(payload).digest("hex");
-  return `rt_v1.${payload}.${signature}`;
+  return issueRealtimeTicket(
+    {
+      sessionId,
+      tenantId: TENANT,
+      learnerId: "learner-1",
+      externalAsrProcessing: false,
+      audioRetention: "discard",
+      expiresAtUnixSeconds: Math.floor(Date.now() / 1000) + 300,
+      nonce,
+    },
+    SECRET,
+  );
 }
 
 const log = (msg) => console.log(`[chaos] ${new Date().toISOString()} ${msg}`);

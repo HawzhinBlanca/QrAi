@@ -89,7 +89,7 @@ test("a non-ISO timestamp RAISES rather than being committed verbatim", () => {
   assert.throws(() => normalizeBody({ startedAt: "yesterday" }), NormalizeError);
 });
 
-test("a token that is neither JWT, uuid, nor rt_v1 ticket RAISES", () => {
+test("a token that is neither JWT, uuid, nor rt_v2 ticket RAISES", () => {
   // Refusing here is what stops an unrecognised secret-shaped value reaching a committed fixture.
   assert.throws(() => normalizeBody({ token: "hunter2" }), NormalizeError);
 });
@@ -106,7 +106,7 @@ test("recognised token shapes are accepted and replaced", () => {
   assert.equal(normalizeBody({ token: "aaa.bbb.ccc" }).token, "<JWT#1>");
   assert.equal(normalizeBody({ token: UUID_A }).token, "<TOKEN#1>");
   assert.equal(
-    normalizeBody({ token: "rt_v1.s.t.l.true.123.nonce.sig" }).token,
+    normalizeBody({ token: "rt_v2.s.t.l.true.discard.123.nonce.sig" }).token,
     "<RT_TICKET#1>",
   );
 });

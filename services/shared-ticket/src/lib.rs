@@ -11,12 +11,33 @@ type HmacSha256 = Hmac<Sha256>;
 /// TTL for realtime session tickets (seconds). Consumers may override.
 pub const DEFAULT_TICKET_TTL_SECONDS: u64 = 300;
 
+/// The ticket version tag. Bumped `rt_v1` -> `rt_v2` when `audio_retention` joined the payload
+/// (2026-08-03): the gateway is the only thing that can tell ml-inference how long a learner agreed
+/// their audio may be kept, and a ticket that cannot carry the answer means the answer is guessed.
+///
+/// The change is not backward compatible AND does not need to be: the field count moved 8 -> 9, so a
+/// v1 ticket reaching a v2 validator (and a v2 ticket reaching a v1 one) already fails the part-count
+/// check. The tag makes that failure legible in a log instead of looking like corruption.
+///
+/// Deploy platform-api and realtime-gateway together. Tickets live 300s, so a rolling deploy costs at
+/// most one ticket TTL of refused websocket upgrades — the client re-mints and reconnects.
+pub const TICKET_VERSION: &str = "rt_v2";
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RealtimeTicketClaims {
     pub session_id: String,
     pub tenant_id: String,
     pub learner_id: String,
     pub external_asr_processing: bool,
+    /// The learner's stored retention choice: `discard` | `teacher-review` | `training-opt-in`.
+    ///
+    /// Carried as an unvalidated string ON PURPOSE. The closed set is owned by the
+    /// `consent_records.audio_retention` CHECK constraint and mirrored in exactly two places
+    /// (`types.rs::AudioRetention` and the OpenAPI schema), which `tests/contract/enum-parity.test.mjs`
+    /// holds together. A third copy here would be a third thing to drift, and it would buy nothing:
+    /// ml-inference already treats any value it does not recognise as `discard`, the privacy-safe
+    /// end of the range. An unknown value shortens retention; it can never extend it.
+    pub audio_retention: String,
     pub expires_at_unix_seconds: u64,
     pub nonce: String,
 }
@@ -45,11 +66,13 @@ impl std::fmt::Display for TicketError {
 impl std::error::Error for TicketError {}
 
 /// Issue a signed realtime ticket string.
+#[allow(clippy::too_many_arguments)]
 pub fn issue_realtime_ticket(
     session_id: &str,
     tenant_id: &str,
     learner_id: &str,
     external_asr_processing: bool,
+    audio_retention: &str,
     expires_at_unix_seconds: u64,
     nonce: &str,
     secret: &str,
@@ -59,13 +82,12 @@ pub fn issue_realtime_ticket(
         tenant_id,
         learner_id,
         external_asr_processing,
+        audio_retention,
         expires_at_unix_seconds,
         nonce,
     );
     let signature = sign_ticket_payload(&payload, secret);
-    format!(
-        "rt_v1.{session_id}.{tenant_id}.{learner_id}.{external_asr_processing}.{expires_at_unix_seconds}.{nonce}.{signature}"
-    )
+    format!("{TICKET_VERSION}.{payload}.{signature}")
 }
 
 /// Validate a signed realtime ticket string.
@@ -86,13 +108,18 @@ pub fn validate_realtime_ticket(
     let tenant_id = parts.next().ok_or(TicketError::Malformed)?;
     let learner_id = parts.next().ok_or(TicketError::Malformed)?;
     let external_asr_processing = parts.next().ok_or(TicketError::Malformed)?;
+    let audio_retention = parts.next().ok_or(TicketError::Malformed)?;
     let expires_at = parts.next().ok_or(TicketError::Malformed)?;
     let nonce = parts.next().ok_or(TicketError::Malformed)?;
     let signature = parts.next().ok_or(TicketError::Malformed)?;
     if parts.next().is_some()
-        || version != "rt_v1"
+        || version != TICKET_VERSION
         || tenant_id.trim().is_empty()
         || learner_id.trim().is_empty()
+        // Blank, not enum-checked — see the field's doc comment. A blank one would reach ml-inference
+        // as "" and land in the `discard` fallback silently, which is the one case where the
+        // fail-safe hides a real bug rather than absorbing it.
+        || audio_retention.trim().is_empty()
         || nonce.trim().is_empty()
     {
         return Err(TicketError::Malformed);
@@ -117,6 +144,7 @@ pub fn validate_realtime_ticket(
         tenant_id,
         learner_id,
         external_asr_processing,
+        audio_retention,
         expires_at,
         nonce,
     );
@@ -130,6 +158,7 @@ pub fn validate_realtime_ticket(
         tenant_id: tenant_id.to_owned(),
         learner_id: learner_id.to_owned(),
         external_asr_processing,
+        audio_retention: audio_retention.to_owned(),
         expires_at_unix_seconds: expires_at,
         nonce: nonce.to_owned(),
     })
@@ -140,11 +169,12 @@ fn ticket_payload(
     tenant_id: &str,
     learner_id: &str,
     external_asr_processing: bool,
+    audio_retention: &str,
     expires_at_unix_seconds: u64,
     nonce: &str,
 ) -> String {
     format!(
-        "{session_id}.{tenant_id}.{learner_id}.{external_asr_processing}.{expires_at_unix_seconds}.{nonce}"
+        "{session_id}.{tenant_id}.{learner_id}.{external_asr_processing}.{audio_retention}.{expires_at_unix_seconds}.{nonce}"
     )
 }
 
@@ -180,6 +210,11 @@ pub fn to_hex(bytes: &[u8]) -> String {
 mod tests {
     use super::*;
 
+    /// Every test below issues a ticket; only a few care about all eight fields.
+    fn ticket(session: &str, retention: &str, secret: &str) -> String {
+        issue_realtime_ticket(session, "t1", "l1", false, retention, 2_000, "n1", secret)
+    }
+
     #[test]
     fn round_trip_issue_validate() {
         let secret = "test-secret";
@@ -188,6 +223,7 @@ mod tests {
             "tenant-1",
             "learner-1",
             true,
+            "teacher-review",
             2_000,
             "nonce-1",
             secret,
@@ -197,14 +233,42 @@ mod tests {
         assert_eq!(claims.tenant_id, "tenant-1");
         assert_eq!(claims.learner_id, "learner-1");
         assert!(claims.external_asr_processing);
+        assert_eq!(claims.audio_retention, "teacher-review");
+    }
+
+    #[test]
+    fn the_retention_choice_survives_the_round_trip_unchanged() {
+        // The reason this field exists. ml-inference decides how long a child's recorded voice is
+        // kept from the value that arrives here; a round trip that silently normalised, defaulted or
+        // dropped it would hand the decision to whatever default sits downstream.
+        let secret = "test-secret";
+        for retention in ["discard", "teacher-review", "training-opt-in"] {
+            let ticket = ticket("s1", retention, secret);
+            let claims = validate_realtime_ticket("s1", &ticket, secret, 1_000).unwrap();
+            assert_eq!(claims.audio_retention, retention);
+        }
+    }
+
+    #[test]
+    fn the_retention_choice_is_signed_not_merely_carried() {
+        // A field appended to the string but left out of the signed payload would look identical in
+        // every assertion above, while letting anyone holding a ticket rewrite "discard" into
+        // "training-opt-in" and keep a learner's audio forever.
+        let secret = "test-secret";
+        let discard = ticket("s1", "discard", secret);
+        let tampered = discard.replace(".discard.", ".training-opt-in.");
+        assert_ne!(tampered, discard, "the replace must actually have applied");
+        assert_eq!(
+            validate_realtime_ticket("s1", &tampered, secret, 1_000),
+            Err(TicketError::InvalidSignature)
+        );
     }
 
     #[test]
     fn rejects_session_mismatch() {
         let secret = "test-secret";
-        let ticket = issue_realtime_ticket("s1", "t1", "l1", false, 2_000, "n1", secret);
         assert_eq!(
-            validate_realtime_ticket("s2", &ticket, secret, 1_000),
+            validate_realtime_ticket("s2", &ticket("s1", "discard", secret), secret, 1_000),
             Err(TicketError::SessionMismatch)
         );
     }
@@ -212,18 +276,16 @@ mod tests {
     #[test]
     fn rejects_expired_ticket() {
         let secret = "test-secret";
-        let ticket = issue_realtime_ticket("s1", "t1", "l1", false, 2_000, "n1", secret);
         assert_eq!(
-            validate_realtime_ticket("s1", &ticket, secret, 2_000),
+            validate_realtime_ticket("s1", &ticket("s1", "discard", secret), secret, 2_000),
             Err(TicketError::Expired)
         );
     }
 
     #[test]
     fn rejects_wrong_secret() {
-        let ticket = issue_realtime_ticket("s1", "t1", "l1", false, 2_000, "n1", "correct");
         assert_eq!(
-            validate_realtime_ticket("s1", &ticket, "wrong", 1_000),
+            validate_realtime_ticket("s1", &ticket("s1", "discard", "correct"), "wrong", 1_000),
             Err(TicketError::InvalidSignature)
         );
     }
@@ -242,7 +304,7 @@ mod tests {
 
     #[test]
     fn rejects_ticket_with_blank_tenant_id() {
-        let ticket = "rt_v1.s1..l1.false.2000.n1.deadbeef";
+        let ticket = "rt_v2.s1..l1.false.discard.2000.n1.deadbeef";
         assert_eq!(
             validate_realtime_ticket("s1", ticket, "sec", 1_000),
             Err(TicketError::Malformed)
@@ -251,7 +313,18 @@ mod tests {
 
     #[test]
     fn rejects_ticket_with_blank_learner_id() {
-        let ticket = "rt_v1.s1.t1..false.2000.n1.deadbeef";
+        let ticket = "rt_v2.s1.t1..false.discard.2000.n1.deadbeef";
+        assert_eq!(
+            validate_realtime_ticket("s1", ticket, "sec", 1_000),
+            Err(TicketError::Malformed)
+        );
+    }
+
+    #[test]
+    fn rejects_ticket_with_blank_audio_retention() {
+        // The signature check would catch a blank field too, but only AFTER it has been parsed as a
+        // legitimate value. Refusing it by shape says which field is wrong.
+        let ticket = "rt_v2.s1.t1.l1.false..2000.n1.deadbeef";
         assert_eq!(
             validate_realtime_ticket("s1", ticket, "sec", 1_000),
             Err(TicketError::Malformed)
@@ -260,7 +333,7 @@ mod tests {
 
     #[test]
     fn rejects_ticket_with_blank_nonce() {
-        let ticket = "rt_v1.s1.t1.l1.false.2000..deadbeef";
+        let ticket = "rt_v2.s1.t1.l1.false.discard.2000..deadbeef";
         assert_eq!(
             validate_realtime_ticket("s1", ticket, "sec", 1_000),
             Err(TicketError::Malformed)
@@ -269,7 +342,7 @@ mod tests {
 
     #[test]
     fn rejects_wrong_version_tag() {
-        let ticket = "rt_v2.s1.t1.l1.false.2000.n1.deadbeef";
+        let ticket = "rt_v9.s1.t1.l1.false.discard.2000.n1.deadbeef";
         assert_eq!(
             validate_realtime_ticket("s1", ticket, "sec", 1_000),
             Err(TicketError::Malformed)
@@ -277,10 +350,20 @@ mod tests {
     }
 
     #[test]
+    fn rejects_a_v1_ticket_that_predates_the_retention_field() {
+        // A gateway mid-rolling-deploy will see these. It must refuse rather than parse the fields
+        // one position out and treat an EXPIRY as the learner's retention choice.
+        let v1 = "rt_v1.s1.t1.l1.false.2000.n1.deadbeef";
+        assert_eq!(
+            validate_realtime_ticket("s1", v1, "sec", 1_000),
+            Err(TicketError::Malformed)
+        );
+    }
+
+    #[test]
     fn rejects_ticket_with_trailing_extra_parts() {
         let secret = "test-secret";
-        let ticket = issue_realtime_ticket("s1", "t1", "l1", false, 2_000, "n1", secret);
-        let with_trailer = format!("{ticket}.extra");
+        let with_trailer = format!("{}.extra", ticket("s1", "discard", secret));
         assert_eq!(
             validate_realtime_ticket("s1", &with_trailer, secret, 1_000),
             Err(TicketError::Malformed)
@@ -338,6 +421,7 @@ mod ticket_vectors {
                 v["tenantId"].as_str().unwrap(),
                 v["learnerId"].as_str().unwrap(),
                 v["externalAsrProcessing"].as_bool().unwrap(),
+                v["audioRetention"].as_str().unwrap(),
                 // A STRING in the fixture, not a JSON number: u64::MAX does not survive
                 // JSON.parse in the Node half (18446744073709551615 -> ...552000). Found by
                 // the max-u64 vector, which is why it is in the set.
@@ -368,7 +452,31 @@ mod ticket_vectors {
             .unwrap_or_else(|e| panic!("vector '{}' failed validation: {e}", v["name"]));
             assert_eq!(claims.tenant_id, v["tenantId"].as_str().unwrap());
             assert_eq!(claims.learner_id, v["learnerId"].as_str().unwrap());
+            assert_eq!(
+                claims.audio_retention,
+                v["audioRetention"].as_str().unwrap()
+            );
         }
+    }
+
+    #[test]
+    fn the_vectors_cover_every_retention_value_the_database_allows() {
+        // `audio_retention` is the one payload field with a closed set, and the whole point of the
+        // field is that the three values reach ml-inference DISTINGUISHABLY. Vectors that all said
+        // "discard" would pin the format without pinning that.
+        let covered: std::collections::BTreeSet<String> = vectors()
+            .iter()
+            .map(|v| v["audioRetention"].as_str().unwrap().to_owned())
+            .collect();
+        let expected: std::collections::BTreeSet<String> =
+            ["discard", "teacher-review", "training-opt-in"]
+                .iter()
+                .map(|s| (*s).to_owned())
+                .collect();
+        assert_eq!(
+            covered, expected,
+            "the vector set must exercise every value infra/sql/0001_core_schema.sql permits"
+        );
     }
 
     #[test]

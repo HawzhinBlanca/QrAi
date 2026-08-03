@@ -6,8 +6,8 @@
  * realtime-gateway validates whatever this produces, so any drift here is not a bug in one service,
  * it is an outage in two.
  *
- *   payload = "{sessionId}.{tenantId}.{learnerId}.{externalAsr}.{expiresAt}.{nonce}"
- *   ticket  = "rt_v1.{payload}.{lowercase hex HMAC-SHA256(secret, payload)}"
+ *   payload = "{sessionId}.{tenantId}.{learnerId}.{externalAsr}.{audioRetention}.{expiresAt}.{nonce}"
+ *   ticket  = "rt_v2.{payload}.{lowercase hex HMAC-SHA256(secret, payload)}"
  *
  * `String(bool)` is "true"/"false", identical to Rust's `Display for bool` — which is why this port
  * is possible at all. Pinned by specs/node-backend-port/fixtures/ticket-vectors.json, asserted in
@@ -15,7 +15,11 @@
  */
 import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 
-export const TICKET_VERSION = "rt_v1";
+/** Mirrors `TICKET_VERSION` in shared-ticket/src/lib.rs — see its doc comment for the v1 -> v2 why. */
+export const TICKET_VERSION = "rt_v2";
+
+/** Field count of a well-formed ticket: version + 7 payload fields + signature. */
+const TICKET_PARTS = 9;
 
 /**
  * Reject what `validate_realtime_ticket` rejects (shared-ticket/src/lib.rs:92-99), at MINT time.
@@ -43,12 +47,18 @@ export function ticketPayload({
   tenantId,
   learnerId,
   externalAsrProcessing,
+  audioRetention,
   expiresAtUnixSeconds,
   nonce,
 }) {
   requireField("sessionId", sessionId);
   requireField("tenantId", tenantId);
   requireField("learnerId", learnerId);
+  // Not enum-checked here, deliberately, matching the Rust original — the closed set lives in the
+  // `consent_records.audio_retention` CHECK constraint. But it MUST be present: an undefined would
+  // serialize as the literal "undefined", which the Rust gateway happily forwards to ml-inference,
+  // which does not recognise it and falls back to deleting the audio in an hour.
+  requireField("audioRetention", audioRetention);
   requireField("nonce", nonce);
   if (typeof externalAsrProcessing !== "boolean") {
     throw new TypeError(
@@ -67,7 +77,7 @@ export function ticketPayload({
         `got ${JSON.stringify(String(expiresAtUnixSeconds))}`,
     );
   }
-  return `${sessionId}.${tenantId}.${learnerId}.${externalAsrProcessing}.${expiresAtUnixSeconds}.${nonce}`;
+  return `${sessionId}.${tenantId}.${learnerId}.${externalAsrProcessing}.${audioRetention}.${expiresAtUnixSeconds}.${nonce}`;
 }
 
 export function signTicketPayload(payload, secret) {
@@ -93,7 +103,7 @@ export function issueRealtimeTicket(fields, secret) {
 export function verifyRealtimeTicket(ticket, secret) {
   if (typeof ticket !== "string") return false;
   const parts = ticket.trim().split(".");
-  if (parts.length !== 8 || parts[0] !== TICKET_VERSION) return false;
+  if (parts.length !== TICKET_PARTS || parts[0] !== TICKET_VERSION) return false;
   const [, ...rest] = parts;
   const signature = rest.pop();
   const expected = signTicketPayload(rest.join("."), secret);

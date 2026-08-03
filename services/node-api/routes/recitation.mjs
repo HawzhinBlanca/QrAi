@@ -45,9 +45,10 @@ export async function createRealtimeTicket(req, reply, ctx) {
 
   const body = await ctx.db.withTenant(actor.tenantId, async (tx) => {
     const [row] = await tx`
-      SELECT id, tenant_id, learner_id, external_processing_allowed
-      FROM recitation_sessions
-      WHERE id = ${sessionId} AND tenant_id = ${actor.tenantId}`;
+      SELECT s.id, s.tenant_id, s.learner_id, s.external_processing_allowed, c.audio_retention
+      FROM recitation_sessions s
+      JOIN consent_records c ON c.id = s.consent_record_id
+      WHERE s.id = ${sessionId} AND s.tenant_id = ${actor.tenantId}`;
     if (!row) throw NotFound();
 
     requireSelfOrAny(actor, row.learner_id, ["admin", "ops"]);
@@ -71,6 +72,10 @@ export async function createRealtimeTicket(req, reply, ctx) {
         tenantId: actor.tenantId,
         learnerId: row.learner_id,
         externalAsrProcessing: externalAsr,
+        // Same rule as the flag above: the learner's STORED answer, joined from their consent
+        // record. The gateway forwards it to ml-inference, which is where a recording's lifetime
+        // is actually decided.
+        audioRetention: row.audio_retention,
         expiresAtUnixSeconds: expiresAt,
         nonce: randomUUID(),
       },

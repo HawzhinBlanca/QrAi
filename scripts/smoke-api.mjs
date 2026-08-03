@@ -101,7 +101,7 @@ const ticket = await request("/v1/realtime-session-tickets", {
 });
 if (
   !ticket.response.ok ||
-  !ticket.body?.token?.startsWith("rt_v1.")
+  !ticket.body?.token?.startsWith("rt_v2.")
 ) {
   console.error(`realtime ticket failed: ${ticket.response.status}`);
   process.exit(1);

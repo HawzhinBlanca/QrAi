@@ -1,7 +1,7 @@
 {
-  "$comment": "N1 — cross-language golden vectors for the realtime ticket (services/shared-ticket/src/lib.rs:48-69). Asserted by BOTH a Rust test in that crate and tests/node-api/ticket-vectors.test.mjs, so platform-api and realtime-gateway can be ported independently instead of cutting over together (specs/node-backend-port/plan.md §1). GENERATED FROM RUST, never from a port: vectors derived from the port would pin the port's behaviour including its bugs, and both suites would agree while both were wrong. To regenerate, add a temporary printing test to shared-ticket — do not hand-edit expectedTicket. expiresAtUnixSeconds is a STRING, not a JSON number: Rust's u64 range exceeds JS's Number.MAX_SAFE_INTEGER, and the max-u64 vector proved it — JSON.parse turned 18446744073709551615 into 18446744073709552000. Any u64 crossing a JSON boundary in this port has the same hazard.",
-  "payloadFormat": "{sessionId}.{tenantId}.{learnerId}.{externalAsrProcessing}.{expiresAtUnixSeconds}.{nonce}",
-  "ticketFormat": "rt_v1.{payload}.{lowercase hex HMAC-SHA256(secret, payload)}",
+  "$comment": "N1 — cross-language golden vectors for the realtime ticket (services/shared-ticket/src/lib.rs). Asserted by BOTH a Rust test in that crate and tests/node-api/ticket-vectors.test.mjs, so platform-api and realtime-gateway can be ported independently instead of cutting over together (specs/node-backend-port/plan.md §1). GENERATED FROM RUST, never from a port: vectors derived from the port would pin the port's behaviour including its bugs, and both suites would agree while both were wrong. To regenerate, add a temporary generator test to shared-ticket — do not hand-edit expectedTicket. expiresAtUnixSeconds is a STRING, not a JSON number: Rust's u64 range exceeds JS's Number.MAX_SAFE_INTEGER, and the max-u64 vector proved it — JSON.parse turned 18446744073709551615 into 18446744073709552000. Any u64 crossing a JSON boundary in this port has the same hazard. audioRetention joined the payload on 2026-08-03 (rt_v1 -> rt_v2) so the gateway can tell ml-inference how long a learner agreed their audio may be kept; every value the database CHECK permits appears in the set below.",
+  "payloadFormat": "{sessionId}.{tenantId}.{learnerId}.{externalAsrProcessing}.{audioRetention}.{expiresAtUnixSeconds}.{nonce}",
+  "ticketFormat": "rt_v2.{payload}.{lowercase hex HMAC-SHA256(secret, payload)}",
   "vectorCount": 6,
   "vectors": [
     {
@@ -10,10 +10,11 @@
       "tenantId": "tenant-1",
       "learnerId": "learner-1",
       "externalAsrProcessing": true,
+      "audioRetention": "discard",
       "expiresAtUnixSeconds": "2000",
       "nonce": "nonce-1",
       "secret": "test-secret",
-      "expectedTicket": "rt_v1.session-1.tenant-1.learner-1.true.2000.nonce-1.36d4d9e1a13d75f018be3822a00ced7975cb87d28bd63c7a2fb777c36ab600de"
+      "expectedTicket": "rt_v2.session-1.tenant-1.learner-1.true.discard.2000.nonce-1.ae15851e68acdbd3d1e91255b6f30305089cbeedd306c7b7b51d47da951d6b19"
     },
     {
       "name": "external-asr-false",
@@ -21,10 +22,11 @@
       "tenantId": "hikmah-pilot-erbil",
       "learnerId": "learner-1",
       "externalAsrProcessing": false,
+      "audioRetention": "teacher-review",
       "expiresAtUnixSeconds": "1900000000",
       "nonce": "n-2",
       "secret": "test-secret",
-      "expectedTicket": "rt_v1.session-2.hikmah-pilot-erbil.learner-1.false.1900000000.n-2.a6e461e5aeb9c5bee3b077e08e9442d47281755a7f40e0412c25aa1c51731d20"
+      "expectedTicket": "rt_v2.session-2.hikmah-pilot-erbil.learner-1.false.teacher-review.1900000000.n-2.962c227834871f13bbdf8fc1cabd9494e27aafa558f5cb1014f15218e6d35ae1"
     },
     {
       "name": "prefixed-uuid-ids",
@@ -32,10 +34,11 @@
       "tenantId": "hikmah-pilot-erbil",
       "learnerId": "learner-42",
       "externalAsrProcessing": true,
+      "audioRetention": "training-opt-in",
       "expiresAtUnixSeconds": "1893456000",
       "nonce": "0123456789abcdef",
       "secret": "a-much-longer-secret-value-32ch",
-      "expectedTicket": "rt_v1.recitation-session-550e8400-e29b-41d4-a716-446655440000.hikmah-pilot-erbil.learner-42.true.1893456000.0123456789abcdef.dbc7328d9a8c7ce2df7745d1438bb569e6f03f622fdae9cd70fcf9915d93ec0d"
+      "expectedTicket": "rt_v2.recitation-session-550e8400-e29b-41d4-a716-446655440000.hikmah-pilot-erbil.learner-42.true.training-opt-in.1893456000.0123456789abcdef.a76871bed7f572b60897c7b46b55cf3571ee93b9278f47a1b6287e4c182054d5"
     },
     {
       "name": "unicode-tenant",
@@ -43,10 +46,11 @@
       "tenantId": "مدرسة-هيكمة",
       "learnerId": "learner-ك",
       "externalAsrProcessing": false,
+      "audioRetention": "teacher-review",
       "expiresAtUnixSeconds": "2147483647",
       "nonce": "nonce-ünïcode",
       "secret": "sécret-with-ünicode",
-      "expectedTicket": "rt_v1.s-1.مدرسة-هيكمة.learner-ك.false.2147483647.nonce-ünïcode.a449aa4fb790d55c19d175be294ddc893db5bcd6ab00892dd7f19e685b23aa44"
+      "expectedTicket": "rt_v2.s-1.مدرسة-هيكمة.learner-ك.false.teacher-review.2147483647.nonce-ünïcode.a231d44d01a90a48e9889bbff3720be5d366a4df60a8cc5f686de5d28b882a5f"
     },
     {
       "name": "empty-secret",
@@ -54,10 +58,11 @@
       "tenantId": "t-1",
       "learnerId": "l-1",
       "externalAsrProcessing": true,
+      "audioRetention": "training-opt-in",
       "expiresAtUnixSeconds": "2000",
       "nonce": "n-1",
       "secret": "",
-      "expectedTicket": "rt_v1.s-1.t-1.l-1.true.2000.n-1.8b6dff077be80e337c0e07ff72f5f4e74aa3606299aa8d39018d0ec9c6b12ab3"
+      "expectedTicket": "rt_v2.s-1.t-1.l-1.true.training-opt-in.2000.n-1.c07e48b41fc9dfc6798f9ed9ffca5be4469565f8a82847f8cfeeafda1f872683"
     },
     {
       "name": "max-u64-expiry",
@@ -65,10 +70,11 @@
       "tenantId": "t-1",
       "learnerId": "l-1",
       "externalAsrProcessing": false,
+      "audioRetention": "discard",
       "expiresAtUnixSeconds": "18446744073709551615",
       "nonce": "n-1",
       "secret": "test-secret",
-      "expectedTicket": "rt_v1.s-1.t-1.l-1.false.18446744073709551615.n-1.f24df72d22063f7ba92bc81a77955b74d596f92b26ce1fcb96a57aa3a09fb93b"
+      "expectedTicket": "rt_v2.s-1.t-1.l-1.false.discard.18446744073709551615.n-1.2feaed3c3e7a62512dcc7aa2d8876218cd2dbc76df53ad081a206f607e0882c0"
     }
   ]
 }
