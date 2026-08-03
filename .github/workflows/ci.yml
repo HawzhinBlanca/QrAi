@@ -139,10 +139,22 @@ jobs:
       # --- Assert no missing SQL migrations in CI list ---
       - name: Assert no missing SQL migrations in CI list
         run: |
-          expected_count=$(ls infra/sql/*.sql | wc -l | tr -d ' ')
-          actual_count=21
-          if [ "$expected_count" != "$actual_count" ]; then
-            echo "::error::Migration file count mismatch! Expected $actual_count migration files in infra/sql, found $expected_count. Update ci.yml."
+          # Compares the LIST, not a count.
+          #
+          # This used to assert a hardcoded number against `ls | wc -l`. It caught 0022 arriving —
+          # and then passed as soon as the number was bumped, while the file was still missing from
+          # the apply list below, so the column did not exist and two integration tests failed on CI
+          # having passed locally. A count cannot tell "acknowledged" from "applied", and the error
+          # it printed ("Update ci.yml") was ambiguous about which of the two it meant.
+          #
+          # Diffing the actual sets says what it means and names the offender.
+          on_disk=$(ls infra/sql/[0-9]*.sql | sort)
+          in_apply_list=$(grep -oE 'infra/sql/[0-9]+_[A-Za-z0-9_-]+\.sql' .github/workflows/ci.yml | sort -u)
+          missing=$(comm -23 <(echo "$on_disk") <(echo "$in_apply_list"))
+          extra=$(comm -13 <(echo "$on_disk") <(echo "$in_apply_list"))
+          if [ -n "$missing" ] || [ -n "$extra" ]; then
+            [ -n "$missing" ] && echo "::error::Migrations on disk but NOT applied by ci.yml (add them to the Apply SQL migrations list): $missing"
+            [ -n "$extra" ] && echo "::error::ci.yml applies migrations that do not exist: $extra"
             exit 1
           fi
 
@@ -169,7 +181,8 @@ jobs:
             infra/sql/0018_agent_run_learner_id.sql \
             infra/sql/0019_recitation_and_findings_sort_indexes.sql \
             infra/sql/0020_language_check.sql \
-            infra/sql/0021_pilot_identity.sql; do
+            infra/sql/0021_pilot_identity.sql \
+            infra/sql/0022_session_lost_chunks.sql; do
             echo "Applying $sql..."
             psql -v ON_ERROR_STOP=1 "$DATABASE_URL" -f "$sql"
           done

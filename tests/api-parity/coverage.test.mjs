@@ -139,5 +139,7 @@ test("the ported count matches the approved scope: 36", () => {
   // ALSO run through the Node port (verify.sh's "api parity THROUGH the Node port" line), because
   // that route has a Node handler holding its own copy of the learner rule.
   assert.equal(coverage.totals.ported, 36);
-  assert.equal(coverage.totals["deferred-to-phase-7"], 5);
+  // 5 -> 7 (2026-08-03): the two lost_chunk_count finalize tests. Deferred rather than ported for
+  // the same reason as the sm2/RLS entries — Node has no finalize route to compare against yet.
+  assert.equal(coverage.totals["deferred-to-phase-7"], 7);
 });

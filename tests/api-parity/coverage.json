@@ -4,7 +4,7 @@
   "totals": {
     "ported": 36,
     "mechanical-remainder": 46,
-    "deferred-to-phase-7": 5
+    "deferred-to-phase-7": 7
   },
   "tests": [
     {
@@ -528,6 +528,18 @@
       "rustLine": 5054,
       "status": "ported",
       "parityFile": "ml-proxy.test.mjs"
+    },
+    {
+      "rustTest": "finalize_records_chunks_the_session_never_got",
+      "rustLine": 5213,
+      "status": "deferred-to-phase-7",
+      "reason": "platform-api's finalize has no Node implementation yet (the N-series has not ported register, login or finalize), so there is no equivalent route to compare against. The behaviour is asserted by the Rust integration test."
+    },
+    {
+      "rustTest": "a_complete_session_records_no_lost_chunks",
+      "rustLine": 5261,
+      "status": "deferred-to-phase-7",
+      "reason": "platform-api's finalize has no Node implementation yet (the N-series has not ported register, login or finalize), so there is no equivalent route to compare against. The behaviour is asserted by the Rust integration test."
     }
   ]
 }

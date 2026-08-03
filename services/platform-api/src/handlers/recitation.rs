@@ -982,6 +982,42 @@ pub async fn finalize_session(
         crate::auth::extract_trace_id(&headers),
     )
     .await?;
+
+    // Record what the session did NOT get, on the session.
+    //
+    // ml-inference reports chunks that were accepted upstream and never reached storage (an outage,
+    // a crashed writer, a bad disk). Without this the only trace was a PROCESS counter on the
+    // gateway — an operator could see that some chunks were lost somewhere, for someone, while the
+    // learner's own session record claimed to be complete. Transcription then returns a short
+    // transcript and the aligner scores it against the FULL passage, so words the learner DID recite
+    // are recorded as missed.
+    //
+    // RECORDED, not acted on. This does not refuse the finalize, change the scoring, or block
+    // review — what should happen to a gapped session is a product decision. It makes that decision
+    // possible by putting the fact somewhere a person and a query can reach.
+    let lost_chunks = transcript
+        .get("missingChunkIds")
+        .and_then(|v| v.as_array())
+        .map(|a| a.len())
+        .unwrap_or(0);
+    if lost_chunks > 0 {
+        tracing::warn!(
+            session_id = %id,
+            lost_chunks,
+            "session finalized with chunks that were accepted upstream but never stored — its \
+             transcript is short, and anything scored against the full passage will read the gap \
+             as the learner's mistakes"
+        );
+        sqlx::query(
+            "UPDATE recitation_sessions SET lost_chunk_count = $1 WHERE id = $2 AND tenant_id = $3",
+        )
+        .bind(lost_chunks as i32)
+        .bind(&id)
+        .bind(&actor.tenant_id)
+        .execute(&mut *tx)
+        .await?;
+    }
+
     tx.commit().await?;
 
     Ok(Json(serde_json::json!({
@@ -989,6 +1025,9 @@ pub async fn finalize_session(
         "finalized": true,
         "reason": "consent-granted",
         "chunkCount": transcript.get("chunkCount").cloned().unwrap_or(serde_json::json!(0)),
+        // Surfaced on the response too: a client that finalizes a gapped session should be able to
+        // tell the learner their recording was incomplete rather than that they recited badly.
+        "lostChunkCount": lost_chunks,
         "persisted": persisted.get("persisted").cloned().unwrap_or(serde_json::json!(0)),
         "auditEventId": persisted.get("auditEventId").cloned(),
     })))

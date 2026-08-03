@@ -142,3 +142,76 @@ test("consent is checked BEFORE any audio is read or sent", async () => {
   assert.equal(res.transcribed, false);
   assert.equal(received, null, "audio was sent to ASR despite the learner declining");
 });
+
+// ── Gaps: chunks that were accepted upstream and never stored ───────────────────────────────────
+//
+// Skipping a missing chunk is honest about the AUDIO and dishonest about the SESSION. The transcript
+// comes out short, the aligner scores it against the FULL canonical passage, and words the learner
+// DID recite are recorded as words they missed — the same wrong answer the reconnect collision
+// produced, arriving from an upstream outage instead of a bug.
+//
+// Measured in specs/dr-rehearsal/evidence/P5.4-partial-loss-recovery.log: an ML outage during a
+// session leaves exactly this shape on disk.
+
+test("a hole in the session's chunk run is reported, not silently skipped", async () => {
+  const t = "t-gap";
+  // 0,1,2 then 6,7 — 3,4,5 were accepted upstream and never stored.
+  for (const [n, ms] of [[0, 0], [1, 100], [2, 200], [6, 600], [7, 700]]) {
+    writeChunk(t, "learner-1", "s1", `sess-ws-${String(n).padStart(4, "0")}`, ms, 0x40 + n);
+  }
+
+  const res = await transcribeSession({
+    tenantId: t,
+    learnerId: "learner-1",
+    sessionId: "s1",
+    consent: { externalAsrProcessing: true, guardianApproved: true },
+  });
+
+  assert.equal(res.chunkCount, 5, "the five chunks that exist are still transcribed");
+  assert.deepEqual(
+    res.missingChunkIds,
+    ["sess-ws-0003", "sess-ws-0004", "sess-ws-0005"],
+    "the gap between 0002 and 0006 was not reported",
+  );
+});
+
+test("a complete session reports no gaps — and reports the field anyway", async () => {
+  // Present-but-empty, not absent: a caller must be able to tell "no gaps" from "this build does
+  // not look". An absent field would read as the former while meaning the latter.
+  const t = "t-nogap";
+  for (const [n, ms] of [[0, 0], [1, 100], [2, 200]]) {
+    writeChunk(t, "learner-1", "s1", `full-ws-${String(n).padStart(4, "0")}`, ms, 0x50 + n);
+  }
+
+  const res = await transcribeSession({
+    tenantId: t,
+    learnerId: "learner-1",
+    sessionId: "s1",
+    consent: { externalAsrProcessing: true, guardianApproved: true },
+  });
+
+  assert.deepEqual(res.missingChunkIds, []);
+});
+
+test("loss off the END of a session is NOT detectable, and the test says so", async () => {
+  // The run has no declared upper bound, so a recitation truncated by an outage in its last seconds
+  // looks complete. This is a real limit of deriving gaps from what is on disk, and it is pinned
+  // here so nobody reads "missingChunkIds: []" as "nothing was lost".
+  const t = "t-truncated";
+  for (const [n, ms] of [[0, 0], [1, 100]]) {
+    writeChunk(t, "learner-1", "s1", `trunc-ws-${String(n).padStart(4, "0")}`, ms, 0x60 + n);
+  }
+
+  const res = await transcribeSession({
+    tenantId: t,
+    learnerId: "learner-1",
+    sessionId: "s1",
+    consent: { externalAsrProcessing: true, guardianApproved: true },
+  });
+
+  assert.deepEqual(
+    res.missingChunkIds,
+    [],
+    "a truncated session cannot be distinguished from a short one without a declared chunk total",
+  );
+});
