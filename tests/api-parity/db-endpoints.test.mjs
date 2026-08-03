@@ -331,10 +331,13 @@ test("POST /v1/teacher-reviews records a review against a real finding", async (
     "findingId",
     "id",
     "note",
+    // ADR-0031: null on a review this fresh, an RFC3339 stamp once a re-record detaches it.
+    "supersededAt",
     "teacherId",
     "tenantId",
   ]);
   assert.equal(res.body.findingId, finding.id);
+  assert.equal(res.body.supersededAt, null);
   assert.equal(res.body.decision, "accepted");
   assert.ok(res.body.auditEventId, "a review is an accountable act — it must carry its audit row");
 });

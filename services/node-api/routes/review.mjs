@@ -123,6 +123,8 @@ export async function createTeacherReview(req, reply, ctx) {
       teacherId: actor.userId,
       decision: b.decision,
       note: b.note,
+      // Freshly written, so it is about a live finding by construction.
+      supersededAt: null,
       auditEventId: auditId,
     };
   });
@@ -140,20 +142,27 @@ export async function listTeacherReviewQueue(req, reply, ctx) {
 
   const body = await ctx.db.withTenant(actor.tenantId, async (tx) => {
     const rows = await tx`
-      SELECT id, tenant_id, finding_id, teacher_id, decision, note, audit_event_id
+      SELECT id, tenant_id, finding_id, teacher_id, decision, note, audit_event_id,
+             to_char(superseded_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"') AS superseded_at
       FROM teacher_reviews WHERE tenant_id = ${actor.tenantId}
       ORDER BY created_at DESC, id LIMIT 200`;
 
     return rows.map((r) => ({
       id: r.id ?? "",
       tenantId: r.tenant_id ?? "",
-      findingId: r.finding_id ?? "",
+      // NULL, not "". A re-record detaches a review instead of deleting it (ADR-0031), and a
+      // detached one genuinely has no finding — `""` says the finding is the empty string, and the
+      // contract's own `minLength: 1` forbids it.
+      findingId: r.finding_id ?? null,
       teacherId: r.teacher_id ?? "",
       // An unrecognised decision falls back to "accepted" — transcribed, and worth noticing: the
       // fallback is the PERMISSIVE value, so a corrupt row reads as an acceptance. Not changed here
       // (that is a behaviour change, not a port), but it is the sort of default worth a second look.
       decision: TEACHER_DECISIONS.includes(r.decision) ? r.decision : "accepted",
       note: r.note ?? "",
+      // Between note and auditEventId because serde emits the Rust struct in DECLARATION order and
+      // the A/B compares response bytes. Null while the review is about a live finding.
+      supersededAt: r.superseded_at ?? null,
       auditEventId: r.audit_event_id ?? "",
     }));
   });
