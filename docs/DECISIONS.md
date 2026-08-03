@@ -1351,3 +1351,66 @@ not a column.
   `wordsSelfReported` in the UI is worth doing before this reaches them.
 - `wordsSelfReported` is a new field on a wire contract the Node port also serves; both
   implementations changed together and `progress-parity` asserts the shape.
+
+---
+
+## ADR-0031 — A teacher's judgement outlives the finding it was about
+
+**Status:** Accepted · **Date:** 2026-08-03 · **Related:** ADR-0027 (a teacher decision changes the finding)
+
+### Context
+
+`persist_session_alignments` replaces a session's alignment on write. `tajweed_findings.alignment_id`
+and `teacher_reviews.finding_id` both RESTRICT, so it cascaded: teacher_reviews → tajweed_findings →
+word_alignments, all three DELETEd.
+
+The route is authorised for the session **owner**. So a learner re-recording their own session
+deleted any review a teacher had already submitted on it. A previous pass made the erasure visible —
+the persist audit event records `deletedTeacherReviews` — and left the policy open as a product
+decision.
+
+Visibility was the right first move and it is not enough. An audit line saying a review was destroyed
+is not the review. The record that a named teacher made a named decision about a named learner's
+recitation, at a known time, is the kind of thing an institution is later asked to produce.
+
+### Decision
+
+Detach, do not delete.
+
+`teacher_reviews.finding_id` becomes nullable, and the cascade sets it `NULL` with
+`superseded_at = now()` instead of removing the row. That releases the RESTRICT so the finding can
+still go — which is correct, it points at words that no longer exist — while the review, its author,
+its decision, its note and its timestamp survive.
+
+A detached review needs one more thing to be worth keeping: `reviewed_finding`, a JSON snapshot of
+what the teacher was looking at, captured in the same read that validates the finding exists.
+Without it a surviving review says "a teacher rejected something", which stops being evidence at the
+point it matters most.
+
+### What this does NOT decide
+
+Whether re-recording should invalidate a teacher's review **at all** remains open. It still does; the
+finding is still destroyed and the review is still marked superseded. This changes only whether the
+record of the decision survives that, which is not a product question.
+
+### A constraint that had to be removed
+
+The first draft added a CHECK: a review with no `finding_id` must carry a non-empty snapshot. A
+mutation test showed what it does to real data. Reviews written before this migration have
+`reviewed_finding = '{}'` — their snapshot was never captured, and inventing one would be fabricating
+evidence. Detaching such a row fails every arm of the check, so the constraint fires and a learner's
+ordinary re-record returns 500.
+
+The rule was right and the place was wrong. It is held by the write path instead, where every review
+from now on gets a snapshot; legacy rows stay identifiable by `reviewed_finding = '{}'`, which is the
+truth about them. Recorded because "add a constraint expressing the invariant" is the obvious move
+and it was, here, an outage.
+
+### Consequences
+
+- `deletedTeacherReviews` keeps its name in the audit metadata although the reviews are now detached
+  rather than destroyed. The number still answers what it was added to answer — how much review
+  history this request affected — and renaming an audit-log field breaks every existing reader for a
+  wording improvement.
+- Any query counting teacher reviews now sees superseded ones. `superseded_at IS NULL` is the filter
+  for live reviews; the index supports it.

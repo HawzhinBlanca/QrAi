@@ -41,15 +41,34 @@ pub async fn create_teacher_review(
     // The finding must exist in this tenant. Without this check a dangling finding_id
     // fails the FK constraint and surfaces as a 500; a missing referenced entity is a
     // 404. RLS scopes the lookup to the caller's tenant.
+    // `reviewed_finding` is captured in the SAME read that validates the finding exists, so the
+    // snapshot is of the row this decision was actually made against. Re-reading it afterwards would
+    // leave a window in which the finding changed between the check and the copy.
     let finding = sqlx::query(
-        "SELECT jsonb_array_length(source_refs) AS source_count
-         FROM tajweed_findings WHERE id = $1 AND tenant_id = $2",
+        "SELECT jsonb_array_length(tf.source_refs) AS source_count,
+                jsonb_build_object(
+                  'findingId',    tf.id,
+                  'wordId',       wa.word_id,
+                  'sessionId',    wa.session_id,
+                  'rule',         tf.rule,
+                  'severity',     tf.severity,
+                  'confidence',   tf.confidence::float8,
+                  'explanation',  tf.explanation,
+                  'reviewStatus', tf.review_status,
+                  'sources',      tf.source_refs
+                ) AS reviewed_finding
+         FROM tajweed_findings tf
+         JOIN word_alignments wa ON wa.id = tf.alignment_id
+         WHERE tf.id = $1 AND tf.tenant_id = $2",
     )
     .bind(&req.finding_id)
     .bind(&actor.tenant_id)
     .fetch_optional(&mut *tx)
     .await?;
     let finding = finding.ok_or(ApiError::NotFound)?;
+    let reviewed_finding: serde_json::Value = finding
+        .try_get("reviewed_finding")
+        .unwrap_or_else(|_| serde_json::json!({}));
 
     // ── Accepting an UNSOURCED finding is refused ───────────────────────────────────────────────
     // `create_scholar_approval` already refuses the same hazard (`ApiError::MissingSources`) and a
@@ -98,8 +117,8 @@ pub async fn create_teacher_review(
     // cross-tenant user, since users(id) is a platform-global FK). req.teacher_id is ignored.
     let author_id = &actor.user_id;
     sqlx::query(
-        "INSERT INTO teacher_reviews (id, tenant_id, finding_id, teacher_id, decision, note, audit_event_id)
-         VALUES ($1, $2, $3, $4, $5, $6, $7)",
+        "INSERT INTO teacher_reviews (id, tenant_id, finding_id, teacher_id, decision, note, audit_event_id, reviewed_finding)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
     )
     .bind(&review_id)
     .bind(&actor.tenant_id)
@@ -108,6 +127,9 @@ pub async fn create_teacher_review(
     .bind(decision_str)
     .bind(&req.note)
     .bind(&audit_id)
+    // What the teacher was looking at. A review that outlives its finding (see
+    // 0024_teacher_review_survives_realignment.sql) says "a teacher rejected something" without it.
+    .bind(&reviewed_finding)
     .execute(&mut *tx)
     .await?;
 

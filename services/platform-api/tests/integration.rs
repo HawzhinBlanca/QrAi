@@ -1339,15 +1339,17 @@ async fn teacher_review_author_is_actor_and_realignment_cascades() {
     .await;
     assert_eq!(review.status(), StatusCode::OK);
     assert_eq!(read_json::<Value>(review).await["teacherId"], "teacher-1");
-    let stored: String =
-        sqlx::query("SELECT teacher_id FROM teacher_reviews WHERE finding_id = $1")
-            .bind(&finding_id)
-            .fetch_one(&state.pool)
-            .await
-            .unwrap()
-            .try_get("teacher_id")
-            .unwrap();
-    assert_eq!(stored, "teacher-1", "author must not be forgeable");
+    // The id is captured HERE, while finding_id still points at the finding. After the re-record
+    // below it is NULL by design (ADR-0031), so a lookup by finding_id would find nothing and the
+    // survival assertions further down would read as "deleted" whether or not it was.
+    let stored = sqlx::query("SELECT id, teacher_id FROM teacher_reviews WHERE finding_id = $1")
+        .bind(&finding_id)
+        .fetch_one(&state.pool)
+        .await
+        .unwrap();
+    let review_id: String = stored.try_get("id").unwrap();
+    let stored_author: String = stored.try_get("teacher_id").unwrap();
+    assert_eq!(stored_author, "teacher-1", "author must not be forgeable");
 
     // (2) Re-record alignment for the SAME session (which now has a finding+review): must
     // cascade-delete them and succeed, not FK-violate into a 500.
@@ -1376,9 +1378,9 @@ async fn teacher_review_author_is_actor_and_realignment_cascades() {
         "stale finding should be cascaded away on re-record"
     );
 
-    // (3) The cascade above just destroyed a TEACHER's review on behalf of a LEARNER (the session
-    // owner). Whether that policy is right is a separate product decision — but it must never be
-    // INVISIBLE: the persist audit event must record what it actually erased.
+    // (3) The cascade above ran on behalf of a LEARNER (the session owner) over a TEACHER's review.
+    // It must be visible in the persist audit event — the count is how an operator learns that
+    // review history was affected at all.
     let audit_event_id = rerecord_body["auditEventId"].as_str().unwrap().to_owned();
     let meta: Value = sqlx::query_scalar("SELECT metadata FROM audit_events WHERE id = $1")
         .bind(&audit_event_id)
@@ -1387,11 +1389,62 @@ async fn teacher_review_author_is_actor_and_realignment_cascades() {
         .unwrap();
     assert_eq!(
         meta["deletedTeacherReviews"], 1,
-        "the erased teacher review must be visible in the persist audit metadata"
+        "the affected teacher review must be visible in the persist audit metadata"
     );
     assert_eq!(
         meta["deletedTajweedFindings"], 1,
         "the erased tajweed finding must be visible in the persist audit metadata"
+    );
+
+    // (4) ADR-0031 — and the review itself SURVIVED.
+    //
+    // This used to be a DELETE, so a learner re-recording their own session erased a named teacher's
+    // judgement about a named learner. The finding going is correct: it points at words that no
+    // longer exist. The record of a professional having made a decision is a different kind of thing,
+    // and no learner action should be able to remove it.
+    let review: (
+        Option<String>,
+        Option<chrono::DateTime<chrono::Utc>>,
+        Value,
+        String,
+        String,
+    ) = sqlx::query_as(
+        "SELECT finding_id, superseded_at, reviewed_finding, decision, note
+             FROM teacher_reviews WHERE id = $1",
+    )
+    .bind(&review_id)
+    .fetch_optional(&state.pool)
+    .await
+    .unwrap()
+    .expect("the teacher's review was DELETED by a learner re-recording their own session");
+
+    assert_eq!(
+        review.0, None,
+        "finding_id must be released, or the finding below could not be deleted at all"
+    );
+    assert!(
+        review.1.is_some(),
+        "a detached review with no superseded_at is indistinguishable from a review of nothing"
+    );
+    assert_eq!(review.3, "rejected", "the decision itself must survive");
+    assert!(!review.4.is_empty(), "the teacher's note must survive");
+
+    // The snapshot is the difference between evidence and "a teacher rejected something".
+    let snapshot = &review.2;
+    assert_eq!(
+        snapshot["findingId"].as_str(),
+        Some(finding_id.as_str()),
+        "the snapshot must name the finding this decision was made against: {snapshot}"
+    );
+    for field in ["wordId", "rule", "severity", "explanation", "reviewStatus"] {
+        assert!(
+            snapshot[field].is_string(),
+            "the snapshot lost `{field}`, so nobody can now say what was judged: {snapshot}"
+        );
+    }
+    assert!(
+        snapshot["confidence"].is_number(),
+        "the snapshot lost `confidence`: {snapshot}"
     );
 }
 

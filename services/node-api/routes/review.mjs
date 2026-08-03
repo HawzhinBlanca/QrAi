@@ -53,9 +53,24 @@ export async function createTeacherReview(req, reply, ctx) {
   const body = await ctx.db.withTenant(actor.tenantId, async (tx) => {
     // The finding must exist IN THIS TENANT. Without it a dangling findingId fails the FK and
     // surfaces as a 500; a missing referenced entity is a 404.
+    // The snapshot comes from THIS read, not a second one: re-reading afterwards would leave a
+    // window in which the finding changed between the check and the copy. Mirrors review.rs.
     const [finding] = await tx`
-      SELECT jsonb_array_length(source_refs) AS source_count
-      FROM tajweed_findings WHERE id = ${b.findingId} AND tenant_id = ${actor.tenantId}`;
+      SELECT jsonb_array_length(tf.source_refs) AS source_count,
+             jsonb_build_object(
+               'findingId',    tf.id,
+               'wordId',       wa.word_id,
+               'sessionId',    wa.session_id,
+               'rule',         tf.rule,
+               'severity',     tf.severity,
+               'confidence',   tf.confidence::float8,
+               'explanation',  tf.explanation,
+               'reviewStatus', tf.review_status,
+               'sources',      tf.source_refs
+             ) AS reviewed_finding
+      FROM tajweed_findings tf
+      JOIN word_alignments wa ON wa.id = tf.alignment_id
+      WHERE tf.id = ${b.findingId} AND tf.tenant_id = ${actor.tenantId}`;
     if (!finding) throw NotFound();
 
     // Accepting an UNSOURCED finding is refused, mirroring review.rs and the scholar path's
@@ -76,11 +91,15 @@ export async function createTeacherReview(req, reply, ctx) {
     // The author is the AUTHENTICATED actor. `b.teacherId` is accepted by the request shape and
     // deliberately IGNORED — trusting it let any teacher attribute a review to another user, even a
     // cross-tenant one, since users(id) is a platform-global FK.
+    // `reviewed_finding` is what the teacher was looking at. A review that outlives its finding
+    // (0024) reads as "a teacher rejected something" without it — the sentence stops being evidence
+    // at the point it matters most. Taken from the same read that validated the finding exists, so
+    // the snapshot is of the row this decision was actually made against.
     await tx`
       INSERT INTO teacher_reviews
-        (id, tenant_id, finding_id, teacher_id, decision, note, audit_event_id)
+        (id, tenant_id, finding_id, teacher_id, decision, note, audit_event_id, reviewed_finding)
       VALUES (${reviewId}, ${actor.tenantId}, ${b.findingId}, ${actor.userId}, ${b.decision},
-              ${b.note}, ${auditId})`;
+              ${b.note}, ${auditId}, ${tx.json(finding.reviewed_finding ?? {})})`;
 
     // The decision reaches the finding (ADR-0027). Same transaction as the review row and the
     // audit event: a promotion without its audit trail is learner-facing content nobody can account
