@@ -86,7 +86,15 @@ log is committed rather than summarized. **FL9 stays open.**
 - [x] FL6 — Feedback surfaces — tajweed + progress; nothing rendered without source/confidence/approval.
 - [x] FL7 — Privacy + i18n + a11y — export/delete, locale switching, semantics labels, contrast.
 - [x] FL8 — Offline/error states — no stale data presented as live.
-- [ ] FL9 — 🔓 Device matrix — **OPEN: needs Xcode + hardware this machine does not have.**
+- [ ] FL9 — 🔓 Device matrix — **OPEN, and the reason changed on 2026-08-03.** Xcode is no longer
+      absent: `/Applications/Xcode-beta.app` is installed but `xcode-select` still points at
+      CommandLineTools, so `xcodebuild` and `simctl` do not exist. iOS/macOS is one owner-run
+      command away (`sudo xcode-select -s /Applications/Xcode-beta.app/Contents/Developer` — note
+      the BETA path; `flutter doctor` prints `Xcode.app`, which is not what is installed here).
+      Android is separately blocked on missing `cmdline-tools` + unaccepted licences. Measured:
+      [`evidence/fl9-blocked-2026-08-03.md`](evidence/fl9-blocked-2026-08-03.md).
+      A simulator would still not be a phone, and would still not execute the recorder's
+      hardware path.
 - [x] FL10 — **F-7's missing evidence.** The impact map named a Dart contract test; none existed.
       Written as a Node test instead (`verify.sh` SKIPS every Flutter step without the SDK, so a
       Dart-side test would be skipped on CI — the one gate that matters). It found three contract
