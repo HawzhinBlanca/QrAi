@@ -1,0 +1,34 @@
+P5.4 — long audio: what a real-length recitation costs transcribeSession
+specs/readiness-recovery-10-10/tasks.md P5.4
+
+date (UTC): 2026-08-03
+measured by: scripts/measure-long-audio.mjs, against a loopback ASR (no torch, no model download)
+             run with `node --expose-gc scripts/measure-long-audio.mjs`
+
+  minutes  chunks  audio    elapsed  peak RSS  worst event-loop stall
+     1       600   1.9MB     0.03s      24MB       16ms
+     5      3000   9.6MB     0.12s      99MB      102ms
+    15      9000  28.8MB     0.39s     302MB      356ms
+
+TWO CEILINGS, BOTH LINEAR IN SESSION LENGTH
+
+  1. Memory is roughly 10x the audio. 28.8MB of PCM becomes ~302MB RSS: a readFileSync per chunk,
+     one Buffer.concat over the whole session, then a base64 string of the lot. A 30-minute
+     recitation would be ~600MB for a SINGLE learner's finalize.
+
+  2. The event loop stalls ~24ms per audio-minute. Note it is not SLOW — 0.39s for fifteen minutes
+     of audio is fine. It is BLOCKING: the reads and the concat are synchronous, so for those 356ms
+     every other learner's analysis request waits. ~700ms at 30 minutes, ~1.4s at an hour.
+
+  The second is the one that matters, because the cost does not land on the session that caused it.
+  One learner finishing a long memorization session degrades everybody.
+
+HOW MUCH THIS MATTERS DEPENDS ON SESSION LENGTH, WHICH NOBODY HAS SET
+  Al-Fatihah is ~30 seconds; at that length this is invisible. Memorization practice is plausibly
+  5-30 minutes. There is no product answer yet for how long a session may be, and no SLO to measure
+  against (P5.1 is open), so these are measurements without a target rather than a pass or a fail.
+
+NOT FIXED. The direction is to stream chunks to the ASR instead of materialising the session —
+chunked transfer, or an upload the ASR reads incrementally. That is a refactor of transcribeSession
+AND of the ASR contract, not a patch, and it should be done against a length target somebody has
+actually chosen.
