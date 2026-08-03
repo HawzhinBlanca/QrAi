@@ -4478,6 +4478,44 @@ async fn tajweed_findings_persist_and_the_learner_can_read_their_own() {
 /// A mock ML service for the finalize chain: the session transcript, then the alignment computed
 /// from it. Mirrors the real shapes — `transcribed`/`recognizedText` from `/v1/session-transcript`,
 /// `alignments[]` from `/v1/alignments:predict`.
+/// Like `spawn_mock_ml_finalize`, but the transcript reports chunks that never reached storage.
+///
+/// That is what an upstream outage leaves behind: ml-inference derives the gap from the holes in the
+/// session's chunk run and reports it, and finalize has to write it down. Without this the session
+/// record claims to be complete while its transcript is short — and the aligner then scores the
+/// short transcript against the FULL passage, recording words the learner DID recite as missed.
+async fn spawn_mock_ml_finalize_with_gap() -> String {
+    let app = axum::Router::new()
+        .route(
+            "/v1/session-transcript",
+            axum::routing::post(|| async {
+                axum::Json(json!({
+                    "transcribed": true, "reason": "consent-granted", "chunkCount": 3,
+                    "recognizedText": ["بسم", "الله"],
+                    "missingChunkIds": ["s-ws-0003", "s-ws-0004"]
+                }))
+            }),
+        )
+        .route(
+            "/v1/alignments:predict",
+            axum::routing::post(|| async {
+                axum::Json(json!({
+                    "sessionId": "s", "confidence": 0.9,
+                    "alignments": [
+                        {"wordId": "1:1:1", "canonicalText": "بِسْمِ", "heardText": "بسم",
+                         "startMs": 0, "endMs": 100, "confidence": 0.9, "status": "matched"}
+                    ]
+                }))
+            }),
+        );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+    format!("http://{addr}")
+}
+
 async fn spawn_mock_ml_finalize(transcribed: bool) -> String {
     let app = axum::Router::new()
         .route(
@@ -5157,5 +5195,97 @@ async fn ml_tajweed_predict_redacts_unreviewed_findings_for_a_learner() {
     assert_eq!(
         first["explanation"],
         json!("Apply ghunnah on the noon sakina.")
+    );
+}
+
+/// A session records the chunks it never got.
+///
+/// The failure this closes is not a missing file. Chunks accepted by the gateway and never stored
+/// (an ML outage, a crashed writer) left the session record claiming to be complete while its
+/// transcript was short — and the aligner scores a short transcript against the FULL canonical
+/// passage, so words the learner DID recite are recorded as words they missed. The only trace was a
+/// PROCESS counter on the gateway: some chunks were lost somewhere, for someone.
+///
+/// RECORDED, not acted on: finalize still succeeds and scoring is unchanged. What should happen to a
+/// gapped session is a product decision, and this is what makes that decision possible.
+#[tokio::test]
+#[ignore = "requires live Postgres"]
+async fn finalize_records_chunks_the_session_never_got() {
+    use sqlx::Row;
+    let mock = spawn_mock_ml_finalize_with_gap().await;
+    let state = test_state().with_ml_inference_url(mock.clone());
+    let router = platform_router_with_rate_limit(test_state().with_ml_inference_url(mock), false);
+
+    let session_id = finalize_test_session(&router, "fnv1a32:finalize-gap").await;
+
+    let done = send_json(
+        &router,
+        Method::POST,
+        &format!("/v1/recitation-sessions/{session_id}/finalize"),
+        Some("hikmah-pilot-erbil"),
+        Some("learner"),
+        json!({}),
+    )
+    .await;
+    assert_eq!(done.status(), StatusCode::OK);
+    let body = read_json::<Value>(done).await;
+
+    // Still finalized — this records the gap, it does not refuse the session.
+    assert_eq!(body["finalized"], json!(true));
+    assert_eq!(
+        body["lostChunkCount"],
+        json!(2),
+        "the response must tell a client the recording was incomplete, so it can say that to the \
+         learner instead of letting them read the gap as their own mistakes"
+    );
+
+    let stored: i32 = sqlx::query("SELECT lost_chunk_count FROM recitation_sessions WHERE id = $1")
+        .bind(&session_id)
+        .fetch_one(&state.pool)
+        .await
+        .unwrap()
+        .try_get("lost_chunk_count")
+        .unwrap();
+    assert_eq!(
+        stored, 2,
+        "the gap is not on the SESSION, so nothing downstream can know this recitation was incomplete"
+    );
+}
+
+/// The other half: a complete session must not be labelled as gapped.
+///
+/// A column that is always non-zero is as useless as one that is always zero — this is what stops
+/// the check above from passing against an implementation that simply writes a number.
+#[tokio::test]
+#[ignore = "requires live Postgres"]
+async fn a_complete_session_records_no_lost_chunks() {
+    use sqlx::Row;
+    let mock = spawn_mock_ml_finalize(true).await;
+    let state = test_state().with_ml_inference_url(mock.clone());
+    let router = platform_router_with_rate_limit(test_state().with_ml_inference_url(mock), false);
+
+    let session_id = finalize_test_session(&router, "fnv1a32:finalize-nogap").await;
+    let done = send_json(
+        &router,
+        Method::POST,
+        &format!("/v1/recitation-sessions/{session_id}/finalize"),
+        Some("hikmah-pilot-erbil"),
+        Some("learner"),
+        json!({}),
+    )
+    .await;
+    assert_eq!(done.status(), StatusCode::OK);
+    assert_eq!(read_json::<Value>(done).await["lostChunkCount"], json!(0));
+
+    let stored: i32 = sqlx::query("SELECT lost_chunk_count FROM recitation_sessions WHERE id = $1")
+        .bind(&session_id)
+        .fetch_one(&state.pool)
+        .await
+        .unwrap()
+        .try_get("lost_chunk_count")
+        .unwrap();
+    assert_eq!(
+        stored, 0,
+        "a complete session was labelled as having lost chunks"
     );
 }

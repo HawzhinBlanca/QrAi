@@ -140,7 +140,10 @@ jobs:
       - name: Assert no missing SQL migrations in CI list
         run: |
           expected_count=$(ls infra/sql/*.sql | wc -l | tr -d ' ')
-          actual_count=21
+          # 21 -> 22: 0022_session_lost_chunks.sql. This gate is why the number is edited by hand —
+          # a migration that arrives without someone acknowledging it is a schema change nobody
+          # reviewed. It caught this one.
+          actual_count=22
           if [ "$expected_count" != "$actual_count" ]; then
             echo "::error::Migration file count mismatch! Expected $actual_count migration files in infra/sql, found $expected_count. Update ci.yml."
             exit 1
