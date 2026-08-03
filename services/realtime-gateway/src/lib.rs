@@ -151,6 +151,31 @@ pub struct RealtimeGateway {
     // of the connection-churn overhead. `ConnectionManager` is `Clone` (multiplexes over one
     // connection) and reconnects on its own, so one instance is created once and reused.
     redis_conn: Arc<tokio::sync::OnceCell<redis::aio::ConnectionManager>>,
+    /// How far each SESSION has counted, kept across the connections that make it up.
+    ///
+    /// A session survives reconnects on purpose — the same `session_id` is resumed after a dropped
+    /// socket. The per-connection counter did not, and both things derived from it restarted at
+    /// zero: the chunk id (`{session}-ws-{sequence:04}`, which is the storage filename) and the
+    /// chunk's `start_ms`. So connection 2's audio was written over connection 1's under the same
+    /// key, claiming to have been spoken at the same instants. Measured: a learner who reconnects
+    /// twice keeps 6 of 12 chunks, and the survivors are not even a coherent prefix.
+    ///
+    /// IN-PROCESS, deliberately, and not in Redis. Redis here is best-effort — `redis_connection`
+    /// returns an `Option` and the comments above forbid letting it block the session map — so
+    /// making "a learner does not overwrite their own recitation" depend on it would put a
+    /// correctness property behind an optional service.
+    ///
+    /// The residual, stated rather than hidden: a gateway RESTART loses these, so a session resumed
+    /// across a restart can still collide. That window is much narrower than the one this closes
+    /// (every reconnect), and closing it needs durable session state, which is a bigger change.
+    session_next_sequence: Arc<RwLock<HashMap<String, SessionCursor>>>,
+}
+
+/// Where a session's chunk numbering has reached, and when that was last touched.
+#[derive(Debug, Clone, Copy)]
+struct SessionCursor {
+    next_sequence: u64,
+    touched_unix: u64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -188,6 +213,49 @@ impl RealtimeGateway {
             chunk_capacity: chunk_capacity.max(1),
             redis_url,
             redis_conn: Arc::new(tokio::sync::OnceCell::new()),
+            session_next_sequence: Arc::new(RwLock::new(HashMap::new())),
+        }
+    }
+
+    /// The chunk sequence a NEW connection for this session must start counting from.
+    ///
+    /// Zero for a session nobody has streamed yet; otherwise wherever the previous connection got
+    /// to. This is what stops a reconnect from re-minting chunk ids that already name stored audio.
+    pub async fn resume_sequence(&self, session_id: &str) -> u64 {
+        self.session_next_sequence
+            .read()
+            .await
+            .get(session_id)
+            .map(|c| c.next_sequence)
+            .unwrap_or(0)
+    }
+
+    /// Record how far a connection counted, so the next one continues instead of repeating.
+    ///
+    /// MONOTONIC: never moves a session's cursor backwards. Two connections for one session can
+    /// overlap (the old socket's handler finishing after the new one has started), and a late,
+    /// smaller value from the dying connection would hand the live one ids it has already used —
+    /// re-opening exactly the bug this closes.
+    pub async fn record_sequence(&self, session_id: &str, next_sequence: u64) {
+        let now = unix_now_seconds();
+        let mut cursors = self.session_next_sequence.write().await;
+        let entry = cursors
+            .entry(session_id.to_owned())
+            .or_insert(SessionCursor {
+                next_sequence: 0,
+                touched_unix: now,
+            });
+        entry.next_sequence = entry.next_sequence.max(next_sequence);
+        entry.touched_unix = now;
+
+        // Bounded, or this map is a leak in a process that runs for months. Sessions have no
+        // "finished" signal — a learner simply stops reconnecting — so the only available rule is
+        // age. Swept only when the map is large, so the common path stays O(1).
+        const SWEEP_ABOVE: usize = 1024;
+        const STALE_AFTER_SECONDS: u64 = 6 * 60 * 60;
+        if cursors.len() > SWEEP_ABOVE {
+            let cutoff = now.saturating_sub(STALE_AFTER_SECONDS);
+            cursors.retain(|_, c| c.touched_unix >= cutoff);
         }
     }
 
@@ -1098,7 +1166,11 @@ async fn handle_audio_socket(
         }
     });
 
-    let mut sequence = 0_u64;
+    // NOT zero. A session outlives the socket that carries it — that is what reconnect means — and
+    // this counter names the chunk (`{session}-ws-{sequence:04}`, the storage filename) and dates it
+    // (`sequence * chunk_duration_ms`). Restarting it made connection 2 overwrite connection 1's
+    // audio under the same key, timestamped as if spoken at the same moment.
+    let mut sequence = state.gateway.resume_sequence(&session_id).await;
 
     while let Some(message) = socket.recv().await {
         match message {
@@ -1187,6 +1259,12 @@ async fn handle_audio_socket(
             Err(_) => break,
         }
     }
+
+    // BEFORE end_session, and unconditionally — a chaos drop, a network failure and a clean close
+    // all reach here, and all of them must hand the next connection a cursor it can trust. Recording
+    // it only on the tidy path would leave the reconnect case, which is the whole reason a session
+    // spans sockets, still minting duplicate ids.
+    state.gateway.record_sequence(&session_id, sequence).await;
 
     let _ = state.gateway.end_session(&session_id).await;
 }
@@ -2086,5 +2164,118 @@ mod tests {
                 panic!("expected fail-closed to refuse the connection when Redis is unreachable")
             }
         }
+    }
+
+    /// A session's chunk numbering must SURVIVE the socket that carried it.
+    ///
+    /// The bug this pins: `sequence` lived in the per-connection handler, so a reconnect restarted
+    /// it at zero. Both things derived from it restarted too — the chunk id, which is the filename
+    /// audio is stored under, and `start_ms`. Connection 2 therefore wrote over connection 1's
+    /// recording under the same key, dated as if spoken at the same instant. Measured end to end
+    /// (specs/dr-rehearsal/evidence/P5.4-reconnect-drill.log): 12 chunks sent and acked across two
+    /// reconnects, 6 distinct ids, 6 files on disk.
+    #[tokio::test]
+    async fn a_reconnect_continues_the_session_numbering_instead_of_repeating_it() {
+        let gateway = RealtimeGateway::new(8);
+
+        // Connection 1: a session nobody has streamed starts at zero.
+        let first_start = gateway.resume_sequence("session-a").await;
+        assert_eq!(first_start, 0);
+        let conn1: Vec<u64> = (first_start..first_start + 3).collect();
+        gateway.record_sequence("session-a", 3).await;
+
+        // Connection 2: same session id — that is what a reconnect IS — must not start over.
+        let second_start = gateway.resume_sequence("session-a").await;
+        assert_eq!(
+            second_start, 3,
+            "the reconnect restarted the session's numbering"
+        );
+        let conn2: Vec<u64> = (second_start..second_start + 3).collect();
+
+        // The property that actually protects the audio: no id is minted twice.
+        let ids = |seqs: &[u64]| -> Vec<String> {
+            seqs.iter()
+                .map(|n| format!("session-a-ws-{n:04}"))
+                .collect()
+        };
+        let all = [ids(&conn1), ids(&conn2)].concat();
+        let mut distinct = all.clone();
+        distinct.sort();
+        distinct.dedup();
+        assert_eq!(
+            distinct.len(),
+            all.len(),
+            "two connections minted the same chunk id, so the second overwrites the first: {all:?}"
+        );
+
+        // And the session clock only moves forward — start_ms is derived from this same counter, so
+        // a repeat would make later audio claim an earlier moment and be reassembled out of order.
+        assert!(conn2[0] > *conn1.last().unwrap());
+    }
+
+    /// Sessions do not belong to each other.
+    #[tokio::test]
+    async fn each_session_keeps_its_own_cursor() {
+        let gateway = RealtimeGateway::new(8);
+        gateway.record_sequence("session-a", 9).await;
+        assert_eq!(gateway.resume_sequence("session-b").await, 0);
+        assert_eq!(gateway.resume_sequence("session-a").await, 9);
+    }
+
+    /// The cursor never moves backwards.
+    ///
+    /// Two connections for one session can overlap: the dying socket's handler runs its recording
+    /// step after the new one has already started streaming. A late, smaller value from the old
+    /// connection would hand the live one ids it has already used — re-opening the exact bug.
+    #[tokio::test]
+    async fn a_late_record_from_a_dying_connection_cannot_rewind_the_cursor() {
+        let gateway = RealtimeGateway::new(8);
+        gateway.record_sequence("session-a", 6).await;
+        gateway.record_sequence("session-a", 2).await; // the straggler
+        assert_eq!(
+            gateway.resume_sequence("session-a").await,
+            6,
+            "a late straggler rewound the cursor and will re-issue ids 2..6"
+        );
+    }
+
+    /// The three tests above pin the CURSOR. This one pins that the socket handler actually uses it.
+    ///
+    /// Written after those three failed to notice the bug being put back: reverting
+    /// `handle_audio_socket` to `let mut sequence = 0_u64;` left all forty tests green, because the
+    /// cursor API kept behaving perfectly while nothing called it. A fix whose tests cannot detect
+    /// its own removal is not a fix, it is a coincidence.
+    ///
+    /// Source-level, because the alternative — driving two real websocket connections through the
+    /// router and comparing minted ids — is an integration test this module has no harness for. The
+    /// end-to-end proof is the reconnect drill (specs/dr-rehearsal/evidence/P5.4-reconnect-drill.log),
+    /// which is deterministic in ten seconds; this is the cheap half that runs on every build.
+    #[test]
+    fn the_socket_handler_seeds_its_counter_from_the_session_cursor() {
+        // Only the PRODUCTION half. `include_str!` pulls in this test module too, and the needles
+        // below appear here verbatim — the first version of this test failed on its own assertion
+        // strings. Splitting at the test attribute keeps the check looking at the code it is about.
+        let whole = include_str!("lib.rs");
+        let source = whole
+            .split_once("#[cfg(test)]")
+            .map(|(production, _)| production)
+            .unwrap_or(whole);
+
+        assert!(
+            source.contains("let mut sequence = state.gateway.resume_sequence(&session_id).await;"),
+            "handle_audio_socket no longer seeds its chunk counter from the session cursor, so a \
+             reconnect will re-mint ids that already name stored audio and overwrite it"
+        );
+        assert!(
+            !source.contains("let mut sequence = 0_u64;"),
+            "the per-connection counter is back. That is the original bug: the chunk id is the \
+             storage filename and start_ms is derived from the same value, so connection 2 writes \
+             over connection 1's recording, timestamped as if spoken at the same moment"
+        );
+        assert!(
+            source.contains(".record_sequence(&session_id, sequence)"),
+            "the handler no longer records how far it counted, so the NEXT connection resumes from \
+             a stale cursor and repeats ids"
+        );
     }
 }

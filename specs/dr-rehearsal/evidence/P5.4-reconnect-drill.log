@@ -117,10 +117,41 @@ AUDIO INTEGRITY: FAIL — half the recitation was acknowledged and then overwrit
   to a stale gateway from a previous run, still holding the port. Every run quoted here uses a
   unique port set, a fresh mktemp storage dir, and asserts a gateway OF THAT RUN is listening first.
 
-NOT FIXED IN THIS RUN. The cause is understood rather than guessed and the repro takes ten seconds,
-so the fix can be written against a red test — but it changes an identifier that is simultaneously
-the storage filename, the right-to-erasure key in `privacy_jobs`, and part of the ack contract, and
-it needs the session clock to survive a reconnect as well. See the options above; that is a design
-decision, not a patch, and the erasure path is the one that must not be got wrong twice.
+FIXED — 2026-08-03. `RealtimeGateway` now keeps a per-session cursor that outlives the socket, and
+`handle_audio_socket` seeds its counter from it instead of from zero.
+
+  same drill, after:
+    drops=0 -> 12/12 stored   ids 0000..0011
+    drops=1 -> 12/12 stored   ids 0000..0011      (was 9/12)
+    drops=2 -> 12/12 stored   ids 0000..0011      (was 6/12)
+
+  Twelve chunks, twelve distinct ids, at every drop count. The recording proxy confirms the gateway
+  forwards twelve and no id repeats, so nothing is overwritten and no chunk claims a moment another
+  one already claimed.
+
+WHY IN-PROCESS AND NOT REDIS
+  Redis in this gateway is best-effort by construction — `redis_connection` returns an `Option` and
+  the comments there forbid letting it block the session map. Putting "a learner does not overwrite
+  their own recitation" behind an optional service would make a correctness property fail whenever
+  Redis is down. The cursor is therefore in-process, and the residual is stated rather than hidden:
+  a gateway RESTART loses it, so a session resumed across a restart can still collide. That window
+  is far narrower than the one this closes (every reconnect) and shutting it needs durable session
+  state, which is a larger change than this one.
+
+  The cursor is also MONOTONIC. Two connections for a session overlap — the dying socket's handler
+  records after the new one has started — and a late, smaller value would hand the live connection
+  ids it had already used, re-opening the bug from the other end.
+
+THE ERASURE CONTRACT STILL HOLDS. `chunk_id` is the storage filename and the value
+`privacy_jobs.audio_object_keys_deleted` records, so scripts/restore-audio.test.sh was re-run after
+the change: 17/17, including the round trip where a file erased after the backup stays absent.
+
+A NOTE ON THE TESTS, because the first set was wrong
+  Three unit tests pinned the cursor API and all three stayed green when the original bug was put
+  back — they exercised `resume_sequence`/`record_sequence` while nothing asserted the handler
+  CALLED them. A fix whose tests cannot detect its own removal is a coincidence. There is now a
+  fourth test asserting the wiring, and both mutations (revert the seeding, stop recording) turn it
+  red. Its first version failed on itself: `include_str!` pulls in the test module, which contains
+  the needles verbatim, so it now reads only the production half of the file.
 
 STILL NOT RUN for P5.4: long-audio, timeout, duplicate-delivery, recovery.
