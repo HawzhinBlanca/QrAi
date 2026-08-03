@@ -6,7 +6,7 @@
  */
 
 import { createServer } from "node:http";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { readFileSync, readdirSync, existsSync, writeFileSync, appendFileSync, mkdirSync, realpathSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -817,6 +817,54 @@ async function deletePrivacy(requestBody) {
   return job;
 }
 
+/**
+ * Describe how an incoming chunk differs from one already stored under the same id, or null when
+ * there is nothing stored or it is the same audio arriving again.
+ *
+ * Compares the content HASH, not just the size: two different 3200-byte chunks of PCM are the
+ * normal case, not an exotic one, so a size check would miss almost every real conflict. Metadata
+ * written before `audioSha256` existed has no hash to compare, so those fall back to size and
+ * timing — weaker, and deliberately not treated as "no conflict" just because the hash is absent.
+ */
+function describeChunkConflict(tenantDir, chunkId, incoming) {
+  const metaPath = join(tenantDir, `${chunkId}.meta.json`);
+  if (!existsSync(metaPath)) return null;
+
+  let stored;
+  try {
+    stored = JSON.parse(readFileSync(metaPath, "utf8"));
+  } catch {
+    // Unreadable metadata beside a stored chunk is itself worth surfacing rather than swallowing.
+    return { reason: "existing metadata could not be read" };
+  }
+
+  if (stored.audioSha256 && incoming.audioSha256) {
+    if (stored.audioSha256 === incoming.audioSha256) return null; // idempotent retry
+    return {
+      reason: "different audio",
+      storedSha256: stored.audioSha256.slice(0, 12),
+      incomingSha256: incoming.audioSha256.slice(0, 12),
+      storedStartMs: stored.startMs,
+      incomingStartMs: incoming.startMs,
+    };
+  }
+
+  // Pre-hash metadata, or a chunk stored with no audio at all.
+  const differs =
+    stored.audioSize !== incoming.audioSize ||
+    stored.startMs !== incoming.startMs ||
+    stored.endMs !== incoming.endMs;
+  return differs
+    ? {
+        reason: "different size or timing (stored before content hashing)",
+        storedAudioSize: stored.audioSize,
+        incomingAudioSize: incoming.audioSize,
+        storedStartMs: stored.startMs,
+        incomingStartMs: incoming.startMs,
+      }
+    : null;
+}
+
 // === Audio chunk storage ===
 async function storeAudioChunk(requestBody) {
   const tenantId = safeStorageSegment(requestBody.tenantId, "tenantId");
@@ -846,6 +894,40 @@ async function storeAudioChunk(requestBody) {
     const audioBytes = Buffer.from(requestBody.audioBase64, "base64");
     await storeAudioObject(tenantId, learnerId, chunkId, audioBytes);
     metadata.audioSize = audioBytes.length;
+    // Cheap because the bytes are already in hand. It is what lets the check below tell a harmless
+    // retry from a chunk being replaced with DIFFERENT audio.
+    metadata.audioSha256 = createHash("sha256").update(audioBytes).digest("hex");
+  }
+
+  // ── Is this replacing a learner's recording with a different one? ────────────────────────────
+  // Writing a chunk id that already exists is NORMAL and safe when it is the same audio: the ML
+  // forwarder retries up to three times, so a POST whose response was lost arrives again. That path
+  // is idempotent and must stay silent.
+  //
+  // A conflicting write is a different thing entirely, and until now it was indistinguishable — the
+  // file was replaced, 200 was returned, and nothing anywhere said a child's recitation had just
+  // been overwritten by other audio. That silence is what let the reconnect chunk-id collision
+  // (ADR: fix/reconnect-chunk-id-collision) destroy half of a learner's session undetected for as
+  // long as it existed. The gateway no longer mints duplicate ids, so this should now never fire —
+  // which is exactly why it is worth hearing if it does.
+  //
+  // DETECT, not refuse. Refusing would be stronger, but chunk rewriting is not yet enumerated
+  // across every flow, and a 409 that breaks a legitimate one would trade a silent failure for a
+  // loud wrong one. The half that cannot break anything goes in first.
+  const conflict = describeChunkConflict(tenantDir, chunkId, metadata);
+  if (conflict) {
+    log("error", "audio chunk OVERWRITTEN with different content", {
+      tenantId,
+      sessionId,
+      chunkId,
+      traceId: extractTraceId(requestBody),
+      conflict,
+    });
+    appendAudit(tenantId, "audio.chunk.overwritten", chunkId, {
+      sessionId,
+      traceId: extractTraceId(requestBody),
+      conflict,
+    });
   }
 
   writeFileSync(join(tenantDir, `${chunkId}.meta.json`), JSON.stringify(metadata, null, 2));
