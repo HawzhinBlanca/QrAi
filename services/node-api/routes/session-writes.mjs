@@ -204,9 +204,15 @@ export async function persistSessionAlignments(req, reply, ctx) {
     // Replace-on-write, in FK-SAFE ORDER. tajweed_findings.alignment_id and
     // teacher_reviews.finding_id both RESTRICT, so a naked DELETE of word_alignments raises a
     // foreign_key_violation (→ 500) for any session that already has findings or reviews.
+    // DETACHED, not deleted (0024_teacher_review_survives_realignment.sql). This route is reached by
+    // the session OWNER, so the DELETE this replaced let a learner re-recording their own session
+    // erase a review a teacher had already submitted. Nulling finding_id releases the RESTRICT so the
+    // finding can go, while the review row, its author, note, decision and snapshot survive — marked
+    // as being about something the learner has since replaced. Mirrors recitation.rs.
     const deletedTeacherReviews = (
       await tx`
-        DELETE FROM teacher_reviews WHERE tenant_id = ${actor.tenantId} AND finding_id IN (
+        UPDATE teacher_reviews SET finding_id = NULL, superseded_at = now()
+        WHERE tenant_id = ${actor.tenantId} AND superseded_at IS NULL AND finding_id IN (
           SELECT tf.id FROM tajweed_findings tf
           JOIN word_alignments wa ON wa.id = tf.alignment_id
           WHERE wa.session_id = ${sessionId} AND wa.tenant_id = ${actor.tenantId})`
@@ -223,11 +229,11 @@ export async function persistSessionAlignments(req, reply, ctx) {
       DELETE FROM word_alignments
       WHERE session_id = ${sessionId} AND tenant_id = ${actor.tenantId}`;
 
-    // Audit AFTER the cascade, recording what this request ACTUALLY destroyed. The cascade is
-    // authorized for the session OWNER, so a learner re-recording their own session silently erases
-    // teacher_reviews a teacher had already submitted — with the audit giving no hint that review
-    // history was destroyed. Whether that cascade is the right POLICY is a product decision and is
-    // still open; making the erasure VISIBLE is not. Ordered before the INSERTs, which reference it.
+    // Audit AFTER the cascade, recording what this request ACTUALLY did. `deletedTeacherReviews`
+    // keeps its name now that the reviews are detached rather than destroyed: the number still
+    // answers what it was added to answer — how much review history this request affected — and
+    // renaming an audit-log field breaks every existing reader for a wording improvement.
+    // Ordered before the INSERTs, which reference it.
     await tx`
       INSERT INTO audit_events (id, tenant_id, actor_id, action, subject_type, subject_id, metadata)
       VALUES (${auditId}, ${actor.tenantId}, ${actor.userId}, 'recitation.alignment.persisted',
@@ -264,13 +270,13 @@ export async function persistSessionAlignments(req, reply, ctx) {
       await tx`
         INSERT INTO word_alignments
           (id, tenant_id, session_id, word_id, heard_text, start_ms, end_ms, confidence, status,
-           model_version_id, audit_event_id)
+           model_version_id, audit_event_id, transcript_source)
         VALUES (${newId("word-alignment")}, ${actor.tenantId}, ${sessionId}, ${a.wordId},
                 ${typeof a.heardText === "string" ? a.heardText : ""},
                 ${Number.isInteger(a.startMs) ? a.startMs : 0},
                 ${Number.isInteger(a.endMs) ? a.endMs : 0},
                 ${Math.min(Math.max(Number(a.confidence) || 0, 0), 1)}::float8::numeric,
-                ${a.status}, ${modelVersion}, ${auditId})`;
+                ${a.status}, ${modelVersion}, ${auditId}, 'client-reported')`;
       persisted += 1;
     }
 
@@ -291,6 +297,10 @@ export async function persistSessionAlignments(req, reply, ctx) {
       sessionId,
       skippedInvalidStatus: invalidStatus.length,
       skippedUnknownWord,
+      // Hardcoded, matching the Rust original: this route's words come from whatever the caller
+      // sent, so it can only ever mint `client-reported`. `server-derived` belongs to
+      // finalize_session, which is not ported (Phase 7) and takes no words from a caller at all.
+      transcriptSource: "client-reported",
     };
   });
 

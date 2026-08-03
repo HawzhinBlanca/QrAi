@@ -41,15 +41,34 @@ pub async fn create_teacher_review(
     // The finding must exist in this tenant. Without this check a dangling finding_id
     // fails the FK constraint and surfaces as a 500; a missing referenced entity is a
     // 404. RLS scopes the lookup to the caller's tenant.
+    // `reviewed_finding` is captured in the SAME read that validates the finding exists, so the
+    // snapshot is of the row this decision was actually made against. Re-reading it afterwards would
+    // leave a window in which the finding changed between the check and the copy.
     let finding = sqlx::query(
-        "SELECT jsonb_array_length(source_refs) AS source_count
-         FROM tajweed_findings WHERE id = $1 AND tenant_id = $2",
+        "SELECT jsonb_array_length(tf.source_refs) AS source_count,
+                jsonb_build_object(
+                  'findingId',    tf.id,
+                  'wordId',       wa.word_id,
+                  'sessionId',    wa.session_id,
+                  'rule',         tf.rule,
+                  'severity',     tf.severity,
+                  'confidence',   tf.confidence::float8,
+                  'explanation',  tf.explanation,
+                  'reviewStatus', tf.review_status,
+                  'sources',      tf.source_refs
+                ) AS reviewed_finding
+         FROM tajweed_findings tf
+         JOIN word_alignments wa ON wa.id = tf.alignment_id
+         WHERE tf.id = $1 AND tf.tenant_id = $2",
     )
     .bind(&req.finding_id)
     .bind(&actor.tenant_id)
     .fetch_optional(&mut *tx)
     .await?;
     let finding = finding.ok_or(ApiError::NotFound)?;
+    let reviewed_finding: serde_json::Value = finding
+        .try_get("reviewed_finding")
+        .unwrap_or_else(|_| serde_json::json!({}));
 
     // ── Accepting an UNSOURCED finding is refused ───────────────────────────────────────────────
     // `create_scholar_approval` already refuses the same hazard (`ApiError::MissingSources`) and a
@@ -98,8 +117,8 @@ pub async fn create_teacher_review(
     // cross-tenant user, since users(id) is a platform-global FK). req.teacher_id is ignored.
     let author_id = &actor.user_id;
     sqlx::query(
-        "INSERT INTO teacher_reviews (id, tenant_id, finding_id, teacher_id, decision, note, audit_event_id)
-         VALUES ($1, $2, $3, $4, $5, $6, $7)",
+        "INSERT INTO teacher_reviews (id, tenant_id, finding_id, teacher_id, decision, note, audit_event_id, reviewed_finding)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
     )
     .bind(&review_id)
     .bind(&actor.tenant_id)
@@ -108,6 +127,9 @@ pub async fn create_teacher_review(
     .bind(decision_str)
     .bind(&req.note)
     .bind(&audit_id)
+    // What the teacher was looking at. A review that outlives its finding (see
+    // 0024_teacher_review_survives_realignment.sql) says "a teacher rejected something" without it.
+    .bind(&reviewed_finding)
     .execute(&mut *tx)
     .await?;
 
@@ -342,7 +364,14 @@ pub async fn list_tajweed_findings(
     let mut tx = crate::begin_tenant_tx(&state.pool, &actor.tenant_id).await?;
 
     let rows = sqlx::query(
-        "SELECT tf.id, tf.alignment_id, wa.word_id, tf.rule, tf.severity,
+        // `wa.transcript_source` travels with the finding because this queue is where a teacher
+        // DECIDES. A finding anchored to a `client-reported` alignment rests on words the learner's
+        // browser supplied — possibly its own Web Speech recognition, possibly nothing recited at
+        // all — while a `server-derived` one rests on audio this platform transcribed itself.
+        // Promoting the first to `teacher-reviewed` makes it learner-visible feedback (ADR-0028)
+        // about a recitation nobody can show happened, and until now the queue gave a teacher no way
+        // to tell the two apart.
+        "SELECT tf.id, tf.alignment_id, wa.word_id, wa.transcript_source, tf.rule, tf.severity,
                 tf.confidence::float8 AS confidence, tf.explanation, tf.review_status, tf.source_refs
          FROM tajweed_findings tf
          JOIN word_alignments wa ON wa.id = tf.alignment_id
@@ -366,6 +395,10 @@ pub async fn list_tajweed_findings(
             serde_json::json!({
                 "id": r.try_get::<String, _>("id").unwrap_or_default(),
                 "wordId": r.try_get::<String, _>("word_id").unwrap_or_default(),
+                // `server-derived` | `client-reported` — what this finding's evidence rests on.
+                "transcriptSource": r
+                    .try_get::<String, _>("transcript_source")
+                    .unwrap_or_else(|_| "client-reported".to_owned()),
                 "rule": r.try_get::<String, _>("rule").unwrap_or_default(),
                 "severity": r.try_get::<String, _>("severity").unwrap_or_default(),
                 "confidence": r.try_get::<f64, _>("confidence").unwrap_or(0.0),

@@ -286,8 +286,12 @@ test("alignments persist, and synthetic word ids are SKIPPED rather than 500", a
     "sessionId",
     "skippedInvalidStatus",
     "skippedUnknownWord",
+    "transcriptSource",
   ]);
   assert.equal(s.body.persisted, 2);
+  // ADR-0030. This route can only ever mint the weaker label: its words came from the request body.
+  // On the wire so a caller is never left assuming they were recorded as measured evidence.
+  assert.equal(s.body.transcriptSource, "client-reported");
   assert.equal(s.body.skippedUnknownWord, 1, "extra-1 is not a canonical word");
   assert.equal(s.body.skippedInvalidStatus, 1, '"matche" is a typo, counted separately');
 });

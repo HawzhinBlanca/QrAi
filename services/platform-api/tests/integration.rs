@@ -807,9 +807,13 @@ async fn weekly_progress_reports_real_per_day_sessions_and_word_accuracy() {
     .enumerate()
     {
         sqlx::query(
+            // `server-derived` explicitly (ADR-0030). This test is about the ARITHMETIC of measured
+            // accuracy, so its rows have to be the kind that counts toward it. The column defaults
+            // to `client-reported` and that default is deliberate — it is why this insert had to
+            // change rather than inherit, and why the assertions below still mean what they say.
             "INSERT INTO word_alignments
-               (id, tenant_id, session_id, word_id, heard_text, start_ms, end_ms, confidence, status, model_version_id, audit_event_id)
-             VALUES ($1, 'hikmah-pilot-erbil', $2, $3, 'x', 0, 100, 0.9, $4, 'model-v0.3', $5)",
+               (id, tenant_id, session_id, word_id, heard_text, start_ms, end_ms, confidence, status, model_version_id, audit_event_id, transcript_source)
+             VALUES ($1, 'hikmah-pilot-erbil', $2, $3, 'x', 0, 100, 0.9, $4, 'model-v0.3', $5, 'server-derived')",
         )
         .bind(format!("wa-weekly-{suffix}-{i}"))
         .bind(&session_id)
@@ -851,6 +855,10 @@ async fn weekly_progress_reports_real_per_day_sessions_and_word_accuracy() {
     assert_eq!(days[0]["wordsTotal"], 3);
     assert_eq!(days[0]["wordsMatched"], 2);
     assert_eq!(days[0]["accuracy"], 66.7); // 2/3, one decimal — measured, not synthesized
+    assert_eq!(
+        days[0]["wordsSelfReported"], 0,
+        "these three words were server-derived; none of them is a learner's own claim"
+    );
     assert!(
         days[0]["date"].as_str().is_some_and(|d| d.len() == 10),
         "date is a YYYY-MM-DD string: {:?}",
@@ -1331,15 +1339,17 @@ async fn teacher_review_author_is_actor_and_realignment_cascades() {
     .await;
     assert_eq!(review.status(), StatusCode::OK);
     assert_eq!(read_json::<Value>(review).await["teacherId"], "teacher-1");
-    let stored: String =
-        sqlx::query("SELECT teacher_id FROM teacher_reviews WHERE finding_id = $1")
-            .bind(&finding_id)
-            .fetch_one(&state.pool)
-            .await
-            .unwrap()
-            .try_get("teacher_id")
-            .unwrap();
-    assert_eq!(stored, "teacher-1", "author must not be forgeable");
+    // The id is captured HERE, while finding_id still points at the finding. After the re-record
+    // below it is NULL by design (ADR-0031), so a lookup by finding_id would find nothing and the
+    // survival assertions further down would read as "deleted" whether or not it was.
+    let stored = sqlx::query("SELECT id, teacher_id FROM teacher_reviews WHERE finding_id = $1")
+        .bind(&finding_id)
+        .fetch_one(&state.pool)
+        .await
+        .unwrap();
+    let review_id: String = stored.try_get("id").unwrap();
+    let stored_author: String = stored.try_get("teacher_id").unwrap();
+    assert_eq!(stored_author, "teacher-1", "author must not be forgeable");
 
     // (2) Re-record alignment for the SAME session (which now has a finding+review): must
     // cascade-delete them and succeed, not FK-violate into a 500.
@@ -1368,9 +1378,9 @@ async fn teacher_review_author_is_actor_and_realignment_cascades() {
         "stale finding should be cascaded away on re-record"
     );
 
-    // (3) The cascade above just destroyed a TEACHER's review on behalf of a LEARNER (the session
-    // owner). Whether that policy is right is a separate product decision — but it must never be
-    // INVISIBLE: the persist audit event must record what it actually erased.
+    // (3) The cascade above ran on behalf of a LEARNER (the session owner) over a TEACHER's review.
+    // It must be visible in the persist audit event — the count is how an operator learns that
+    // review history was affected at all.
     let audit_event_id = rerecord_body["auditEventId"].as_str().unwrap().to_owned();
     let meta: Value = sqlx::query_scalar("SELECT metadata FROM audit_events WHERE id = $1")
         .bind(&audit_event_id)
@@ -1379,11 +1389,62 @@ async fn teacher_review_author_is_actor_and_realignment_cascades() {
         .unwrap();
     assert_eq!(
         meta["deletedTeacherReviews"], 1,
-        "the erased teacher review must be visible in the persist audit metadata"
+        "the affected teacher review must be visible in the persist audit metadata"
     );
     assert_eq!(
         meta["deletedTajweedFindings"], 1,
         "the erased tajweed finding must be visible in the persist audit metadata"
+    );
+
+    // (4) ADR-0031 — and the review itself SURVIVED.
+    //
+    // This used to be a DELETE, so a learner re-recording their own session erased a named teacher's
+    // judgement about a named learner. The finding going is correct: it points at words that no
+    // longer exist. The record of a professional having made a decision is a different kind of thing,
+    // and no learner action should be able to remove it.
+    let review: (
+        Option<String>,
+        Option<chrono::DateTime<chrono::Utc>>,
+        Value,
+        String,
+        String,
+    ) = sqlx::query_as(
+        "SELECT finding_id, superseded_at, reviewed_finding, decision, note
+             FROM teacher_reviews WHERE id = $1",
+    )
+    .bind(&review_id)
+    .fetch_optional(&state.pool)
+    .await
+    .unwrap()
+    .expect("the teacher's review was DELETED by a learner re-recording their own session");
+
+    assert_eq!(
+        review.0, None,
+        "finding_id must be released, or the finding below could not be deleted at all"
+    );
+    assert!(
+        review.1.is_some(),
+        "a detached review with no superseded_at is indistinguishable from a review of nothing"
+    );
+    assert_eq!(review.3, "rejected", "the decision itself must survive");
+    assert!(!review.4.is_empty(), "the teacher's note must survive");
+
+    // The snapshot is the difference between evidence and "a teacher rejected something".
+    let snapshot = &review.2;
+    assert_eq!(
+        snapshot["findingId"].as_str(),
+        Some(finding_id.as_str()),
+        "the snapshot must name the finding this decision was made against: {snapshot}"
+    );
+    for field in ["wordId", "rule", "severity", "explanation", "reviewStatus"] {
+        assert!(
+            snapshot[field].is_string(),
+            "the snapshot lost `{field}`, so nobody can now say what was judged: {snapshot}"
+        );
+    }
+    assert!(
+        snapshot["confidence"].is_number(),
+        "the snapshot lost `confidence`: {snapshot}"
     );
 }
 
@@ -5287,5 +5348,224 @@ async fn a_complete_session_records_no_lost_chunks() {
     assert_eq!(
         stored, 0,
         "a complete session was labelled as having lost chunks"
+    );
+}
+
+/// Blocker 1 — the two ways alignments get written must stay distinguishable after the write.
+///
+/// The web practice loop posts alignments computed from a transcript the CLIENT supplied: either one
+/// this API produced and handed to the browser, or the browser's own Web Speech recognition. A caller
+/// can also post a flawless recitation having recited nothing at all. `finalize_session` is different
+/// in kind — it fetches the transcript server-to-server from the service holding the audio and the
+/// caller supplies no words.
+///
+/// Both wrote identical rows. `/v1/learner/progress/weekly` then averaged them into a figure it
+/// called "accuracy", and a teacher promoting a finding to learner-visible feedback could not tell
+/// which sort of evidence it rested on.
+#[tokio::test]
+#[ignore = "requires live Postgres"]
+async fn a_client_posted_alignment_is_recorded_as_client_reported() {
+    use sqlx::Row;
+    let state = test_state();
+    let router = platform_router_with_rate_limit(test_state(), false);
+    let session_id = finalize_test_session(&router, "fnv1a32:provenance-client").await;
+
+    let persisted = send_json(
+        &router,
+        Method::POST,
+        &format!("/v1/recitation-sessions/{session_id}/alignments"),
+        Some("hikmah-pilot-erbil"),
+        Some("learner"),
+        json!({
+            "modelVersion": "model-v0.3",
+            // A perfect recitation, asserted rather than recited.
+            "alignments": [
+                {"wordId": "1:1:1", "heardText": "بسم", "startMs": 0, "endMs": 400, "confidence": 1.0, "status": "matched"},
+                {"wordId": "1:1:2", "heardText": "الله", "startMs": 400, "endMs": 800, "confidence": 1.0, "status": "matched"}
+            ]
+        }),
+    )
+    .await;
+    assert_eq!(persisted.status(), StatusCode::OK);
+    let body = read_json::<Value>(persisted).await;
+    assert_eq!(
+        body["transcriptSource"],
+        json!("client-reported"),
+        "the response must not let a caller believe its words were recorded as measured evidence"
+    );
+
+    let sources: Vec<String> = sqlx::query(
+        "SELECT transcript_source FROM word_alignments WHERE session_id = $1 AND tenant_id = $2",
+    )
+    .bind(&session_id)
+    .bind("hikmah-pilot-erbil")
+    .fetch_all(&state.pool)
+    .await
+    .unwrap()
+    .into_iter()
+    .map(|r| r.try_get::<String, _>("transcript_source").unwrap())
+    .collect();
+    assert_eq!(sources.len(), 2);
+    assert!(
+        sources.iter().all(|s| s == "client-reported"),
+        "words the server never heard were stored as if it had: {sources:?}"
+    );
+}
+
+/// The other half. A label that is always `client-reported` distinguishes nothing — this is what
+/// stops the test above from passing against an implementation that simply writes one constant.
+#[tokio::test]
+#[ignore = "requires live Postgres"]
+async fn a_finalized_session_records_a_server_derived_alignment() {
+    use sqlx::Row;
+    let mock = spawn_mock_ml_finalize(true).await;
+    let state = test_state().with_ml_inference_url(mock.clone());
+    let router = platform_router_with_rate_limit(test_state().with_ml_inference_url(mock), false);
+    let session_id = finalize_test_session(&router, "fnv1a32:provenance-server").await;
+
+    let done = send_json(
+        &router,
+        Method::POST,
+        &format!("/v1/recitation-sessions/{session_id}/finalize"),
+        Some("hikmah-pilot-erbil"),
+        Some("learner"),
+        json!({}),
+    )
+    .await;
+    assert_eq!(done.status(), StatusCode::OK);
+    assert_eq!(read_json::<Value>(done).await["finalized"], json!(true));
+
+    let sources: Vec<String> = sqlx::query(
+        "SELECT transcript_source FROM word_alignments WHERE session_id = $1 AND tenant_id = $2",
+    )
+    .bind(&session_id)
+    .bind("hikmah-pilot-erbil")
+    .fetch_all(&state.pool)
+    .await
+    .unwrap()
+    .into_iter()
+    .map(|r| r.try_get::<String, _>("transcript_source").unwrap())
+    .collect();
+    assert!(!sources.is_empty(), "finalize persisted nothing to check");
+    assert!(
+        sources.iter().all(|s| s == "server-derived"),
+        "the one path that never takes words from a caller was not credited for it: {sources:?}"
+    );
+}
+
+/// Measured accuracy must come from words the server itself transcribed.
+///
+/// Averaging a learner's self-reported practice into a figure labelled "accuracy" is the same class
+/// of untruth as the static charts P1.1 replaced, and harder to spot: the arithmetic is real, the
+/// data underneath means something else.
+///
+/// ── Why this test creates its own learner ──────────────────────────────────────────────────────
+/// `learner-1` is shared by the whole suite and the weekly window buckets by DAY, so every other
+/// test that persists an alignment lands in the same bucket. Written against `learner-1` this test
+/// first read a neighbour's `accuracy: 50.0` and failed while the code was correct; rewritten as a
+/// before/after delta it then raced the two tests above, which run concurrently in this process and
+/// moved the counters between the two reads. Neither failure was real and both looked real, which is
+/// the expensive kind. A learner nobody else touches makes the numbers mean what they say.
+#[tokio::test]
+#[ignore = "requires live Postgres"]
+async fn weekly_accuracy_excludes_self_reported_words_but_still_counts_them() {
+    let state = test_state();
+    let router = platform_router_with_rate_limit(test_state(), false);
+
+    let learner = format!("learner-provenance-{}", uuid::Uuid::new_v4());
+    sqlx::query(
+        "INSERT INTO users (id, tenant_id, display_name, role, language)
+         VALUES ($1, 'hikmah-pilot-erbil', 'Provenance Test Learner', 'learner', 'ckb')",
+    )
+    .bind(&learner)
+    .execute(&state.pool)
+    .await
+    .unwrap();
+
+    // Admin creates and writes on the learner's behalf: `send_json` maps a role to one fixed user id,
+    // so "learner" is always learner-1. Both routes allow admin (`require_self_or_any(.., ADMIN)`),
+    // and this test is about arithmetic, not about who may write.
+    let created = send_json(
+        &router,
+        Method::POST,
+        "/v1/recitation-sessions",
+        Some("hikmah-pilot-erbil"),
+        Some("admin"),
+        json!({
+            "learnerId": learner,
+            "quranRef": {"surahNumber": 1, "ayahStart": 1, "ayahEnd": 7, "display": "Al-Fatihah 1:1-7"},
+            "sourceChecksum": "fnv1a32:provenance-weekly", "modelVersion": "model-v0.3",
+            "language": "ckb", "mode": "guided-recite", "practicePlanId": "fatihah-mastery-v1",
+            "consent": {"audioRetention": "discard", "anonymizedLearning": true, "externalAsrProcessing": false, "guardianApproved": true, "consentVersion": "pilot-v1"}
+        }),
+    )
+    .await;
+    assert_eq!(created.status(), StatusCode::OK);
+    let session_id = read_json::<Value>(created).await["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+
+    let persisted = send_json(
+        &router,
+        Method::POST,
+        &format!("/v1/recitation-sessions/{session_id}/alignments"),
+        Some("hikmah-pilot-erbil"),
+        Some("admin"),
+        json!({
+            "modelVersion": "model-v0.3",
+            // A flawless recitation, asserted rather than recited.
+            "alignments": [
+                {"wordId": "1:1:1", "heardText": "بسم", "startMs": 0, "endMs": 400, "confidence": 1.0, "status": "matched"},
+                {"wordId": "1:1:2", "heardText": "الله", "startMs": 400, "endMs": 800, "confidence": 1.0, "status": "matched"}
+            ]
+        }),
+    )
+    .await;
+    assert_eq!(persisted.status(), StatusCode::OK);
+
+    let weekly = send_json(
+        &router,
+        Method::GET,
+        &format!("/v1/learner/progress/weekly?learnerId={learner}"),
+        Some("hikmah-pilot-erbil"),
+        Some("admin"),
+        json!({}),
+    )
+    .await;
+    assert_eq!(weekly.status(), StatusCode::OK);
+    let body = read_json::<Value>(weekly).await;
+    let days = body["days"].as_array().unwrap();
+    assert_eq!(
+        days.len(),
+        1,
+        "this learner has exactly one session: {body}"
+    );
+    let day = &days[0];
+
+    assert_eq!(
+        day["accuracy"],
+        Value::Null,
+        "two self-asserted words became a 100% measured accuracy: {day}"
+    );
+    assert_eq!(
+        day["wordsTotal"],
+        json!(0),
+        "self-reported words were counted as measured: {day}"
+    );
+    assert_eq!(
+        day["wordsMatched"],
+        json!(0),
+        "self-reported words were counted as correctly recited: {day}"
+    );
+    assert_eq!(
+        day["wordsSelfReported"],
+        json!(2),
+        "the practice was recorded and then hidden from the learner entirely: {day}"
+    );
+    assert_eq!(
+        day["sessions"],
+        json!(1),
+        "the session itself must still count: {day}"
     );
 }

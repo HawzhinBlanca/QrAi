@@ -141,5 +141,9 @@ test("the ported count matches the approved scope: 36", () => {
   assert.equal(coverage.totals.ported, 36);
   // 5 -> 7 (2026-08-03): the two lost_chunk_count finalize tests. Deferred rather than ported for
   // the same reason as the sm2/RLS entries — Node has no finalize route to compare against yet.
-  assert.equal(coverage.totals["deferred-to-phase-7"], 7);
+  //
+  // 7 -> 10 (2026-08-03, ADR-0030): the three transcript-provenance tests. Two need to read a
+  // column the black-box harness cannot see; the third seeds its own learner through the pool to
+  // stay out of the shared day bucket. Each says which in its `reason`.
+  assert.equal(coverage.totals["deferred-to-phase-7"], 10);
 });

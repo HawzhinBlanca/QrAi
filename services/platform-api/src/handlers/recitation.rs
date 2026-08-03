@@ -524,6 +524,27 @@ pub struct PersistAlignmentsRequest {
 ///
 /// Does not commit — the caller owns the transaction, because `finalize_session` has more to do in
 /// the same one.
+/// Where the words being persisted came from. Not a request field — a property of the CODE PATH,
+/// which is why it is an enum passed by the caller rather than anything a client can influence.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum TranscriptSource {
+    /// `finalize_session`: the transcript was fetched server-to-server from the service holding the
+    /// audio. The caller named a session and supplied no words.
+    ServerDerived,
+    /// The client-facing persist route: the words originate from something the caller sent, and a
+    /// caller can send anything. Practice, not evidence.
+    ClientReported,
+}
+
+impl TranscriptSource {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::ServerDerived => "server-derived",
+            Self::ClientReported => "client-reported",
+        }
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn persist_alignments_in_tx(
     tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
@@ -531,6 +552,7 @@ async fn persist_alignments_in_tx(
     actor_user_id: &str,
     session_id: &str,
     req: PersistAlignmentsRequest,
+    transcript_source: TranscriptSource,
     trace_id: Option<String>,
 ) -> Result<serde_json::Value, ApiError> {
     // FK3 — model_version must satisfy the FK against model_versions(id).
@@ -563,8 +585,23 @@ async fn persist_alignments_in_tx(
     // that already has findings/reviews. Re-recording the alignment invalidates those old
     // findings anyway (they point at words being re-aligned), so cascade them explicitly:
     // teacher_reviews → tajweed_findings → word_alignments, all scoped to this session.
+    // DETACHED, not deleted (0024_teacher_review_survives_realignment.sql).
+    //
+    // This used to be a DELETE, and it is reached by the session OWNER — so a learner re-recording
+    // their own session erased any review a teacher had already submitted on it. A finding about
+    // words that no longer exist should certainly go. A named teacher's judgement about a named
+    // learner, made at a known time, is a different kind of record, and a learner action must not be
+    // able to remove it.
+    //
+    // `finding_id = NULL` releases the RESTRICT so the finding below can be deleted; the review row,
+    // its author, its note, its decision and its snapshot of what was being judged all survive, now
+    // marked as being about something the learner has since replaced.
+    //
+    // Still counted and still audited under the same name: the count is what a reader of the audit
+    // event uses to know review history was affected.
     let deleted_teacher_reviews = sqlx::query(
-        "DELETE FROM teacher_reviews WHERE tenant_id = $1 AND finding_id IN (
+        "UPDATE teacher_reviews SET finding_id = NULL, superseded_at = now()
+         WHERE tenant_id = $1 AND superseded_at IS NULL AND finding_id IN (
              SELECT tf.id FROM tajweed_findings tf
              JOIN word_alignments wa ON wa.id = tf.alignment_id
              WHERE wa.session_id = $2 AND wa.tenant_id = $1)",
@@ -591,13 +628,19 @@ async fn persist_alignments_in_tx(
         .execute(&mut **tx)
         .await?;
 
-    // Audit AFTER the cascade, recording what this request ACTUALLY destroyed. The cascade above is
+    // Audit AFTER the cascade, recording what this request ACTUALLY did. The cascade above is
     // authorized for the session OWNER (require_self_or_any), so a learner re-recording their own
-    // session silently erased any teacher_reviews a teacher had already submitted on it — with the
-    // audit event giving no hint that review history was destroyed. Whether that cascade is the right
-    // POLICY is a product decision (still open); making the erasure VISIBLE is not, so record the
-    // real deleted counts. Still ordered before the word_alignments INSERTs below, which FK-reference
-    // this audit row.
+    // session used to silently erase any teacher_reviews a teacher had already submitted on it — with
+    // the audit event giving no hint that review history was destroyed. Recording the real counts
+    // made it visible; 0024 stopped the reviews being destroyed at all (they are now detached and
+    // marked superseded, retaining a snapshot of what was judged).
+    //
+    // `deletedTeacherReviews` keeps its name. It is read by existing operator queries and the number
+    // still answers the question it was added for — how much review history this request affected —
+    // even though "deleted" is now the weaker "detached". Renaming a field in an audit log breaks
+    // every reader for a wording improvement.
+    //
+    // Still ordered before the word_alignments INSERTs below, which FK-reference this audit row.
     let audit_id = next_id("audit");
     sqlx::query(
         "INSERT INTO audit_events (id, tenant_id, actor_id, action, subject_type, subject_id, metadata)
@@ -648,8 +691,8 @@ async fn persist_alignments_in_tx(
         let wa_id = next_id("word-alignment");
         sqlx::query(
             "INSERT INTO word_alignments
-                (id, tenant_id, session_id, word_id, heard_text, start_ms, end_ms, confidence, status, model_version_id, audit_event_id)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8::float8::numeric, $9, $10, $11)",
+                (id, tenant_id, session_id, word_id, heard_text, start_ms, end_ms, confidence, status, model_version_id, audit_event_id, transcript_source)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8::float8::numeric, $9, $10, $11, $12)",
         )
         .bind(&wa_id)
         .bind(tenant_id)
@@ -662,6 +705,7 @@ async fn persist_alignments_in_tx(
         .bind(&a.status)
         .bind(&model_version)
         .bind(&audit_id)
+        .bind(transcript_source.as_str())
         .execute(&mut **tx)
         .await?;
         persisted += 1;
@@ -683,6 +727,10 @@ async fn persist_alignments_in_tx(
         "persisted": persisted,
         "skippedInvalidStatus": skipped_invalid_status,
         "skippedUnknownWord": skipped_unknown_word,
+        // On the wire so a caller is never left assuming its words were recorded as measured
+        // evidence. `client-reported` here is not a failure — it is the honest label for practice
+        // the server did not witness.
+        "transcriptSource": transcript_source.as_str(),
         "auditEventId": audit_id,
     }))
 }
@@ -717,6 +765,18 @@ pub async fn persist_session_alignments(
         &actor.user_id,
         &id,
         req,
+        // ALWAYS client-reported on this route, and not negotiable through the request body.
+        //
+        // The words in `req` came from whatever the caller sent. On the web path that is either a
+        // transcript this API produced and then handed to the browser, or the browser's own Web
+        // Speech recognition — and in both cases the round trip means the server cannot vouch for
+        // what came back. A caller can also skip the audio entirely and post a flawless recitation.
+        //
+        // None of that makes the route wrong: practice a learner logs is worth recording. It makes
+        // it something other than measured evidence, and the difference now survives the write.
+        // `finalize_session` is the path that earns `ServerDerived`, by never taking words from a
+        // caller at all.
+        TranscriptSource::ClientReported,
         crate::auth::extract_trace_id(&headers),
     )
     .await?;
@@ -986,6 +1046,10 @@ pub async fn finalize_session(
             // would (correctly) be refused.
             model_version: None,
         },
+        // The one path that earns this. `inputs` was built from a transcript fetched
+        // server-to-server from the service holding the audio (step 2 above) — the caller named a
+        // session id and supplied no words at all.
+        TranscriptSource::ServerDerived,
         crate::auth::extract_trace_id(&headers),
     )
     .await?;
