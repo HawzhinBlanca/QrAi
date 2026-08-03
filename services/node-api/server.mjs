@@ -254,6 +254,29 @@ export function buildServer(config) {
     }
   });
 
+/**
+ * The two SQLSTATEs a caller-supplied NUL byte (U+0000) produces, depending on column type:
+ *
+ *   22021  character_not_in_repertoire  — into `text`:  invalid byte sequence for encoding "UTF8"
+ *   22P05  untranslatable_character     — into `jsonb`: unsupported Unicode escape sequence
+ *
+ * Both, not just the first. `22P05` was added to the Rust original after measuring that the SAME
+ * input produces a different code when the column is jsonb — which is why POST /v1/agent-runs with a
+ * NUL inside `sources` was the one surface still 500ing after the first fix. The port had neither.
+ *
+ * ONLY these two, deliberately. SQLSTATE class 22 is "Data Exception", but not every class-22 code
+ * is unambiguously caller-supplied: `22003` numeric_value_out_of_range is exactly how the SM-2
+ * interval overflow surfaced, and mapping it to 400 would report a SERVER bug as a client error and
+ * hide it. These two are safe because nothing in this service emits a NUL byte, so every occurrence
+ * is caller-supplied by construction.
+ */
+const SQLSTATE_NUL_BYTE = new Set(["22021", "22P05"]);
+
+/** postgres.js surfaces the SQLSTATE as `err.code`, the same string Postgres reports. */
+function isNulByteError(err) {
+  return typeof err?.code === "string" && SQLSTATE_NUL_BYTE.has(err.code);
+}
+
   app.setErrorHandler((err, _req, reply) => {
     // An extractor rejection answers in text/plain, not the JSON error body (see RejectionError).
     if (err instanceof ApiError && err.contentType) {
@@ -261,6 +284,16 @@ export function buildServer(config) {
     }
     if (err instanceof ApiError) return reply.code(err.status).send({ error: err.message });
     if (err.statusCode) return reply.code(err.statusCode).send({ error: err.message });
+    if (isNulByteError(err)) {
+      // Mirrors `impl From<sqlx::Error> for ApiError` (platform-api/src/types.rs). A fixed message,
+      // NOT the driver's text: a database error can carry table and constraint names and, on a
+      // conflict, the offending values — the 500 branch below redacts all of that, and a 400 must
+      // not become the way around it. The string is byte-identical to Rust's because the A/B
+      // compares response bodies.
+      return reply
+        .code(400)
+        .send({ error: "request contains a NUL byte (U+0000), which cannot be stored" });
+    }
     reply.code(500).send({ error: "internal error" });
   });
 

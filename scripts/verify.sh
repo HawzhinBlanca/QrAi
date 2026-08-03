@@ -128,7 +128,7 @@ if [[ "$FAST" != "yes" ]]; then
   # declares. CI pins `node-version: "22"`, which floats to the newest, so the gate was red on a
   # supported runtime and green on the one that tested it. tests/contract/strip-types.test.mjs pins
   # the flag against the imports so this cannot come back.
-  run "test: node services"       "node --experimental-strip-types --test scripts/fixture-normalize.test.mjs scripts/diff-api-fixtures.test.mjs scripts/fixture-coverage.test.mjs services/ml-inference/alignment.test.mjs services/ml-inference/marks-parity.test.mjs services/ml-inference/tajweed.test.mjs services/ml-inference/server.test.mjs services/ml-inference/session-transcript.test.mjs services/ml-inference/rate-limit.test.mjs services/ml-inference/chunk-overwrite.test.mjs services/agents/agents.test.mjs scripts/release-manifest.test.mjs scripts/release-build-evidence.test.mjs scripts/release-evidence-summary.test.mjs scripts/smoke-evidence.test.mjs scripts/smoke-database.test.mjs scripts/release-images.test.mjs tests/api-parity/coverage.test.mjs tests/node-api/ticket-vectors.test.mjs tests/node-api/authz.test.mjs tests/node-api/shell.test.mjs tests/node-api/routes-table.test.mjs tests/node-api/metrics-render.test.mjs tests/node-api/rust-json.test.mjs tests/node-api/no-secret-logging.test.mjs tests/node-api/boot-guard.test.mjs tests/contract/coverage.test.mjs tests/contract/cutover-readiness.test.mjs tests/contract/boundary-references.test.mjs tests/contract/flutter-contract.test.mjs tests/contract/enum-parity.test.mjs tests/contract/tajweed-gate-parity.test.mjs tests/contract/ml-findings-shape.test.mjs tests/contract/strip-types.test.mjs tests/contract/store-readiness.test.mjs scripts/check-apk.test.mjs tests/security/arabic-regex-escapes.test.mjs tests/i18n/registers.test.mjs tests/i18n/locale-parity.test.mjs tests/i18n/drafts.test.mjs tests/security/legacy-insecure-flag.test.mjs"
+  run "test: node services"       "node --experimental-strip-types --test scripts/fixture-normalize.test.mjs scripts/diff-api-fixtures.test.mjs scripts/fixture-coverage.test.mjs services/ml-inference/alignment.test.mjs services/ml-inference/marks-parity.test.mjs services/ml-inference/tajweed.test.mjs services/ml-inference/server.test.mjs services/ml-inference/session-transcript.test.mjs services/ml-inference/rate-limit.test.mjs services/ml-inference/chunk-overwrite.test.mjs services/agents/agents.test.mjs scripts/release-manifest.test.mjs scripts/release-build-evidence.test.mjs scripts/release-evidence-summary.test.mjs scripts/smoke-evidence.test.mjs scripts/smoke-database.test.mjs scripts/release-images.test.mjs tests/api-parity/coverage.test.mjs tests/node-api/ticket-vectors.test.mjs tests/node-api/authz.test.mjs tests/node-api/shell.test.mjs tests/node-api/routes-table.test.mjs tests/node-api/metrics-render.test.mjs tests/node-api/rust-json.test.mjs tests/node-api/no-secret-logging.test.mjs tests/node-api/boot-guard.test.mjs tests/node-api/nul-byte-is-a-400.test.mjs tests/contract/coverage.test.mjs tests/contract/cutover-readiness.test.mjs tests/contract/boundary-references.test.mjs tests/contract/flutter-contract.test.mjs tests/contract/enum-parity.test.mjs tests/contract/tajweed-gate-parity.test.mjs tests/contract/ml-findings-shape.test.mjs tests/contract/strip-types.test.mjs tests/contract/store-readiness.test.mjs scripts/check-apk.test.mjs tests/security/arabic-regex-escapes.test.mjs tests/i18n/registers.test.mjs tests/i18n/locale-parity.test.mjs tests/i18n/drafts.test.mjs tests/security/legacy-insecure-flag.test.mjs"
   # apps/mobile is NOT a pnpm workspace member, so the TS `test: ts` line above never covered it and
   # its consent/auth/audio-format helpers went unguarded (a real audioFormat bug shipped there). The
   # helpers import ONLY node builtins, so this needs no install — just Node's type-stripping to read
@@ -266,11 +266,26 @@ if [[ "$FAST" != "yes" ]]; then
     # learner-redaction mirror in services/node-api/routes/ml-proxy.mjs was, until this line, a
     # security control with no gate behind it.
     #
-    # Scoped to the ML proxy routes deliberately: those are the ones whose Node handlers hold a copy
-    # of a learner-facing rule. Widening the list is how the rest of the port earns the same proof —
-    # a route added to NODE_API_PORTED here must pass the identical assertions or this goes red.
-    run "test: api parity THROUGH the Node port" \
-      "PARITY_THROUGH_SHELL=1 NODE_API_PORTED='POST /v1/ml/tajweed-findings:predict,POST /v1/ml/alignments:predict' node --test --test-concurrency=1 tests/api-parity/ml-proxy.test.mjs"
+    # WIDENED to every portable route (was: the two ML proxy routes).
+    #
+    # The narrow version proved 2 of 36. The other 34 were ported, merged, and never once compared to
+    # the Rust original by any gate — the same shape as the gap this line was added to close, one
+    # level up. Running the full set found a real divergence on the first attempt: a caller-supplied
+    # NUL byte was a 400 naming the problem in Rust and a bare `500 internal error` in Node, across
+    # FOURTEEN surfaces, because the port never mirrored `impl From<sqlx::Error> for ApiError`.
+    #
+    # The list is READ FROM `PORTABLE` rather than written here. A hardcoded list is a second place
+    # to remember, and the one that gets forgotten is always the gate — a route added to PORTABLE
+    # would be servable in production while nothing compared it to anything.
+    run "test: api parity THROUGH the Node port (every portable route)" \
+      "PARITY_THROUGH_SHELL=1 NODE_API_PORTED=\"\$(node -e '
+         const s = require(\"fs\").readFileSync(\"services/node-api/server.mjs\", \"utf8\");
+         const m = /export const PORTABLE = \\[([^\\]]*)\\]/s.exec(s);
+         if (!m) { console.error(\"could not read PORTABLE out of server.mjs\"); process.exit(1); }
+         const keys = [...m[1].matchAll(/\"([^\"]+)\"/g)].map((x) => x[1]);
+         if (keys.length < 30) { console.error(\"PORTABLE parsed to only \" + keys.length + \" routes\"); process.exit(1); }
+         console.log(keys.join(\",\"));
+       ')\" node --test --test-concurrency=1 tests/api-parity/default.test.mjs tests/api-parity/auth-disabled.test.mjs tests/api-parity/cors.test.mjs tests/api-parity/metrics.test.mjs tests/api-parity/ml-proxy.test.mjs tests/api-parity/realtime-ticket.test.mjs tests/api-parity/db-endpoints.test.mjs tests/api-parity/proxy-endpoints.test.mjs tests/api-parity/contract-shapes.test.mjs tests/api-parity/hostile-input.test.mjs tests/api-parity/infra-parity.test.mjs tests/api-parity/quran-parity.test.mjs tests/api-parity/progress-parity.test.mjs tests/api-parity/reports-parity.test.mjs tests/api-parity/auth-token-parity.test.mjs tests/api-parity/pilot-auth-parity.test.mjs tests/api-parity/pilot-routes-parity.test.mjs tests/api-parity/sessions-parity.test.mjs tests/api-parity/session-writes-parity.test.mjs tests/api-parity/review-parity.test.mjs tests/api-parity/ml-asr-proxy-parity.test.mjs tests/api-parity/privacy-parity.test.mjs tests/api-parity/agent-write-parity.test.mjs"
   else
     say "test: platform-api integration + api parity suite"
     if [[ "$RELEASE" == "yes" ]]; then
