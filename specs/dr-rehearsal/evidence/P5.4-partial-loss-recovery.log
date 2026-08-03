@@ -1,0 +1,73 @@
+P5.4 — partial loss and recovery (the last two of the eight)
+specs/readiness-recovery-10-10/tasks.md P5.4
+
+date (UTC): 2026-08-03
+commit:     c00adba
+setup:      real realtime-gateway -> a proxy that 503s a WINDOW of chunks on EVERY attempt (so the
+            gateway's bounded retry is exhausted, not papered over) -> real ml-inference.
+            Chunks 0-2 precede the outage, 3-5 are lost, 6-11 follow it.
+
+────────────────────────────────────────────────────────────────────────────────────────────────────
+PARTIAL LOSS: the gateway behaves WELL, and says so
+
+  rejected delivery attempts : 9   = 3 chunks x 3 attempts (MAX_ATTEMPTS is honoured exactly)
+  realtime_gateway_chunks_forward_failed_total : 3
+  per-attempt logs           : WARN "ML service returned 503 ... for chunk <id> (attempt N/3)"
+  stored                     : 9/12, ids 0000 0001 0002 0006 0007 0008 0009 0010 0011
+
+  Bounded retry, an accurate counter, and a log line per attempt naming the chunk. Nothing is
+  swallowed. This is what the counter was built for and it works.
+
+RECOVERY: PASS
+
+  chunks after the outage window that were stored: 6/6
+  The stream resumed on its own with no restart and no client involvement — the failure was
+  per-chunk, not per-session, and did not poison the connection.
+
+────────────────────────────────────────────────────────────────────────────────────────────────────
+THE REAL FINDING, one layer up: the gap is observable but NOT ATTACHED TO THE SESSION
+
+  `chunks_forward_failed` is a PROCESS counter on the gateway. It says "3 chunks were lost
+  somewhere, at some point, for someone". It is not on the session, so:
+
+    - platform-api does not know this session is incomplete
+    - `recitation_sessions` records nothing about it
+    - transcription assembles the nine chunks that exist and returns a shorter transcript
+    - the aligner scores that against the FULL canonical passage
+
+  So the words the learner DID recite during the outage are recorded as words they MISSED. Same
+  outcome as the reconnect collision fixed in #323 — except there the cause was our bug, and here
+  the cause is an upstream outage the system handled correctly at every individual step.
+
+  An operator can see the loss. The learner cannot, the teacher cannot, and nothing downstream can
+  decline to score a session it has no way of knowing is incomplete.
+
+  NOT FIXED, because the right behaviour is a product decision rather than a bug fix:
+    - refuse to score a session with known gaps, and tell the learner to re-record?
+    - score it but mark the result provisional / not teacher-reviewable?
+    - record the gap on the session and let the review UI show it?
+  All three are defensible; picking one is not an engineering call. What IS clearly needed either
+  way is that the gateway's per-session loss count reaches the session record — today it exists
+  only in a process-wide metric.
+
+────────────────────────────────────────────────────────────────────────────────────────────────────
+A CORRECTION, recorded because it nearly became a false finding
+
+  The first run of this drill reported "chunks_forward_failed: (empty)" and "forward-failure logs:
+  0", which reads as a service losing audio silently. Both were MY harness: the metric is
+  `realtime_gateway_chunks_forward_failed_total` (I grepped `gateway_chunks_forward_failed`), and
+  the log lines say "ML service returned 503 ... for chunk" (I grepped for the word "forward").
+
+  That is the second time in this session a measurement blamed the product for a defect in the
+  measurement. Check the instrument before writing up the reading.
+
+────────────────────────────────────────────────────────────────────────────────────────────────────
+P5.4 IS NOW EIGHT OF EIGHT RUN — and the row still does not close.
+
+  load, burst (P5.4-load-burst.log) · reconnect (P5.4-reconnect-drill.log) · long-audio
+  (P5.4-long-audio.log) · duplicate-delivery · timeout · partial-loss, recovery (this file)
+
+  Every one of these is a measurement without a target. P5.1 has not approved SLOs, a capacity
+  model, or RTO/RPO, so none of these numbers can be called a pass or a fail — they are the inputs
+  someone needs in order to SET those targets. The row closes when there is something to compare
+  them against, and P5.7 requires an SRE to sign the evidence besides.
