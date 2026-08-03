@@ -122,6 +122,9 @@ test("tajweed-findings key order is alphabetical, and the sort has a unique tieb
   assert.equal(res.status, 200);
   if (res.body.length === 0) return;
   assert.deepEqual(Object.keys(res.body[0]), [
+    // ADR-0033: what the finding is ABOUT. Today always `canonical-text` — the analyser reads the
+    // passage's Uthmani text, so a finding is "a rule applies here", not "you recited this wrongly".
+    "analysisBasis",
     "confidence",
     "explanation",
     "id",

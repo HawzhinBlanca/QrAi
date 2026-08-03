@@ -371,7 +371,8 @@ pub async fn list_tajweed_findings(
         // Promoting the first to `teacher-reviewed` makes it learner-visible feedback (ADR-0028)
         // about a recitation nobody can show happened, and until now the queue gave a teacher no way
         // to tell the two apart.
-        "SELECT tf.id, tf.alignment_id, wa.word_id, wa.transcript_source, tf.rule, tf.severity,
+        "SELECT tf.id, tf.alignment_id, wa.word_id, wa.transcript_source, tf.analysis_basis,
+                tf.rule, tf.severity,
                 tf.confidence::float8 AS confidence, tf.explanation, tf.review_status, tf.source_refs
          FROM tajweed_findings tf
          JOIN word_alignments wa ON wa.id = tf.alignment_id
@@ -399,6 +400,21 @@ pub async fn list_tajweed_findings(
                 "transcriptSource": r
                     .try_get::<String, _>("transcript_source")
                     .unwrap_or_else(|_| "client-reported".to_owned()),
+                // `canonical-text` | `acoustic` — what the finding is ABOUT (ADR-0033).
+                //
+                // The two answer different questions and a teacher needs both. `transcriptSource`
+                // says whether the platform heard the recitation at all; `analysisBasis` says
+                // whether this judgement was derived from it. Today every finding is
+                // `canonical-text`: the analyser reads the passage's Uthmani text and detects where
+                // a rule applies, which is true of the text and identical for every learner.
+                //
+                // Accepting one promotes it to learner-visible feedback about that learner's
+                // recitation (ADR-0028). Whether that is the right thing to do with a text-derived
+                // finding is a scholar's call; this is what makes it a call rather than an
+                // assumption.
+                "analysisBasis": r
+                    .try_get::<String, _>("analysis_basis")
+                    .unwrap_or_else(|_| "canonical-text".to_owned()),
                 "rule": r.try_get::<String, _>("rule").unwrap_or_default(),
                 "severity": r.try_get::<String, _>("severity").unwrap_or_default(),
                 "confidence": r.try_get::<f64, _>("confidence").unwrap_or(0.0),

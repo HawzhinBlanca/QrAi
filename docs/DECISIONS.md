@@ -1414,3 +1414,60 @@ and it was, here, an outage.
   wording improvement.
 - Any query counting teacher reviews now sees superseded ones. `superseded_at IS NULL` is the filter
   for live reviews; the index supports it.
+
+---
+
+## ADR-0033 — A tajweed finding records whether it is about the text or about the person
+
+**Status:** Accepted · **Date:** 2026-08-03 · **Related:** ADR-0028, ADR-0030 · **Supersedes:** the first open item under ADR-0029
+
+### Context
+
+`services/ml-inference/tajweed.js`:
+
+```js
+export function analyzeAyah(ayahId, words) {
+  for (const word of words) allFindings.push(...analyzeWord(word.id, word.text));
+```
+
+`word.text` is the canonical Uthmani text of the passage. The analyser inspects no audio, no heard
+text, no timing and no pitch. What it detects is **where a rule applies in the Quran** — a fact about
+the passage, identical for every learner who ever recites it.
+
+Those results are stored in `tajweed_findings`, a table whose own documentation describes a row as
+"this word, in this recitation, was mispronounced", anchored to a `word_alignments` row as "the
+evidence that the word was heard at all", and released to a learner once a teacher accepts it
+(ADR-0028). ADR-0029 recorded this in prose — *"Redaction makes the withholding honest; it does not
+make the feature honest"* — and left it there.
+
+Nothing in the data said which of those two things a finding is. A teacher working the queue was
+being asked to decide whether to tell a child they mispronounced a word, with no way to see that the
+system had not listened to them.
+
+### Decision
+
+`tajweed_findings.analysis_basis` — `canonical-text` | `acoustic` — written as a **literal** at the
+insert, not read from the ML response. Same reasoning as `TranscriptSource::ClientReported`
+(ADR-0030): a value read from a response is one refactor away from being caller-controlled, and this
+one decides whether a teacher trusts what they are looking at. When an acoustic analyser exists,
+writing `acoustic` will be a deliberate code change with its own review.
+
+Today every row is `canonical-text`, because that is the only thing the analyser can produce. The
+column is worth having precisely then: it makes the gap legible in the data rather than only in a
+doc comment, and it puts the fact in front of the person who has to act on it. The staff queue now
+returns `analysisBasis` alongside `transcriptSource`, which answer different questions — whether the
+platform heard the recitation at all, and whether this judgement came from it.
+
+### What this does NOT decide
+
+Whether a `canonical-text` finding should be shown to a learner as feedback about their recitation.
+That is a scholar's and the owner's call (SHIP_PLAN P3.4–P3.6). `clears_learner_gate` is untouched:
+an accepted finding is still released exactly as before. This makes the question answerable; it does
+not answer it.
+
+### Known gap, not fixed here
+
+`GET /v1/teacher-review-queue` returns `findingId: ""` for a review detached by ADR-0031, with
+nothing saying why. `superseded_at` is on the row but not on the wire. Left out deliberately to keep
+this change to one subject — recorded so it is a gap someone can find, not one they have to
+rediscover.

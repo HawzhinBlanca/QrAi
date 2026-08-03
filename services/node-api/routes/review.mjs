@@ -269,7 +269,8 @@ export async function listTajweedFindings(req, reply, ctx) {
 
   const body = await ctx.db.withTenant(actor.tenantId, async (tx) => {
     const rows = await tx`
-      SELECT tf.id, tf.alignment_id, wa.word_id, tf.rule, tf.severity,
+      SELECT tf.id, tf.alignment_id, wa.word_id, wa.transcript_source, tf.analysis_basis,
+             tf.rule, tf.severity,
              tf.confidence::float8 AS confidence, tf.explanation, tf.review_status, tf.source_refs
       FROM tajweed_findings tf
       JOIN word_alignments wa ON wa.id = tf.alignment_id
@@ -282,6 +283,10 @@ export async function listTajweedFindings(req, reply, ctx) {
 
     return rows.map((r) => ({
       // json! keys, alphabetical.
+      // `canonical-text` | `acoustic` — what the finding is ABOUT (ADR-0033). Today always
+      // canonical-text: the analyser reads the passage's Uthmani text and detects where a rule
+      // applies, which is true of the text and identical for every learner.
+      analysisBasis: r.analysis_basis ?? "canonical-text",
       confidence: f64(Number(r.confidence ?? 0)),
       explanation: r.explanation ?? "",
       id: r.id ?? "",
@@ -290,6 +295,10 @@ export async function listTajweedFindings(req, reply, ctx) {
       severity: r.severity ?? "",
       // Untyped jsonb passed straight through, so BTreeMap key ordering applies.
       sources: sortKeysDeep(r.source_refs ?? []),
+      // `server-derived` | `client-reported` — whether the platform heard the recitation this
+      // finding is anchored to at all (ADR-0030). Different question from analysisBasis, and a
+      // teacher deciding whether to release the finding needs both.
+      transcriptSource: r.transcript_source ?? "client-reported",
       wordId: r.word_id ?? "",
     }));
   });
