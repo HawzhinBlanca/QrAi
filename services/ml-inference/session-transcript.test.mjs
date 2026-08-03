@@ -17,13 +17,23 @@ import { join } from "node:path";
 /** Whatever the ASR was last asked to transcribe, so the test can inspect the assembled audio. */
 let received = null;
 
+/**
+ * What the mock ASR replies with. Mutable because the two shapes are BOTH real.
+ *
+ * The default below is the openai-whisper path: word segments AND text. The Quran-fine-tuned HF
+ * checkpoint that `ASR_MODEL` defaults to in production returns `words: []` and puts the whole
+ * recitation in `text` (asr-inference/server.py: "this 2022 fine-tune lacks timestamp config").
+ * A mock that only ever spoke the first dialect is why nothing here noticed the second.
+ */
+let asrReply = { words: [{ word: "بسم" }, { word: "الله" }], text: "بسم الله" };
+
 const asr = createServer((req, res) => {
   let body = "";
   req.on("data", (c) => (body += c));
   req.on("end", () => {
     received = JSON.parse(body);
     res.writeHead(200, { "content-type": "application/json" });
-    res.end(JSON.stringify({ words: [{ word: "بسم" }, { word: "الله" }], text: "بسم الله" }));
+    res.end(JSON.stringify(asrReply));
   });
 });
 
@@ -31,12 +41,13 @@ const storage = mkdtempSync(join(tmpdir(), "ml-transcript-test-"));
 process.env.AUDIO_STORAGE_DIR = storage;
 
 let transcribeSession;
+let predictAlignment;
 
 before(async () => {
   await new Promise((resolve) => asr.listen(0, "127.0.0.1", resolve));
   // Both are read at module load, so they must be set before the import.
   process.env.ASR_SERVICE_URL = `http://127.0.0.1:${asr.address().port}`;
-  ({ transcribeSession } = await import("./server.mjs"));
+  ({ transcribeSession, predictAlignment } = await import("./server.mjs"));
 });
 
 after(() => asr.close());
@@ -214,4 +225,103 @@ test("loss off the END of a session is NOT detectable, and the test says so", as
     [],
     "a truncated session cannot be distinguished from a short one without a declared chunk total",
   );
+});
+
+test("a transcript survives an ASR that returns text but no word segments", async () => {
+  // The PRODUCTION topology. `ASR_MODEL` defaults to tarteel-ai/whisper-base-ar-quran, an HF
+  // pipeline whose reply carries the recitation in `text` with `words: []` — the checkpoint has no
+  // timestamp config, so word segments come from the separate /v1/force-align pass instead.
+  //
+  // Both readers here took `.words` and nothing else, so on the default model every server-side
+  // transcription resolved to ZERO words. finalize_session then aligned an empty transcript against
+  // the full passage and recorded every word the learner actually recited as `missed` — and since
+  // ADR-0030 that empty result is the only kind of alignment counted as measured accuracy.
+  //
+  // Nothing failed. A learner who recited perfectly was recorded as having recited nothing.
+  const t = "t-no-word-segments";
+  writeChunk(t, "learner-1", "s-hf", "c1", 0, 0x01);
+
+  const previous = asrReply;
+  asrReply = { words: [], text: "بِسْمِ ٱللَّهِ ٱلرَّحْمَٰنِ ٱلرَّحِيمِ", modelVersion: "tarteel-ai/whisper-base-ar-quran" };
+  try {
+    const out = await transcribeSession({
+      tenantId: t,
+      learnerId: "learner-1",
+      sessionId: "s-hf",
+      consent: { guardianApproved: true, externalAsrProcessing: true },
+    });
+    assert.equal(out.transcribed, true, `expected a transcript: ${JSON.stringify(out)}`);
+    assert.deepEqual(
+      out.recognizedText,
+      ["بِسْمِ", "ٱللَّهِ", "ٱلرَّحْمَٰنِ", "ٱلرَّحِيمِ"],
+      "the words are split on whitespace ONLY — every diacritic and every letter is passed " +
+        "through untouched, because this is Quranic text and normalising it is forbidden",
+    );
+  } finally {
+    asrReply = previous;
+  }
+});
+
+test("word segments still win when the ASR provides them", async () => {
+  // The other direction. Deriving words from `text` unconditionally would throw away the segment
+  // boundaries the whisper path does produce, and with them any chance of per-word timing.
+  const t = "t-word-segments-win";
+  writeChunk(t, "learner-1", "s-whisper", "c1", 0, 0x01);
+
+  const previous = asrReply;
+  // `text` deliberately disagrees with `words`: if the fallback fired anyway, the assertion below
+  // reads the wrong one and says so.
+  asrReply = { words: [{ word: "بسم" }, { word: "الله" }], text: "not the words" };
+  try {
+    const out = await transcribeSession({
+      tenantId: t,
+      learnerId: "learner-1",
+      sessionId: "s-whisper",
+      consent: { guardianApproved: true, externalAsrProcessing: true },
+    });
+    assert.deepEqual(out.recognizedText, ["بسم", "الله"]);
+  } finally {
+    asrReply = previous;
+  }
+});
+
+test("the ALIGNMENT path also survives an ASR that returns text but no word segments", async () => {
+  // `recognizedWordsFrom` has two callers and the test above only exercises one. A shared helper
+  // that half the code still bypasses is the shape of the reconnect-cursor bug: the API behaved
+  // perfectly while nothing called it.
+  //
+  // This is the web/Flutter live-analysis path rather than finalize. Same model, same empty
+  // `words`, same outcome if the text is ignored — every canonical word scored as `missed`.
+  const previous = asrReply;
+  asrReply = { words: [], text: "بِسْمِ ٱللَّهِ" };
+  try {
+    const out = await predictAlignment({
+      tenantId: "t-align-hf",
+      sessionId: "s-align-hf",
+      quranRef: { surahNumber: 1, ayahStart: 1, ayahEnd: 1, display: "Al-Fatihah 1:1" },
+      audioBase64: Buffer.from([0x01, 0x02]).toString("base64"),
+      // ALL THREE are required. `asrAllowed` is
+      // `externalAsrRequested && consent.externalAsrProcessing && consent.guardianApproved`, and the
+      // first version of this test omitted `externalAsrRequested`. The ASR was therefore never
+      // called at all, the canonical fallback ran, and the test passed — including when the fix it
+      // exists for was mutated away. A test that cannot fail is not a test.
+      externalAsrRequested: true,
+      consent: { guardianApproved: true, externalAsrProcessing: true },
+    });
+    // The mock ASR is what must have been consulted. Without this the canonical fallback would
+    // satisfy the assertion below on its own, which is exactly how the first version passed.
+    assert.deepEqual(
+      out.externalAsr,
+      { called: true, reason: "consent-granted" },
+      `the ASR was not consulted, so this test proves nothing about it`,
+    );
+    const heard = out.alignments.filter((a) => a.status !== "missed");
+    assert.ok(
+      heard.length > 0,
+      `every word was scored as missed, so the learner recited nothing as far as this service is ` +
+        `concerned: ${JSON.stringify(out.alignments.map((a) => [a.canonicalText, a.status]))}`,
+    );
+  } finally {
+    asrReply = previous;
+  }
 });
