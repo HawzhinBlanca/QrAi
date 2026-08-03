@@ -63,7 +63,7 @@ before(async () => {
 
 after(() => child?.kill());
 
-async function store({ audio, startMs }) {
+async function store({ audio, startMs, expect = 200 }) {
   const res = await fetch(`http://127.0.0.1:${PORT}/v1/audio-chunks`, {
     method: "POST",
     headers: { "content-type": "application/json", "x-ml-api-key": KEY },
@@ -78,11 +78,18 @@ async function store({ audio, startMs }) {
       audioBase64: b64(audio),
     }),
   });
-  assert.equal(res.status, 200, "storing a chunk should succeed");
+  assert.equal(res.status, expect, `expected ${expect}, got ${res.status}`);
+  return res;
+}
+
+/** The bytes actually on disk for the fixture chunk, or null. */
+function storedBytes() {
+  const p = join(storage, TENANT, "l1", "c1.bin");
+  return existsSync(p) ? readFileSync(p, "utf8") : null;
 }
 
 const overwriteWarnings = () =>
-  stderr.split("\n").filter((l) => l.includes("OVERWRITTEN")).length;
+  stderr.split("\n").filter((l) => l.includes("REFUSED: audio chunk would be overwritten")).length;
 
 test("a retry of the SAME audio is silent — it is the normal case, not an incident", async () => {
   await store({ audio: "AAAA", startMs: 0 });
@@ -94,12 +101,23 @@ test("a retry of the SAME audio is silent — it is the normal case, not an inci
   );
 });
 
-test("replacing a chunk with DIFFERENT audio is reported, with what changed", async () => {
-  await store({ audio: "ZZZZ", startMs: 5000 });
+test("replacing a chunk with DIFFERENT audio is REFUSED, and nothing is written", async () => {
+  assert.equal(storedBytes(), "AAAA", "precondition: the original audio is stored");
 
-  assert.equal(overwriteWarnings(), 1, "a learner's audio was replaced and nothing said so");
+  const res = await store({ audio: "ZZZZ", startMs: 5000, expect: 409 });
+  const body = await res.json();
+  assert.match(body.error, /refusing to replace a stored recitation/);
 
-  const line = stderr.split("\n").find((l) => l.includes("OVERWRITTEN"));
+  // The point of refusing rather than reporting: the learner's recitation is still there.
+  assert.equal(
+    storedBytes(),
+    "AAAA",
+    "the stored recitation was replaced anyway — the check must run BEFORE the write",
+  );
+
+  assert.equal(overwriteWarnings(), 1, "the refusal was silent");
+
+  const line = stderr.split("\n").find((l) => l.includes("REFUSED: audio chunk would be overwritten"));
   const entry = JSON.parse(line);
   assert.equal(entry.level, "error");
   assert.equal(entry.chunkId, "c1");
@@ -119,7 +137,7 @@ test("and it lands in the tenant's durable audit log, not only in stderr", () =>
     .split("\n")
     .filter(Boolean)
     .map((l) => JSON.parse(l))
-    .filter((e) => e.action === "audio.chunk.overwritten");
-  assert.equal(events.length, 1, "the overwrite is not in the durable audit trail");
+    .filter((e) => e.action === "audio.chunk.overwrite-refused");
+  assert.equal(events.length, 1, "the refusal is not in the durable audit trail");
   assert.equal(events[0].subjectId ?? events[0].subject_id ?? events[0].chunkId, "c1");
 });
