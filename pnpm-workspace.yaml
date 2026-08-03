@@ -16,3 +16,30 @@ minimumReleaseAgeExclude:
 # so the gate keeps its teeth. pnpm 10+ reads overrides from this file, not package.json.
 overrides:
   postcss: '>=8.5.18'
+  # 2026-08-03, same story, two more packages. Seven advisories (3 high) published upstream and
+  # turned `pnpm audit` red on every branch including main, with nothing in this repo changed.
+  #
+  #   undici    <7.29.0  — 5 advisories, transitive via apps/web > jsdom (test tooling only)
+  #   fast-uri  <3.1.5   — host confusion via backslash, transitive via ajv AND via
+  #                        fastify > @fastify/fast-json-stringify-compiler. The fastify path is
+  #                        services/node-api's RUNTIME, not test tooling, which is why this one
+  #                        is not merely CI hygiene.
+  #
+  # Both are patch bumps inside the same major, so this pins forward without a semver risk. Pinned
+  # rather than suppressed, for the reason the postcss line gives: a gate that can be silenced is
+  # not a gate.
+  # Upper bounds are load-bearing. A bare '>=7.29.0' resolved undici to 8.9.0 — a MAJOR bump, taken
+  # to satisfy a patch advisory. Pinning forward must not become an unreviewed upgrade.
+  undici: '>=7.29.0 <8'
+  # fast-uri needs TWO pins because two majors are in the tree and a single range cannot express it:
+  # a bare '>=3.1.5' is already satisfied by the vulnerable 4.1.1 and moves nothing, while forcing
+  # all of it to '>=4.1.2' would hand ajv (which asks for ^3) a major it never agreed to.
+  # Selected by VERSION, not by parent. Pinning `@fastify/fast-json-stringify-compiler>fast-uri`
+  # left 4.1.1 in the tree because a second parent — @fastify/ajv-compiler — pulls it too, and
+  # chasing parents means finding them all and finding them again next release.
+  fast-uri@3: '>=3.1.5'
+  fast-uri@4: '>=4.1.2'
+  # Plus the exact path `pnpm audit` names. The version selectors above moved most of the tree but
+  # left the root ajv's copy at 4.1.1, so both forms are here: the selectors catch parents nobody has
+  # enumerated, this catches the one the advisory actually points at.
+  ajv>fast-uri: '>=4.1.2'
