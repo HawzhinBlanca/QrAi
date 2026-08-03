@@ -173,7 +173,9 @@ pub async fn create_teacher_review(
         id: review_id,
         teacher_id: actor.user_id.clone(),
         tenant_id: actor.tenant_id,
-        finding_id: req.finding_id,
+        // Freshly written, so it is about a live finding by construction.
+        finding_id: Some(req.finding_id),
+        superseded_at: None,
         decision: req.decision,
         note: req.note,
         audit_event_id: audit_id,
@@ -191,7 +193,8 @@ pub async fn list_teacher_review_queue(
     let mut tx = crate::begin_tenant_tx(&state.pool, &actor.tenant_id).await?;
 
     let rows = sqlx::query(
-        "SELECT id, tenant_id, finding_id, teacher_id, decision, note, audit_event_id
+        "SELECT id, tenant_id, finding_id, teacher_id, decision, note, audit_event_id,
+                to_char(superseded_at AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"') AS superseded_at
          FROM teacher_reviews WHERE tenant_id = $1 ORDER BY created_at DESC, id LIMIT 200",
     )
     .bind(&actor.tenant_id)
@@ -211,7 +214,10 @@ pub async fn list_teacher_review_queue(
             TeacherReview {
                 id: r.try_get("id").unwrap_or_default(),
                 tenant_id: r.try_get("tenant_id").unwrap_or_default(),
-                finding_id: r.try_get("finding_id").unwrap_or_default(),
+                // NULL is the answer, not a failure to read one: a detached review genuinely has
+                // no finding. `unwrap_or_default()` on a String turned that into `""`.
+                finding_id: r.try_get("finding_id").ok().flatten(),
+                superseded_at: r.try_get("superseded_at").ok().flatten(),
                 teacher_id: r.try_get("teacher_id").unwrap_or_default(),
                 decision,
                 note: r.try_get("note").unwrap_or_default(),

@@ -334,16 +334,22 @@ components:
 
     TeacherReview:
       type: object
-      required: [id, tenantId, findingId, teacherId, decision, note, auditEventId]
+      required: [id, tenantId, findingId, teacherId, decision, note, supersededAt, auditEventId]
       properties:
         id: { type: string, minLength: 1 }
         tenantId: { type: string, minLength: 1 }
-        findingId: { type: string, minLength: 1 }
+        # NULLABLE since ADR-0031. A re-record DETACHES a review instead of deleting it, so a
+        # surviving review can legitimately have no finding. This said `minLength: 1` while the
+        # queue mapped the NULL to `""` — every detached review was a response this schema forbids.
+        findingId: { type: [string, "null"] }
         # ALWAYS the acting user — review.rs ignores a caller-supplied teacherId. Asserted in
         # tests/api-parity/db-endpoints.test.mjs.
         teacherId: { type: string, minLength: 1 }
         decision: { type: string, enum: [accepted, rejected, edited] }
         note: { type: string }
+        # RFC3339 when a re-record superseded this review, null while it is about a live finding.
+        # Without it a reader sees a review pointing at no finding and nothing saying why.
+        supersededAt: { type: [string, "null"] }
         auditEventId: { type: string, minLength: 1 }
       additionalProperties: false
 

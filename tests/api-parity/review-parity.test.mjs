@@ -309,9 +309,14 @@ test("a teacher review is attributed to the caller, and needs a REAL finding", a
     "teacherId",
     "decision",
     "note",
+    // ADR-0031: null while the review is about a live finding, an RFC3339 stamp once a re-record
+    // has detached it. Declaration order — serde emits the struct in it and this compares bytes.
+    "supersededAt",
     "auditEventId",
   ]);
   assert.notEqual(res.body.teacherId, "definitely-not-me");
+  assert.equal(res.body.supersededAt, null, "a review written a moment ago is not superseded");
+  assert.equal(res.body.findingId, findingId, "a live review names its finding");
 
   const [row] = await queryJson("SELECT teacher_id FROM teacher_reviews WHERE id = $1", [res.body.id]);
   assert.equal(row.teacher_id, res.body.teacherId);

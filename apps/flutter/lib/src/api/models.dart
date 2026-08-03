@@ -355,7 +355,7 @@ enum TeacherDecision {
   String get wire => name;
 }
 
-/// `POST /v1/teacher-reviews` response.
+/// `POST /v1/teacher-reviews` response, and a row of `GET /v1/teacher-review-queue`.
 class TeacherReview {
   const TeacherReview({
     required this.id,
@@ -363,20 +363,29 @@ class TeacherReview {
     required this.teacherId,
     required this.decision,
     required this.note,
+    required this.supersededAt,
     required this.auditEventId,
   });
 
   factory TeacherReview.fromJson(Map<String, dynamic> json) => TeacherReview(
         id: _str(json, 'id'),
-        findingId: _str(json, 'findingId'),
+        // NULLABLE, and read with the nullable helper for the reason F-7 exists: `_str` THROWS on a
+        // null, so a queue row for a superseded review would crash this client at parse time. That
+        // is the same defect as the Surah fields — a contract that says non-null about something
+        // that can be null, and a Dart client that believes it.
+        findingId: _strOrNull(json, 'findingId'),
         teacherId: _str(json, 'teacherId'),
         decision: _str(json, 'decision'),
         note: _str(json, 'note'),
+        supersededAt: _strOrNull(json, 'supersededAt'),
         auditEventId: _str(json, 'auditEventId'),
       );
 
   final String id;
-  final String findingId;
+
+  /// `null` once a re-record has detached this review from its finding (ADR-0031). The review, its
+  /// author and its decision survive; the finding it was about does not.
+  final String? findingId;
 
   /// The AUTHENTICATED author, decided server-side. `create_teacher_review` ignores the
   /// `teacherId` the client sends — trusting it once let a teacher attribute a review to somebody
@@ -387,6 +396,10 @@ class TeacherReview {
   /// recorded, and a value the client's enum does not know about must still be displayable.
   final String decision;
   final String note;
+
+  /// When a re-record superseded this review, or `null` while it is still about a live finding.
+  /// A detached review with no timestamp would be indistinguishable from a review of nothing.
+  final String? supersededAt;
 
   /// Every review writes an audit event. Surfacing the id is what lets a decision be traced back.
   final String auditEventId;

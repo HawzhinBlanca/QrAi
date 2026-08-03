@@ -1446,6 +1446,39 @@ async fn teacher_review_author_is_actor_and_realignment_cascades() {
         snapshot["confidence"].is_number(),
         "the snapshot lost `confidence`: {snapshot}"
     );
+
+    // (5) And a reader of the QUEUE can tell what happened to it.
+    //
+    // ADR-0031 preserved the row and stopped there. The queue then mapped the released
+    // `finding_id` NULL to `""` and said nothing about `superseded_at`, so a staff reader saw a
+    // review pointing at no finding with no explanation — the same "a teacher rejected something"
+    // gap, one level up at the API. `""` also violated this endpoint's own contract, which declared
+    // `findingId` with `minLength: 1`.
+    let queue = send_json(
+        &router,
+        Method::GET,
+        "/v1/teacher-review-queue",
+        Some("hikmah-pilot-erbil"),
+        Some("teacher"),
+        json!({}),
+    )
+    .await;
+    assert_eq!(queue.status(), StatusCode::OK);
+    let rows: Vec<Value> = read_json(queue).await;
+    let row = rows
+        .iter()
+        .find(|r| r["id"] == json!(review_id))
+        .unwrap_or_else(|| panic!("the detached review vanished from the queue: {rows:?}"));
+
+    assert_eq!(
+        row["findingId"],
+        Value::Null,
+        "a detached review must report NO finding, not the empty string: {row}"
+    );
+    assert!(
+        row["supersededAt"].is_string(),
+        "nothing on the wire says why this review has no finding: {row}"
+    );
 }
 
 /// Spawn a throwaway HTTP server that impersonates the ML inference service's audio-erasure

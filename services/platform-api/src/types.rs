@@ -238,10 +238,21 @@ pub struct TeacherReviewRequest {
 pub struct TeacherReview {
     pub id: String,
     pub tenant_id: String,
-    pub finding_id: String,
+    /// `None` once the finding is gone.
+    ///
+    /// A re-record detaches this review rather than deleting it (ADR-0031), which released the
+    /// column to NULL. The wire type followed a step late: the queue mapped that NULL to `""` and
+    /// the contract said `minLength: 1`, so every detached review was a response the API's own
+    /// schema forbids — and `""` reads as "the finding is the empty string", not "there isn't one".
+    pub finding_id: Option<String>,
     pub teacher_id: String,
     pub decision: TeacherDecision,
     pub note: String,
+    /// When a re-record superseded this review, or `None` while it is still about a live finding.
+    ///
+    /// Without it a reader sees a review pointing at no finding and nothing saying why — the same
+    /// "a teacher rejected something" gap ADR-0031 closed at the row level, reappearing at the API.
+    pub superseded_at: Option<String>,
     pub audit_event_id: String,
 }
 
