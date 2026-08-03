@@ -1059,14 +1059,45 @@ async function transcribeSession(requestBody) {
     .sort((a, b) => (a.startMs ?? 0) - (b.startMs ?? 0));
 
   const parts = [];
+  const present = [];
   for (const meta of chunks) {
     const bin = join(dir, `${meta.chunkId}.bin`);
     // A chunk whose bytes are gone (erased, or never stored) is SKIPPED rather than treated as
     // silence: inserting nothing is more honest than inserting a gap the learner did not leave.
-    if (existsSync(bin)) parts.push(readFileSync(bin));
+    if (existsSync(bin)) {
+      parts.push(readFileSync(bin));
+      present.push(meta.chunkId);
+    }
+  }
+
+  // What ISN'T here. Skipping a missing chunk silently is honest about the audio and dishonest
+  // about the session: the transcript comes out short, the aligner scores it against the FULL
+  // canonical passage, and words the learner DID recite get recorded as words they missed. That is
+  // the same wrong answer the reconnect collision produced, arriving from an upstream outage
+  // instead of from a bug — and measured in specs/dr-rehearsal/evidence/P5.4-partial-loss-recovery.log.
+  //
+  // The gateway mints `{session}-ws-{NNNN}` from a per-session monotonic cursor, so a hole in that
+  // run is a chunk that was accepted and never stored. No new endpoint and no cross-service call —
+  // it is derivable from what is already on disk, which also means it catches loss from ANY cause
+  // (forward failure, a crashed writer, a bad disk), not only the ones the gateway knew about.
+  const missingChunkIds = interiorSequenceGaps(present);
+  if (missingChunkIds.length > 0) {
+    log("warn", "session is missing chunks that were accepted upstream", {
+      tenantId,
+      sessionId,
+      traceId,
+      storedChunks: present.length,
+      missingChunkIds,
+    });
   }
   if (parts.length === 0) {
-    return { transcribed: false, reason: "no-audio", recognizedText: [], chunkCount: chunks.length };
+    return {
+      transcribed: false,
+      reason: "no-audio",
+      recognizedText: [],
+      chunkCount: chunks.length,
+      missingChunkIds,
+    };
   }
 
   const sampleRate = chunks[0]?.sampleRate ?? 16000;
@@ -1086,7 +1117,47 @@ async function transcribeSession(requestBody) {
     recognizedText: (asr.words ?? []).map((w) => w.word),
     chunkCount: parts.length,
     sampleRate,
+    // Reported even when empty, so a caller can tell "no gaps" from "this build does not check".
+    missingChunkIds,
   };
+}
+
+/**
+ * Sequence numbers missing from the INTERIOR of a session's chunk ids.
+ *
+ * Ids are `{session}-ws-{NNNN}` with a per-session monotonic cursor, so 0,1,2,6,7 means 3,4,5 were
+ * accepted and never stored.
+ *
+ * INTERIOR only, and that limit is not a detail: the run has no known upper bound, so chunks lost
+ * off the END of a session are invisible here. A recitation truncated by an outage in its last
+ * seconds still looks complete. Closing that needs the client or the gateway to declare how many
+ * chunks a session should have — which is a protocol change, not a computation.
+ *
+ * Ids that do not match the pattern are ignored rather than guessed at; a session whose chunks came
+ * from somewhere else simply reports no gaps.
+ */
+function interiorSequenceGaps(chunkIds) {
+  const seqs = [];
+  let prefix = null;
+  let width = 0;
+  for (const id of chunkIds) {
+    const m = /^(.*-ws-)(\d+)$/.exec(id ?? "");
+    if (!m) continue;
+    prefix ??= m[1];
+    if (m[1] !== prefix) continue;
+    seqs.push(Number(m[2]));
+    // From the id TEXT, not from the number: deriving it from the value pads `11` to "11" and would
+    // report `-ws-11` for an id that is actually `-ws-0011`.
+    width = Math.max(width, m[2].length);
+  }
+  if (seqs.length < 2) return [];
+
+  seqs.sort((a, b) => a - b);
+  const missing = [];
+  for (let n = seqs[0] + 1; n < seqs.at(-1); n++) {
+    if (!seqs.includes(n)) missing.push(`${prefix}${String(n).padStart(width, "0")}`);
+  }
+  return missing;
 }
 
 // === Router ===
