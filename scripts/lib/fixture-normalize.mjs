@@ -44,8 +44,8 @@ const PREFIXED_UUID_RE = /^(.+)-([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}
 /** Three base64url segments. */
 const JWT_RE = /^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/;
 const ISO8601_RE = /^\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}(\.\d+)?(Z|[+-]\d{2}:?\d{2})?$/;
-/** `rt_v1.<session>.<tenant>.<learner>.<bool>.<exp>.<nonce>.<sig>` — the realtime ticket. */
-const RT_TICKET_RE = /^rt_v1\./;
+/** `rt_v2.<session>.<tenant>.<learner>.<bool>.<retention>.<exp>.<nonce>.<sig>` — the realtime ticket. */
+const RT_TICKET_RE = /^rt_v2\./;
 
 /**
  * Field names whose values are SERVER-GENERATED and therefore vary per run.

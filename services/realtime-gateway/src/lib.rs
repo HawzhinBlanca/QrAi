@@ -867,6 +867,10 @@ async fn validate_origin(
 enum TicketCheckOutcome {
     Accepted {
         learner_id: String,
+        /// The learner's stored retention choice, signed into the ticket by platform-api. The
+        /// gateway never interprets it — it forwards it to ml-inference, which owns the TTL. This
+        /// service has no database, so the ticket is the ONLY path this answer can travel.
+        audio_retention: String,
         trace_id: Option<String>,
     },
     Rejected(StatusCode),
@@ -970,6 +974,7 @@ async fn check_ticket(
 
     TicketCheckOutcome::Accepted {
         learner_id: claims.learner_id,
+        audio_retention: claims.audio_retention,
         trace_id,
     }
 }
@@ -984,6 +989,7 @@ async fn audio_ws(
         TicketCheckOutcome::Rejected(status) => status.into_response(),
         TicketCheckOutcome::Accepted {
             learner_id,
+            audio_retention,
             trace_id,
         } => upgrade
             // G1 — stop absurd frames at the TRANSPORT rather than assembling them first. Without
@@ -992,7 +998,14 @@ async fn audio_ws(
             .max_frame_size(MAX_WS_FRAME_BYTES)
             .max_message_size(MAX_WS_FRAME_BYTES)
             .on_upgrade(move |socket| {
-                handle_audio_socket(socket, session_id, learner_id, trace_id, state)
+                handle_audio_socket(
+                    socket,
+                    session_id,
+                    learner_id,
+                    audio_retention,
+                    trace_id,
+                    state,
+                )
             })
             .into_response(),
     }
@@ -1062,10 +1075,40 @@ fn unix_now_seconds() -> u64 {
         .unwrap_or_default()
 }
 
+/// The `POST /v1/audio-chunks` body the gateway sends ml-inference for one chunk.
+///
+/// A free function rather than an inline `json!` inside the forwarding task so it can be asserted
+/// directly. That matters most for `audioRetention`: this service holds no database, so what it puts
+/// here is the ONLY thing telling ml-inference how long a learner agreed their recorded voice may be
+/// kept. A missing field is not a missing field — ml-inference reads `?? "discard"` and deletes the
+/// recording an hour later, which is indistinguishable from working.
+fn chunk_forward_body(
+    chunk: &AudioChunk,
+    tenant_id: &str,
+    learner_id: &str,
+    audio_retention: &str,
+    trace_id: Option<&str>,
+) -> serde_json::Value {
+    serde_json::json!({
+        "tenantId": tenant_id,
+        "learnerId": learner_id,
+        "sessionId": chunk.session_id,
+        "chunkId": chunk.chunk_id,
+        "sampleRate": chunk.sample_rate,
+        "startMs": chunk.start_ms,
+        "endMs": chunk.end_ms,
+        "audioBase64": base64_encode(&chunk.bytes),
+        "audioSize": chunk.bytes.len(),
+        "audioRetention": audio_retention,
+        "traceId": trace_id,
+    })
+}
+
 async fn handle_audio_socket(
     mut socket: WebSocket,
     session_id: String,
     learner_id: String,
+    audio_retention: String,
     trace_id: Option<String>,
     state: GatewayServerState,
 ) {
@@ -1102,22 +1145,14 @@ async fn handle_audio_socket(
         let client = state.http_client.clone();
         while let Some(chunk) = reader.recv().await {
             let chunk_id = chunk.chunk_id.clone();
-            let session_id = chunk.session_id.clone();
             let url = format!("{}/v1/audio-chunks", ml_url);
-            // Encode actual audio bytes as base64
-            let audio_base64 = base64_encode(&chunk.bytes);
-            let body = serde_json::json!({
-                "tenantId": tenant_id,
-                "learnerId": learner_id,
-                "sessionId": session_id,
-                "chunkId": chunk_id,
-                "sampleRate": chunk.sample_rate,
-                "startMs": chunk.start_ms,
-                "endMs": chunk.end_ms,
-                "audioBase64": audio_base64,
-                "audioSize": chunk.bytes.len(),
-                "traceId": ml_trace,
-            });
+            let body = chunk_forward_body(
+                &chunk,
+                &tenant_id,
+                &learner_id,
+                &audio_retention,
+                ml_trace.as_deref(),
+            );
             // Bounded retry: a transient ML blip (connection error / 5xx) shouldn't silently lose the
             // chunk. A 4xx is a permanent rejection (bad body) — don't hammer it. On final failure,
             // record the gap in metrics so a lossy session is observable, not just a warn line.
@@ -1284,7 +1319,7 @@ mod tests {
     use super::{
         AudioChunk, GatewayError, GatewayMetrics, GatewayServerConfig, GatewayServerState,
         MAX_CHUNK_BYTES, MAX_TICKET_LIFETIME_SECONDS, RealtimeGateway, TicketCheckOutcome,
-        TicketDedup, TicketError, check_ticket, evict_expired, gateway_router,
+        TicketDedup, TicketError, check_ticket, chunk_forward_body, evict_expired, gateway_router,
         gateway_router_with_rate_limit, issue_realtime_ticket, metrics_access_allowed,
         render_prometheus, ticket_hash, unix_now_seconds, validate_realtime_ticket,
     };
@@ -1410,6 +1445,7 @@ mod tests {
             "tenant-1",
             "learner-1",
             true,
+            "discard",
             2_000,
             "nonce-1",
             secret,
@@ -1942,6 +1978,7 @@ mod tests {
                     tenant_id,
                     "learner-1",
                     false,
+                    "discard",
                     expires_at,
                     nonce,
                     secret,
@@ -2011,6 +2048,7 @@ mod tests {
             tenant_id,
             "learner-1",
             false,
+            "discard",
             unix_now_seconds() + 300,
             "nonce-1",
             secret,
@@ -2022,13 +2060,119 @@ mod tests {
         match check_ticket(&state, "session-1", &query).await {
             TicketCheckOutcome::Accepted {
                 learner_id,
+                audio_retention,
                 trace_id,
             } => {
                 assert_eq!(learner_id, "learner-1");
+                assert_eq!(audio_retention, "discard");
                 assert_eq!(trace_id.as_deref(), Some("trace-abc"));
             }
             TicketCheckOutcome::Rejected(status) => {
                 panic!("expected a valid ticket to be accepted, got {status}")
+            }
+        }
+    }
+
+    fn a_chunk() -> AudioChunk {
+        AudioChunk {
+            session_id: "session-1".to_owned(),
+            chunk_id: "session-1-ws-0001".to_owned(),
+            start_ms: 0,
+            end_ms: 480,
+            sample_rate: 16_000,
+            bytes: vec![1, 2, 3, 4],
+        }
+    }
+
+    /// The bug this whole change exists to fix, stated as a test.
+    ///
+    /// Before it, the forwarded body simply had no `audioRetention` key. ml-inference's
+    /// `requestBody.audioRetention ?? "discard"` filled the hole, wrote "discard" into every chunk's
+    /// .meta.json, and its eviction sweep deleted a learner's recording an hour later — including a
+    /// learner who had chosen "teacher-review" and whose teacher would find nothing. Nothing logged
+    /// an error; the pipeline was working exactly as written.
+    #[test]
+    fn the_forwarded_chunk_body_carries_the_learners_retention_choice() {
+        for retention in ["discard", "teacher-review", "training-opt-in"] {
+            let body = chunk_forward_body(&a_chunk(), "tenant-1", "learner-1", retention, None);
+            assert_eq!(
+                body["audioRetention"],
+                serde_json::json!(retention),
+                "ml-inference decides how long a child's recorded voice is kept from this field"
+            );
+        }
+    }
+
+    /// `?? "discard"` downstream means an ABSENT field and a "discard" field are indistinguishable
+    /// once they arrive. The difference has to be caught here, on the sending side, or not at all.
+    #[test]
+    fn the_forwarded_chunk_body_never_simply_omits_retention() {
+        let body = chunk_forward_body(&a_chunk(), "tenant-1", "learner-1", "teacher-review", None);
+        let obj = body.as_object().expect("the body is a JSON object");
+        assert!(
+            obj.contains_key("audioRetention"),
+            "the key is missing, which ml-inference silently reads as 'discard' — the exact failure \
+             this function was extracted to make visible"
+        );
+        // The rest of the contract, so a refactor cannot drop a field this test does not name.
+        for key in [
+            "tenantId",
+            "learnerId",
+            "sessionId",
+            "chunkId",
+            "sampleRate",
+            "startMs",
+            "endMs",
+            "audioBase64",
+            "audioSize",
+            "audioRetention",
+            "traceId",
+        ] {
+            assert!(obj.contains_key(key), "the ML chunk body lost `{key}`");
+        }
+        assert_eq!(
+            obj.len(),
+            11,
+            "an unexpected field joined the ML chunk body"
+        );
+    }
+
+    #[tokio::test]
+    async fn the_accepted_outcome_carries_the_retention_the_ticket_was_signed_with() {
+        // Not the same claim as the test above, which would still pass if `check_ticket` hardcoded
+        // "discard" — the value it happens to use. This one signs a DIFFERENT choice and requires it
+        // to survive: a learner who agreed to keep their recording for a teacher must not have that
+        // silently rewritten into the one-hour default somewhere between the ticket and the chunk.
+        let secret = "retention-secret";
+        let tenant_id = "tenant-retention";
+        for retention in ["discard", "teacher-review", "training-opt-in"] {
+            let state = state_for_ticket_tests(GatewayServerConfig {
+                ticket_secret: secret.to_owned(),
+                tenant_id: tenant_id.to_owned(),
+                ..GatewayServerConfig::default()
+            });
+            let ticket = issue_realtime_ticket(
+                "session-1",
+                tenant_id,
+                "learner-1",
+                false,
+                retention,
+                unix_now_seconds() + 300,
+                // A fresh nonce per iteration: the same ticket twice is a replay, and the
+                // single-use check would reject the second one for the wrong reason.
+                &format!("nonce-{retention}"),
+                secret,
+            );
+            let mut query = HashMap::new();
+            query.insert("ticket".to_owned(), ticket);
+
+            match check_ticket(&state, "session-1", &query).await {
+                TicketCheckOutcome::Accepted {
+                    audio_retention, ..
+                } => assert_eq!(audio_retention, retention),
+                TicketCheckOutcome::Rejected(status) => {
+                    panic!("expected retention '{retention}' to be accepted, got {status}")
+                }
             }
         }
     }
@@ -2060,6 +2204,7 @@ mod tests {
             "tenant-someone-else",
             "learner-1",
             false,
+            "discard",
             unix_now_seconds() + 300,
             "nonce-1",
             secret,
@@ -2095,6 +2240,7 @@ mod tests {
             tenant_id,
             "learner-1",
             false,
+            "discard",
             unix_now_seconds() + 300,
             "nonce-1",
             secret,
@@ -2149,6 +2295,7 @@ mod tests {
             tenant_id,
             "learner-1",
             false,
+            "discard",
             unix_now_seconds() + 300,
             "nonce-1",
             secret,

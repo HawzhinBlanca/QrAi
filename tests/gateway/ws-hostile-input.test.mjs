@@ -115,6 +115,7 @@ const validTicket = (over = {}) =>
       tenantId: TENANT,
       learnerId: LEARNER,
       externalAsrProcessing: false,
+      audioRetention: "discard",
       expiresAtUnixSeconds: Math.floor(Date.now() / 1000) + 300,
       nonce: newNonce(),
       ...over,
@@ -184,15 +185,21 @@ test("a malformed ticket never reaches the upgrade", async () => {
   const cases = [
     ["empty", ""],
     ["wrong prefix", "hello"],
-    ["too few parts", "rt_v1.a.b"],
+    ["too few parts", "rt_v2.a.b"],
     ["too many parts", `${validTicket()}.extra.parts`],
-    ["100 000 characters", `rt_v1.${"x".repeat(100_000)}`],
-    ["a NUL byte", `rt_v1.a.b.c.true.1.n.${NUL}`],
-    ["negative expiry", `rt_v1.${SESSION}.${TENANT}.${LEARNER}.false.-1.n.${signed}`],
-    ["non-numeric expiry", `rt_v1.${SESSION}.${TENANT}.${LEARNER}.false.abc.n.${signed}`],
-    ["non-boolean consent", `rt_v1.${SESSION}.${TENANT}.${LEARNER}.maybe.${now + 300}.n.${signed}`],
-    ["short signature", `rt_v1.${SESSION}.${TENANT}.${LEARNER}.false.${now + 300}.n.ab`],
-    ["non-hex signature", `rt_v1.${SESSION}.${TENANT}.${LEARNER}.false.${now + 300}.n.${"z".repeat(64)}`],
+    ["100 000 characters", `rt_v2.${"x".repeat(100_000)}`],
+    ["a NUL byte", `rt_v2.a.b.c.true.discard.1.n.${NUL}`],
+    ["negative expiry", `rt_v2.${SESSION}.${TENANT}.${LEARNER}.false.discard.-1.n.${signed}`],
+    ["non-numeric expiry", `rt_v2.${SESSION}.${TENANT}.${LEARNER}.false.discard.abc.n.${signed}`],
+    ["non-boolean consent", `rt_v2.${SESSION}.${TENANT}.${LEARNER}.maybe.discard.${now + 300}.n.${signed}`],
+    ["blank retention", `rt_v2.${SESSION}.${TENANT}.${LEARNER}.false..${now + 300}.n.${signed}`],
+    ["short signature", `rt_v2.${SESSION}.${TENANT}.${LEARNER}.false.discard.${now + 300}.n.ab`],
+    ["non-hex signature", `rt_v2.${SESSION}.${TENANT}.${LEARNER}.false.discard.${now + 300}.n.${"z".repeat(64)}`],
+    // A ticket from a platform-api that has not been upgraded yet. It must be REFUSED, not read one
+    // field out of alignment — which would silently take the EXPIRY as the retention choice.
+    // Every case above carries the current version tag on purpose: leave them at rt_v1 and the
+    // gateway rejects them all on the prefix, so nothing below would actually be tested.
+    ["a pre-retention v1 ticket", `rt_v1.${SESSION}.${TENANT}.${LEARNER}.false.${now + 300}.n.${signed}`],
     // Validly SIGNED but for another session/tenant — the interesting half, because the signature
     // passes and only the binding check refuses it.
     ["another tenant", validTicket({ tenantId: "tenant-somebody-else" })],

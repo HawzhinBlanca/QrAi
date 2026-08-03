@@ -338,10 +338,15 @@ pub async fn create_realtime_ticket(
 
     let mut tx = crate::begin_tenant_tx(&state.pool, &actor.tenant_id).await?;
 
+    // `audio_retention` is joined from the session's OWN consent record, exactly like
+    // `external_processing_allowed` above it and for the same reason: it is the learner's stored
+    // answer, and the request body has no say in it. The gateway is the only thing that can tell
+    // ml-inference how long this recording may be kept, and the ticket is the only channel it has.
     let row = sqlx::query(
-        "SELECT id, tenant_id, learner_id, external_processing_allowed
-         FROM recitation_sessions
-         WHERE id = $1 AND tenant_id = $2",
+        "SELECT s.id, s.tenant_id, s.learner_id, s.external_processing_allowed, c.audio_retention
+         FROM recitation_sessions s
+         JOIN consent_records c ON c.id = s.consent_record_id
+         WHERE s.id = $1 AND s.tenant_id = $2",
     )
     .bind(&req.session_id)
     .bind(&actor.tenant_id)
@@ -352,6 +357,7 @@ pub async fn create_realtime_ticket(
     let session_id: String = row.try_get("id")?;
     let learner_id: String = row.try_get("learner_id")?;
     let external_asr: bool = row.try_get("external_processing_allowed")?;
+    let audio_retention: String = row.try_get("audio_retention")?;
 
     actor.require_self_or_any(&learner_id, &[ActorRole::Admin, ActorRole::Ops])?;
 
@@ -378,6 +384,7 @@ pub async fn create_realtime_ticket(
         &actor.tenant_id,
         &learner_id,
         external_asr,
+        &audio_retention,
         expires_at,
         &nonce,
         &crate::realtime_ticket_secret(),

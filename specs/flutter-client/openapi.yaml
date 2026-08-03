@@ -211,8 +211,11 @@ components:
           minItems: 1
           items: { type: integer, enum: [16000, 24000, 48000] }
         externalAsrProcessing: { type: boolean }
-        # rt_v1.{session}.{tenant}.{learner}.{bool}.{expiry}.{nonce}.{hex hmac-sha256}
-        token: { type: string, pattern: '^rt_v1\.[^.]+\.[^.]+\.[^.]+\.(true|false)\.\d+\.[^.]+\.[0-9a-f]{64}$' }
+        # rt_v2.{session}.{tenant}.{learner}.{bool}.{audioRetention}.{expiry}.{nonce}.{hex hmac-sha256}
+        # audioRetention joined the payload on 2026-08-03: the gateway has no database, so the ticket
+        # is the only way a learner's retention choice can reach ml-inference, which decides how long
+        # the recording is kept. Field count 8 -> 9, hence the version bump.
+        token: { type: string, pattern: '^rt_v2\.[^.]+\.[^.]+\.[^.]+\.(true|false)\.[^.]+\.\d+\.[^.]+\.[0-9a-f]{64}$' }
         auditEventId: { type: string, minLength: 1 }
       additionalProperties: false
 

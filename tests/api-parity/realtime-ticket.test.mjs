@@ -94,19 +94,49 @@ test("a minted ticket carries every contractual field", async () => {
   assert.match(res.body.expiresAt, /^\d+$/, "expiresAt is unix seconds as a string, not RFC3339");
 });
 
-test("the token is a well-formed rt_v1 ticket whose fields match the response", async () => {
+test("the token is a well-formed rt_v2 ticket whose fields match the response", async () => {
   const sessionId = await createSession("learner-1");
   const { body } = await mint(sessionId);
   const parts = body.token.split(".");
-  assert.equal(parts.length, 8);
-  const [version, session, tenant, learner, ext, expires] = parts;
-  assert.equal(version, "rt_v1");
+  assert.equal(parts.length, 9);
+  const [version, session, tenant, learner, ext, retention, expires] = parts;
+  assert.equal(version, "rt_v2");
   assert.equal(session, sessionId);
   assert.equal(tenant, TENANT);
   assert.equal(learner, "learner-1");
   assert.equal(ext, String(body.externalAsrProcessing), "the token must agree with the JSON body");
+  assert.equal(retention, "discard", "the session above consented to `discard`");
   assert.equal(expires, body.expiresAt);
-  assert.match(parts[7], /^[0-9a-f]{64}$/, "signature is lowercase hex HMAC-SHA256");
+  assert.match(parts[8], /^[0-9a-f]{64}$/, "signature is lowercase hex HMAC-SHA256");
+});
+
+test("audioRetention in the token is the SESSION's stored consent", async () => {
+  // The gateway has no database. Whatever is in this field is what ml-inference uses to decide how
+  // long a learner's recorded voice is kept — "discard" deletes it in an hour, "teacher-review" in
+  // seven days, "training-opt-in" never. So it has to come from the consent record written when the
+  // session was created, exactly like `externalAsrProcessing` below.
+  //
+  // Before this field existed the gateway forwarded no retention at all and ml-inference defaulted
+  // every chunk to "discard": a learner who chose to keep their recitation for their teacher had it
+  // deleted an hour later, silently.
+  for (const choice of ["discard", "teacher-review", "training-opt-in"]) {
+    const sessionId = await createSession("learner-1", { audioRetention: choice });
+    const { body } = await mint(sessionId);
+    assert.equal(
+      body.token.split(".")[5],
+      choice,
+      `a session consented to '${choice}' must mint a ticket carrying it`,
+    );
+  }
+});
+
+test("a client cannot ask for a retention the session did not consent to", async () => {
+  // The mint request body has no say. A learner who chose "discard" must not be able to talk the
+  // server into a ticket that keeps their audio for training — nor the reverse, which would silently
+  // discard a recording a teacher was waiting for.
+  const sessionId = await createSession("learner-1", { audioRetention: "discard" });
+  const { body } = await mint(sessionId, { body: { audioRetention: "training-opt-in" } });
+  assert.equal(body.token.split(".")[5], "discard", "the request body overrode stored consent");
 });
 
 // --- consent, which the ticket carries to the gateway ---

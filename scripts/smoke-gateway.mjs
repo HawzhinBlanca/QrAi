@@ -1,4 +1,6 @@
-import { createHmac, randomUUID } from "node:crypto";
+import { randomUUID } from "node:crypto";
+
+import { issueRealtimeTicket } from "../services/node-api/lib/ticket.mjs";
 
 const baseUrl = process.env.REALTIME_GATEWAY_BASE_URL ?? "ws://127.0.0.1:8081";
 const secret = process.env.REALTIME_GATEWAY_TICKET_SECRET ?? "smoke-secret";
@@ -58,10 +60,16 @@ function audioUrl(targetSessionId, ticket) {
   return `${baseUrl}/v1/recitation-sessions/${encodeURIComponent(targetSessionId)}/audio?${params.toString()}`;
 }
 
-function issueTicket({ sessionId, tenantId, learnerId, externalAsrProcessing = true, expiresAt, nonce, secret }) {
-  const payload = `${sessionId}.${tenantId}.${learnerId}.${externalAsrProcessing}.${expiresAt}.${nonce}`;
-  const signature = createHmac("sha256", secret).update(payload).digest("hex");
-  return `rt_v1.${sessionId}.${tenantId}.${learnerId}.${externalAsrProcessing}.${expiresAt}.${nonce}.${signature}`;
+/**
+ * Delegates to node-api's minter, which cross-language vectors pin to the Rust original. It used to
+ * transcribe the format by hand here — a second copy that could drift from the service it smokes,
+ * and did when `audioRetention` joined the payload.
+ */
+function issueTicket({ sessionId, tenantId, learnerId, externalAsrProcessing = true, audioRetention = "discard", expiresAt, nonce, secret }) {
+  return issueRealtimeTicket(
+    { sessionId, tenantId, learnerId, externalAsrProcessing, audioRetention, expiresAtUnixSeconds: expiresAt, nonce },
+    secret,
+  );
 }
 
 function nowSeconds() {

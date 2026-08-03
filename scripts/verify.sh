@@ -199,6 +199,17 @@ if [[ "$FAST" != "yes" ]]; then
   run "test: gateway websocket (real process)" \
     "cargo build --manifest-path $GW && node --test tests/gateway/ws-hostile-input.test.mjs"
 
+  # Blocker 3 — the learner's audio-retention choice, end to end: real gateway, real ml-inference,
+  # real websocket, and an assertion on the .meta.json actually written to disk. Also needs no
+  # database: the choice travels in the signed ticket, which is the point.
+  #
+  # A pipeline test rather than another unit test, because every unit involved was already correct
+  # when this shipped broken. The gateway simply never put the field in the body, ml-inference's
+  # `?? "discard"` filled the hole, and a learner who chose "teacher-review" had their recitation
+  # deleted an hour later with nothing logged. Only an assertion on the artifact catches that.
+  run "test: audio retention reaches stored audio (real processes)" \
+    "cargo build --manifest-path $GW && node --test tests/gateway/audio-retention-e2e.test.mjs"
+
   # DB-gated integration tests — only when a live Postgres answers and allows authentication. Skipped, not faked.
   can_auth="no"
   if command -v psql >/dev/null 2>&1; then
