@@ -2214,6 +2214,34 @@ async fn list_tajweed_findings_returns_the_seeded_finding_not_an_empty_list() {
         findings.iter().any(|f| f["id"] == json!(finding_id)),
         "expected to find seeded finding {finding_id} in {findings:?}"
     );
+
+    // ── Clean up the row this test created, or the workaround above becomes the problem ─────────
+    //
+    // Ranking the fixture first by setting `confidence = 1` was correct and it DEGRADED, because
+    // every run left its confidence-1 row behind for good. After ~200 runs against one long-lived
+    // local database there were 201 rows tied at the maximum, the endpoint returns
+    // `ORDER BY confidence DESC, tf.id LIMIT 200`, ids are timestamp-prefixed so the NEWEST sorts
+    // last — and this test's own fixture was the one that fell off the end. Measured: 201 rows at
+    // confidence 1, cut at 200.
+    //
+    // It went red for a developer who had merely run `verify.sh` often enough, on a change that
+    // touched none of this. That is the flaky-gate failure mode verify.sh's own comments warn about:
+    // a gate that teaches people to re-run stops being a gate.
+    //
+    // So the test now removes what it added. Ordered teacher_reviews -> tajweed_findings, because
+    // teacher_reviews.finding_id RESTRICTs. Deliberately NOT touching rows from earlier runs: this
+    // test owns exactly one finding and cleaning up other people's data from a test is how a suite
+    // starts deleting something it did not understand.
+    sqlx::query("DELETE FROM teacher_reviews WHERE finding_id = $1")
+        .bind(&finding_id)
+        .execute(&state.pool)
+        .await
+        .unwrap();
+    sqlx::query("DELETE FROM tajweed_findings WHERE id = $1")
+        .bind(&finding_id)
+        .execute(&state.pool)
+        .await
+        .unwrap();
 }
 
 /// T18 proof #2 — the teacher cockpit's cross-tenant isolation.
