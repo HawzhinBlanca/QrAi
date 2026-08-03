@@ -349,10 +349,22 @@ async fn persist_tajweed_findings(
         }
 
         sqlx::query(
+            // `analysis_basis` is a LITERAL, not a field read from the ML response.
+            //
+            // `analyzeAyah` inspects `word.text` — the canonical Uthmani text — and nothing else: no
+            // audio, no heard text, no timing, no pitch. Every finding it produces is "a rule applies
+            // at this position in the passage", which is true of the text and identical for every
+            // learner who ever recites it. Recording that is what lets a teacher tell it apart from a
+            // judgement about how THIS learner recited.
+            //
+            // Hardcoded for the same reason `TranscriptSource::ClientReported` is (ADR-0030): a value
+            // read from a response is one refactor away from being caller-controlled, and this one
+            // decides whether a teacher trusts what they are looking at. When an acoustic analyser
+            // exists, writing `acoustic` will be a deliberate code change with its own review.
             "INSERT INTO tajweed_findings
                (id, tenant_id, alignment_id, rule, severity, confidence, explanation,
-                review_status, source_refs, model_version_id, audit_event_id)
-             VALUES ($1, $2, $3, $4, $5, $6::float8::numeric, $7, 'ai-suggested', $8, $9, $10)",
+                review_status, source_refs, model_version_id, audit_event_id, analysis_basis)
+             VALUES ($1, $2, $3, $4, $5, $6::float8::numeric, $7, 'ai-suggested', $8, $9, $10, 'canonical-text')",
         )
         .bind(next_id("tajweed-finding"))
         .bind(tenant_id)

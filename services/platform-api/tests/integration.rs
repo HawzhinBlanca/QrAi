@@ -4410,13 +4410,29 @@ async fn tajweed_findings_persist_and_the_learner_can_read_their_own() {
     assert_eq!(analysed.status(), StatusCode::OK);
 
     let rows = sqlx::query(
-        "SELECT tf.id, tf.rule, tf.review_status FROM tajweed_findings tf
+        "SELECT tf.id, tf.rule, tf.review_status, tf.analysis_basis FROM tajweed_findings tf
          JOIN word_alignments wa ON wa.id = tf.alignment_id WHERE wa.session_id = $1",
     )
     .bind(&session_id)
     .fetch_all(&state.pool)
     .await
     .unwrap();
+
+    // ADR-0033 — what this finding is ABOUT, recorded on the row.
+    //
+    // `analyzeAyah` reads the passage's canonical Uthmani text and nothing else: no audio, no heard
+    // text, no timing. What it returns is "a rule applies at this position", which is true of the
+    // Quran and identical for every learner who ever recites it. This row is anchored to a
+    // `word_alignments` row and will be released to the learner if a teacher accepts it — so
+    // whether it is a fact about the text or a judgement about the person has to survive the write.
+    for r in &rows {
+        assert_eq!(
+            r.try_get::<String, _>("analysis_basis").unwrap(),
+            "canonical-text",
+            "a text-derived finding was stored without saying so, which is how it becomes \
+             indistinguishable from one derived from the learner's audio"
+        );
+    }
     assert_eq!(
         rows.len(),
         1,
