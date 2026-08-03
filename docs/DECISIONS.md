@@ -1527,3 +1527,61 @@ not answer it.
 nothing saying why. `superseded_at` is on the row but not on the wire. Left out deliberately to keep
 this change to one subject — recorded so it is a gap someone can find, not one they have to
 rediscover.
+
+---
+
+## ADR-0034 — A port is only ported where something compares it
+
+**Status:** Accepted · **Date:** 2026-08-03 · **Related:** ADR-0030 (drift found the same way)
+
+### Context
+
+All 36 portable routes had been ported (N7–N19; `N12b` register/login remains blocked on ADR-0025).
+`scripts/verify.sh` ran the black-box A/B suite through the Node port for **two** of them:
+
+```
+NODE_API_PORTED='POST /v1/ml/tajweed-findings:predict,POST /v1/ml/alignments:predict'
+```
+
+Scoped that way for a good reason at the time — those two hold a copy of a learner-facing rule — and
+the line's own comment said so: *"Widening the list is how the rest of the port earns the same
+proof."* It was never widened. Thirty-four routes were ported, reviewed, merged and shipped with
+nothing anywhere comparing them to the Rust original.
+
+This is the same shape as the gap that comment was written to close. `PARITY_THROUGH_SHELL=1` had
+existed since Phase 7 N2 with no gate running it at all; the fix ran it over 2 routes and the
+remaining 94% inherited the original problem.
+
+### What running it found
+
+One real divergence, on the first attempt, across **fourteen** surfaces.
+
+Postgres text cannot hold U+0000. Rust translates the resulting SQLSTATE into a 400 naming the
+problem (`impl From<sqlx::Error> for ApiError`). The Node port never mirrored it, so the same input
+answered `500 {"error":"internal error"}` on session-create, progress, agent-runs, teacher-reviews,
+scholar-approvals, realtime tickets, invitations, privacy-export and four path-parameter routes: bad
+input reported as a server fault, with nothing telling the caller what to fix.
+
+Fixed in the shared error handler, where Rust puts it, so all fourteen close at once — and with the
+same two SQLSTATEs, not one. `22P05` (jsonb) was added to the Rust original after measuring that the
+same byte produces a different code by column type; a port that copied only `22021` would have
+inherited exactly one route's worth of the bug.
+
+### Decision
+
+The gate runs the full parity suite through the Node port over **every** route in `PORTABLE` — 243
+assertions, up from 14 — and the route list is **read out of `server.mjs` at gate time** rather than
+written into `verify.sh`. A hardcoded list is a second place to remember, and the forgotten one is
+always the gate: a route added to `PORTABLE` would be servable in production with nothing comparing
+it to anything.
+
+The parser fails loudly if it reads fewer than 30 routes, because a regex that silently matches
+nothing would report a green run over an empty set.
+
+### Consequences
+
+- The gate is slower: the parity suite now runs twice, once per backend. That is the cost of the
+  claim, and the claim is the one thing that makes a cutover decidable.
+- **This does not enable anything.** `NODE_API_PORTED` stays empty at runtime and `traffic-share`
+  stays UNMET. Parity is one of four gates the brief names (parity, rollback, security, operations);
+  it is now measured rather than assumed.
