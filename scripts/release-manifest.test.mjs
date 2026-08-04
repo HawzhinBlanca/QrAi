@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
 import { createHash, generateKeyPairSync } from "node:crypto";
-import { copyFileSync, mkdtempSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -473,4 +473,127 @@ test("retains the external evidence hashes in the signed manifest", (t) => {
   assert.equal(manifest.build.summarySha256, sha256(candidate.buildSummaryPath));
   assert.equal(manifest.build.provenanceSha256, sha256(candidate.buildProvenancePath));
   assert.equal(manifest.environment.summarySha256, sha256(candidate.environmentSummaryPath));
+});
+
+// ── P0.7 — the independence guarantees, adversarially ────────────────────────────────────────────
+//
+// The five challenge tests above cover a clean run, a reused runner identity, a tampered manifest,
+// the missing release database, and a symlinked OUTPUT path. What they do not cover is the property
+// the whole challenge rests on: the EVIDENCE must come from outside the candidate.
+//
+// `release-challenge.mjs` calls `assertExternalPath` on every manifest input for exactly that
+// reason. If a candidate could supply its own evidence from inside its own tree, an attacker who
+// controls the checkout controls the proof, the challenge verifies a manifest the candidate wrote
+// about itself, and "independently verified" means nothing. That guard had no test.
+//
+// P0.7's wording is "record its successful AND ADVERSARIAL FAILED runs", so each case below also
+// asserts the failure REPORT — a refusal that leaves no artifact is not a recorded run.
+
+/** The challenge report, or null when the run left none. */
+function challengeReport(candidate) {
+  const path = join(candidate.evidenceDirectory, "challenge-report.json");
+  return existsSync(path) ? readJson(path) : null;
+}
+
+test("independent challenge refuses evidence that lives inside the candidate it is judging", (t) => {
+  // The keystone. Every manifest input is probed one at a time rather than all at once, because a
+  // guard that only checks the first flag would pass a test that moves all eight.
+  for (const flag of [
+    "--manifest",
+    "--build-summary",
+    "--build-provenance",
+    "--sbom",
+    "--smoke-summary",
+    "--test-summary",
+    "--environment-summary",
+    "--trusted-signers",
+  ]) {
+    const candidate = prepareCandidate(t);
+    const args = challengeArguments(candidate);
+    const at = args.indexOf(flag);
+    assert.notEqual(at, -1, `${flag} is no longer passed to the challenge`);
+
+    // Same bytes, moved inside the candidate checkout AND COMMITTED. Committing matters: an
+    // uncommitted copy dirties the tree, the clean-candidate guard fires first, and the test would
+    // pass without ever reaching the isolation check it exists for. A real candidate carrying its
+    // own evidence would carry it committed.
+    const smuggled = join(candidate.repo, `smuggled-${flag.replace(/^--/, "")}.json`);
+    copyFileSync(args[at + 1], smuggled);
+    git(candidate.repo, ["add", "."]);
+    git(candidate.repo, ["commit", "-qm", "candidate carries its own evidence"]);
+    args[at + 1] = smuggled;
+
+    const result = spawnSync(process.execPath, [challengeScript, ...args], {
+      cwd: candidate.repo,
+      encoding: "utf8",
+      env: process.env,
+    });
+    assert.notEqual(result.status, 0, `${flag} was accepted from inside the candidate:\n${result.stdout}${result.stderr}`);
+    assert.match(
+      `${result.stdout}${result.stderr}`,
+      /must be outside the candidate checkout/i,
+      `${flag} was refused for the wrong reason`,
+    );
+  }
+});
+
+test("a refused challenge still records what happened", (t) => {
+  // An adversarial run that fails silently is indistinguishable from one nobody performed. The
+  // no-database case above proves the report exists for ONE failure path; this proves it for a
+  // failure raised much earlier, before any evidence has been read.
+  const candidate = prepareCandidate(t);
+  const result = runChallenge(candidate, { runnerId: "release-evidence-test" });
+  assert.notEqual(result.status, 0, result.output);
+
+  const report = challengeReport(candidate);
+  assert.ok(report, "a failed challenge left no report, so the run cannot be evidence of anything");
+  assert.equal(report.schemaVersion, "qrai-release-challenge/v1");
+  assert.equal(report.status, "failed");
+  assert.match(report.failure, /must differ from build provenance builderId/i);
+  assert.equal(report.challenger.runnerId, "release-evidence-test");
+});
+
+test("independent challenge refuses a candidate directory that is not a checkout root", (t) => {
+  // A subdirectory of a real repo answers `git rev-parse --show-toplevel` with the PARENT, so a
+  // naive check passes while the challenge verifies a tree it has not actually pinned.
+  const candidate = prepareCandidate(t);
+  const inner = join(candidate.repo, "scripts");
+  const args = challengeArguments(candidate);
+  args[args.indexOf("--candidate-dir") + 1] = inner;
+
+  const result = spawnSync(process.execPath, [challengeScript, ...args], {
+    cwd: candidate.repo,
+    encoding: "utf8",
+    env: process.env,
+  });
+  assertFailure({ status: result.status, output: `${result.stdout}${result.stderr}` }, /must be the root of the clean candidate checkout/i);
+});
+
+test("independent challenge refuses a candidate whose tree is dirty", (t) => {
+  // Distinct from the manifest's own clean-tree check: this one runs in the CHALLENGE, against the
+  // candidate directory it was pointed at, which may not be the tree the manifest was made from.
+  // An untracked file is the quiet case — it changes what `verify.sh --release` would execute
+  // without changing any tracked content.
+  const candidate = prepareCandidate(t);
+  writeFileSync(join(candidate.repo, "untracked-during-challenge.txt"), "added after the commit\n");
+  assertFailure(runChallenge(candidate), /untracked or modified files/i);
+  assert.equal(challengeReport(candidate)?.status, "failed");
+});
+
+test("a full challenge refuses to write its two fresh summaries to one path", (t) => {
+  // `--challenge-test-summary` and `--challenge-environment-summary` are separate proofs. Pointed at
+  // one file, the second silently overwrites the first and the report then hashes the same bytes
+  // twice under two names — two independent-looking pieces of evidence that are one.
+  const candidate = prepareCandidate(t);
+  const shared = join(candidate.evidenceDirectory, "one-file-for-both.json");
+  const args = challengeArguments(candidate, { mode: "--run-release" });
+  args[args.indexOf("--challenge-test-summary") + 1] = shared;
+  args[args.indexOf("--challenge-environment-summary") + 1] = shared;
+
+  const result = spawnSync(process.execPath, [challengeScript, ...args], {
+    cwd: candidate.repo,
+    encoding: "utf8",
+    env: { ...process.env, RELEASE_DATABASE_URL: "postgresql://unused@127.0.0.1:1/none" },
+  });
+  assertFailure({ status: result.status, output: `${result.stdout}${result.stderr}` }, /must be different files/i);
 });
