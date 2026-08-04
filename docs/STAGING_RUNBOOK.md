@@ -203,9 +203,11 @@ MAINTENANCE_MODE=0 docker compose up -d platform-api
 ### 3. Restore the database
 
 ```bash
-# Backups: scripts/backup-db.sh (custom-format pg_dump, rotated). Restore into a FRESH database.
+# Backups: scripts/backup-db.sh (custom-format pg_dump, encrypted, rotated). Restore into a FRESH database.
+# BACKUP_DECRYPTION_KEY is the OFFLINE private key — retrieving it is a rehearsed step of the drill.
 RESTORE_TARGET_URL="postgresql://<user>:<pass>@<host>:5432/quran_ai_restored" \
-  bash scripts/restore-db.sh backups/quran_ai-<timestamp>.dump
+BACKUP_DECRYPTION_KEY=/path/to/qrai-backup-private.key \
+  bash scripts/restore-db.sh backups/quran_ai-<timestamp>.dump.cms
 ```
 
 `restore-db.sh` refuses a non-empty target unless `RESTORE_FORCE=1`, and has **no default target** —
@@ -221,8 +223,11 @@ proved the verification has teeth: restoring a deliberately under-seeded dump re
 `specs/dr-rehearsal/evidence/T1-restore-drill.log`.
 
 > **This number is a FLOOR, not a prediction.** Isolated infrastructure, no network latency, no
-> concurrent load, and a 6,236-ayah corpus is not a year of pilot audio. P5.6 also requires
-> *encrypted* backups, which `backup-db.sh` does not yet do.
+> concurrent load, and a 6,236-ayah corpus is not a year of pilot audio.
+>
+> **The measurement above also predates encryption.** Backups are now encrypted CMS envelopes
+> (ADR-0035), so a restore adds a decryption step and the drill must be re-timed — the number will
+> move, and re-measuring it is part of the P5.6 drill rather than something to estimate here.
 
 > 🔴 **Legal step, not optional.** If the dump predates a learner's right-to-erasure request, the
 > restore **resurrects data they asked to have deleted**. Re-apply outstanding erasure requests

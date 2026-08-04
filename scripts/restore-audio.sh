@@ -5,12 +5,14 @@
 # Usage:
 #   AUDIO_RESTORE_TARGET=/data/audio-storage \
 #   ERASURE_DATABASE_URL=postgresql://... \
-#     bash scripts/restore-audio.sh backups/audio-storage-<stamp>.tar.gz
+#   BACKUP_DECRYPTION_KEY=/path/to/qrai-backup-private.key \
+#     bash scripts/restore-audio.sh backups/audio-storage-<stamp>.tar.gz.cms
 #
 # Env:
-#   AUDIO_RESTORE_TARGET  REQUIRED, no default. Directory to restore INTO.
-#   ERASURE_DATABASE_URL  REQUIRED, no default. Database holding privacy_jobs.
-#   RESTORE_FORCE=1       Allow restoring into a non-empty target (default: refuse).
+#   AUDIO_RESTORE_TARGET   REQUIRED, no default. Directory to restore INTO.
+#   ERASURE_DATABASE_URL   REQUIRED, no default. Database holding privacy_jobs.
+#   BACKUP_DECRYPTION_KEY  REQUIRED for encrypted (.cms) archives — the offline private key.
+#   RESTORE_FORCE=1        Allow restoring into a non-empty target (default: refuse).
 #
 # ═════════════════════════════════════════════════════════════════════════════════════════════════
 # THE HAZARD THIS SCRIPT EXISTS FOR — research.md §8.4
@@ -39,6 +41,9 @@
 
 set -euo pipefail
 
+# shellcheck source=scripts/backup-crypto.sh
+. "$(dirname "$0")/backup-crypto.sh"
+
 archive="${1:-}"
 
 if [[ -z "$archive" ]]; then
@@ -62,6 +67,17 @@ if [[ -z "${ERASURE_DATABASE_URL:-}" ]]; then
   echo "       Outstanding erasure requests cannot be re-applied without it, and a restore that" >&2
   echo "       skips re-application resurrects audio a learner asked to have deleted." >&2
   exit 2
+fi
+
+# Checked HERE, with the other pre-flight validations, rather than at the extraction step — this
+# script's governing rule is that anything which can fail should fail while the answer is still
+# "exited, having changed nothing".
+if backup_crypto_is_encrypted "$archive"; then
+  backup_crypto_require_key || exit 2
+else
+  echo "WARNING: $archive is NOT encrypted — it predates P5.6 backup encryption." >&2
+  echo "         Restoring it is permitted; the plaintext archive of learner recordings on disk is" >&2
+  echo "         itself the exposure, so delete it once this restore is done." >&2
 fi
 
 target="$AUDIO_RESTORE_TARGET"
@@ -165,7 +181,14 @@ done <<< "$erasure_keys"
 mkdir -p "$target"
 echo "==> restoring $archive into $target"
 started="$(date +%s)"
-tar -xzf "$archive" -C "$target"
+# Decrypted STRAIGHT into tar. Unlike the database restore — where pg_restore's seeking forces a
+# temporary plaintext file — tar reads a stream happily, so a decrypted archive of children's
+# recordings never exists on disk at all, in either direction.
+if backup_crypto_is_encrypted "$archive"; then
+  backup_crypto_decrypt_stream "$archive" | tar -xz -C "$target"
+else
+  tar -xzf "$archive" -C "$target"
+fi
 restored_count="$(find "$target" -type f | wc -l | tr -d ' ')"
 echo "    $restored_count file(s) on disk"
 

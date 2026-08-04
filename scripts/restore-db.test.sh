@@ -59,6 +59,67 @@ else
   printf '  ok   %s\n' "no DATABASE_URL fallback exists in the script"; pass=$((pass + 1))
 fi
 
+# 6. THE SUCCESS PATH — which nothing above reaches.
+#
+# Every assertion before this one is a REFUSAL, and each refusal exits explicitly. That left the
+# script's normal, successful exit completely untested, and a real bug lived in the gap: the
+# decrypted-dump cleanup trap was written as
+#
+#     cleanup() { [[ -n "$decrypted_tmp" && -f "$decrypted_tmp" ]] && rm -f "$decrypted_tmp"; }
+#
+# whose last command is FALSE whenever there is no temp file — an unencrypted dump, or an encrypted
+# one whose decrypt never ran. On an EXIT trap bash adopts that status, so a restore that fully
+# succeeded, verified every row count, and printed "RESTORE OK" exited 1.
+#
+# `pg_restore` and `psql` are stubbed so this runs on any host, including one with no Postgres
+# client. That is the point: this tests the SCRIPT's control flow, which is what this file is for.
+# Whether a real restore actually recovers real rows is the drill's job
+# (specs/dr-rehearsal/evidence/), and stubbing here does not weaken that.
+stub_bin="$tmp/stub"
+mkdir -p "$stub_bin"
+cat > "$stub_bin/pg_restore" <<'STUB'
+#!/bin/sh
+exit 0
+STUB
+# Answers the canary check with 0 rows (a fresh target, so no RESTORE_FORCE needed) and every
+# verification count with exactly what restore-db.sh requires.
+cat > "$stub_bin/psql" <<'STUB'
+#!/bin/sh
+for arg in "$@"; do
+  case "$arg" in
+    *canonical_surahs*) echo 114; exit 0 ;;
+    *canonical_ayahs*)  echo 6236; exit 0 ;;
+    *canonical_words*)  echo 82456; exit 0 ;;
+    *count*)            echo 0; exit 0 ;;
+  esac
+done
+echo 0
+STUB
+chmod +x "$stub_bin/pg_restore" "$stub_bin/psql"
+
+restore_out="$(PATH="$stub_bin:$PATH" RESTORE_TARGET_URL="postgresql://stub/quran_ai_restored" \
+  bash "$script" "$dump" 2>&1)"
+restore_rc=$?
+check "a successful restore exits 0 (the cleanup trap must not change the status)" 0 "$restore_rc"
+
+if grep -q "RESTORE OK" <<<"$restore_out"; then
+  printf '  ok   %s\n' "and reports RESTORE OK"; pass=$((pass + 1))
+else
+  printf '  FAIL %s\n' "a restore that exited 0 did not report RESTORE OK:"; fail=$((fail + 1))
+  sed 's/^/         /' <<<"$restore_out"
+fi
+
+# The other direction, so the assertion above cannot be satisfied by a script that always exits 0:
+# when pg_restore FAILS, that failure must still surface.
+cat > "$stub_bin/pg_restore" <<'STUB'
+#!/bin/sh
+echo "pg_restore: error: simulated failure" >&2
+exit 1
+STUB
+( PATH="$stub_bin:$PATH" RESTORE_TARGET_URL="postgresql://stub/quran_ai_restored" \
+  bash "$script" "$dump" >/dev/null 2>&1 )
+check "a FAILED pg_restore still exits non-zero (no masking by the trap)" 1 "$?"
+
 echo ""
 echo "$pass passed, $fail failed"
 [[ "$fail" -eq 0 ]]

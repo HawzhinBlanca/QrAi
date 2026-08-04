@@ -1,0 +1,69 @@
+=== QrAi P5.6 encrypted backup verification ===
+date(UTC): 2026-08-04T15:49:01Z
+host: single dev machine; Postgres in docker `qrai-staging-pg` (STAGING data, not production)
+tooling: OpenSSL 3.6.2, pg_dump/pg_restore 16.14 (in-container)
+
+WHAT THIS IS
+  Verification that an encrypted backup, produced by the real `scripts/backup-db.sh` with no
+  modification, is (a) genuinely opaque and (b) genuinely restorable. This is the "encrypted backup
+  verification" half of P5.6.
+
+WHAT THIS IS NOT
+  It is NOT the timed point-in-time restore / disaster-recovery drill that P5.6 also requires, and
+  it does NOT close the row. One host, no network, no concurrent load, staging-sized data, and the
+  decryption key was fetched from a directory rather than from wherever a real offline key lives —
+  which is the step a real drill exists to rehearse. The 1s below is a FLOOR, not a prediction.
+
+--- 1. BACKUP (scripts/backup-db.sh, unmodified) ---
+$ DATABASE_URL=postgresql://hawzhin@localhost:5432/quran_ai \
+  BACKUP_DIR=<tmp>/out BACKUP_ENCRYPTION_CERT=<tmp>/drill.x509 \
+  bash scripts/backup-db.sh
+
+backing up database -> <tmp>/out/quran_ai-20260804T154901Z.dump.cms
+backup complete: quran_ai-20260804T154901Z.dump.cms (11,658,823 bytes)
+done. 14 most-recent dumps retained
+reminder: copy ... off-host — an on-host backup is not disaster recovery.
+
+  The recipient keypair was generated for this drill and discarded with the temp directory. It is
+  NOT the owner's backup key; per ADR-0035 the tooling never creates one.
+
+--- 2. IS IT ACTUALLY ENCRYPTED? ---
+$ pg_restore --list quran_ai-20260804T154901Z.dump.cms
+  -> fails. The archive is not a readable pg_dump.                                  [opaque]
+
+$ head -c 5 quran_ai-20260804T154901Z.dump.cms | grep PGDMP
+  -> no match. The custom-format magic is absent.                                   [opaque]
+
+--- 3. RESTORE INTO A FRESH DATABASE ---
+$ CREATE DATABASE quran_ai_drill_enc;
+$ openssl cms -decrypt -binary -inform DER -in <dump> -inkey <tmp>/drill.pkcs8 \
+    | pg_restore --dbname=postgresql://hawzhin@localhost:5432/quran_ai_drill_enc --no-owner
+
+  pg_restore reported no errors.
+  restore wall-clock: 1s  (1-second timer resolution; see the FLOOR note above)
+
+  Decryption is piped straight into pg_restore here, so no plaintext dump touched disk in this run.
+  NOTE that `scripts/restore-db.sh` does NOT do this — it decrypts to a `mktemp` file because
+  `pg_restore --jobs` requires a seekable archive. That temp file is owner-only and trap-removed;
+  the difference is recorded in ADR-0035 rather than glossed.
+
+--- 4. ROW COUNTS AFTER RESTORE ---
+  ok   canonical_surahs = 114      (expected 114)
+  ok   canonical_ayahs  = 6236     (expected 6236)
+  ok   canonical_words  = 82456    (expected 82456)
+
+  The canonical corpus survived encryption and decryption intact. A restore that "succeeded" while
+  restoring nothing is the failure that hides, which is why counts are asserted rather than exit 0.
+
+--- 5. CLEANUP ---
+  DROP DATABASE quran_ai_drill_enc;  -> confirmed dropped, no `%drill%` databases remain.
+
+--- RESULT ---
+  PASS for encrypted backup verification on staging data.
+  P5.6 REMAINS OPEN: the timed point-in-time restore/DR drill is not performed here, and the
+  pre-existing T1 measurement (`<1s`, 2026-07-30) is stale because it predates encryption.
+
+  The mechanised, gated equivalent of this run — including the confidentiality, wrong-key, tamper
+  and fail-closed directions — is `scripts/backup-crypto.test.sh` (22 assertions), which runs on
+  every `verify.sh`. This log covers what that test deliberately does not: a real database, at real
+  size, through the real script.
