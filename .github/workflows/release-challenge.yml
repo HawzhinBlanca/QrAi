@@ -1,0 +1,119 @@
+name: release-challenge
+
+# P0.7 — the independent clean-checkout challenge.
+#
+# ── What this is for ────────────────────────────────────────────────────────────────────────────
+# Everything else in this repo verifies a candidate using the machine that produced it. This job
+# exists to do it from somewhere else: a fresh runner, a clean checkout of the candidate SHA, and
+# evidence supplied from OUTSIDE that checkout. `scripts/release-challenge.mjs` enforces both halves
+# — it refuses a candidate directory that is not a clean checkout root, and it refuses any evidence
+# path that resolves inside the candidate, because a candidate that supplies its own proof has not
+# been independently verified of anything.
+#
+# It also refuses a `--runner-id` equal to the build provenance `builderId`. That is the point of the
+# word "independent": the thing that built the candidate does not get to be the thing that clears it.
+#
+# ── HONEST STATUS: this workflow has never run ──────────────────────────────────────────────────
+# P0.7 asks for the job AND for "its successful and adversarial failed runs" to be recorded. This is
+# the job. The runs do not exist, because no release candidate exists (the ledger header still reads
+# "Candidate: not yet created"), and a challenge with nothing to challenge would be theatre.
+#
+# P0.7 therefore stays `[ ]`. Committing the job now rather than on release day is the difference
+# between a reviewed procedure and one written under pressure by someone who wants it to pass.
+#
+# ── Why workflow_dispatch and not `on: push` ────────────────────────────────────────────────────
+# A challenge needs a signed evidence bundle that does not live in the repository — manifest, build
+# summary and provenance, SBOM, smoke, test and environment summaries, and the trusted-signer policy.
+# Those arrive as an artifact from the release pipeline, named by whoever is running the challenge.
+# There is nothing to do on a push.
+
+on:
+  workflow_dispatch:
+    inputs:
+      candidate_sha:
+        description: "The 40-character candidate commit to check out and challenge."
+        required: true
+        type: string
+      evidence_artifact:
+        description: "Name of the uploaded artifact holding the signed evidence bundle."
+        required: true
+        type: string
+      runner_id:
+        description: "Identity of this challenger. MUST differ from the build provenance builderId."
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  challenge:
+    runs-on: ubuntu-latest
+    steps:
+      # The candidate goes in its own directory, and the evidence goes somewhere else entirely.
+      # `release-challenge.mjs` checks that separation itself; keeping them apart here means the
+      # check is a second line of defence rather than the only one.
+      - name: Check out the candidate, clean
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.candidate_sha }}
+          path: candidate
+          # Full history: the manifest binds a commit, and a shallow clone cannot prove the checkout
+          # is that commit rather than merely resembling it.
+          fetch-depth: 0
+
+      - name: Confirm the checkout is the requested candidate
+        working-directory: candidate
+        run: |
+          actual=$(git rev-parse HEAD)
+          if [ "$actual" != "${{ inputs.candidate_sha }}" ]; then
+            echo "::error::checkout is $actual, not the requested ${{ inputs.candidate_sha }}"
+            exit 1
+          fi
+          # A dirty checkout would be refused by the challenge script anyway. Failing here says which
+          # step introduced it, instead of blaming the candidate for something CI did.
+          if [ -n "$(git status --porcelain=v1 --untracked-files=all)" ]; then
+            echo "::error::the freshly checked-out candidate is already dirty"
+            exit 1
+          fi
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: ${{ inputs.evidence_artifact }}
+          path: evidence
+
+      - uses: actions/setup-node@v4
+        with: { node-version: "22.13.1" }
+
+      # `--verify-manifest-only`. A full `--run-release` challenge additionally needs a dedicated,
+      # disposable release database and the environment variables verify.sh --release requires; the
+      # script refuses to fake it (`RELEASE_DATABASE_URL must be set ... intentionally accepted only
+      # through the environment`). Wiring that database is P5.1/P5.7 work with a named owner, so this
+      # job does the half that can be done honestly from a bare runner and says so in its output.
+      - name: Independent challenge
+        run: |
+          node candidate/scripts/release-challenge.mjs --verify-manifest-only \
+            --candidate-dir           "$PWD/candidate" \
+            --manifest                "$PWD/evidence/candidate-evidence.json" \
+            --build-summary           "$PWD/evidence/build-summary.json" \
+            --build-provenance        "$PWD/evidence/build-provenance.json" \
+            --sbom                    "$PWD/evidence/sbom.spdx.json" \
+            --smoke-summary           "$PWD/evidence/smoke-summary.json" \
+            --test-summary            "$PWD/evidence/test-summary.json" \
+            --environment-summary     "$PWD/evidence/environment-summary.json" \
+            --trusted-signers         "$PWD/evidence/trusted-signers.json" \
+            --challenge-output        "$PWD/challenge-report.json" \
+            --runner-id               "${{ inputs.runner_id }}" \
+            --runner-class            "github-hosted-ubuntu"
+
+      # `if: always()`. A REFUSED challenge is the result worth keeping — the script writes a
+      # `status: "failed"` report naming what it refused, and losing that on a red run would mean the
+      # adversarial half of P0.7 could never be evidenced.
+      - name: Retain the challenge report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: challenge-report-${{ inputs.candidate_sha }}
+          path: challenge-report.json
+          if-no-files-found: warn
+          retention-days: 90
