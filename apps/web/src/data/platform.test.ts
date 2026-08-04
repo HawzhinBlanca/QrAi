@@ -108,4 +108,42 @@ describe("locale capability expiry", () => {
 
     expect(english.interface.keyCount).toBe(countLeaves(en));
   });
+
+  it("never lets a locale advertise a bundle it does not have", async () => {
+    // The invariant above is SOURCE-LANGUAGE ONLY: it early-returns unless
+    // `source === "source-language"`, so it checks `en` and nothing else. Every other locale's
+    // declared keyCount is unverified.
+    //
+    // That matters on exactly one day — the day someone ships a reviewed locale. Flipping `ckb` to
+    // `availability: "available"` today is caught, but only by App.smoke's `toEqual(["en"])`, which
+    // is a PIN on the current offer list. Whoever genuinely ships Sorani will update that pin (they
+    // should), and at that moment nothing checks that `apps/web/src/locales/ckb.json` contains the
+    // 384 strings the manifest claims. An empty bundle plus `fallbackLng: "en"` renders a fully
+    // English app that the capability manifest insists is reviewed Kurdish — the manifest becomes
+    // the thing it exists to prevent.
+    //
+    // Loaded dynamically because the set is data-driven: a locale added to the manifest tomorrow is
+    // covered without touching this file.
+    const countLeaves = (value: Record<string, unknown>): number =>
+      Object.values(value).reduce<number>(
+        (count, child) => count + (typeof child === "object" && child !== null ? countLeaves(child as Record<string, unknown>) : 1),
+        0,
+      );
+
+    const declared = localeCapabilities.filter(
+      (locale): locale is typeof locale & { interface: { bundlePath: string; keyCount: number } } =>
+        "bundlePath" in locale.interface && "keyCount" in locale.interface,
+    );
+    expect(declared.length).toBeGreaterThan(0);
+
+    for (const locale of declared) {
+      const bundle = (await import(`../locales/${locale.code}.json`)).default as Record<string, unknown>;
+      const actual = countLeaves(bundle);
+      expect(
+        actual,
+        `${locale.code}: the manifest claims ${locale.interface.keyCount} reviewed strings, the bundle has ${actual}`,
+      ).toBe(locale.interface.keyCount);
+      expect(actual, `${locale.code}: an available locale with an empty bundle renders as English`).toBeGreaterThan(0);
+    }
+  });
 });

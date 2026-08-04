@@ -301,6 +301,11 @@ if [[ "$FAST" != "yes" ]]; then
   run "build" "pnpm --filter @quran-ai/contracts build && pnpm --filter @quran-ai/quran-data build && pnpm --filter @quran-ai/web build"
   run "guard: web production bundle secrets" "node scripts/check-web-bundle-secrets.mjs"
   run "guard: web security headers (ADR-0010)" "node scripts/check-security-headers.mjs"
+  # P4.4 named a licence gate and there was none. `pnpm audit` covers vulnerabilities and the SBOM
+  # records what is present; neither says whether this project may SHIP what it depends on. A
+  # transitive AGPL arrival changes the obligations of the whole distribution and turns up the same
+  # silent way the undici advisory did — through someone else's lockfile bump.
+  run "guard: dependency licences (P4.4)" "node scripts/check-licenses.mjs --self-test && node scripts/check-licenses.mjs"
 
   if [[ "$RELEASE" == "yes" ]]; then
     # smoke:all drives proof, SQL, browser, API, gateway, ML, and privacy

@@ -19,6 +19,48 @@ P6 supports R10; and P7 supports R11/R12.
 - [ ] P0.7 — Build independent clean-checkout/CI challenge job; record its successful and adversarial failed runs.
 - [x] P0.8 — Reconcile `SHIP_READINESS`, proof checklist, pilot report, and release docs; retain old evidence as historical/invalidated.
 
+- 4 August 2026 — **audit of the twelve "engineering in place" rows**, one at a time, using the
+  method that found the P0.7 defects: ignore the ledger note, enumerate what the code actually
+  guarantees, and look for a guarantee nothing tests. Four defects found; three fixed here.
+
+  **P2.2 — the keyCount invariant was source-language only.** `platform.test.ts` early-returns
+  unless `source === "source-language"`, so it verified English and nothing else. Flipping `ckb` to
+  `available` today is caught, but only by `App.smoke`'s `toEqual(["en"])` — a PIN on the current
+  offer list, which whoever genuinely ships Sorani will (correctly) update. At that moment nothing
+  checked that the bundle held the strings the manifest claimed. An empty bundle plus
+  `fallbackLng: "en"` renders a fully English app the manifest insists is reviewed Kurdish. Now
+  every locale declaring a `bundlePath`/`keyCount` is verified against the real file.
+
+  **P4.4 — the TLS policy was set and unasserted.** `nginx-tls.conf` pins
+  `ssl_protocols TLSv1.2 TLSv1.3;` and no gate read it. Both directions now: the pin must be
+  present, AND `TLSv1.0`/`TLSv1.1`/`SSLv2`/`SSLv3`/bare `TLSv1` must be absent — because
+  presence-checking cannot see a protocol being ADDED, and downgrade is the attack.
+
+  **P4.4 — there was no licence gate at all**, though the row names one. `pnpm audit` covers
+  vulnerabilities and the SBOM records what is present; neither said whether this project may SHIP
+  what it depends on. Allowlist, not denylist: the unknown licence needs a human, not a default.
+  13 licences in the tree, all permissive; `MPL-2.0` (axe-core, lightningcss) is reported on every
+  run rather than silently allowed, because its file-level obligation goes live the moment somebody
+  vendors and patches one. **Scope stated honestly: JavaScript only — `cargo-license` is not
+  installed here or in CI, so the Rust tree is UNGATED for licensing.**
+
+  **P5.6 — backups are plaintext, and that is not fixed here.** `backup-db.sh` uses
+  `pg_dump --format=custom` and `backup-audio.sh` uses `tar -czf`; both are compression, neither is
+  encryption. These hold learner PII and children's recorded voices. The row demands "encrypted
+  backup verification". Not fixed in this change because the machine has neither `age` nor `gpg`
+  (only `openssl`), and cipher choice plus key custody and rotation is an ADR the owner owns — the
+  same reasoning that holds `T4` on ADR-0022. Recorded so it is a decision, not an omission.
+
+  **Confirmed accurate, no hidden gap: P3.2.** Its "expired" gap is documented with the real reason
+  — no expiry concept exists in the schema for an approval. That is a product decision.
+
+  **Human-gated, no engineering half to close: P3.4, P3.5** (dataset + consent governance),
+  **P5.4, P5.5** (candidate + SRE), **P6.2** (VoiceOver/AT audits), **P6.1** (severity policy half).
+
+  **NOT probed deeply, and therefore still unaudited: P2.6, P5.3.** Listed rather than assumed
+  clean — the whole point of this pass is that "the ledger says it is in place" was wrong once in
+  three.
+
 ## Phase 1 — learner path and authorization
 
 - [x] P1.1 — Reproduce and retain the default-browser learner `Progress API 401` test before any fix.
