@@ -171,11 +171,45 @@ async fn proxy_ml(
 /// finding fail `canShowLearnerFacingAiOutput` and `isLearnerVisible` on its own merits, so a client
 /// that ignores the redaction entirely still cannot present one as feedback.
 fn redact_withheld_findings(result: &mut serde_json::Value) {
-    let Some(findings) = result.get_mut("findings").and_then(|v| v.as_array_mut()) else {
+    let Some(raw) = result.get_mut("findings") else {
+        // No `findings` key at all: the response claims nothing about how the person recited, so
+        // there is nothing to gate. This is a legitimate ML response shape and stays untouched.
         return;
     };
+
+    // ── Shapes this function was NOT written to inspect ─────────────────────────────────────────
+    // Both branches below used to `return`/`continue`, i.e. forward the value UNREDACTED. That was
+    // the gate failing OPEN on exactly the input it cannot reason about, and it is reachable without
+    // anyone editing the gate: a partially migrated model server, a debug build with a different
+    // schema, or an ML service someone has compromised. `tests/api-parity/upstream-malformed.test.mjs`
+    // demonstrated both by putting a marker string in front of a learner.
+    //
+    // The rule (ADR-0028) is that learner-facing model output does not leave this service without
+    // source, confidence and an approval gate. "A client probably would not render it" is not that
+    // rule — it is the reasoning that put the gate on the wrong side of the boundary in the first
+    // place.
+    let Some(findings) = raw.as_array_mut() else {
+        tracing::error!(
+            "ML proxy: `findings` was present but not an array; dropping ungated model output"
+        );
+        *raw = serde_json::json!([]);
+        return;
+    };
+
     for finding in findings.iter_mut() {
         let Some(obj) = finding.as_object_mut() else {
+            // Not an object, so its fields cannot be cleared one by one. Replace it wholesale with a
+            // withheld placeholder rather than passing it through: the array keeps its length, which
+            // is what both clients count to render "N notes are waiting for a teacher", and it
+            // carries no model text.
+            tracing::error!(
+                "ML proxy: a finding was not an object; replacing it with a withheld placeholder"
+            );
+            *finding = serde_json::json!({
+                "withheld": true,
+                "confidence": 0.0,
+                "sources": [],
+            });
             continue;
         };
         let status = obj

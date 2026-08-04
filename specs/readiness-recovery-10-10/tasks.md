@@ -290,6 +290,49 @@ P6 supports R10; and P7 supports R11/R12.
   Still not covered, and still why P5.3 stays open: latency injection short of a full hang, partial
   or truncated upstream responses, and mid-request cancellation.
 
+- 4 August 2026 (P5.3 continued — an ML service that answers 200 with the WRONG SHAPE, and the
+  learner-gate hole it exposed):
+
+  The hang case covers an upstream that never answers; `proxy-endpoints.test.mjs` covers one that
+  answers with an error status. Neither covers the realistic model-server failure: **200 with
+  something unexpected** — a partially migrated response, an ingress error page, a debug build on a
+  different schema.
+
+  **This is where it stopped being a reliability question.** `redact_withheld_findings` enforces the
+  domain rule server-side (ADR-0028): no learner-facing model output without source, confidence and
+  an approval gate. It enforces it by INSPECTING the shape it was handed — and it had two branches
+  that forwarded values it could not inspect, **unredacted**:
+
+  ```rust
+  let Some(findings) = result.get_mut("findings").and_then(|v| v.as_array_mut()) else { return };
+  for finding in findings.iter_mut() {
+      let Some(obj) = finding.as_object_mut() else { continue };   // passed straight through
+  ```
+
+  A `findings` that is not an array redacted NOTHING; an element that is not an object was forwarded
+  verbatim. Both were demonstrated by putting a marker string in an ML response and finding it in
+  the learner's payload — not reasoned about, measured. The gate failed OPEN on precisely the input
+  it cannot reason about, which is reachable without anyone editing it: a partially migrated model
+  server, or an ML service somebody has compromised.
+
+  Fixed fail-closed and consistent with the surrounding design. A non-array `findings` becomes `[]`;
+  a non-object element becomes a withheld placeholder, so the array KEEPS its length — both clients
+  count it to render "N notes are waiting for a teacher" — while carrying no model text. Both log at
+  error level, because a broken upstream should be visible rather than silently normalised.
+
+  The argument that had to be rejected to fix this is "no client would render a bare string anyway".
+  That is true today and is not the rule. It is also the exact reasoning ADR-0028 was written to
+  overturn — the gate belongs on the server, not in whatever the browser happens to do.
+
+  `tests/api-parity/upstream-malformed.test.mjs` (5): non-JSON ML body → 502 (the ML proxy had no
+  such test, though ASR has had one since C2); findings with no gate fields at all; a non-object
+  finding; a non-array `findings`; and a 0.999-confidence unreviewed finding, because confidence
+  alone must never open the gate and that is the case a model author would most expect to work.
+  Mutation-tested: restoring either fail-open branch turns exactly those two tests red and leaves the
+  other three green. 26 pre-existing proxy/ML/contract tests still pass.
+
+  **P5.3 still open**: latency injection short of a hang, and mid-request cancellation.
+
 ## Phase 1 — learner path and authorization
 
 - [x] P1.1 — Reproduce and retain the default-browser learner `Progress API 401` test before any fix.
