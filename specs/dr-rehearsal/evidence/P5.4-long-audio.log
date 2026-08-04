@@ -32,3 +32,39 @@ NOT FIXED. The direction is to stream chunks to the ASR instead of materialising
 chunked transfer, or an upload the ASR reads incrementally. That is a refactor of transcribeSession
 AND of the ASR contract, not a patch, and it should be done against a length target somebody has
 actually chosen.
+
+────────────────────────────────────────────────────────────────────────────────────────────────
+FIXED — 2026-08-04. Re-measured with the same script, same machine, same loopback ASR.
+
+  minutes  chunks  audio    elapsed  peak RSS  worst event-loop stall
+     1       600   1.9MB     0.04s      28MB        0ms   (was  16ms)
+     5      3000   9.6MB     0.13s     106MB       22ms   (was 102ms)
+    15      9000  28.8MB     0.39s     291MB       80ms   (was 356ms)
+
+CEILING 2 — the one that mattered — is 4.4x better at fifteen minutes: ~24ms per audio-minute down
+to ~5ms. Elapsed is unchanged, which is the point: this was never a speed problem. The assembly now
+reads asynchronously in batches of 64, so the loop stays free to serve other learners while one
+person's long session is being put together.
+
+CEILING 1 — memory — is UNCHANGED at ~10x the audio (302MB -> 291MB is noise). Removing it needs the
+whole session to stop existing as one buffer, which means streaming the upload to the ASR service.
+That service takes `audioBase64` inside a JSON body, so it is a two-service contract change, not a
+refactor. Still open, still linear, still ~600MB for a thirty-minute recitation.
+
+AND A GUESS THAT WAS WRONG, KEPT BECAUSE IT WAS EXPENSIVE TO HAVE
+
+The obvious next move looked like the base64 conversion: 28.8MB of PCM becomes a 38.4MB string in
+one synchronous call. A chunked version was written (slicing on multiples of 3 so the output is
+byte-identical) and measured: 80ms -> 78ms. Nothing. It was reverted rather than kept.
+
+Timed directly, on the 15-minute buffer:
+
+    Buffer.concat   2.7ms
+    wav framing     2.0ms
+    base64          2.8ms   -> 38.4MB string
+
+Seven and a half milliseconds of the remaining eighty. The single big allocation is NOT where the
+cost is, despite being the thing that looks expensive. Whatever is left is spread across the 9000
+reads and their JSON.parse, not concentrated in the one place intuition points at.
+
+Recorded so the next person does not spend the same afternoon optimising base64.
