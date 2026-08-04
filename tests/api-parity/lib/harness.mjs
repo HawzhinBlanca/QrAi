@@ -358,8 +358,14 @@ export async function startMockUpstream(respond = () => ({ status: 200, body: {}
         parsed = raw;
       }
       received.push({ path: req.url, method: req.method, headers: req.headers, body: parsed });
-      const { status = 200, body = {}, contentType = "application/json" } =
-        handler({ path: req.url, body: parsed }) ?? {};
+      const decision = handler({ path: req.url, body: parsed }) ?? {};
+      // Fault injection (P5.3): `{ hang: true }` accepts the request, records it, and NEVER answers.
+      // The socket is deliberately left open, so the only thing that can end the call is the
+      // caller's own timeout — which is precisely what a wedged ML/ASR process looks like from
+      // platform-api, and what `upstream_timeout()` exists to survive. Returning an error status
+      // would test a different thing entirely: a server that is answering.
+      if (decision.hang) return;
+      const { status = 200, body = {}, contentType = "application/json" } = decision;
       res.writeHead(status, { "content-type": contentType });
       res.end(typeof body === "string" ? body : JSON.stringify(body));
     });

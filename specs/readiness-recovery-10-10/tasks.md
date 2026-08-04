@@ -255,6 +255,41 @@ P6 supports R10; and P7 supports R11/R12.
   (latency, partial failure, mid-request cancellation) does not exist, and P5.4's load/burst/chaos
   execution against a real candidate is a separate, still-open row.
 
+- 4 August 2026 (P5.3 continued — fault INJECTION for a wedged ML/ASR upstream):
+
+  `lib.rs` had carried this comment since the HTTP client was written: *"A bare `Client::new()` has
+  no request timeout, so a stuck/hung ML or ASR upstream (e.g. a GPU/MPS fault mid-inference) would
+  block the calling request indefinitely."* The timeout was there. **Nothing ever fired it.** Every
+  proxy test uses an upstream that ANSWERS — 200, or an error that becomes a 502 — and an upstream
+  that answers is a different failure from one that does not.
+
+  `startMockUpstream` could not express the fault at all: it always wrote a response. It now accepts
+  `{ hang: true }`, which records the request and never replies, holding the socket open. That is the
+  first actual fault-injection primitive in the harness, and it is what a wedged inference process
+  looks like from platform-api.
+
+  **The timeout had to become configurable for the test to be possible.** Hardcoded at 60s, no gate
+  could afford it. `UPSTREAM_TIMEOUT_SECS` is also the honest operational answer — 60s was one
+  deployment's guess about its own hardware. It parses STRICTLY and refuses to boot on a bad value:
+  `unwrap_or(60)` would turn `6O` (capital letter O) into a silent 60, and **zero is rejected
+  outright** because reqwest reads a zero Duration as *no timeout* — the one value an operator would
+  set to be stricter would in fact restore the unbounded hang.
+
+  `tests/api-parity/upstream-hang.test.mjs` (6 tests): a hung ML upstream, a hung ASR upstream, no
+  leak of the internal host in the timeout response, both config guards, and — the reliability
+  property the timeout actually protects — that ONE hung request does not wedge the server, asserted
+  by hitting `/health` and an unrelated route while the first call is still in flight. A 502 alone
+  proves nothing here, because platform-api collapses every upstream failure into 502, so the tests
+  assert a TIME WINDOW: too fast means something else failed first, too slow means the configured
+  value is being ignored.
+
+  Mutation-tested. Removing `.timeout(...)` does not make the suite fail — it makes it **hang until
+  the runner kills it at 25s**, which is the bug stated as plainly as it can be. Replacing the strict
+  parse with `unwrap_or(60)` turns exactly the two config guards red and leaves the other four green.
+
+  Still not covered, and still why P5.3 stays open: latency injection short of a full hang, partial
+  or truncated upstream responses, and mid-request cancellation.
+
 ## Phase 1 — learner path and authorization
 
 - [x] P1.1 — Reproduce and retain the default-browser learner `Progress API 401` test before any fix.

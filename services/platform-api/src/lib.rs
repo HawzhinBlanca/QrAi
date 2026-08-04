@@ -50,6 +50,42 @@ fn env_or(key: &str, default: &str) -> String {
     std::env::var(key).unwrap_or_else(|_| default.to_owned())
 }
 
+/// Default request timeout for the ML/ASR upstreams, in seconds.
+///
+/// 60s comfortably covers Whisper transcription on CPU, which can legitimately take tens of
+/// seconds. It is the value this service has always used.
+const DEFAULT_UPSTREAM_TIMEOUT_SECS: u64 = 60;
+
+/// How long a call to ML/ASR may hang before it is abandoned.
+///
+/// Configurable (`UPSTREAM_TIMEOUT_SECS`) for two reasons. Operationally, 60s is a guess about one
+/// deployment's hardware — a GPU box and a CPU box do not deserve the same number. And for testing:
+/// a hung-upstream fault test that had to wait 60 real seconds could not live in a gate, which is
+/// why the timeout this service has always had was never actually exercised
+/// (`tests/api-parity/upstream-hang.test.mjs`, P5.3).
+///
+/// Parses STRICTLY. `unwrap_or(60)` would turn `UPSTREAM_TIMEOUT_SECS=6O` — capital letter O — into
+/// a silent 60, and an operator who set 5 and got 60 would have no way to tell. Zero is refused for
+/// the same reason: reqwest treats a zero Duration as "no timeout", so the one value that reads like
+/// "fail fast" would in fact restore the unbounded hang this exists to prevent.
+fn upstream_timeout() -> std::time::Duration {
+    let raw = env_or("UPSTREAM_TIMEOUT_SECS", "");
+    if raw.is_empty() {
+        return std::time::Duration::from_secs(DEFAULT_UPSTREAM_TIMEOUT_SECS);
+    }
+    let secs: u64 = raw.parse().unwrap_or_else(|_| {
+        panic!("UPSTREAM_TIMEOUT_SECS must be a whole number of seconds, got {raw:?}")
+    });
+    if secs == 0 {
+        panic!(
+            "UPSTREAM_TIMEOUT_SECS=0 would disable the timeout entirely (reqwest reads a zero \
+             Duration as 'no timeout'), leaving a hung ML/ASR upstream to block the request \
+             forever. Set a positive number of seconds."
+        );
+    }
+    std::time::Duration::from_secs(secs)
+}
+
 impl AppState {
     pub fn new(pool: PgPool, jwt_secret: &str) -> Self {
         Self::build(pool, JwtConfig::new(jwt_secret))
@@ -70,10 +106,10 @@ impl AppState {
             jwt_config: Arc::new(jwt_config),
             // A bare `Client::new()` has no request timeout, so a stuck/hung ML or ASR upstream
             // (e.g. a GPU/MPS fault mid-inference) would block the calling request indefinitely
-            // instead of failing over with a 502 in bounded time. 60s comfortably covers Whisper
-            // transcription on CPU, which can legitimately take tens of seconds.
+            // instead of failing over with a 502 in bounded time. See `upstream_timeout` for the
+            // default and why it is configurable.
             http_client: reqwest::Client::builder()
-                .timeout(std::time::Duration::from_secs(60))
+                .timeout(upstream_timeout())
                 .build()
                 .expect("reqwest client with a fixed timeout is always constructible"),
             ml_inference_url: env_or("ML_INFERENCE_URL", "http://127.0.0.1:8090"),
