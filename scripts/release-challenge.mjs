@@ -217,9 +217,24 @@ function main() {
   try {
     ({ mode, values } = parseArguments(process.argv.slice(2)));
     const candidateRoot = getCandidateRoot(values["--candidate-dir"]);
+
+    // The report destination is resolved BEFORE any check that can refuse the candidate.
+    //
+    // It used to be assigned after `assertCleanCandidate`, so a dirty candidate — the single most
+    // likely adversarial failure, and the one this tool exists to catch — produced no report at all.
+    // The refusal was correct and completely unrecorded, which is the opposite of what P0.7 asks
+    // for: "record its successful AND adversarial failed runs". An unrecorded refusal is
+    // indistinguishable from a challenge nobody ran.
+    //
+    // Still validated as external here, so the earlier ordering cannot be restored by accident: the
+    // check needs `candidateRoot`, which is why this line cannot move above it.
+    //
+    // A directory that is not a Git checkout at all still yields no report, and that is right —
+    // there is no candidate to write a report *about*.
+    outputPath = assertExternalPath(values["--challenge-output"], candidateRoot, "--challenge-output");
+
     assertCleanCandidate(candidateRoot);
     const paths = challengePaths(values, candidateRoot);
-    outputPath = paths["--challenge-output"];
     const builderId = validateIndependentRunner(values, paths);
     const manifest = readJson(paths["--manifest"], "release manifest");
     candidateSha = manifest.candidateSha;

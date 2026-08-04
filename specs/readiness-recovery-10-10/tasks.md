@@ -19,6 +19,55 @@ P6 supports R10; and P7 supports R11/R12.
 - [ ] P0.7 — Build independent clean-checkout/CI challenge job; record its successful and adversarial failed runs.
 - [x] P0.8 — Reconcile `SHIP_READINESS`, proof checklist, pilot report, and release docs; retain old evidence as historical/invalidated.
 
+### Local implementation evidence — not a release-status change
+
+- 4 August 2026 (**P0.4**, engineering COMPLETE — the row stays open): the manifest schema and
+  verifier bind every item this row names. Enumerated against `scripts/release-manifest.mjs`
+  (schemaVersion 2.1.0) and its 22 adversarial tests, one per line:
+
+  | bound | refused when |
+  |---|---|
+  | source | manifest from an earlier commit; untracked files; tracked files modified after the commit |
+  | build | provenance that no longer matches the declared deployable images |
+  | image | null deployable digests; provenance/summary digest mismatch |
+  | SBOM | SBOM changed after evidence generation |
+  | smoke | smoke evidence with a mismatched trace |
+  | test | a passed-looking test summary for a different candidate |
+  | environment | environment summary hash change (signed-content check) |
+  | signature | unsigned; key not authorized by policy; policy changed after generation; content changed after signing |
+  | expiry | expired release evidence; a non-future `--expires-at` |
+
+  The row stays `[ ]` because the ledger rule requires a **retained candidate-bound artifact** and an
+  **independent verifier**, and the header still reads "Candidate: not yet created". The verifier
+  works; nothing has been verified with it, because there is nothing to verify yet.
+
+- 4 August 2026 (**P0.7**, two real defects found and fixed — the row stays open): the challenge
+  script existed with five tests. Probing the guarantees it actually makes found two that nothing
+  covered.
+
+  **The isolation keystone was untested.** `release-challenge.mjs` calls `assertExternalPath` on
+  every manifest input so a candidate cannot supply the evidence used to judge it — if it could, an
+  attacker holding the checkout holds the proof and "independently verified" means nothing. Only the
+  manifest generator's `--output` had a test for this. Now all eight inputs are probed one at a
+  time, each committed inside the candidate so the tree stays clean and the isolation check is what
+  is being exercised rather than the dirty-tree guard.
+
+  **An adversarial refusal left no record.** `outputPath` was assigned AFTER `assertCleanCandidate`,
+  so a dirty candidate — the most likely adversarial failure, and the one this tool exists to catch —
+  was refused correctly and recorded nowhere. P0.7 asks for "successful and adversarial failed runs";
+  an unrecorded refusal is indistinguishable from a challenge nobody ran. The report destination is
+  now resolved before any check that can refuse. Mutation-verified: restoring the old ordering turns
+  the new test red.
+
+  `.github/workflows/release-challenge.yml` is the job this row asks for: clean checkout of a named
+  candidate SHA, evidence downloaded to a separate directory, `--verify-manifest-only`, and the
+  report retained `if: always()` so a refusal survives a red run.
+
+  **The row stays `[ ]` and the workflow has never run.** P0.7 wants the job *and* its successful and
+  adversarial runs; there is no candidate to challenge. Committing the job now rather than on release
+  day is the difference between a reviewed procedure and one written under pressure by someone who
+  needs it to pass.
+
 ## Phase 1 — learner path and authorization
 
 - [x] P1.1 — Reproduce and retain the default-browser learner `Progress API 401` test before any fix.
