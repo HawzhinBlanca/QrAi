@@ -8,6 +8,7 @@
 import { createServer } from "node:http";
 import { createHash, randomUUID } from "node:crypto";
 import { readFileSync, readdirSync, existsSync, writeFileSync, appendFileSync, mkdirSync, realpathSync } from "node:fs";
+import { readFile as readFileAsync, readdir as readdirAsync } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
@@ -1076,31 +1077,57 @@ async function transcribeSession(requestBody) {
     return { transcribed: false, reason: "no-audio", recognizedText: [], chunkCount: 0 };
   }
 
+  // ── Read ASYNCHRONOUSLY, in bounded batches ─────────────────────────────────────────────────
+  //
+  // This used to be `readFileSync` per file: one for every chunk's metadata and one for its bytes.
+  // A fifteen-minute recitation is 9000 chunks, so ~18000 synchronous reads on the event loop —
+  // measured at a 356ms stall (specs/dr-rehearsal/evidence/P5.4-long-audio.log), scaling at roughly
+  // 24ms per audio-minute.
+  //
+  // The problem was never speed. 0.39s to assemble fifteen minutes of audio is fine. It was that
+  // the cost did not land on the session that caused it: for those 356ms every OTHER learner's
+  // analysis request waited. One person finishing a long memorisation session degraded everybody.
+  //
+  // Batched rather than one big `Promise.all`: 9000 concurrent opens is a good way to meet the
+  // process file-descriptor limit, and a session that fails at 9000 chunks and works at 500 is a
+  // worse bug than the stall. 64 keeps the libuv threadpool busy while the loop stays free.
+  const BATCH = 64;
+  async function readAllOf(files, read) {
+    const out = [];
+    for (let i = 0; i < files.length; i += BATCH) {
+      out.push(...(await Promise.all(files.slice(i, i + BATCH).map(read))));
+    }
+    return out;
+  }
+
   // startMs, not filename: chunk ids are UUIDs, so lexical order is arbitrary and would splice the
   // recitation out of sequence — which the ASR would faithfully transcribe as a different one.
-  const chunks = readdirSync(dir)
-    .filter((f) => f.endsWith(".meta.json"))
-    .map((f) => {
+  const metaFiles = (await readdirAsync(dir)).filter((f) => f.endsWith(".meta.json"));
+  const chunks = (
+    await readAllOf(metaFiles, async (f) => {
       try {
-        return JSON.parse(readFileSync(join(dir, f), "utf8"));
+        return JSON.parse(await readFileAsync(join(dir, f), "utf8"));
       } catch {
         return null;
       }
     })
+  )
     .filter((m) => m && m.sessionId === sessionId)
     .sort((a, b) => (a.startMs ?? 0) - (b.startMs ?? 0));
 
-  const parts = [];
-  const present = [];
-  for (const meta of chunks) {
-    const bin = join(dir, `${meta.chunkId}.bin`);
-    // A chunk whose bytes are gone (erased, or never stored) is SKIPPED rather than treated as
-    // silence: inserting nothing is more honest than inserting a gap the learner did not leave.
-    if (existsSync(bin)) {
-      parts.push(readFileSync(bin));
-      present.push(meta.chunkId);
+  // A chunk whose bytes are gone (erased, or never stored) is SKIPPED rather than treated as
+  // silence: inserting nothing is more honest than inserting a gap the learner did not leave.
+  // `existsSync` is gone with the rest — a failed read answers the same question without a second
+  // syscall, and without the TOCTOU window between the check and the open.
+  const read = await readAllOf(chunks, async (meta) => {
+    try {
+      return { chunkId: meta.chunkId, bytes: await readFileAsync(join(dir, `${meta.chunkId}.bin`)) };
+    } catch {
+      return null;
     }
-  }
+  });
+  const parts = read.filter(Boolean).map((r) => r.bytes);
+  const present = read.filter(Boolean).map((r) => r.chunkId);
 
   // What ISN'T here. Skipping a missing chunk silently is honest about the audio and dishonest
   // about the session: the transcript comes out short, the aligner scores it against the FULL
