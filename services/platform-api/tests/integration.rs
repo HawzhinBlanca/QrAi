@@ -4080,6 +4080,114 @@ async fn maintenance_mode_503s_normal_routes_but_keeps_health_live() {
     );
 }
 
+/// P5.3 fault test — **Postgres unreachable**, the row in the P5.2 map with no test.
+///
+/// `docs/readiness/INVENTORIES.md` states the contract: "`/ready` returns 503 when the pool can't
+/// answer (liveness `/health` stays 200) so orchestrators see 'up but can't serve'". Only the HAPPY
+/// path was tested (`ready_endpoint_returns_200_when_the_db_pool_answers`, itself `#[ignore]`d behind
+/// live Postgres), so the entire reason `/ready` exists — being DIFFERENT from `/health` during a
+/// database outage — was never executed.
+///
+/// Both halves are asserted in ONE test because the PAIRING is the contract, and each half fails a
+/// different way in production:
+///   • `/ready` wrongly 200 → the orchestrator keeps routing traffic to a pod where every request
+///     fails, and the outage looks like an application bug instead of a database one.
+///   • `/health` wrongly 503 → the orchestrator kills and reschedules pods that are perfectly
+///     healthy, turning a recoverable DB blip into a restart storm.
+///
+/// Deterministic and needs NO live Postgres: `connect_lazy` never dials, so the first connection
+/// attempt is the one `/ready` makes, against a port nothing listens on. The short `acquire_timeout`
+/// is what keeps this fast — sqlx otherwise retries for its 30s default before giving up.
+#[tokio::test]
+async fn readiness_reports_503_when_postgres_is_unreachable_while_liveness_holds() {
+    let pool = sqlx::postgres::PgPoolOptions::new()
+        .max_connections(1)
+        .acquire_timeout(std::time::Duration::from_secs(2))
+        .connect_lazy("postgresql://invalid:invalid@127.0.0.1:1/none")
+        .expect("lazy pool");
+    let router = platform_router_with_rate_limit(
+        AppState::with_header_auth(pool, "test-jwt-secret", true),
+        false,
+    );
+
+    let ready = send_json(&router, Method::GET, "/ready", None, None, Value::Null).await;
+    assert_eq!(
+        ready.status(),
+        StatusCode::SERVICE_UNAVAILABLE,
+        "/ready answered OK while Postgres was unreachable — an orchestrator would keep sending \
+         traffic to a process that cannot serve a single request"
+    );
+
+    let health = send_json(&router, Method::GET, "/health", None, None, Value::Null).await;
+    assert_eq!(
+        health.status(),
+        StatusCode::OK,
+        "/health must stay 200 during a database outage: the PROCESS is alive. A 503 here tells the \
+         orchestrator to kill a pod that would recover on its own"
+    );
+}
+
+/// P5.3 fault test — the kill-switch must not blind the people using it.
+///
+/// `maintenance_guard` exempts three paths: `/health`, `/ready`, `/metrics`. The test above covers
+/// exactly one of them. Drop `"/metrics"` from that match arm and every existing test still passes,
+/// while Prometheus starts receiving `503 service is in maintenance` for every scrape — losing
+/// observability precisely during the window when somebody is watching the system most closely.
+///
+/// `/ready` is checked by BODY rather than status: with a dead pool it is 503 either way, so the
+/// status cannot tell "the readiness handler ran and reported the DB is down" apart from "the
+/// maintenance guard swallowed the request before the handler existed". The body can — the guard
+/// emits `{"error":"service is in maintenance"}` and the handler does not.
+#[tokio::test]
+async fn maintenance_mode_leaves_metrics_and_readiness_reachable() {
+    let pool = sqlx::postgres::PgPoolOptions::new()
+        .max_connections(1)
+        .acquire_timeout(std::time::Duration::from_secs(2))
+        .connect_lazy("postgresql://invalid:invalid@127.0.0.1:1/none")
+        .expect("lazy pool");
+    let state = AppState::with_header_auth(pool, "test-jwt-secret", true)
+        .with_maintenance_mode(true)
+        // No token + dev_open, so the scrape needs no credential and this asserts the MAINTENANCE
+        // exemption rather than accidentally re-testing metrics auth.
+        .with_metrics_access(None, true);
+    let router = platform_router_with_rate_limit(state, false);
+
+    let metrics = send_json(&router, Method::GET, "/metrics", None, None, Value::Null).await;
+    assert_eq!(
+        metrics.status(),
+        StatusCode::OK,
+        "the maintenance guard swallowed /metrics — monitoring goes dark exactly when it is needed"
+    );
+
+    let ready = send_json(&router, Method::GET, "/ready", None, None, Value::Null).await;
+    let ready_body = axum::body::to_bytes(ready.into_body(), usize::MAX)
+        .await
+        .expect("readiness body");
+    let ready_text = String::from_utf8_lossy(&ready_body);
+    assert!(
+        !ready_text.contains("service is in maintenance"),
+        "/ready was answered by the maintenance guard instead of the readiness handler, so during \
+         maintenance it can no longer report whether the database is actually reachable — got: {ready_text}"
+    );
+
+    // The contrast, in the same test: a normal route IS refused. Without this, both assertions above
+    // would still hold if maintenance mode had simply stopped working.
+    let blocked = send_json(
+        &router,
+        Method::GET,
+        "/v1/quran/surahs",
+        None,
+        None,
+        Value::Null,
+    )
+    .await;
+    assert_eq!(
+        blocked.status(),
+        StatusCode::SERVICE_UNAVAILABLE,
+        "maintenance mode is not actually engaged, so the exemptions above prove nothing"
+    );
+}
+
 /// MIG2a — RLS as a BACKSTOP, not just as a barrier against a hostile tenant.
 ///
 /// `adversarial_sql_isolation_prevents_cross_tenant_access` proves RLS blocks a caller who is

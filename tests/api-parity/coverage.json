@@ -1,9 +1,9 @@
 {
-  "$comment": "PAR6 \u2014 every Rust integration test accounted for. coverage.test.mjs FAILS if a #[test] in services/platform-api/tests/integration.rs has no entry here. If that is why your build is red: add an entry with a status of ported | deferred-to-phase-7 | mechanical-remainder. Do not delete the check. rustLine is informational and NOT asserted \u2014 it drifts on every edit above it, and a gate that fails on unrelated line shifts gets disabled.",
+  "$comment": "PAR6 — every Rust integration test accounted for. coverage.test.mjs FAILS if a #[test] in services/platform-api/tests/integration.rs has no entry here. If that is why your build is red: add an entry with a status of ported | deferred-to-phase-7 | mechanical-remainder. Do not delete the check. rustLine is informational and NOT asserted — it drifts on every edit above it, and a gate that fails on unrelated line shifts gets disabled.",
   "scope": "specs/api-parity-suite/plan.md option B (approved 2026-07-31)",
   "totals": {
     "ported": 36,
-    "mechanical-remainder": 46,
+    "mechanical-remainder": 48,
     "deferred-to-phase-7": 10
   },
   "tests": [
@@ -77,31 +77,31 @@
       "rustTest": "sm2_spaced_repetition_updates_correctly",
       "rustLine": 579,
       "status": "deferred-to-phase-7",
-      "reason": "calls handlers::progress::sm2_update directly \u2014 there is no Node equivalent to call until Phase 7 writes one"
+      "reason": "calls handlers::progress::sm2_update directly — there is no Node equivalent to call until Phase 7 writes one"
     },
     {
       "rustTest": "sm2_quality_three_is_a_pass_not_a_reset",
       "rustLine": 605,
       "status": "deferred-to-phase-7",
-      "reason": "calls handlers::progress::sm2_update directly \u2014 there is no Node equivalent to call until Phase 7 writes one"
+      "reason": "calls handlers::progress::sm2_update directly — there is no Node equivalent to call until Phase 7 writes one"
     },
     {
       "rustTest": "sm2_interval_never_exceeds_the_ten_year_cap",
       "rustLine": 624,
       "status": "deferred-to-phase-7",
-      "reason": "calls handlers::progress::sm2_update directly \u2014 there is no Node equivalent to call until Phase 7 writes one"
+      "reason": "calls handlers::progress::sm2_update directly — there is no Node equivalent to call until Phase 7 writes one"
     },
     {
       "rustTest": "review_status_serializes_teacher_review_required",
       "rustLine": 647,
       "status": "deferred-to-phase-7",
-      "reason": "asserts types::ReviewStatus serde directly \u2014 there is no Node equivalent to call until Phase 7 writes one"
+      "reason": "asserts types::ReviewStatus serde directly — there is no Node equivalent to call until Phase 7 writes one"
     },
     {
       "rustTest": "begin_tenant_tx_activates_rls_context",
       "rustLine": 663,
       "status": "deferred-to-phase-7",
-      "reason": "calls begin_tenant_tx directly \u2014 there is no Node equivalent to call until Phase 7 writes one"
+      "reason": "calls begin_tenant_tx directly — there is no Node equivalent to call until Phase 7 writes one"
     },
     {
       "rustTest": "learner_progress_learner_id_is_authorized",
@@ -549,12 +549,24 @@
     {
       "rustTest": "a_finalized_session_records_a_server_derived_alignment",
       "status": "deferred-to-phase-7",
-      "reason": "finalize_session is not ported (Phase 7), so there is no Node route to compare against \u2014 the same reason the other two finalize entries are deferred."
+      "reason": "finalize_session is not ported (Phase 7), so there is no Node route to compare against — the same reason the other two finalize entries are deferred."
     },
     {
       "rustTest": "weekly_accuracy_excludes_self_reported_words_but_still_counts_them",
       "status": "deferred-to-phase-7",
       "reason": "Needs a learner seeded mid-test via direct pool access to stay isolated from the shared learner-1 day bucket; the parity harness speaks HTTP only."
+    },
+    {
+      "rustTest": "readiness_reports_503_when_postgres_is_unreachable_while_liveness_holds",
+      "rustLine": 4102,
+      "status": "mechanical-remainder",
+      "reason": "P5.3 fault test. The outage it needs — an unreachable pool — cannot be produced inside the A/B harness, which requires a live Postgres for every other test in the same run. The Node port serves GET /ready itself and its equivalent contract is covered directly by tests/node-api/readiness-fault.test.mjs."
+    },
+    {
+      "rustTest": "maintenance_mode_leaves_metrics_and_readiness_reachable",
+      "rustLine": 4142,
+      "status": "mechanical-remainder",
+      "reason": "P5.3 fault test for the kill-switch exemptions (/metrics, /ready). Engaging maintenance mode 503s every other route, so it cannot be expressed in the A/B harness, whose servers must serve normally for the rest of the run."
     }
   ]
 }

@@ -150,12 +150,61 @@ P6 supports R10; and P7 supports R11/R12.
      (a `LIMIT 200` tie). Cleaning them is the owner's database to touch, not mine.
 
   **Both rows remain open, and deliberately.** P2.6's bar is "every critical flow" — this covers the
-  microphone and offline flows, not timeout or the full unavailable path. P5.3's bar is "deterministic
-  fault tests AND observability assertions" — this adds one observability assertion and no
-  fault-injection suite. Real work toward them; not completion. Copy wording was left alone on
-  purpose: `micNotice.unavailable` is a dead end that offers no path forward and `offlineBanner.text`
-  says only "some features", but learner-facing copy is translation-reviewed work (P2.4), not
-  something to rewrite from inside a test commit.
+  microphone and offline flows, not timeout or the full unavailable path. Real work toward them; not
+  completion. Copy wording was left alone on purpose: `micNotice.unavailable` is a dead end that
+  offers no path forward and `offlineBanner.text` says only "some features", but learner-facing copy
+  is translation-reviewed work (P2.4), not something to rewrite from inside a test commit.
+
+- 4 August 2026 (P5.3 — fault tests for the two rows of the P5.2 map that had none):
+
+  The P5.2 degradation map (`docs/readiness/INVENTORIES.md`) documents five dependencies. Auditing
+  them against actual tests: the ML/ASR generic-502 path is covered (`proxy-endpoints.test.mjs`),
+  `fetchWithTimeout`'s 15s abort is covered (`http.test.ts`), the gateway reconnect/buffering is
+  chaos-tested (T13). Two were not.
+
+  **Postgres unreachable — the row whose whole purpose was untested.** The map states: "`/ready`
+  returns 503 when the pool can't answer (liveness `/health` stays 200) so orchestrators see 'up but
+  can't serve'". The only readiness test was
+  `ready_endpoint_returns_200_when_the_db_pool_answers` — the HAPPY path, itself `#[ignore]`d behind
+  live Postgres. The reason `/ready` exists at all, namely being DIFFERENT from `/health` during a
+  database outage, had never been executed. Each half fails differently in production: `/ready`
+  wrongly 200 keeps traffic flowing to a pod where every request fails; `/health` wrongly 503 makes
+  the orchestrator kill pods that would have recovered. Both are now asserted in one test, because
+  the pairing IS the contract. Mutation-tested in both directions.
+
+  **The kill switch could blind the people using it.** `maintenance_guard` exempts `/health`,
+  `/ready` and `/metrics`; the existing test covered `/health` alone. Removing `"/metrics"` from that
+  match arm left **every pre-existing test green** while Prometheus would have received
+  `503 service is in maintenance` for every scrape — observability lost precisely during the window
+  someone is watching most closely. That mutation is the proof the gap was real, not theoretical.
+  `/ready`'s exemption is asserted by BODY, not status: with a dead pool it is 503 either way, so
+  only the body distinguishes "the readiness handler ran" from "the guard swallowed the request".
+
+  Both tests need NO live Postgres — `connect_lazy` against a port nothing listens on, with a short
+  `acquire_timeout` — so they run in the default `cargo test` rather than behind the `--ignored`
+  flag, and are in `verify.sh` already.
+
+  **The same gap existed on the Node port, and it is the one that will be asked first.** `GET /ready`
+  is in the shell's own `PORTABLE` list, so during a cutover the Node process is what an orchestrator
+  queries. `routes/infra.mjs` implements the contract correctly — but the only A/B coverage
+  (`infra-parity.test.mjs`) asserts `s.text === "ready"`, the happy path, so a port that answered 200
+  with a dead pool would have passed. It cannot be an A/B test: the parity harness needs a live
+  Postgres for every other test in the same run, so there is no moment at which the database can be
+  taken from one server without destroying the suite. `ready` takes its context explicitly, so
+  `tests/node-api/readiness-fault.test.mjs` (5 tests) hands it the outage directly — no pool, a
+  throwing pool, the 200 control, liveness unaffected, and that the 503 body leaks neither the host,
+  the port, nor the role (infra.mjs withholds it deliberately: `/ready` answers without credentials).
+  Mutation-tested — making the `catch` return 200 turns it red.
+
+  Registered in `tests/api-parity/coverage.json` as `mechanical-remainder` with the real reason
+  rather than the convenient one. Its `ported` status structurally requires a file under
+  `tests/api-parity/`, and marking a fault test "not incident-class" would have contradicted the
+  argument above — that `/ready`'s behaviour during an outage is the entire reason it exists.
+
+  **P5.3 stays open.** Its bar is fault tests for the whole dependency map plus observability
+  assertions. Postgres-down and the kill switch are now covered; a general fault-INJECTION harness
+  (latency, partial failure, mid-request cancellation) does not exist, and P5.4's load/burst/chaos
+  execution against a real candidate is a separate, still-open row.
 
 ## Phase 1 — learner path and authorization
 
