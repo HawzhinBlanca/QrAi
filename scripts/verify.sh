@@ -173,6 +173,12 @@ if [[ "$FAST" != "yes" ]]; then
   # it. `psql` is not on every host (this repo's Postgres runs in Docker), so PSQL_BIN lets the
   # drill point at the container's client rather than making the gate depend on a host install.
   run "test: audio restore guards" "bash scripts/restore-audio.test.sh"
+  # P5.6. Backups hold learner PII and recordings of children, and until this gate they were written
+  # with `pg_dump --format=custom` and `tar -czf` — compression, which is not confidentiality.
+  # Runs the full round trip through the real backup and restore scripts with a throwaway keypair,
+  # and asserts BOTH directions: that an archive is opaque, and that no backup is written at all
+  # when no recipient certificate is configured. Needs only openssl, so it is not DB-gated.
+  run "test: backup encryption (P5.6)" "bash scripts/backup-crypto.test.sh"
   # MIG5 — Python. asr-inference ships plain-interpreter suites (documented as `python test_x.py`)
   # that import no torch and load no model, so they run anywhere Python 3 + numpy exist. They were
   # previously ungated ENTIRELY — including test_forced_align_normalization.py, which guards the

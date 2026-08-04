@@ -2137,6 +2137,41 @@ mod tests {
         );
     }
 
+    /// P5.3 (observability assertions): the trace id is the ONLY thing joining a learner's
+    /// WebSocket session to the ML requests it produced. When a recitation fails in the pilot, it is
+    /// what makes the difference between reading one request's logs and reading all of them.
+    ///
+    /// Every other test of this function passes `None`, so `"traceId"` was asserted PRESENT and only
+    /// ever observed as `null`. A refactor that hardcoded `"traceId": null`, dropped the parameter,
+    /// or wired the wrong variable in passes all of them — the key-presence check above included.
+    /// Presence is not propagation.
+    #[test]
+    fn the_forwarded_chunk_body_carries_the_trace_id_it_was_given() {
+        let traced = chunk_forward_body(
+            &a_chunk(),
+            "tenant-1",
+            "learner-1",
+            "teacher-review",
+            Some("trace-xyz"),
+        );
+        assert_eq!(
+            traced["traceId"],
+            serde_json::json!("trace-xyz"),
+            "the trace id did not survive into the ML request body, so nothing downstream can be \
+             correlated back to the session that caused it"
+        );
+
+        // ...and an untraced request must stay DISTINGUISHABLE from a traced one, or the assertion
+        // above could be satisfied by a function that stamped a constant into every request.
+        let untraced =
+            chunk_forward_body(&a_chunk(), "tenant-1", "learner-1", "teacher-review", None);
+        assert_eq!(
+            untraced["traceId"],
+            serde_json::Value::Null,
+            "an untraced chunk reported a trace id it was never given"
+        );
+    }
+
     #[tokio::test]
     async fn the_accepted_outcome_carries_the_retention_the_ticket_was_signed_with() {
         // Not the same claim as the test above, which would still pass if `check_ticket` hardcoded

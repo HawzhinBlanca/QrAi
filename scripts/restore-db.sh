@@ -9,12 +9,14 @@
 #
 # Usage:
 #   RESTORE_TARGET_URL=postgresql://user:pass@host:5432/quran_ai_restored \
-#     bash scripts/restore-db.sh path/to/quran_ai-<timestamp>.dump
+#     BACKUP_DECRYPTION_KEY=/path/to/qrai-backup-private.key \
+#     bash scripts/restore-db.sh path/to/quran_ai-<timestamp>.dump.cms
 #
 # Env:
-#   RESTORE_TARGET_URL   REQUIRED. Connection string for the database to restore INTO.
-#   RESTORE_FORCE=1      Allow restoring into a database that already has rows (default: refuse).
-#   RESTORE_JOBS         pg_restore parallelism (default: 4).
+#   RESTORE_TARGET_URL     REQUIRED. Connection string for the database to restore INTO.
+#   BACKUP_DECRYPTION_KEY  REQUIRED for encrypted (.cms) backups — the offline private key.
+#   RESTORE_FORCE=1        Allow restoring into a database that already has rows (default: refuse).
+#   RESTORE_JOBS           pg_restore parallelism (default: 4).
 #
 # ─────────────────────────────────────────────────────────────────────────────────────────────────
 # SAFETY: this script deliberately has NO DEFAULT for its target.
@@ -29,6 +31,9 @@
 # ─────────────────────────────────────────────────────────────────────────────────────────────────
 
 set -euo pipefail
+
+# shellcheck source=scripts/backup-crypto.sh
+. "$(dirname "$0")/backup-crypto.sh"
 
 dump_file="${1:-}"
 
@@ -55,6 +60,44 @@ for tool in pg_restore psql; do
   fi
 done
 
+# --- Decryption (P5.6) ---------------------------------------------------------------------------
+# Backups are encrypted CMS envelopes. Unlike the backup direction — where the dump is piped straight
+# into the encryptor and plaintext never exists as a file — a restore MUST materialise the dump:
+# pg_restore seeks within a custom-format archive, and `--jobs` requires a real seekable file.
+#
+# So this is the one place in the backup lifecycle where a decrypted dump touches disk. It is
+# created under `mktemp` with `umask 077` (owner-only) and removed by the trap below on ANY exit
+# path, including failure and Ctrl-C. That is a genuine, bounded exposure rather than an absent one,
+# and it is written down here so nobody has to rediscover it.
+restore_source="$dump_file"
+decrypted_tmp=""
+cleanup() {
+  if [[ -n "$decrypted_tmp" && -f "$decrypted_tmp" ]]; then rm -f "$decrypted_tmp"; fi
+  # `return 0` is load-bearing, not tidiness. Written as a one-line
+  # `[[ ... ]] && rm -f ...`, the test is FALSE whenever there is no temp file to remove — an
+  # unencrypted dump, or a decrypt that never happened — so the trap's last command exits 1. On an
+  # EXIT trap bash then uses that status, and a restore that fully succeeded reports FAILURE.
+  # Measured, not theorised. The wrong direction is harmless-looking (a false alarm rather than a
+  # masked failure), but an operator reading it at 3am cannot tell which they are looking at.
+  return 0
+}
+trap cleanup EXIT INT TERM
+
+if backup_crypto_is_encrypted "$dump_file"; then
+  backup_crypto_require_key || exit 2
+  decrypted_tmp="$(mktemp "${TMPDIR:-/tmp}/qrai-restore-XXXXXX.dump")"
+  echo "decrypting $dump_file"
+  backup_crypto_decrypt "$dump_file" "$decrypted_tmp" || exit 1
+  restore_source="$decrypted_tmp"
+else
+  # A bare .dump predates encryption (or was hand-made). Restoring it is allowed — refusing would
+  # make old backups unrecoverable, which is the opposite of what a restore path is for — but it is
+  # called out, because its existence on disk is itself the P5.6 problem.
+  echo "WARNING: $dump_file is NOT encrypted." >&2
+  echo "         It predates P5.6 backup encryption. Restoring it is permitted, but the file is" >&2
+  echo "         readable by anyone with disk access — handle and delete it accordingly." >&2
+fi
+
 target="$RESTORE_TARGET_URL"
 jobs="${RESTORE_JOBS:-4}"
 
@@ -80,7 +123,7 @@ start_epoch="$(date -u +%s)"
 # --no-owner: the dump's owner role may not exist in the target (e.g. restoring prod into a drill DB).
 # Not using ON_ERROR_STOP semantics here: pg_restore reports per-object errors and a non-zero exit,
 # which the `if` below turns into a hard failure rather than a warning nobody reads.
-if ! pg_restore --dbname="$target" --clean --if-exists --no-owner --jobs="$jobs" "$dump_file"; then
+if ! pg_restore --dbname="$target" --clean --if-exists --no-owner --jobs="$jobs" "$restore_source"; then
   echo "error: pg_restore reported failures — treat this restore as FAILED, not partial." >&2
   exit 1
 fi

@@ -15,6 +15,19 @@ restore="$here/restore-audio.sh"
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
 
+# Backups are encrypted (ADR-0035), so this suite needs a recipient keypair to exercise the scripts
+# at all. Throwaway, generated per run in `mktemp -d`, deleted on exit — not the owner's backup key,
+# which is created offline and never touched by tooling. Named `.x509`/`.pkcs8` rather than `.pem`
+# because `**/*.pem` is a protected path under AGENTS.md and fixtures should not look like real
+# credentials. The encryption itself is tested by scripts/backup-crypto.test.sh; here it is only
+# scaffolding, and every assertion below is exactly the one it was before encryption existed.
+cert="$tmp/recipient.x509"
+key="$tmp/recipient.pkcs8"
+export BACKUP_ENCRYPTION_CERT="$cert"
+export BACKUP_DECRYPTION_KEY="$key"
+openssl req -x509 -newkey rsa:2048 -keyout "$key" -out "$cert" -days 1 -nodes \
+  -subj "/CN=qrai-restore-audio-test" >/dev/null 2>&1
+
 pass=0
 fail=0
 check() { # check <name> <expected-exit> <actual-exit>
@@ -52,7 +65,7 @@ mkdir -p "$src/tenant-a/learner-1"
 printf 'audio-one' > "$src/tenant-a/learner-1/chunk-1.bin"
 printf 'audio-two' > "$src/tenant-a/learner-1/chunk-2.bin"
 AUDIO_BACKUP_SOURCE="$src" bash "$backup" "$tmp/backups" >/dev/null 2>&1
-archive="$(find "$tmp/backups" -name 'audio-storage-*.tar.gz' | head -1)"
+archive="$(find "$tmp/backups" -name 'audio-storage-*.tar.gz.cms' | head -1)"
 check_true "backup produced an archive" "$([[ -f "$archive" ]] && echo 0 || echo 1)"
 
 # 3. No archive argument.

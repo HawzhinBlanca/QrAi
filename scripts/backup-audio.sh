@@ -10,8 +10,15 @@
 #   AUDIO_BACKUP_SOURCE=/data/audio-storage bash scripts/backup-audio.sh [output-dir]
 #
 # Env:
-#   AUDIO_BACKUP_SOURCE  REQUIRED, no default. The audio storage directory to back up.
-#   AUDIO_BACKUP_DIR     Output directory (default: ./backups, or $1).
+#   AUDIO_BACKUP_SOURCE     REQUIRED, no default. The audio storage directory to back up.
+#   BACKUP_ENCRYPTION_CERT  REQUIRED. Public X.509 cert of the backup recipient.
+#   AUDIO_BACKUP_DIR        Output directory (default: ./backups, or $1).
+#
+# ENCRYPTION (P5.6): of everything this project stores, this archive is the most sensitive — it is
+# the children's voices themselves. `tar -czf` is COMPRESSION; it was never confidentiality, and
+# this script previously treated it as though it were. The archive is now written as an encrypted
+# CMS envelope using only the recipient's PUBLIC certificate, so this host cannot read back what it
+# just wrote. See scripts/backup-crypto.sh.
 #
 # ─────────────────────────────────────────────────────────────────────────────────────────────────
 # NO DEFAULT SOURCE, for the reason scripts/restore-db.sh spells out at length: a script that fell
@@ -26,6 +33,9 @@
 
 set -euo pipefail
 
+# shellcheck source=scripts/backup-crypto.sh
+. "$(dirname "$0")/backup-crypto.sh"
+
 if [[ -z "${AUDIO_BACKUP_SOURCE:-}" ]]; then
   echo "error: AUDIO_BACKUP_SOURCE is required and has NO default." >&2
   echo "       This is deliberate — see the safety note at the top of this script." >&2
@@ -39,11 +49,14 @@ if [[ ! -d "$source_dir" ]]; then
   exit 2
 fi
 
+# Checked before any archiving work starts — see the same note in scripts/backup-db.sh.
+backup_crypto_require_cert || exit 2
+
 out_dir="${1:-${AUDIO_BACKUP_DIR:-backups}}"
 mkdir -p "$out_dir"
 
 stamp="$(date -u +%Y%m%dT%H%M%SZ)"
-archive="$out_dir/audio-storage-$stamp.tar.gz"
+archive="$out_dir/audio-storage-$stamp.tar.gz${BACKUP_CRYPTO_SUFFIX}"
 
 # Counted BEFORE the archive is written, from the live tree — so the verification below compares two
 # independently produced numbers rather than the archive against itself.
@@ -55,11 +68,37 @@ started="$(date +%s)"
 # `-C "$source_dir" .` stores paths RELATIVE to the storage root: `tenant/learner/chunk.bin`. That
 # is the same shape as `privacy_jobs.audio_object_keys_deleted`, which is what makes the restore
 # script's erasure re-application a direct key lookup instead of a path-rewriting exercise.
-tar -czf "$archive" -C "$source_dir" .
+#
+# Piped into the encryptor rather than written and then encrypted, so the plaintext tarball of
+# children's recordings never exists as a file. `-v` makes tar report each member on stderr as it
+# writes it, which is what the count below is taken from.
+manifest="$(mktemp)"
+# INT/TERM as well as EXIT: the manifest lists the PATHS of learner recordings
+# (`tenant/learner/chunk.bin`). That is metadata rather than audio, but it still names which learners
+# have recordings, and a Ctrl-C during a long backup should not leave it behind.
+trap 'rm -f "$manifest"' EXIT INT TERM
+tar -czvf - -C "$source_dir" . 2>"$manifest" | backup_crypto_encrypt_stream "$archive"
 
 elapsed="$(( $(date +%s) - started ))"
 
-archived_count="$(tar -tzf "$archive" | grep -cv '/$' || true)"
+# The original check read the archive back with `tar -tzf`. That is no longer possible on this host,
+# and deliberately so: it holds no private key, so it cannot decrypt what it just wrote. The count
+# therefore comes from what tar REPORTED archiving, which is still a number produced independently
+# of `find` — so the comparison below still catches a silent drop, which is what it was for.
+#
+# What it no longer proves is that the archive reads back. That check moved to the restore drill,
+# where the key is present; it is the drill's job and is stated as such rather than quietly lost.
+#
+# Parsing note, learned by getting it wrong: BSD tar prints `a ./tenant/learner/chunk.bin` and lists
+# DIRECTORIES too, with no trailing slash to filter on — so the obvious `grep -cv '/$'` counts every
+# directory as a file and reports 8 members for a 3-file tree. GNU tar prints the bare path. Both are
+# handled by stripping an optional `a ` and then asking the filesystem whether the entry is a regular
+# file, rather than trying to infer that from the text.
+archived_count=0
+while IFS= read -r line; do
+  entry="${line#a }"
+  [[ -f "$source_dir/$entry" ]] && archived_count=$((archived_count + 1))
+done < "$manifest"
 if [[ "$archived_count" -ne "$file_count" ]]; then
   echo "FAIL: archive holds $archived_count files, the source has $file_count" >&2
   echo "      A backup that silently drops files is worse than no backup: it reports success." >&2

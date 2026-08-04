@@ -41,15 +41,52 @@ P6 supports R10; and P7 supports R11/R12.
   what it depends on. Allowlist, not denylist: the unknown licence needs a human, not a default.
   13 licences in the tree, all permissive; `MPL-2.0` (axe-core, lightningcss) is reported on every
   run rather than silently allowed, because its file-level obligation goes live the moment somebody
-  vendors and patches one. **Scope stated honestly: JavaScript only — `cargo-license` is not
-  installed here or in CI, so the Rust tree is UNGATED for licensing.**
+  vendors and patches one. ~~**Scope stated honestly: JavaScript only — `cargo-license` is not
+  installed here or in CI, so the Rust tree is UNGATED for licensing.**~~ **Superseded below.**
 
-  **P5.6 — backups are plaintext, and that is not fixed here.** `backup-db.sh` uses
-  `pg_dump --format=custom` and `backup-audio.sh` uses `tar -czf`; both are compression, neither is
-  encryption. These hold learner PII and children's recorded voices. The row demands "encrypted
-  backup verification". Not fixed in this change because the machine has neither `age` nor `gpg`
-  (only `openssl`), and cipher choice plus key custody and rotation is an ADR the owner owns — the
-  same reasoning that holds `T4` on ADR-0022. Recorded so it is a decision, not an omission.
+  ~~**P5.6 — backups are plaintext, and that is not fixed here.**~~ **Superseded below.**
+
+- 4 August 2026 (P4.4 and P5.6, closing two gaps the entry above RECORDED rather than fixed):
+
+  **P4.4 — the Rust tree is no longer ungated.** The scope note above was a true fact with a wrong
+  conclusion: `cargo-license` is indeed not installed, but `cargo metadata` already carries every
+  crate's `license` field, so gating the Rust tree needed no new tooling — only someone to read what
+  was already there. 317 third-party crates had been shipping ungated on that reasoning.
+  `scripts/check-licenses.mjs` now covers **527 packages across both trees** (was 210, JS only) under
+  ONE shared policy, because "may this project ship AGPL code" has the same answer whichever package
+  manager delivered it. Cargo emits real SPDX *expressions*, which string matching gets wrong in both
+  directions — `MIT OR Apache-2.0 OR LGPL-2.1-or-later` (r-efi) is fine because it may be taken under
+  MIT, and a hypothetical `MIT AND AGPL-3.0` is not fine despite containing MIT — so the gate parses
+  and evaluates them (OR takes the cleanest branch, AND takes the worst, with parentheses and the
+  legacy `MIT/Apache-2.0` slash). 16 self-test cases, each one a case a plausible simpler
+  implementation gets wrong. Mutation-tested: dropping `Unicode-3.0` from the policy turns the gate
+  red naming all 19 real crates, and removing `cargo` from `PATH` fails it closed rather than
+  silently skipping the tree. `CDLA-Permissive-2.0` (webpki-roots, Mozilla's CA set) joins MPL-2.0 as
+  acknowledged-every-run. Still ungated: nothing.
+
+  **P5.6 — backups are encrypted (ADR-0035). The deferral above was wrong, and instructively so.**
+  It reasoned that key custody and rotation is an owner-owned ADR — which is true of a SYMMETRIC
+  scheme, where the backup host must hold the key, and which it had assumed was the only option.
+  A CMS envelope (RFC 5652, AES-256-GCM) encrypts to a **public** certificate, so the backup host
+  holds no secret and cannot decrypt its own backups; the private key is generated once by the owner,
+  offline, and this tooling never creates or stores one. That removes key custody from the tooling's
+  decisions entirely, which is exactly why it could be implemented rather than deferred.
+  `pg_dump`/`tar` pipe straight into the encryptor, so plaintext never lands on disk on the backup
+  path. Fails closed with no opt-out flag, and a grep keeps it that way.
+  `scripts/backup-crypto.test.sh` (22 assertions, gated in `verify.sh`) runs the real scripts with a
+  throwaway keypair; the full encrypted round trip including erasure re-application passes against
+  live Postgres — control file restored, erased file still absent.
+
+  Mutation-tested in both directions, and the first mutation found a defect **in the test**: the
+  confidentiality assertion `grep -qa "$marker" "$archive"` PASSED with the encryption replaced by
+  `cat`, because gzip had compressed the marker out of literal visibility. It now asks three separate
+  questions with a plain-`tar.gz` control proving each can discriminate. That is the seventh instance
+  of this codebase's recurring defect class — a guard that passes for the wrong reason — and the
+  first found in a guard written during the same change.
+
+  **Still open on P5.6: the timed point-in-time restore/DR drill**, which is human-run. Encrypted
+  backup *verification* is now mechanised and gated; the drill is not, and the existing `<1s` T1
+  measurement is stale because it predates decryption.
 
   **Confirmed accurate, no hidden gap: P3.2.** Its "expired" gap is documented with the real reason
   — no expiry concept exists in the schema for an approval. That is a product decision.
@@ -57,9 +94,68 @@ P6 supports R10; and P7 supports R11/R12.
   **Human-gated, no engineering half to close: P3.4, P3.5** (dataset + consent governance),
   **P5.4, P5.5** (candidate + SRE), **P6.2** (VoiceOver/AT audits), **P6.1** (severity policy half).
 
-  **NOT probed deeply, and therefore still unaudited: P2.6, P5.3.** Listed rather than assumed
-  clean — the whole point of this pass is that "the ledger says it is in place" was wrong once in
-  three.
+  ~~**NOT probed deeply, and therefore still unaudited: P2.6, P5.3.**~~ **Both audited below.**
+
+- 4 August 2026 (P2.6 and P5.3 — the two rows the entry above left unaudited; both stay OPEN):
+
+  **Status of both rows was already accurate.** Neither claimed more than it had:
+  `docs/readiness/TRUE_READINESS.md` records P5.3 as partial and carries an explicit correction
+  noting that calling P2.6/P5.3 done was wrong. Nothing was overstated. What both rows DID have was
+  implemented behaviour with no test, so a gap existed in the engineering rather than in the claim.
+
+  **P2.6 — the states were built and none of them was tested.** `MicNotice` covers all five
+  microphone states, `OfflineBanner` watches the online/offline events, `ErrorBoundary` catches the
+  unavailable case. No test file existed for any of them. `Record<MicState, string>` makes the
+  state→key map exhaustive at COMPILE time — real, and not re-tested — but nothing checked the other
+  half: that each key resolves to a message. i18next echoes the key back when a translation is
+  missing, so deleting `micNotice.unavailable` shows a learner the literal string
+  `"micNotice.unavailable"` and every test still passes. Typed exhaustiveness over unverified values
+  is the same shape as the P2.2 finding: a guard that holds for the wrong reason.
+  `apps/web/src/components/StateNotices.test.tsx` (6 tests) now asserts no state leaks its key, every
+  state has a DISTINCT message (the copy-paste that maps `unavailable` at the `denied` text would
+  otherwise tell a learner with no microphone to check a permission they were never asked for), the
+  offline banner is exposed with `role="status"` + `aria-live` rather than merely appearing, and that
+  it reacts to real `offline`/`online` events instead of rendering statically. Mutation-tested both
+  ways: deleting the translation and duplicating the mapping each turn it red.
+
+  **P5.3 — `traceId` was threaded end to end and never once asserted with a value.** The trace id is
+  the only thing joining a learner's WebSocket session to the ML requests it produced. Both existing
+  `chunk_forward_body` tests pass `None`, so `"traceId"` was asserted PRESENT in the key-contract list
+  and only ever observed as `null`. Mutation confirmed the blindness directly: replacing the field
+  with a hardcoded `Value::Null` left both pre-existing tests GREEN. The new test
+  (`the_forwarded_chunk_body_carries_the_trace_id_it_was_given`) fails on it, and also pins the
+  untraced case so the assertion cannot be satisfied by stamping a constant into every request.
+
+  **Two defects found by running the gate rather than by reading it**, both in this change's own
+  blast radius and neither caught by any existing test:
+
+  1. **`restore-db.sh` reported FAILURE on a successful restore.** The new decrypted-dump cleanup
+     trap was written `cleanup() { [[ -n "$t" && -f "$t" ]] && rm -f "$t"; }`. Its last command is
+     FALSE whenever there is no temp file — an unencrypted dump, or a decrypt that never ran — and
+     bash adopts an EXIT trap's status, so the script printed `RESTORE OK`, verified every row
+     count, and exited 1. It survived because every assertion in `restore-db.test.sh` was a REFUSAL,
+     each exiting explicitly; the SUCCESS path had never been executed by a test. Fixed with an
+     unconditional `return 0`, and `restore-db.test.sh` now drives the success path with stubbed
+     `pg_restore`/`psql` (8 assertions, up from 5) plus the opposite direction, so it cannot be
+     satisfied by a script that always exits 0. Mutation-tested.
+
+  2. **`uniqueSuffix()` in the parity harness was not unique across runs**, which made `verify.sh`
+     red on two SM-2 tests that this change never touched. It returns `${pid}-${counter}`; the OS
+     recycles PIDs and these rows are never deleted, so a run landing on an earlier run's PID
+     inherits its SM-2 history — 98 such rows had accumulated, and a "first-ever review" returned
+     `intervalDays: 17` against an expected `1`. Dangerous specifically because it presents as a
+     PARITY failure, the one thing the suite exists to detect. Fixed with a random component.
+     **Not fixed: the rows themselves.** They are inert now, but nothing deletes them and unbounded
+     test detritus in the shared database has already caused one boundary failure this month
+     (a `LIMIT 200` tie). Cleaning them is the owner's database to touch, not mine.
+
+  **Both rows remain open, and deliberately.** P2.6's bar is "every critical flow" — this covers the
+  microphone and offline flows, not timeout or the full unavailable path. P5.3's bar is "deterministic
+  fault tests AND observability assertions" — this adds one observability assertion and no
+  fault-injection suite. Real work toward them; not completion. Copy wording was left alone on
+  purpose: `micNotice.unavailable` is a dead end that offers no path forward and `offlineBanner.text`
+  says only "some features", but learner-facing copy is translation-reviewed work (P2.4), not
+  something to rewrite from inside a test commit.
 
 ## Phase 1 — learner path and authorization
 

@@ -20,6 +20,7 @@
  * of genuinely new machinery this phase needs.
  */
 import { spawn } from "node:child_process";
+import { randomBytes } from "node:crypto";
 import { existsSync } from "node:fs";
 import { createServer } from "node:http";
 import { createServer as createNetServer } from "node:net";
@@ -382,11 +383,27 @@ export async function startMockUpstream(respond = () => ({ status: 200, body: {}
   };
 }
 
-/** Unique-per-run suffix so parallel test files never collide on a seeded id (integration.rs:3080). */
+/**
+ * Unique suffix so tests never collide on a seeded id (integration.rs:3080).
+ *
+ * `${pid}-${counter}` alone solved collisions BETWEEN parallel test files in one run, and silently
+ * failed to solve them ACROSS runs. The OS recycles PIDs, and none of these rows is ever deleted, so
+ * a later run that happens to land on an earlier run's PID reuses its ayah refs and inherits its
+ * SM-2 history: `learner_progress` still holds that row at `repetitions=2, interval_days=6`, so the
+ * "first-ever review" returns `intervalDays: 17` and
+ * `the SM-2 progression matches Rust step for step` fails on `17 !== 1`.
+ *
+ * Observed as a red `verify.sh` on 2026-08-04 with 98 such rows accumulated in the staging database.
+ * It is a flake in the harness rather than a bug in either implementation, and it is dangerous
+ * precisely because it looks like a parity failure — the thing the suite exists to detect.
+ *
+ * The random component removes cross-run collision; pid and counter stay for readability when
+ * grepping a failure back to the run that produced it.
+ */
 let counter = 0;
 export function uniqueSuffix() {
   counter += 1;
-  return `${process.pid}-${counter}`;
+  return `${process.pid}-${counter}-${randomBytes(4).toString("hex")}`;
 }
 
 /**

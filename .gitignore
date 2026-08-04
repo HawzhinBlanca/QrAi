@@ -52,6 +52,21 @@ UnpredectableGAME/
 # Database backups (learner data — never commit)
 /backups/
 *.dump
+# Encrypted backups (ADR-0035). `/backups/` already covers the default location; these catch a
+# BACKUP_DIR pointed somewhere else in the tree. Encrypted is not a reason to commit one — the
+# ciphertext still is the learner data, and it outlives every key rotation.
+*.cms
+
+# Backup encryption keys (ADR-0035). The runbook has the owner generate these BY NAME, and a
+# keypair created in the repo directory is otherwise perfectly committable. The private key is the
+# only thing that can read a backup and belongs offline; the public cert is not secret but has no
+# reason to be here either. `*.pkcs8`/`*.x509` are the throwaway extensions the crypto tests use —
+# they live in `mktemp -d`, but a stray TMPDIR should not be able to commit one.
+qrai-backup-private.key
+qrai-backup-public.crt
+*-private.key
+*.pkcs8
+*.x509
 # CocoIndex Code (ccc)
 /.cocoindex_code/
 

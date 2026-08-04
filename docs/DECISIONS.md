@@ -1585,3 +1585,92 @@ nothing would report a green run over an empty set.
 - **This does not enable anything.** `NODE_API_PORTED` stays empty at runtime and `traffic-share`
   stays UNMET. Parity is one of four gates the brief names (parity, rollback, security, operations);
   it is now measured rather than assumed.
+
+---
+
+## ADR-0035 — Backups are encrypted to a key the backup host does not have
+
+**Status:** Accepted · **Date:** 2026-08-04 · **Related:** ADR-0031 (P5.6), ADR-0022 (still owner-held)
+
+### Context
+
+`scripts/backup-db.sh` wrote `pg_dump --format=custom`. `scripts/backup-audio.sh` wrote `tar -czf`.
+Both are **compression**, and this project had been treating them as though they were
+confidentiality. The database dump holds learner accounts, consent records and progress; the audio
+archive holds raw recordings of children reciting. Both were readable by anyone with access to the
+backup directory — or to the off-host bucket that `docs/BACKUP_RESTORE.md` instructs operators to
+copy them to, which is the copy that lives longest and is watched least.
+
+This was found during a row-by-row audit of the twelve ledger rows marked "engineering in place",
+and then **deliberately not fixed**, on this reasoning:
+
+> Cipher choice plus key custody and rotation is an ADR the owner owns. I will not invent a
+> key-management scheme for children's audio in a drive-by commit.
+
+That reasoning was wrong, and the way it was wrong is worth recording, because it is a general
+failure mode: **it assumed the only design was a symmetric one.** Under a shared-secret scheme the
+backup host must hold the key, so key custody genuinely is an unavoidable, owner-owned decision, and
+deferring is correct. The deferral inherited that constraint from an unexamined assumption rather
+than from the problem.
+
+### Decision
+
+**CMS envelope encryption (RFC 5652) with AES-256-GCM, addressed to a recipient certificate.**
+
+Encryption requires only the recipient's **public** certificate. That single property removes the
+blocker entirely:
+
+- The backup host holds **no secret** and cannot decrypt its own backups. Compromising the machine
+  that stores every backup yields ciphertext, which is the threat that actually matters.
+- The private key is generated once by the owner, offline, and never appears in this repository, in
+  an environment variable, in CI, or in any process this tooling runs. **The tooling never creates a
+  key** — the same rule already applied to the release keystore.
+- There is no shared secret to rotate when staff change, and no passphrase to leak through a `ps`
+  listing, a shell history, or a CI log.
+
+So key custody is not a decision the tooling makes, which is precisely why this could be implemented
+rather than deferred. Generating the keypair remains the owner's one manual step and is documented
+in `docs/BACKUP_RESTORE.md`.
+
+**AES-256-GCM** because it is authenticated: a flipped byte makes decryption *fail* rather than
+return plausible garbage. For a backup, that is the difference between a loud failure and a corrupt
+restore nobody notices.
+
+**Fails closed, with no opt-out.** No `BACKUP_ALLOW_PLAINTEXT` flag exists, and
+`scripts/backup-crypto.test.sh` greps to keep it that way. An override is how a guard becomes
+decorative: it gets set once during an incident and never unset. Without a configured recipient, no
+backup is written and the script exits 2.
+
+### Consequences
+
+- **Losing the private key means losing every backup.** That is the design working, not failing. The
+  runbook requires two copies in separate physical locations before the first real backup, and
+  requires retired keys be kept for as long as anything encrypted to them is retained.
+- **The backup path never puts plaintext on disk** — `pg_dump` and `tar` are piped straight into the
+  encryptor, so there is no window and no cleanup step a crash can skip.
+- **The restore path does.** `pg_restore` seeks, and `--jobs` needs a real file, so the dump is
+  decrypted under `mktemp` with `umask 077` and removed by a trap on every exit path. Audio restore
+  has no such window: `tar -xz` reads the decrypted stream directly. This asymmetry is real, is
+  bounded, and is written down rather than smoothed over.
+- **The audio backup's file-count check got weaker.** It used to read the archive back with
+  `tar -tzf`; the host now cannot, having no key. It instead counts what `tar` reported archiving —
+  still a number produced independently of `find`, so it still catches a silent drop, but it no
+  longer proves the archive reads back. That proof moved to the restore drill, where the key is
+  present.
+- **Existing plaintext backups are not migrated.** Both restore scripts accept an unencrypted
+  archive and warn loudly, because refusing would make old backups unrecoverable. Their existence on
+  disk is itself the exposure.
+- **The T1 drill timing is now stale.** The measured `<1s` restore predates decryption. Re-timing it
+  is part of the P5.6 drill, not something to estimate.
+- P5.6 also requires a **timed point-in-time restore drill**, which this does not perform. Encrypted
+  backup *verification* is now mechanised and gated; the drill remains open and human-run.
+
+### What the test had to survive
+
+`scripts/backup-crypto.test.sh` runs the real backup and restore scripts against a throwaway keypair
+in `mktemp -d`. Its first version asserted confidentiality with `grep -qa "$marker" "$archive"` — and
+a mutation run that replaced the encryption with `cat` **passed**, because gzip had compressed the
+marker out of literal visibility. A guard that passes for the wrong reason is worse than no guard,
+since it is counted as coverage. The assertion now asks three separate questions (is it listable as a
+tar, does it carry the gzip magic, is the marker recoverable after decompression) and a plain
+`tar.gz` control proves each one can discriminate.
