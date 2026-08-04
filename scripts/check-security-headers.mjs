@@ -25,8 +25,32 @@ const COMMON = [
   ["script-src 'self'", "CSP script-src 'self'"],
 ];
 
-// nginx-tls.conf serves the HTTPS deployment, so it must additionally pin HSTS.
-const TLS_ONLY = [["add_header Strict-Transport-Security", "Strict-Transport-Security (HSTS)"]];
+// nginx-tls.conf serves the HTTPS deployment, so it must additionally pin HSTS and its TLS policy.
+//
+// The protocol line was already correct and NOTHING asserted it (P4.4 audit): the row names a "TLS
+// policy gate" and `ssl_protocols TLSv1.2 TLSv1.3;` sat in the config with no check, so adding
+// TLSv1.0 back would have been invisible to every gate.
+const TLS_ONLY = [
+  ["add_header Strict-Transport-Security", "Strict-Transport-Security (HSTS)"],
+  ["ssl_protocols TLSv1.2 TLSv1.3;", "ssl_protocols pinned to TLS 1.2/1.3"],
+];
+
+// The other direction, and the one that actually matters.
+//
+// `missingFrom` can only notice something REMOVED. A weak protocol is ADDED, and a config keeping
+// `ssl_protocols TLSv1.2 TLSv1.3;` while enabling TLSv1.0 in another server block would satisfy
+// every requirement above. Downgrade is the attack; presence-checking cannot see it.
+const FORBIDDEN = [
+  [/TLSv1\.0/, "TLSv1.0 (deprecated by RFC 8996)"],
+  [/TLSv1\.1/, "TLSv1.1 (deprecated by RFC 8996)"],
+  [/SSLv[23]/, "SSLv2/SSLv3"],
+  [/ssl_protocols[^;]*\bTLSv1\b(?!\.)/, "bare TLSv1"],
+];
+
+/** Labels of forbidden patterns PRESENT in `text`. Pure, like `missingFrom`, for the same reason. */
+export function forbiddenIn(text, patterns = FORBIDDEN) {
+  return patterns.filter(([re]) => re.test(text)).map(([, label]) => label);
+}
 
 /** Return the labels of requirements NOT satisfied by `text`. Pure, so it is unit-testable. */
 export function missingFrom(text, requirements) {
@@ -36,8 +60,7 @@ export function missingFrom(text, requirements) {
 function checkFile(relPath, requirements) {
   const abs = path.join(ROOT, relPath);
   const text = readFileSync(abs, "utf8");
-  const missing = missingFrom(text, requirements);
-  return { relPath, missing };
+  return { relPath, missing: missingFrom(text, requirements), forbidden: forbiddenIn(text) };
 }
 
 if (process.argv.includes("--self-test")) {
@@ -46,8 +69,11 @@ if (process.argv.includes("--self-test")) {
   const bad = "add_header Something-Else always;";
   const r1 = missingFrom(good, [['add_header X-Frame-Options "DENY" always;', "xfo"]]);
   const r2 = missingFrom(bad, [['add_header X-Frame-Options "DENY" always;', "xfo"]]);
-  if (r1.length !== 0 || r2.length !== 1) {
-    console.error("self-test FAILED", { r1, r2 });
+  // And the downgrade direction, which presence-checking cannot express.
+  const r3 = forbiddenIn("ssl_protocols TLSv1.2 TLSv1.3;");
+  const r4 = forbiddenIn("ssl_protocols TLSv1 TLSv1.1 TLSv1.2;");
+  if (r1.length !== 0 || r2.length !== 1 || r3.length !== 0 || r4.length === 0) {
+    console.error("self-test FAILED", { r1, r2, r3, r4 });
     process.exit(1);
   }
   console.log("check-security-headers self-test OK");
@@ -60,12 +86,17 @@ const results = [
 ];
 
 let failed = false;
-for (const { relPath, missing } of results) {
+for (const { relPath, missing, forbidden } of results) {
+  if (forbidden.length) {
+    failed = true;
+    console.error(`✗ ${relPath} enables protocols that must not be served:`);
+    for (const f of forbidden) console.error(`    - ${f}`);
+  }
   if (missing.length) {
     failed = true;
     console.error(`✗ ${relPath} is missing required security headers:`);
     for (const m of missing) console.error(`    - ${m}`);
-  } else {
+  } else if (!forbidden.length) {
     console.log(`✓ ${relPath} — all required security headers present`);
   }
 }
