@@ -1,5 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 
 import { canShowLearnerFacingAiOutput, statusForRun } from "./lib/gate.mjs";
 import { explainRule, runTajweedExplainer, SCHOLAR_BOARD_SOURCE } from "./lib/tajweedExplainer.mjs";
@@ -302,4 +303,55 @@ test("runAllAgents aggregates every agent's runs (injected IO)", async () => {
   });
   assert.equal(result.agents.length, 3);
   assert.equal(result.created, 3); // 1 explainer + 1 summary + 1 recommendation
+});
+
+// ─────────────────────────────────────────────────────────────────────────────────────────────────
+// The shared gate corpus, executed against THIS runtime.
+//
+// packages/contracts/fixtures/canonical-gates.json states its own purpose in its header: the gates
+// "are currently implemented once, in TypeScript. Any second implementation (a Node service, a Dart
+// client, a Python check) must agree EXACTLY ... every runtime loads this same file and asserts the
+// same expectations."
+//
+// This module IS the "a Node service" in that sentence, and it did not load the file. Nor did
+// services/node-api or services/platform-api. Only the TypeScript suite read the corpus — the
+// language that already owns the reference implementation — so it demonstrated that TypeScript
+// agreed with itself. The tests above this line check this gate against cases written here, which is
+// the same shape of problem one level down: they cannot notice the corpus gaining a case.
+// ─────────────────────────────────────────────────────────────────────────────────────────────────
+
+const GATE_CORPUS = JSON.parse(
+  readFileSync(
+    new URL("../../packages/contracts/fixtures/canonical-gates.json", import.meta.url),
+    "utf8",
+  ),
+)["canShowLearnerFacingAiOutput"];
+
+test("the agents gate agrees with the shared corpus on every case", () => {
+  const cases = GATE_CORPUS?.cases;
+  assert.ok(Array.isArray(cases), "canonical-gates.json has no canShowLearnerFacingAiOutput.cases");
+
+  // Fail CLOSED on a shrinking corpus: an empty `cases` makes the loop below vacuous and this test
+  // green while asserting nothing at all.
+  assert.ok(
+    cases.length >= 8,
+    `the corpus is down to ${cases.length} cases for the learner gate; it had 11. A corpus that ` +
+      "shrinks silently is how this check stops meaning anything.",
+  );
+
+  // Both answers must be present, or a function hardcoded to `false` satisfies every case — which
+  // would withhold all agent output from every learner, a real bug no negative case would catch.
+  assert.ok(
+    cases.some((c) => c.expected === true) && cases.some((c) => c.expected === false),
+    "the corpus must contain both passing and failing cases",
+  );
+
+  for (const c of cases) {
+    assert.equal(
+      canShowLearnerFacingAiOutput(c.input),
+      c.expected,
+      `this runtime disagrees with the shared corpus.\n  case: ${c.name}\n  input: ` +
+        `${JSON.stringify(c.input)}\n  corpus: ${c.expected}`,
+    );
+  }
 });

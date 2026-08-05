@@ -647,3 +647,103 @@ mod learner_gate_tests {
         }
     }
 }
+
+#[cfg(test)]
+mod learner_gate_corpus_tests {
+    use super::clears_learner_gate;
+
+    /// The shared corpus, executed against THIS implementation.
+    ///
+    /// `packages/contracts/fixtures/canonical-gates.json` opens by stating its own purpose: the
+    /// gates "are currently implemented once, in TypeScript. Any second implementation (a Node
+    /// service, a Dart client, a Python check) must agree EXACTLY, and prose in a design doc cannot
+    /// enforce that. This corpus can: every runtime loads this same file and asserts the same
+    /// expectations."
+    ///
+    /// That last sentence was not true. `canShowLearnerFacingAiOutput` has five implementations
+    /// outside TypeScript — this one, `services/node-api/routes/ml-proxy.mjs`,
+    /// `services/node-api/routes/agent-write.mjs`, `services/agents/lib/gate.mjs` and
+    /// `apps/flutter/lib/src/api/models.dart` — and not one of them read the file. The corpus was
+    /// loaded only by the TypeScript suite, which is the language that already owns the reference
+    /// implementation, so it proved that TypeScript agreed with itself.
+    ///
+    /// This is the authoritative gate: ADR-0028 moved enforcement server-side because a client-side
+    /// check is a display choice, not an authorization boundary. A learner with `curl` and their own
+    /// token gets whatever this function returns. If any implementation had to read the corpus, it
+    /// was this one.
+    ///
+    /// The hand-written cases in `learner_gate_tests` above stay. They are not redundant: they were
+    /// written against this function's own reasoning, and a corpus can only ever check the cases
+    /// somebody added to it.
+    const CORPUS: &str =
+        include_str!("../../../../packages/contracts/fixtures/canonical-gates.json");
+
+    #[test]
+    fn rust_agrees_with_the_shared_gate_corpus_on_every_case() {
+        let corpus: serde_json::Value =
+            serde_json::from_str(CORPUS).expect("canonical-gates.json is not valid JSON");
+
+        let cases = corpus["canShowLearnerFacingAiOutput"]["cases"]
+            .as_array()
+            .expect("canonical-gates.json has no canShowLearnerFacingAiOutput.cases array");
+
+        // Fail CLOSED on an empty corpus. Without this, deleting every case — or renaming the key,
+        // which `as_array()` on a missing value would have turned into an empty iteration had it not
+        // panicked — leaves a green test that asserts nothing. Same shape as the licence gate that
+        // once reported "0 unapproved" because it had received zero packages.
+        assert!(
+            cases.len() >= 8,
+            "the shared corpus is down to {} cases for the learner gate; it had 11. A corpus that \
+             shrinks silently is how this check stops meaning anything.",
+            cases.len()
+        );
+
+        let mut checked = 0;
+        for case in cases {
+            let name = case["name"].as_str().unwrap_or("<unnamed>");
+            let input = &case["input"];
+            let expected = case["expected"]
+                .as_bool()
+                .unwrap_or_else(|| panic!("case {name:?} has no boolean `expected`"));
+
+            let review_status = input["reviewStatus"]
+                .as_str()
+                .unwrap_or_else(|| panic!("case {name:?} has no string `reviewStatus`"));
+            let confidence = input["confidence"]
+                .as_f64()
+                .unwrap_or_else(|| panic!("case {name:?} has no numeric `confidence`"));
+            let sources = &input["sources"];
+
+            let actual = clears_learner_gate(review_status, confidence, sources);
+            assert_eq!(
+                actual, expected,
+                "the server-side gate disagrees with the shared corpus.\n  case:     {name}\n  \
+                 input:    reviewStatus={review_status:?} confidence={confidence} \
+                 sources={sources}\n  corpus:   {expected}\n  this impl: {actual}"
+            );
+            checked += 1;
+        }
+
+        // Belt and braces: the loop above is vacuously satisfied by an empty `cases`, and the length
+        // check would have to be wrong for that to happen — but "would have to be wrong" is exactly
+        // the assumption that produces a guard passing for the wrong reason.
+        assert_eq!(checked, cases.len(), "not every corpus case was executed");
+    }
+
+    #[test]
+    fn the_corpus_contains_both_answers() {
+        // A corpus of only-false cases is satisfied by a gate hardcoded to `false`, which withholds
+        // every finding from every learner — silent, and no negative case would notice.
+        let corpus: serde_json::Value = serde_json::from_str(CORPUS).unwrap();
+        let cases = corpus["canShowLearnerFacingAiOutput"]["cases"]
+            .as_array()
+            .unwrap();
+        let passing = cases.iter().filter(|c| c["expected"] == true).count();
+        let failing = cases.iter().filter(|c| c["expected"] == false).count();
+        assert!(
+            passing > 0 && failing > 0,
+            "the corpus has {passing} passing and {failing} failing cases; it must have both, or a \
+             constant function satisfies it"
+        );
+    }
+}
