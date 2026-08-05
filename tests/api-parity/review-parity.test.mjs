@@ -446,3 +446,242 @@ test("the route is teacher-and-above, within tenant — a learner cannot read it
     );
   }
 });
+
+// ── The review queue must contain the findings that need reviewing ────────────────────────────────
+//
+// `/v1/tajweed-findings` is the tenant-wide staff queue: what a teacher opens to decide what to work
+// on. It was `ORDER BY confidence DESC, id LIMIT 200`, and measured against this corpus that page
+// contained:
+//
+//   115  teacher-reviewed          already decided, 58% of the page
+//    84  ai-suggested
+//     1  blocked
+//     0  teacher-review-required   ...out of 1781 in the tenant
+//
+// Zero of the findings whose status LITERALLY NAMES the need were visible, and a teacher working the
+// queue to exhaustion would never reach one.
+//
+// I made half of this worse. ADR-0036 set canonical-text confidence to 0 — correctly, it was
+// fabricated — which put every NEW finding behind all 2892 legacy ones carrying 0.80-0.90. At the
+// time of writing 41 findings had confidence 0 and not one appeared in the page. The ordering was
+// already sorting by something unrelated to whether review was needed; zeroing the number turned a
+// bad sort into a starvation.
+//
+// The queue now sorts by what it is FOR: awaiting review before already decided, then OLDEST first
+// so nothing starves. An unrecognised review status sorts with "awaiting" — a status nobody has
+// heard of should surface for a human, not vanish.
+const DECIDED_STATUSES = ["teacher-reviewed", "blocked", "scholar-approved"];
+
+/**
+ * Seed one finding with a controlled review status, confidence, and session age.
+ *
+ * The first version of these tests asserted against WHATEVER the corpus happened to hold —
+ * `awaiting > 200` as a premise. That passed on a machine with a 1986-deep backlog and failed on
+ * CI's freshly migrated database, which has ten. A test coupled to one machine's data is a pin on
+ * today's state, which is the defect this whole file exists to catch; so the fixtures now state
+ * what they need instead of hoping for it.
+ *
+ * `startedAt` is what the queue orders by, so it is a parameter rather than `now()`.
+ */
+async function seedQueued({ label, reviewStatus, confidence, startedAtSql }) {
+  const suffix = `${Date.now().toString(36)}-${Math.floor(Math.random() * 1e9)}`;
+  const ids = {
+    audit: `audit-q-${label}-${suffix}`,
+    consent: `consent-q-${label}-${suffix}`,
+    session: `session-q-${label}-${suffix}`,
+    alignment: `wa-q-${label}-${suffix}`,
+    finding: `tf-q-${label}-${suffix}`,
+  };
+  const [learner] = await queryJson(
+    "SELECT id FROM users WHERE tenant_id = $1 AND role = 'learner' ORDER BY id LIMIT 1",
+    [TENANT],
+  );
+  const [model] = await queryJson("SELECT id FROM model_versions ORDER BY id LIMIT 1");
+  const [word] = await queryJson("SELECT id FROM canonical_words WHERE ayah_id = '1:1' LIMIT 1");
+
+  await queryJson(
+    `INSERT INTO audit_events (id, tenant_id, actor_id, action, subject_type, subject_id, metadata)
+     VALUES ($1, $2, $3, 'test.seed', 'test', $1, '{}'::jsonb)`,
+    [ids.audit, TENANT, learner.id],
+  );
+  await queryJson(
+    `INSERT INTO consent_records (id, tenant_id, user_id, audio_retention, anonymized_learning,
+       external_asr_processing, guardian_approved, consent_version, audit_event_id)
+     VALUES ($1, $2, $3, 'discard', true, false, true, 'pilot-v1', $4)`,
+    [ids.consent, TENANT, learner.id, ids.audit],
+  );
+  await queryJson(
+    `INSERT INTO recitation_sessions
+       (id, tenant_id, learner_id, quran_ref, source_checksum, model_version_id, mode,
+        practice_plan_id, external_processing_allowed, confidence, review_status, started_at,
+        latency_ms, consent_record_id, consent_snapshot, audit_event_id, language)
+     VALUES ($1, $2, $3, '{}'::jsonb, 'fnv1a32:t', $4, 'guided-recite', 'p', false, 0.0, 'draft',
+             ${startedAtSql}, 0, $5, '{}'::jsonb, $6, 'ar')`,
+    [ids.session, TENANT, learner.id, model.id, ids.consent, ids.audit],
+  );
+  await queryJson(
+    `INSERT INTO word_alignments
+       (id, tenant_id, session_id, word_id, heard_text, start_ms, end_ms, confidence, status,
+        model_version_id, audit_event_id, transcript_source)
+     VALUES ($1, $2, $3, $4, 'x', 0, 100, 0.9, 'matched', $5, $6, 'client-reported')`,
+    [ids.alignment, TENANT, ids.session, word.id, model.id, ids.audit],
+  );
+  await queryJson(
+    `INSERT INTO tajweed_findings
+       (id, tenant_id, alignment_id, rule, severity, confidence, explanation, review_status,
+        source_refs, model_version_id, audit_event_id, analysis_basis)
+     VALUES ($1, $2, $3, 'ghunnah', 'practice', $4, 'e', $5, '[]'::jsonb, $6, $7, 'canonical-text')`,
+    [ids.finding, TENANT, ids.alignment, confidence, reviewStatus, model.id, ids.audit],
+  );
+  return ids.finding;
+}
+
+test("a decided finding never outranks one still awaiting review", async () => {
+  // The ordering rule, stated as the smallest case that can distinguish it — and deliberately NOT as
+  // a claim about how deep the corpus is.
+  //
+  //   decided   HIGH confidence (0.95), OLD session   -> would come first under `confidence DESC`
+  //   awaiting  ZERO confidence,        NEWER session -> must come first under the queue's own rule
+  //
+  // Both are seeded at the very front of the age ordering so neither depends on the backlog: on a
+  // fresh database and on one holding 1986 awaiting findings, the relative order is the same claim.
+  const decided = await seedQueued({
+    label: "decided",
+    reviewStatus: "teacher-reviewed",
+    confidence: 0.95,
+    startedAtSql: "now() - interval '20 years'",
+  });
+  const awaiting = await seedQueued({
+    label: "awaiting",
+    reviewStatus: "teacher-review-required",
+    confidence: 0,
+    startedAtSql: "now() - interval '19 years'",
+  });
+
+  for (const [impl, base] of [["shell", shell.baseUrl], ["rust", api.baseUrl]]) {
+    const res = await request(base, "/v1/tajweed-findings", { role: "teacher" });
+    assert.equal(res.status, 200, `${impl}: ${res.text}`);
+    const ids = res.body.map((f) => f.id);
+
+    assert.ok(
+      ids.includes(awaiting),
+      `${impl}: a finding awaiting review, older than almost everything, is not in the queue at all`,
+    );
+    const awaitingAt = ids.indexOf(awaiting);
+    const decidedAt = ids.indexOf(decided);
+    assert.ok(
+      decidedAt === -1 || awaitingAt < decidedAt,
+      `${impl}: an already-reviewed finding (confidence 0.95) is ahead of one still awaiting ` +
+        `review (confidence 0) at positions ${decidedAt} and ${awaitingAt}. The queue is ranking ` +
+        "by a number instead of by whether work is needed.",
+    );
+  }
+});
+
+test("zero confidence does not change a finding's place in the queue", async () => {
+  // The regression ADR-0036 introduced, isolated: two findings awaiting review, same age ordering,
+  // differing ONLY in confidence. Under `confidence DESC` the 0.9 one leads; under the queue's own
+  // rule the older one does, whatever its confidence.
+  const older = await seedQueued({
+    label: "zero",
+    reviewStatus: "ai-suggested",
+    confidence: 0,
+    startedAtSql: "now() - interval '18 years'",
+  });
+  const newer = await seedQueued({
+    label: "high",
+    reviewStatus: "ai-suggested",
+    confidence: 0.9,
+    startedAtSql: "now() - interval '17 years'",
+  });
+
+  for (const [impl, base] of [["shell", shell.baseUrl], ["rust", api.baseUrl]]) {
+    const ids = (await request(base, "/v1/tajweed-findings", { role: "teacher" })).body.map((f) => f.id);
+    assert.ok(ids.includes(older), `${impl}: the zero-confidence finding is missing from the queue`);
+    assert.ok(
+      ids.indexOf(older) < ids.indexOf(newer),
+      `${impl}: the newer high-confidence finding leads the older zero-confidence one. Every ` +
+        "canonical-text finding now carries confidence 0 (ADR-0036), so this ordering would put all " +
+        "new evidence permanently last.",
+    );
+  }
+});
+
+test("the page is exactly the longest-waiting awaiting findings — not a confidence ranking", async () => {
+  // ── A correction to this test's first draft, kept because the distinction is the whole point ────
+  //
+  // It originally asserted "a zero-confidence finding appears in the queue" and stayed RED after the
+  // fix. That premise conflated two different things:
+  //
+  //   STARVATION  a finding can NEVER be reached however much work is done. Confidence ordering is
+  //               static, so a confidence-0 finding sat behind 2892 legacy ones permanently.
+  //   BACKLOG     a finding is not on page 1 because 1986 others have waited longer. It advances as
+  //               they are worked.
+  //
+  // Under FIFO the 40 newest findings are legitimately not on the first page, and demanding they be
+  // there would have meant ordering newest-first, which starves the oldest instead. So the test was
+  // wrong, not the code — and the honest property is that POSITION DEPENDS ON WAITING, not on a
+  // number. Cross-checked against Postgres rather than against the other implementation, because an
+  // A/B cannot see an ordering both sides get wrong together.
+  const expected = await queryJson(
+    `SELECT tf.id
+     FROM tajweed_findings tf
+     JOIN word_alignments wa ON wa.id = tf.alignment_id
+     LEFT JOIN recitation_sessions rs ON rs.id = wa.session_id
+     WHERE tf.tenant_id = $1
+     ORDER BY (tf.review_status IN ('teacher-reviewed','blocked','scholar-approved')),
+              rs.started_at ASC NULLS FIRST, tf.id
+     LIMIT 200`,
+    [TENANT],
+  );
+
+  for (const [impl, base] of [["shell", shell.baseUrl], ["rust", api.baseUrl]]) {
+    const res = await request(base, "/v1/tajweed-findings", { role: "teacher" });
+    assert.deepEqual(
+      res.body.map((f) => f.id),
+      expected.map((r) => r.id),
+      `${impl}: the queue is not the longest-waiting findings. If this went red after an ORDER BY ` +
+        "change, decide deliberately which findings become unreachable — with a fixed LIMIT and no " +
+        "pagination, some always do.",
+    );
+  }
+});
+
+/**
+ * The truncation, stated rather than left to be discovered.
+ *
+ * `LIMIT 200` with no pagination means a queue deeper than 200 has findings no teacher can reach
+ * through this route, whatever the order. Reordering moved WHO is unreachable — from "everything
+ * that actually needs review" to "the most recent arrivals" — it did not remove the cap.
+ *
+ * This test does not fail on the backlog existing; that would be failing on the corpus. It fails if
+ * the route ever stops being truncated silently, so whoever adds pagination is told this note is
+ * stale, and it prints the depth so the number is visible in the gate rather than in a database.
+ */
+test("the queue is truncated and nothing on the wire says so — a recorded gap", async () => {
+  const [{ awaiting }] = await queryJson(
+    `SELECT count(*)::int AS awaiting FROM tajweed_findings
+     WHERE tenant_id = $1 AND review_status NOT IN ('teacher-reviewed','blocked','scholar-approved')`,
+    [TENANT],
+  );
+  const res = await request(shell.baseUrl, "/v1/tajweed-findings", { role: "teacher" });
+  assert.equal(res.status, 200);
+
+  if (awaiting <= 200) {
+    assert.ok(true, `SKIP — only ${awaiting} findings await review, so nothing is truncated here`);
+    return;
+  }
+
+  assert.equal(
+    res.body.length,
+    200,
+    "the queue stopped returning a full page; if pagination was added, delete this test and the " +
+      "note above it rather than leaving a stale claim about truncation",
+  );
+  assert.ok(
+    !Array.isArray(res.body) || res.body.every((f) => !("totalAwaiting" in f)),
+    "the response now carries a total — say so on the route and retire this gap",
+  );
+  // Printed, not asserted: the point is that the number is knowable from the gate.
+  console.log(`    note: ${awaiting} findings await review; this route returns at most 200 and says nothing about the rest`);
+});

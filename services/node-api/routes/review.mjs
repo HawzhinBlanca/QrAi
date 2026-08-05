@@ -453,11 +453,33 @@ export async function listTajweedFindings(req, reply, ctx) {
       LEFT JOIN recitation_sessions rs ON rs.id = wa.session_id
       LEFT JOIN consent_records cr ON cr.id = rs.consent_record_id
       WHERE tf.tenant_id = ${actor.tenantId}
-      -- tf.id breaks ties: confidence is NOT unique (findings routinely share 0.9), so with the
-      -- LIMIT below Postgres would drop an ARBITRARY subset of the tied rows at the cutoff and
-      -- return a different set run to run. Any ORDER BY feeding a LIMIT needs a unique tiebreaker
-      -- to be reproducible.
-      ORDER BY tf.confidence DESC, tf.id LIMIT 200`;
+-- ── What this queue is FOR ─────────────────────────────────────────────────────────────────
+      -- A teacher opens this to decide what to work on, so it sorts by whether work is NEEDED and
+      -- then by how long it has waited. It used to sort by confidence DESC, which is unrelated to
+      -- either -- and measured against a real corpus that page held 115 already-reviewed findings,
+      -- 84 ai-suggested, and ZERO of the 1781 whose status literally names the need.
+      --
+      -- ADR-0036 then made it worse: setting canonical-text confidence to 0 (correctly -- it was
+      -- fabricated) put every NEW finding behind all 2892 legacy ones carrying 0.80-0.90, so the
+      -- newest evidence became the least visible.
+      --
+      -- An UNRECOGNISED status sorts with the awaiting group, not the decided one: a status nobody
+      -- has heard of should surface for a human rather than vanish from the queue.
+      --
+      -- Oldest recitation first, because the longest wait is the most urgent and FIFO is the only
+      -- order in which nothing starves.
+      --
+      -- rs.started_at, not tf.created_at: tajweed_findings has NO timestamp column at all. The first
+      -- version of this ORDER BY assumed one and both implementations returned a database error,
+      -- identically -- worth recording so the next person does not assume it either.
+      --
+      -- NULLS FIRST: a finding whose session has been erased still needs a human, and sinking it to
+      -- the bottom of a truncated page is how an orphan becomes invisible.
+      --
+      -- tf.id still breaks ties: started_at is not unique across a session's findings.
+      ORDER BY (tf.review_status IN ('teacher-reviewed', 'blocked', 'scholar-approved')),
+               rs.started_at ASC NULLS FIRST, tf.id
+      LIMIT 200`;
 
     return rows.map((r) => ({
       // json! keys, alphabetical.
