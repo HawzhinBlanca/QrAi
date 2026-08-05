@@ -148,17 +148,15 @@ describe("PracticeFlow — the mistake count a learner is shown", () => {
     expect(text, "an empty alignment was reported as a count").not.toMatch(/\b0 words?\b/);
   });
 
-  // ── NOT covered here, and deliberately so ──────────────────────────────────────────────────────
-  // `accuracy`'s divide-by-zero guard (`scoredWords > 0 ? ... : 0`) is UNOBSERVED by this file.
+  // ── accuracy is covered NEXT DOOR, not here ────────────────────────────────────────────────────
+  // `accuracy`'s divide-by-zero guard is asserted in PracticeFlow.accuracy.test.tsx, which mocks
+  // ProgressPanel and inspects the props PracticeFlow hands it.
   //
-  // Accuracy reaches the DOM only through `ProgressPanel`, which renders in `guided-recite` behind a
-  // `lazy` + `Suspense` boundary that does not resolve under `act` in this jsdom setup — awaiting
-  // ticks and preloading the module both leave the fallback in place. The fallback itself carries
-  // `className="progress-panel"` and `aria-busy`, which is how a first attempt at this test came to
-  // assert against the fallback and pass with the guard REMOVED.
+  // It is a separate file because `vi.mock` is file-scoped and these tests deliberately run in
+  // `correction` mode, where the real panel is never rendered.
   //
-  // Three earlier drafts of that assertion could not fail. Rather than ship a fourth, the gap is
-  // stated: removing the guard renders "NaN%" to a learner, and nothing in this repository would
-  // catch it. Closing it needs either a test that can resolve the boundary or a ProgressPanel-level
-  // test taking `accuracy={NaN}` directly.
+  // An earlier note here proposed closing that gap with "a ProgressPanel-level test taking
+  // accuracy={NaN}". That was WRONG: ProgressPanel renders `{accuracy}%` unguarded, so such a test
+  // would have asserted the bug rather than pinned the guard. The guarantee is that PracticeFlow
+  // never EMITS NaN, which is a claim about what it passes, not about what the panel draws.
 });
