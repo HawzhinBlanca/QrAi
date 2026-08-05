@@ -27,14 +27,50 @@ say() { printf '\n==> %s\n' "$1"; }
 # connected. If that identity is already restricted, RLS still enforces, the test still passes, and
 # this script would report "teeth verified" having verified nothing. Refuse instead.
 say "precondition: DATABASE_URL must be a superuser for the RLS mutation to mean anything"
-is_super="$(node -e '
-  const pg = require("pg");
-  const c = new pg.Client({ connectionString: process.env.DATABASE_URL });
-  c.connect()
-    .then(() => c.query("SELECT rolsuper OR rolbypassrls AS s FROM pg_roles WHERE rolname = current_user"))
-    .then((r) => { console.log(r.rows[0]?.s ? "yes" : "no"); return c.end(); })
-    .catch((e) => { console.error(e.message); process.exit(1); });
-')" || exit 1
+
+# ── Retry the CONNECTION, never the ANSWER ──────────────────────────────────────────────────────
+# A single refused connection once took an entire `verify` job down, under this superuser-titled
+# heading — so the failure read as a role problem when it was a socket problem, and the first
+# diagnosis chased the wrong thing entirely.
+#
+# What is retried is strictly the ability to REACH Postgres. If the database answers and says the
+# role is restricted, that is final and is not retried: a guard that kept asking until it liked the
+# answer would be worse than the flake. The two outcomes are also reported separately, because
+# "could not connect" and "connected, wrong role" need opposite fixes and only one of them is about
+# a superuser.
+probe_superuser() {
+  node -e '
+    const pg = require("pg");
+    const c = new pg.Client({ connectionString: process.env.DATABASE_URL });
+    c.connect()
+      .then(() => c.query("SELECT rolsuper OR rolbypassrls AS s FROM pg_roles WHERE rolname = current_user"))
+      .then((r) => { console.log(r.rows[0]?.s ? "yes" : "no"); return c.end(); })
+      .catch((e) => { console.error(e.message); process.exit(1); });
+  '
+}
+
+TEETH_CONNECT_ATTEMPTS="${TEETH_CONNECT_ATTEMPTS:-5}"
+probe_err="$(mktemp)"
+trap 'rm -f "$probe_err"' EXIT
+is_super=""
+for attempt in $(seq 1 "$TEETH_CONNECT_ATTEMPTS"); do
+  if is_super="$(probe_superuser 2>"$probe_err")"; then
+    break
+  fi
+  is_super=""
+  if [[ "$attempt" -lt "$TEETH_CONNECT_ATTEMPTS" ]]; then
+    echo "    ...could not reach Postgres (attempt ${attempt}/${TEETH_CONNECT_ATTEMPTS}), retrying" >&2
+    sleep 2
+  fi
+done
+
+if [[ -z "$is_super" ]]; then
+  echo "    ✗ could not REACH Postgres at \$DATABASE_URL after ${TEETH_CONNECT_ATTEMPTS} attempts." >&2
+  echo "      This is a connectivity failure, NOT the superuser check below — the role was never" >&2
+  echo "      asked. The driver said:" >&2
+  sed 's/^/        /' "$probe_err" >&2
+  exit 1
+fi
 
 if [[ "$is_super" != "yes" ]]; then
   echo "    ✗ DATABASE_URL connects as a RESTRICTED role." >&2
