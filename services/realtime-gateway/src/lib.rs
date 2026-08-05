@@ -189,6 +189,13 @@ pub struct GatewayMetrics {
     /// Chunks that were acked to the client but could NOT be delivered to ML after retries — the
     /// only signal that a session's analysis has gaps (see the forwarding task in handle_audio_socket).
     pub chunks_forward_failed: u64,
+    /// Chunks whose AUDIO was stored but whose index row could not be written, after retries.
+    ///
+    /// Deliberately separate from `chunks_forward_failed`: that one means the analysis never ran;
+    /// this one means the recording exists and cannot be FOUND. A teacher's review queue will report
+    /// `not-captured` for a finding whose audio is sitting on disk. Different repair, different
+    /// urgency, so a single counter would have hidden one behind the other.
+    pub chunks_index_failed: u64,
 }
 
 #[derive(Debug, Default)]
@@ -199,6 +206,7 @@ struct GatewayCounters {
     chunks_rejected_backpressure: AtomicU64,
     chunks_rejected_missing_session: AtomicU64,
     chunks_forward_failed: AtomicU64,
+    chunks_index_failed: AtomicU64,
 }
 
 impl RealtimeGateway {
@@ -484,6 +492,7 @@ impl RealtimeGateway {
                 .chunks_rejected_missing_session
                 .load(Ordering::Relaxed),
             chunks_forward_failed: self.counters.chunks_forward_failed.load(Ordering::Relaxed),
+            chunks_index_failed: self.counters.chunks_index_failed.load(Ordering::Relaxed),
         }
     }
 
@@ -491,6 +500,18 @@ impl RealtimeGateway {
     pub fn record_forward_failure(&self) {
         self.counters
             .chunks_forward_failed
+            .fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Record that a chunk's audio was stored but its index row was not written (findability gap).
+    ///
+    /// The audio is NOT deleted and is never deleted on this path. "Fail the chunk, never lose the
+    /// audio": a recording a learner consented to keep is not thrown away because a database write
+    /// failed. What is lost is the ability to FIND it, and that is counted here rather than hidden —
+    /// an operator seeing this above zero has orphaned recordings to re-index, not to mourn.
+    pub fn record_index_failure(&self) {
+        self.counters
+            .chunks_index_failed
             .fetch_add(1, Ordering::Relaxed);
     }
 }
@@ -517,6 +538,13 @@ pub struct GatewayServerConfig {
     pub sample_rate: u32,
     pub chunk_duration_ms: u64,
     pub ticket_secret: String,
+    /// Where to record that a stored chunk exists (ADR-0037). Env: `PLATFORM_API_URL`.
+    ///
+    /// `None` disables indexing, and that is a real degradation rather than a neutral default: audio
+    /// still reaches storage, but no finding can ever resolve to it and a teacher's review queue
+    /// reports `not-captured` for recordings sitting on disk. Announced once at startup rather than
+    /// discovered months later, and every un-indexed chunk is still counted.
+    pub platform_api_url: Option<String>,
     pub ml_inference_url: String,
     pub tenant_id: String,
     /// When true AND Redis is configured, reject a connection if the shared replay store is
@@ -550,6 +578,11 @@ impl Default for GatewayServerConfig {
             chunk_duration_ms: 480,
             ticket_secret: std::env::var("REALTIME_GATEWAY_TICKET_SECRET")
                 .unwrap_or_else(|_| "smoke-secret".to_owned()),
+            // No default. A guessed platform-api URL would index into the wrong place, or silently
+            // into nothing; absent means indexing is off and says so.
+            platform_api_url: std::env::var("PLATFORM_API_URL")
+                .ok()
+                .filter(|u| !u.trim().is_empty()),
             ml_inference_url: std::env::var("ML_INFERENCE_URL")
                 .unwrap_or_else(|_| "http://127.0.0.1:8090".to_owned()),
             tenant_id: std::env::var("GATEWAY_TENANT_ID")
@@ -791,6 +824,12 @@ fn render_prometheus(m: &GatewayMetrics, consumed_tickets: usize) -> String {
         "Audio chunks that failed to forward to ML inference.",
         m.chunks_forward_failed,
     );
+    counter(
+        &mut out,
+        "realtime_gateway_chunks_index_failed_total",
+        "Audio chunks stored but not indexed: the recording exists and cannot be found.",
+        m.chunks_index_failed,
+    );
     gauge(
         &mut out,
         "realtime_gateway_consumed_tickets",
@@ -872,6 +911,7 @@ enum TicketCheckOutcome {
         /// service has no database, so the ticket is the ONLY path this answer can travel.
         audio_retention: String,
         trace_id: Option<String>,
+        ticket: String,
     },
     Rejected(StatusCode),
 }
@@ -976,6 +1016,10 @@ async fn check_ticket(
         learner_id: claims.learner_id,
         audio_retention: claims.audio_retention,
         trace_id,
+        // The ticket ITSELF, kept so the chunk indexer can present it to platform-api. Not a new
+        // credential: it is the one this session was already admitted with, it expires with the
+        // session, and it authorises exactly this session's chunks and nothing else.
+        ticket: ticket.to_owned(),
     }
 }
 
@@ -991,6 +1035,7 @@ async fn audio_ws(
             learner_id,
             audio_retention,
             trace_id,
+            ticket,
         } => upgrade
             // G1 — stop absurd frames at the TRANSPORT rather than assembling them first. Without
             // these the tungstenite defaults apply (16 MiB frame / 64 MiB message), 8x what
@@ -1004,6 +1049,7 @@ async fn audio_ws(
                     learner_id,
                     audio_retention,
                     trace_id,
+                    ticket,
                     state,
                 )
             })
@@ -1110,6 +1156,7 @@ async fn handle_audio_socket(
     learner_id: String,
     audio_retention: String,
     trace_id: Option<String>,
+    ticket: String,
     state: GatewayServerState,
 ) {
     let reader = match state.gateway.start_session(session_id.clone()).await {
@@ -1137,6 +1184,7 @@ async fn handle_audio_socket(
     let tenant_id = state.config.tenant_id.clone();
     let ml_trace = trace_id.clone();
     let ml_api_key = std::env::var("ML_API_KEY").unwrap_or_else(|_| "smoke-ml-api-key".to_owned());
+    let platform_api_url = state.config.platform_api_url.clone();
     let mut reader = reader;
     // Clone the gateway (Arc-based) into the forwarding task so it can record forward failures
     // without moving state.gateway away from the socket loop below.
@@ -1145,6 +1193,11 @@ async fn handle_audio_socket(
         let client = state.http_client.clone();
         while let Some(chunk) = reader.recv().await {
             let chunk_id = chunk.chunk_id.clone();
+            // Captured before `chunk` is consumed by `chunk_forward_body` below.
+            let chunk_session_id = chunk.session_id.clone();
+            let chunk_start_ms = chunk.start_ms;
+            let chunk_end_ms = chunk.end_ms;
+            let chunk_sample_rate = chunk.sample_rate;
             let url = format!("{}/v1/audio-chunks", ml_url);
             let body = chunk_forward_body(
                 &chunk,
@@ -1197,6 +1250,72 @@ async fn handle_audio_socket(
                 tracing::debug!("forwarded chunk {chunk_id} to ML service");
             } else {
                 forward_gateway.record_forward_failure();
+            }
+
+            // ── Record that the audio EXISTS, so a finding can later be resolved to it ──────────
+            //
+            // ADR-0037. Only after the bytes actually reached storage: an index row for audio that
+            // was never stored is a pointer to nothing, which is the failure `usable_span` and the
+            // 0026 CHECK constraint exist to prevent one level down.
+            //
+            // "Fail the chunk, never lose the audio." If this write cannot be made, the recording
+            // stays exactly where it is and is NEVER deleted — what is lost is only the ability to
+            // find it, and that is counted rather than hidden. Deleting stored audio because a
+            // database write failed would destroy a recording the learner consented to keep, in
+            // order to tidy up a bookkeeping gap.
+            if delivered && let Some(platform_url) = platform_api_url.as_deref() {
+                let index_url = format!("{platform_url}/v1/audio-chunks");
+                let index_body = serde_json::json!({
+                    "sessionId": chunk_session_id,
+                    "chunkId": chunk_id,
+                    "startMs": chunk_start_ms,
+                    "endMs": chunk_end_ms,
+                    "sampleRate": chunk_sample_rate,
+                    "objectKey": format!("{tenant_id}/{learner_id}/{chunk_id}.bin"),
+                });
+                let mut indexed = false;
+                for attempt in 1..=MAX_ATTEMPTS {
+                    match client
+                        .post(&index_url)
+                        // The session's own ticket. platform-api reads tenant and learner from its
+                        // signed claims and ignores anything the body might have said about them.
+                        .header("x-realtime-ticket", &ticket)
+                        .timeout(std::time::Duration::from_secs(5))
+                        .json(&index_body)
+                        .send()
+                        .await
+                    {
+                        Ok(resp) if resp.status().is_success() => {
+                            indexed = true;
+                            break;
+                        }
+                        // A 4xx is permanent — an expired ticket, a span this service should not
+                        // have produced, a deleted session. Retrying cannot fix any of them, and
+                        // hammering an expired ticket looks exactly like an attack.
+                        Ok(resp) if resp.status().is_client_error() => {
+                            tracing::warn!(
+                                "platform-api rejected the index for chunk {chunk_id}: {} (not retrying)",
+                                resp.status()
+                            );
+                            break;
+                        }
+                        Ok(resp) => tracing::warn!(
+                            "platform-api returned {} indexing chunk {chunk_id} (attempt {attempt}/{MAX_ATTEMPTS})",
+                            resp.status()
+                        ),
+                        Err(e) => tracing::warn!(
+                            "failed to index chunk {chunk_id} (attempt {attempt}/{MAX_ATTEMPTS}): {e}"
+                        ),
+                    }
+                    if attempt < MAX_ATTEMPTS {
+                        tokio::time::sleep(std::time::Duration::from_millis(100 * attempt as u64))
+                            .await;
+                    }
+                }
+                if !indexed {
+                    // The audio is still on disk. This says it cannot be found.
+                    forward_gateway.record_index_failure();
+                }
             }
         }
     });
@@ -1408,6 +1527,41 @@ mod tests {
         );
     }
 
+    /// "Fail the chunk, never lose the audio" — what that means in counters.
+    ///
+    /// A chunk whose audio reached storage but whose index row did not is NOT a forward failure. The
+    /// analysis ran; the recording exists; only its findability is gone. Sharing one counter would
+    /// have let a storage outage and a database outage look identical on a dashboard, and they need
+    /// different repairs: one loses analysis, the other leaves orphaned recordings to re-index.
+    #[tokio::test]
+    async fn an_index_failure_is_counted_separately_from_a_forward_failure() {
+        let gateway = RealtimeGateway::new(4);
+        gateway.record_index_failure();
+        gateway.record_index_failure();
+        gateway.record_forward_failure();
+
+        let m = gateway.metrics().await;
+        assert_eq!(m.chunks_index_failed, 2, "index failures were not counted");
+        assert_eq!(
+            m.chunks_forward_failed, 1,
+            "an index failure was counted as a forward failure; a database outage would read as an \
+             ML outage"
+        );
+    }
+
+    #[tokio::test]
+    async fn the_index_failure_counter_is_exposed_to_prometheus() {
+        // A counter nothing scrapes is a counter nobody sees. The whole point of not deleting the
+        // audio is that an operator can go and re-index it, which requires knowing it happened.
+        let gateway = RealtimeGateway::new(4);
+        gateway.record_index_failure();
+        let out = render_prometheus(&gateway.metrics().await, 0);
+        assert!(
+            out.contains("realtime_gateway_chunks_index_failed_total 1"),
+            "the index-failure counter is not exposed: {out}"
+        );
+    }
+
     #[test]
     fn renders_prometheus_text_exposition_not_json() {
         let m = GatewayMetrics {
@@ -1415,6 +1569,7 @@ mod tests {
             sessions_started: 5,
             sessions_ended: 3,
             chunks_accepted: 40,
+            chunks_index_failed: 1,
             chunks_rejected_backpressure: 1,
             chunks_rejected_missing_session: 2,
             chunks_forward_failed: 4,
@@ -2062,7 +2217,16 @@ mod tests {
                 learner_id,
                 audio_retention,
                 trace_id,
+                ticket: carried,
             } => {
+                // The raw ticket is carried through so the chunk indexer can present it to
+                // platform-api. Asserted rather than ignored with `..`: if it stopped being the
+                // ticket the session was admitted with, indexing would authenticate as something
+                // else, and a `..` here would have said nothing about that.
+                assert!(
+                    !carried.is_empty(),
+                    "the admitted ticket was not carried through"
+                );
                 assert_eq!(learner_id, "learner-1");
                 assert_eq!(audio_retention, "discard");
                 assert_eq!(trace_id.as_deref(), Some("trace-abc"));
