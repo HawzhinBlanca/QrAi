@@ -910,6 +910,20 @@ function describeChunkConflict(tenantDir, chunkId, incoming) {
 }
 
 // === Audio chunk storage ===
+/**
+ * Where a chunk sits in the recording, or `{startMs: null, endMs: null}` when that is not known.
+ *
+ * Mirrors `usable_span` (handlers/recitation.rs) and `usableSpan` (routes/session-writes.mjs) in what
+ * it accepts — integers with `0 <= start < end` — and differs in what it does with the rest. Those
+ * two REFUSE the row, because an alignment with no span is a finding pointing at nothing. This one
+ * keeps the row and drops only the claim, because the row here is a learner's actual recording.
+ */
+function chunkSpan(startMs, endMs) {
+  const usable =
+    Number.isInteger(startMs) && Number.isInteger(endMs) && startMs >= 0 && endMs > startMs;
+  return usable ? { startMs, endMs } : { startMs: null, endMs: null };
+}
+
 async function storeAudioChunk(requestBody) {
   const tenantId = safeStorageSegment(requestBody.tenantId, "tenantId");
   const learnerId = safeStorageSegment(requestBody.learnerId, "learnerId");
@@ -925,8 +939,17 @@ async function storeAudioChunk(requestBody) {
     sessionId,
     chunkId,
     sampleRate: requestBody.sampleRate ?? 16000,
-    startMs: requestBody.startMs ?? 0,
-    endMs: requestBody.endMs ?? 0,
+    // `?? 0` here was the same fail-open the alignment writers had (see `usable_span` in
+    // handlers/recitation.rs), and worse for one reason: **0 is a legitimate value**. The first
+    // chunk of every session genuinely starts at 0ms, so "we do not know where this chunk sits" and
+    // "this chunk sits at the beginning" were written identically and no reader could tell them
+    // apart. That span is what a tajweed finding needs to locate its audio; a chunk claiming
+    // 0ms-to-0ms is unlocatable, and claiming it silently is how the gap stays invisible.
+    //
+    // `null` is the honest third value. The AUDIO is stored either way — refusing the chunk would
+    // discard a learner's recording that consent covers, which is the opposite of the point. Only
+    // the claim about where it sits is withheld.
+    ...chunkSpan(requestBody.startMs, requestBody.endMs),
     audioSize: requestBody.audioSize ?? 0,
     audioRetention: requestBody.audioRetention ?? "discard",
     storedAt: new Date().toISOString(),

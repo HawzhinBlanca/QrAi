@@ -141,3 +141,116 @@ test("and it lands in the tenant's durable audit log, not only in stderr", () =>
   assert.equal(events.length, 1, "the refusal is not in the durable audit trail");
   assert.equal(events[0].subjectId ?? events[0].subject_id ?? events[0].chunkId, "c1");
 });
+
+// ── A chunk's own span: unknown must not read as zero ─────────────────────────────────────────────
+//
+// `storeAudioChunk` recorded `startMs: requestBody.startMs ?? 0`. That is the same fail-open the
+// alignment writers had (#360, #361) — and here it is worse, because **0 is a legitimate value**:
+// the first chunk of every session genuinely starts at 0ms. So "we do not know where this chunk
+// sits in the recording" and "this chunk sits at the beginning" were written identically, and no
+// reader could ever tell them apart.
+//
+// That span is what a tajweed finding would need to locate its audio. A chunk claiming 0ms-to-0ms
+// is unlocatable, and claiming it silently is how the gap stays invisible.
+//
+// The audio itself is still stored either way. Refusing the chunk would DISCARD a learner's
+// recording that consent covers — the opposite of what this is for. Only the claim is withheld.
+
+async function storeRaw(body) {
+  const res = await fetch(`http://127.0.0.1:${PORT}/v1/audio-chunks`, {
+    method: "POST",
+    headers: { "content-type": "application/json", "x-ml-api-key": KEY },
+    body: JSON.stringify({ tenantId: TENANT, learnerId: "l1", sampleRate: 16000, ...body }),
+  });
+  return res;
+}
+
+function storedMeta(chunkId) {
+  const p = join(storage, TENANT, "l1", `${chunkId}.meta.json`);
+  return existsSync(p) ? JSON.parse(readFileSync(p, "utf8")) : null;
+}
+
+test("a chunk with NO timings records an unknown span, not 0 to 0", async () => {
+  const res = await storeRaw({
+    sessionId: "s-span",
+    chunkId: "c-nospan",
+    audioBase64: b64("audio-without-timings"),
+  });
+  assert.equal(res.status, 200, "the audio must still be stored — consent covers it either way");
+
+  const meta = storedMeta("c-nospan");
+  assert.ok(meta, "chunk metadata was not written");
+  assert.equal(
+    meta.startMs,
+    null,
+    "a chunk with no timings claims startMs 0, which is indistinguishable from the FIRST chunk of " +
+      "a session — the one case where 0 is real. Unknown must be its own value.",
+  );
+  assert.equal(meta.endMs, null, "same for endMs");
+
+  // And the audio really is on disk: withholding the claim must not withhold the recording.
+  assert.ok(
+    existsSync(join(storage, TENANT, "l1", "c-nospan.bin")),
+    "the recording was dropped along with its unusable span",
+  );
+});
+
+test("a chunk with a REAL span records it verbatim — the control", async () => {
+  // Without this, the assertions above are satisfied by nulling every span, which would make every
+  // chunk unlocatable and look like a pass.
+  const res = await storeRaw({
+    sessionId: "s-span",
+    chunkId: "c-span",
+    startMs: 640,
+    endMs: 1230,
+    audioBase64: b64("audio-with-timings"),
+  });
+  assert.equal(res.status, 200);
+
+  const meta = storedMeta("c-span");
+  assert.equal(meta.startMs, 640);
+  assert.equal(meta.endMs, 1230);
+});
+
+test("startMs 0 with a real endMs is kept — 0 is a legitimate start", async () => {
+  // The case the `?? 0` default made unreadable. The first chunk of a session starts at 0ms and
+  // must stay 0, not become null: this is why "unknown" needed a different value rather than a
+  // stricter one.
+  const res = await storeRaw({
+    sessionId: "s-span",
+    chunkId: "c-zero-start",
+    startMs: 0,
+    endMs: 500,
+    audioBase64: b64("first-chunk"),
+  });
+  assert.equal(res.status, 200);
+  assert.equal(storedMeta("c-zero-start").startMs, 0, "a genuine 0ms start was discarded as unknown");
+});
+
+test("a zero-length or inverted chunk span is also unknown, not taken at face value", async () => {
+  // Added because a mutation exposed the gap: loosening `chunkSpan` to drop `endMs > startMs` ran
+  // GREEN against the three tests above. They probed "no timings", "a real span" and "a genuine 0ms
+  // start" — none of which is a span that is PRESENT but unusable. A test that cannot fail for a
+  // whole class of input is not covering it.
+  for (const [label, startMs, endMs] of [
+    ["zero-length", 500, 500],
+    ["inverted", 900, 400],
+    ["negative start", -1, 100],
+    ["non-integer", "abc", 100],
+    ["fractional", 1.5, 100],
+  ]) {
+    const chunkId = `c-bad-${label.replace(/[^a-z]/g, "")}`;
+    const res = await storeRaw({
+      sessionId: "s-span",
+      chunkId,
+      startMs,
+      endMs,
+      audioBase64: b64(`audio-${label}`),
+    });
+    assert.equal(res.status, 200, `${label}: the recording must still be stored`);
+
+    const meta = storedMeta(chunkId);
+    assert.equal(meta.startMs, null, `${label} was recorded as a real startMs (${meta.startMs})`);
+    assert.equal(meta.endMs, null, `${label} was recorded as a real endMs (${meta.endMs})`);
+  }
+});
