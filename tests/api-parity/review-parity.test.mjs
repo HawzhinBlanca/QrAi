@@ -104,9 +104,22 @@ test("a teacher may READ approvals but not CREATE one", async () => {
 });
 
 test("the scholar-approvals LIST shape is a count, not the sources themselves", async () => {
+  // Creates the row it needs rather than hoping one exists. `if (empty) return` made this a wire
+  // contract that was pinned on a developer's machine and asserted NOTHING on CI, where
+  // scholar_approvals is empty: no migration seeds it. A shape assertion that only runs where the
+  // gate is not is the wrong way round.
+  await request(shell.baseUrl, "/v1/scholar-approvals", {
+    method: "POST",
+    role: "scholar",
+    body: approvalBody(),
+  });
+
   const res = await request(shell.baseUrl, "/v1/scholar-approvals", { role: "admin" });
   assert.equal(res.status, 200);
-  if (res.body.length === 0) return;
+  assert.ok(
+    res.body.length > 0,
+    "an approval was just created and the list is still empty — the route is not reading it back",
+  );
   assert.deepEqual(Object.keys(res.body[0]), [
     "id",
     "reviewer",
@@ -118,9 +131,23 @@ test("the scholar-approvals LIST shape is a count, not the sources themselves", 
 });
 
 test("tajweed-findings key order is alphabetical, and the sort has a unique tiebreaker", async () => {
+  // Seeded, for the same reason as the approvals shape above: no migration creates a
+  // tajweed_findings row, so on CI this route returns [] and `if (empty) return` turned the wire
+  // contract into a green tick. Backdated so it is at the FRONT of the queue and cannot fall off the
+  // 200-row page on a machine with a backlog.
+  await seedQueued({
+    label: "shape",
+    reviewStatus: "ai-suggested",
+    confidence: 0,
+    startedAtSql: "now() - interval '25 years'",
+  });
+
   const res = await request(shell.baseUrl, "/v1/tajweed-findings", { role: "admin" });
   assert.equal(res.status, 200);
-  if (res.body.length === 0) return;
+  assert.ok(
+    res.body.length > 0,
+    "a finding was just seeded at the front of the queue and the route returned none",
+  );
   assert.deepEqual(Object.keys(res.body[0]), [
     // ADR-0033: what the finding is ABOUT. Today always `canonical-text` — the analyser reads the
     // passage's Uthmani text, so a finding is "a rule applies here", not "you recited this wrongly".
