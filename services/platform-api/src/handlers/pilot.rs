@@ -19,11 +19,16 @@ pub struct BootstrapRequest {
 pub async fn bootstrap(
     State(state): State<AppState>,
     headers: HeaderMap,
-    Json(req): Json<BootstrapRequest>,
+    body: JsonBody<BootstrapRequest>,
 ) -> Result<(HeaderMap, Json<Value>), ApiError> {
     // 1. Origin verification for pilot session bootstrap (exact allowlist when
     // CORS_ALLOWED_ORIGINS is configured; presence-only in dev)
+    //
+    // This route takes no actor — it is how a pilot learner gets one — but the origin check is still
+    // a check ON THE CALLER, so it runs before the body is read for the same reason the authenticated
+    // routes do. Previously a request from a disallowed origin was told the shape of BootstrapRequest.
     crate::auth::require_allowed_origin(&headers, &state.jwt_config.pilot_allowed_origins)?;
+    let Json(req) = body?;
 
     // 2. Hash the bootstrap invitation token
     let mut invite_hasher = Sha256::new();
@@ -226,10 +231,11 @@ pub async fn mint_invitation(
     State(state): State<AppState>,
     method: axum::http::Method,
     headers: HeaderMap,
-    Json(req): Json<MintInvitationRequest>,
+    body: JsonBody<MintInvitationRequest>,
 ) -> Result<Json<Value>, ApiError> {
     let actor = crate::auth::resolve_actor(&method, &headers, &state).await?;
     actor.require_any(&[ActorRole::Admin, ActorRole::Ops])?;
+    let Json(req) = body?;
 
     let ttl_hours = req.ttl_hours.unwrap_or(168).clamp(1, 720);
 
