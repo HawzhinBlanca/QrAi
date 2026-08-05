@@ -1,13 +1,9 @@
 import { describe, expect, it } from "vitest";
 
-import {
-  canShowLearnerFacingAnswer,
-  getLanguageDirection,
-  requiresHumanReview,
-} from "./platform";
+import { canShowLearnerFacingAnswer, requiresHumanReview } from "./platform";
 
 /**
- * `lib/platform.ts` had no test. Two of its five exports are safety-critical.
+ * `lib/platform.ts` had no test. Two of its four exports are safety-critical.
  *
  * ── The gap that matters ────────────────────────────────────────────────────────────────────────
  * `canShowLearnerFacingAnswer` is the client-side learner gate for agent runs. It is NOT the same
@@ -95,16 +91,56 @@ describe("requiresHumanReview", () => {
   });
 });
 
-describe("getLanguageDirection", () => {
-  it("returns rtl for every right-to-left language the app offers", () => {
-    // Getting this wrong renders Arabic — including canonical Quran text — left to right. It is the
-    // single call that decides that, and it had no test.
-    for (const language of ["ar", "ckb", "ur"] as const) {
-      expect(getLanguageDirection(language), `${language} must be rtl`).toBe("rtl");
-    }
+describe("requiresHumanReview — an ALLOWLIST, like every other implementation of this rule", () => {
+  // This function was the only denylist among ~8 implementations of "is this safe to show", every
+  // other one carrying a comment explaining that a denylist FAILS OPEN. It read:
+  //
+  //     status === "needs-human-review" || reviewStatus === "ai-suggested" ||
+  //     reviewStatus === "teacher-review-required" || confidence < 0.82
+  //
+  // It also carried the repository's tenth copy of the 0.82 constant.
+  //
+  // It was not a content hole — the ternary in PlatformCommand falls through to
+  // `canShowLearnerFacingAnswer`, which is a correct allowlist, so an unknown status still showed
+  // "blocked" rather than "safe". What it produced was WRONG LABELS on a staff console, in the
+  // direction of understating that a human is needed.
+
+  it("fails CLOSED on a reviewStatus nobody has heard of", () => {
+    // The denylist answered `false` here — "no human needed" — for a status it had never seen. A
+    // typo, or a status added server-side without updating this file, read as settled.
+    expect(requiresHumanReview({ ...clearedRun, reviewStatus: "under-review" as never })).toBe(true);
+    expect(requiresHumanReview({ ...clearedRun, reviewStatus: "" as never })).toBe(true);
   });
 
-  it("returns ltr for English", () => {
-    expect(getLanguageDirection("en")).toBe("ltr");
+  it("a run approved and confident but with NO source still needs a human", () => {
+    // It cannot be shown (the contract gate requires a source) and it is not blocked — somebody has
+    // to add the source. The denylist said `false`, so the console labelled it "blocked": a dead end
+    // rather than a task. handlers/review.rs refuses this exact case with "reject it, or have a
+    // source added first", which is a human action.
+    expect(requiresHumanReview({ ...clearedRun, sources: [] })).toBe(true);
+  });
+
+  it("a BLOCKED run is never reported as awaiting review", () => {
+    // Blocked is a decision, not a queue. The denylist returned `true` for a blocked run whenever
+    // its confidence was under the bar, so a withdrawn answer showed up as work for a teacher.
+    expect(requiresHumanReview({ ...clearedRun, status: "blocked", confidence: 0.5 })).toBe(false);
+    expect(requiresHumanReview({ ...clearedRun, status: "blocked" })).toBe(false);
+  });
+
+  it("does not keep its own copy of the confidence floor", async () => {
+    // 0.82 already lives in ~10 places. This file no longer needs to be one of them: it defers to
+    // the contract gate, which owns the number. A literal reappearing here is the drift starting.
+    //
+    // Comments are stripped before the check, deliberately. The doc comment on `requiresHumanReview`
+    // QUOTES the old denylist, 0.82 and all, because that is the clearest way to record what changed
+    // — and the first version of this test failed on its own documentation. A source assertion that
+    // cannot tell code from prose is not checking what it claims to.
+    const fs = await import("node:fs");
+    const source = fs.readFileSync(new URL("./platform.ts", import.meta.url), "utf8");
+    const code = source.replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/.*$/gm, "");
+
+    expect(code).not.toMatch(/0\.82/);
+    // The strip must not have eaten everything — otherwise the assertion above is vacuous.
+    expect(code).toMatch(/export function requiresHumanReview/);
   });
 });
