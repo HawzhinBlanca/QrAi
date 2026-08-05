@@ -180,6 +180,24 @@ response's headers or bytes against Rust's:
 | 3 | `serde_json` writes a whole f64 as `100.0`; `JSON.stringify` writes `100` | N10 |
 | 4 | a jsonb column round-trips through a **BTreeMap**, so its keys come back alphabetized | N11 |
 | 5 | `EvalRun`'s metrics are **f32**: narrowed, then printed shortest-for-a-single | N11 |
+| 6 | **authz/validation ORDER** — with an invalid body, the shell answers 403 and Rust answers 422 | — |
+
+**Divergence 6 is OPEN and needs a decision, not a patch.** Six privileged writes
+(`POST` on `/v1/auth/token`, `/v1/pilot/invitations`, `/v1/agent-runs`, `/v1/scholar-approvals`,
+`/v1/teacher-reviews`, `/v1/realtime-session-tickets`) disagree for an UNAUTHORIZED caller sending an
+INVALID body. In Axum a `Json<T>` argument is an extractor, so it runs before the handler body where
+`actor.require_any(..)` lives: Rust validates, then authorizes. The port calls `resolveActor` +
+`requireAnyRole` first, so it authorizes, then validates. Rust therefore hands an unauthorized caller
+the field names of a request schema it may not submit
+(`missing field \`learnerId\``); the shell returns only `403`.
+
+The safer implementation is the one that diverges, so "make Node match Rust" would mean **adding**
+that disclosure to every privileged write. Both directions are one-way doors on a published wire
+contract. Pinned by `tests/api-parity/authz-matrix.test.mjs`, which asserts what each side does today
+and goes red the moment either changes — including the day it is resolved.
+
+Found because the A/B differ cannot see it: the suite sends valid bodies as authorized roles and
+invalid bodies as authorized roles. **Unauthorized + invalid** is the cell nobody wrote.
 
 Three bugs in **my own** work, each caught by the test written for it rather than by review:
 
