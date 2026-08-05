@@ -2222,6 +2222,23 @@ async fn list_tajweed_findings_returns_the_seeded_finding_not_an_empty_list() {
     let session_id = create_test_session_for_learner(&router, &learner_id).await;
     let (finding_id, _review_id) = seed_reviewed_finding(&state.pool, &session_id, "list").await;
 
+    // Backdate the session so the seeded finding is at the FRONT of the queue.
+    //
+    // `/v1/tajweed-findings` returns awaiting findings OLDEST FIRST with a LIMIT of 200. A session
+    // created a moment ago is the newest, so in a tenant with a real backlog its finding sits on
+    // page 20 and this assertion fails for a reason that has nothing to do with what it is testing.
+    //
+    // It passed before only because the queue used to sort by `confidence DESC` and this fixture
+    // seeds 0.8 — visibility by accident of a number that no longer means anything (ADR-0036). The
+    // ordering now depends on how long a finding has waited, so the fixture states how long.
+    sqlx::query(
+        "UPDATE recitation_sessions SET started_at = now() - interval '10 years' WHERE id = $1",
+    )
+    .bind(&session_id)
+    .execute(&state.pool)
+    .await
+    .expect("backdate the fixture session");
+
     // This endpoint intentionally returns only its highest-priority 200 findings. The integration
     // database is persistent across local runs, so an ordinary 0.8 fixture can legitimately fall
     // below that boundary after enough unrelated tests. Rank this test's fixture first instead of

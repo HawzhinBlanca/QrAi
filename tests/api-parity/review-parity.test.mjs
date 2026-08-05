@@ -446,3 +446,150 @@ test("the route is teacher-and-above, within tenant — a learner cannot read it
     );
   }
 });
+
+// ── The review queue must contain the findings that need reviewing ────────────────────────────────
+//
+// `/v1/tajweed-findings` is the tenant-wide staff queue: what a teacher opens to decide what to work
+// on. It was `ORDER BY confidence DESC, id LIMIT 200`, and measured against this corpus that page
+// contained:
+//
+//   115  teacher-reviewed          already decided, 58% of the page
+//    84  ai-suggested
+//     1  blocked
+//     0  teacher-review-required   ...out of 1781 in the tenant
+//
+// Zero of the findings whose status LITERALLY NAMES the need were visible, and a teacher working the
+// queue to exhaustion would never reach one.
+//
+// I made half of this worse. ADR-0036 set canonical-text confidence to 0 — correctly, it was
+// fabricated — which put every NEW finding behind all 2892 legacy ones carrying 0.80-0.90. At the
+// time of writing 41 findings had confidence 0 and not one appeared in the page. The ordering was
+// already sorting by something unrelated to whether review was needed; zeroing the number turned a
+// bad sort into a starvation.
+//
+// The queue now sorts by what it is FOR: awaiting review before already decided, then OLDEST first
+// so nothing starves. An unrecognised review status sorts with "awaiting" — a status nobody has
+// heard of should surface for a human, not vanish.
+const DECIDED_STATUSES = ["teacher-reviewed", "blocked", "scholar-approved"];
+
+test("the review queue is not full of findings that were already reviewed", async () => {
+  const [{ awaiting }] = await queryJson(
+    `SELECT count(*)::int AS awaiting FROM tajweed_findings
+     WHERE tenant_id = $1 AND review_status NOT IN ('teacher-reviewed','blocked','scholar-approved')`,
+    [TENANT],
+  );
+  assert.ok(
+    awaiting > 200,
+    `premise: this test needs more awaiting findings than the page holds, got ${awaiting}. ` +
+      "With fewer, every one fits and the ordering cannot starve anything.",
+  );
+
+  for (const [impl, base] of [["shell", shell.baseUrl], ["rust", api.baseUrl]]) {
+    const res = await request(base, "/v1/tajweed-findings", { role: "teacher" });
+    assert.equal(res.status, 200, `${impl}: ${res.text}`);
+    const decided = res.body.filter((f) => DECIDED_STATUSES.includes(f.reviewStatus));
+    assert.equal(
+      decided.length,
+      0,
+      `${impl}: ${decided.length} of ${res.body.length} findings in the queue are already decided ` +
+        `while ${awaiting} await review. A teacher cannot reach the work.`,
+    );
+  }
+});
+
+test("findings whose status names the need are actually IN the queue", async () => {
+  const [{ n }] = await queryJson(
+    `SELECT count(*)::int AS n FROM tajweed_findings
+     WHERE tenant_id = $1 AND review_status = 'teacher-review-required'`,
+    [TENANT],
+  );
+  assert.ok(n > 0, "premise: this tenant has no teacher-review-required findings to look for");
+
+  for (const [impl, base] of [["shell", shell.baseUrl], ["rust", api.baseUrl]]) {
+    const res = await request(base, "/v1/tajweed-findings", { role: "teacher" });
+    const required = res.body.filter((f) => f.reviewStatus === "teacher-review-required");
+    assert.ok(
+      required.length > 0,
+      `${impl}: none of the ${n} teacher-review-required findings appear in the queue`,
+    );
+  }
+});
+
+test("the page is exactly the longest-waiting awaiting findings — not a confidence ranking", async () => {
+  // ── A correction to this test's first draft, kept because the distinction is the whole point ────
+  //
+  // It originally asserted "a zero-confidence finding appears in the queue" and stayed RED after the
+  // fix. That premise conflated two different things:
+  //
+  //   STARVATION  a finding can NEVER be reached however much work is done. Confidence ordering is
+  //               static, so a confidence-0 finding sat behind 2892 legacy ones permanently.
+  //   BACKLOG     a finding is not on page 1 because 1986 others have waited longer. It advances as
+  //               they are worked.
+  //
+  // Under FIFO the 40 newest findings are legitimately not on the first page, and demanding they be
+  // there would have meant ordering newest-first, which starves the oldest instead. So the test was
+  // wrong, not the code — and the honest property is that POSITION DEPENDS ON WAITING, not on a
+  // number. Cross-checked against Postgres rather than against the other implementation, because an
+  // A/B cannot see an ordering both sides get wrong together.
+  const expected = await queryJson(
+    `SELECT tf.id
+     FROM tajweed_findings tf
+     JOIN word_alignments wa ON wa.id = tf.alignment_id
+     LEFT JOIN recitation_sessions rs ON rs.id = wa.session_id
+     WHERE tf.tenant_id = $1
+     ORDER BY (tf.review_status IN ('teacher-reviewed','blocked','scholar-approved')),
+              rs.started_at ASC NULLS FIRST, tf.id
+     LIMIT 200`,
+    [TENANT],
+  );
+
+  for (const [impl, base] of [["shell", shell.baseUrl], ["rust", api.baseUrl]]) {
+    const res = await request(base, "/v1/tajweed-findings", { role: "teacher" });
+    assert.deepEqual(
+      res.body.map((f) => f.id),
+      expected.map((r) => r.id),
+      `${impl}: the queue is not the longest-waiting findings. If this went red after an ORDER BY ` +
+        "change, decide deliberately which findings become unreachable — with a fixed LIMIT and no " +
+        "pagination, some always do.",
+    );
+  }
+});
+
+/**
+ * The truncation, stated rather than left to be discovered.
+ *
+ * `LIMIT 200` with no pagination means a queue deeper than 200 has findings no teacher can reach
+ * through this route, whatever the order. Reordering moved WHO is unreachable — from "everything
+ * that actually needs review" to "the most recent arrivals" — it did not remove the cap.
+ *
+ * This test does not fail on the backlog existing; that would be failing on the corpus. It fails if
+ * the route ever stops being truncated silently, so whoever adds pagination is told this note is
+ * stale, and it prints the depth so the number is visible in the gate rather than in a database.
+ */
+test("the queue is truncated and nothing on the wire says so — a recorded gap", async () => {
+  const [{ awaiting }] = await queryJson(
+    `SELECT count(*)::int AS awaiting FROM tajweed_findings
+     WHERE tenant_id = $1 AND review_status NOT IN ('teacher-reviewed','blocked','scholar-approved')`,
+    [TENANT],
+  );
+  const res = await request(shell.baseUrl, "/v1/tajweed-findings", { role: "teacher" });
+  assert.equal(res.status, 200);
+
+  if (awaiting <= 200) {
+    assert.ok(true, `SKIP — only ${awaiting} findings await review, so nothing is truncated here`);
+    return;
+  }
+
+  assert.equal(
+    res.body.length,
+    200,
+    "the queue stopped returning a full page; if pagination was added, delete this test and the " +
+      "note above it rather than leaving a stale claim about truncation",
+  );
+  assert.ok(
+    !Array.isArray(res.body) || res.body.every((f) => !("totalAwaiting" in f)),
+    "the response now carries a total — say so on the route and retire this gap",
+  );
+  // Printed, not asserted: the point is that the number is knowable from the gate.
+  console.log(`    note: ${awaiting} findings await review; this route returns at most 200 and says nothing about the rest`);
+});
