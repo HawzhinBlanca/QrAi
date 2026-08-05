@@ -27,6 +27,28 @@ pub(crate) fn clears_learner_gate(
     approved && confidence >= LEARNER_MIN_CONFIDENCE && has_source
 }
 
+/// What a reviewer can do with this finding's audio.
+///
+///   available     a stored chunk covers the finding's span, and consent permits keeping it
+///   discarded     consent said `discard`; the recording was destroyed on purpose
+///   not-captured  retention was permitted, but no audio was stored for this span
+///   unknown       retention could not be established — never offered for playback
+///
+/// Consent is checked FIRST and is authoritative. A chunk existing under `discard` consent is a
+/// retention BUG, and answering `available` would invite a teacher to listen to a recording that
+/// should not exist. `discard` means `discarded`, whatever happens to be on disk.
+///
+/// A missing consent record is `unknown`, not `not-captured`: those are different claims, and only
+/// one of them is true when the row a session's retention policy lives in has gone.
+pub(crate) fn audio_status(audio_retention: Option<String>, has_audio: bool) -> &'static str {
+    match audio_retention.as_deref() {
+        Some("discard") => "discarded",
+        None => "unknown",
+        Some(_) if has_audio => "available",
+        Some(_) => "not-captured",
+    }
+}
+
 pub async fn create_teacher_review(
     State(state): State<AppState>,
     method: axum::http::Method,
@@ -381,9 +403,21 @@ pub async fn list_tajweed_findings(
         // to tell the two apart.
         "SELECT tf.id, tf.alignment_id, wa.word_id, wa.transcript_source, tf.analysis_basis,
                 tf.rule, tf.severity,
-                tf.confidence::float8 AS confidence, tf.explanation, tf.review_status, tf.source_refs
+                tf.confidence::float8 AS confidence, tf.explanation, tf.review_status, tf.source_refs,
+                cr.audio_retention,
+                EXISTS (
+                  SELECT 1 FROM audio_chunks ac
+                  WHERE ac.session_id = wa.session_id
+                    AND ac.tenant_id = tf.tenant_id
+                    AND ac.start_ms < wa.end_ms AND ac.end_ms > wa.start_ms
+                ) AS has_audio
          FROM tajweed_findings tf
          JOIN word_alignments wa ON wa.id = tf.alignment_id
+         -- LEFT, both of them. An INNER join here would silently DROP any finding whose session or
+         -- consent record has gone (erasure, or a session deleted while its finding survived), and a
+         -- finding vanishing from a review queue is worse than one that cannot be played.
+         LEFT JOIN recitation_sessions rs ON rs.id = wa.session_id
+         LEFT JOIN consent_records cr ON cr.id = rs.consent_record_id
          WHERE tf.tenant_id = $1
          -- tf.id breaks ties: confidence is NOT unique (findings routinely share 0.9), so with the
          -- LIMIT below Postgres would drop an ARBITRARY subset of the tied rows at the cutoff and
@@ -423,6 +457,17 @@ pub async fn list_tajweed_findings(
                 "analysisBasis": r
                     .try_get::<String, _>("analysis_basis")
                     .unwrap_or_else(|_| "canonical-text".to_owned()),
+                // Whether a reviewer can HEAR the recitation this finding is about, and if not, why.
+                //
+                // A teacher opening this queue is asked to accept or reject a claim about how a
+                // child recited. Nothing told them whether the recording still existed: when this
+                // was added, ALL 2772 findings in the corpus belonged to sessions whose consent said
+                // `discard`, so the audio was destroyed on purpose — and the queue looked exactly
+                // the same as if it were sitting there unplayed.
+                "audioStatus": audio_status(
+                    r.try_get::<Option<String>, _>("audio_retention").unwrap_or(None),
+                    r.try_get::<bool, _>("has_audio").unwrap_or(false),
+                ),
                 "rule": r.try_get::<String, _>("rule").unwrap_or_default(),
                 "severity": r.try_get::<String, _>("severity").unwrap_or_default(),
                 "confidence": r.try_get::<f64, _>("confidence").unwrap_or(0.0),
