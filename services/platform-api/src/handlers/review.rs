@@ -49,6 +49,182 @@ pub(crate) fn audio_status(audio_retention: Option<String>, has_audio: bool) -> 
     }
 }
 
+/// `GET /v1/tajweed-findings/{id}/audio` — the recitation a finding is about, for the person judging it.
+///
+/// ADR-0037. The bytes travel THROUGH here rather than via a signed URL handed to the client: a URL
+/// that grants access is a credential outliving the check that produced it, unrevocable when consent
+/// is withdrawn mid-window, and its audit record would say a link was issued rather than that a
+/// recording was heard.
+///
+/// ── Who ──────────────────────────────────────────────────────────────────────────────────────────
+/// Exactly the roles that can RECORD A DECISION about the finding — `create_teacher_review`'s list.
+/// Scholar is deliberately absent even though a scholar can READ the finding queue: reviewing
+/// content for religious accuracy does not require listening to a particular child's voice, and this
+/// is a child's voice. Whoever can decide needs to hear; nobody else does.
+///
+/// ── Order ────────────────────────────────────────────────────────────────────────────────────────
+/// authenticate -> authorize -> find in tenant -> consent -> AUDIT -> fetch.
+///
+/// The audit row is written BEFORE the bytes are requested, so a transfer that dies halfway is still
+/// recorded as an attempt. It is written AFTER authorization, so an unauthenticated caller cannot
+/// write rows into the audit log by asking.
+pub async fn get_finding_audio(
+    State(state): State<AppState>,
+    method: axum::http::Method,
+    headers: HeaderMap,
+    axum::extract::Path(finding_id): axum::extract::Path<String>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let actor = crate::auth::resolve_actor(&method, &headers, &state).await?;
+    actor.require_any(&[ActorRole::Teacher, ActorRole::Admin, ActorRole::Ops])?;
+
+    let mut tx = crate::begin_tenant_tx(&state.pool, &actor.tenant_id).await?;
+
+    // One query for the finding, its span, its learner, its consent and its chunk. Tenant-scoped on
+    // the finding AND on the chunk: `ac.tenant_id = tf.tenant_id` is not decoration, it is what stops
+    // a chunk id from another tenant being reachable through a finding in this one.
+    let row = sqlx::query(
+        "SELECT rs.learner_id, cr.audio_retention,
+                ac.id AS chunk_id, ac.start_ms AS chunk_start_ms, ac.end_ms AS chunk_end_ms,
+                wa.start_ms AS finding_start_ms, wa.end_ms AS finding_end_ms,
+                (SELECT count(*) FROM audio_chunks c2
+                  WHERE c2.session_id = wa.session_id AND c2.tenant_id = tf.tenant_id
+                    AND c2.start_ms < wa.end_ms AND c2.end_ms > wa.start_ms) AS overlapping
+         FROM tajweed_findings tf
+         JOIN word_alignments wa ON wa.id = tf.alignment_id
+         LEFT JOIN recitation_sessions rs ON rs.id = wa.session_id
+         LEFT JOIN consent_records cr ON cr.id = rs.consent_record_id
+         LEFT JOIN audio_chunks ac ON ac.session_id = wa.session_id
+              AND ac.tenant_id = tf.tenant_id
+              AND ac.start_ms < wa.end_ms AND ac.end_ms > wa.start_ms
+         WHERE tf.id = $1 AND tf.tenant_id = $2
+         -- Earliest overlapping chunk. A word can straddle a chunk boundary; `overlapping` tells the
+         -- caller when there is more rather than pretending this one is the whole word.
+         ORDER BY ac.start_ms ASC NULLS LAST
+         LIMIT 1",
+    )
+    .bind(&finding_id)
+    .bind(&actor.tenant_id)
+    .fetch_optional(&mut *tx)
+    .await?;
+
+    // 404 whether the finding does not exist or belongs to another tenant. Distinguishing them would
+    // let a teacher in one tenant confirm a finding id in another.
+    let row = row.ok_or(ApiError::NotFound)?;
+
+    let retention: Option<String> = row.try_get("audio_retention").unwrap_or(None);
+    let chunk_id: Option<String> = row.try_get("chunk_id").unwrap_or(None);
+    let learner_id: Option<String> = row.try_get("learner_id").unwrap_or(None);
+
+    let status = audio_status(retention.clone(), chunk_id.is_some());
+
+    // ── The audit row, before anything else is decided ──────────────────────────────────────────
+    // EVERY authorized attempt, not only the ones that return bytes. "Who tried to listen to this
+    // child's recording, and what happened" is the question a pilot has to answer, and an attempt on
+    // a discarded recording is at least as interesting as a successful one. The outcome is recorded
+    // WITH the attempt, so the row never claims audio was heard when it was not.
+    //
+    // After authorization, so an unauthenticated caller cannot write rows into the audit log by
+    // asking. Before the bytes, so a transfer that dies halfway still leaves the record.
+    let audit_id = next_id("audit");
+    let trace_id = crate::auth::extract_trace_id(&headers);
+    sqlx::query(
+        "INSERT INTO audit_events (id, tenant_id, actor_id, action, subject_type, subject_id, metadata)
+         VALUES ($1, $2, $3, 'recitation.audio.read', 'tajweed_finding', $4, $5)",
+    )
+    .bind(&audit_id)
+    .bind(&actor.tenant_id)
+    .bind(&actor.user_id)
+    .bind(&finding_id)
+    .bind(serde_json::json!({
+        "trace_id": trace_id,
+        "outcome": status,
+        "chunk_id": chunk_id,
+        "learner_id": learner_id,
+    }))
+    .execute(&mut *tx)
+    .await?;
+    tx.commit().await?;
+
+    match status {
+        // 410 Gone, not 404: the finding exists and the recording DID exist. The learner asked for it
+        // to be destroyed and it was. A 404 would read as "we lost it" or "not yet", and a teacher
+        // would keep coming back.
+        "discarded" => {
+            return Err(ApiError::Gone(
+                "this recording was discarded at the learner's request".to_owned(),
+            ));
+        }
+        "unknown" => {
+            return Err(ApiError::Gone(
+                "retention for this recording cannot be established".to_owned(),
+            ));
+        }
+        "not-captured" => return Err(ApiError::NotFound),
+        _ => {}
+    }
+    let chunk_id = chunk_id.ok_or(ApiError::NotFound)?;
+    let learner_id = learner_id.ok_or(ApiError::NotFound)?;
+
+    // The object key's PARTS, never the key — and `tenant_id` is the ACTOR's, never a value read
+    // from the row. A tenant id taken from data is a tenant id an attacker can influence.
+    let upstream = state
+        .http_client
+        .post(format!("{}/v1/audio-objects:read", state.ml_inference_url))
+        .header("content-type", "application/json")
+        .header("x-ml-api-key", &state.ml_api_key)
+        .json(&serde_json::json!({
+            "tenantId": actor.tenant_id,
+            "learnerId": learner_id,
+            "chunkId": chunk_id,
+        }))
+        .send()
+        .await
+        .map_err(|e| {
+            tracing::error!("audio read send error: {e}");
+            ApiError::Upstream("audio storage unavailable".to_owned())
+        })?;
+
+    if upstream.status() == reqwest::StatusCode::GONE {
+        // ml-inference checks the retention stored ALONGSIDE the bytes. Reaching this means the two
+        // records disagree — the consent row said retain, the object said otherwise. Refuse, and say
+        // so loudly server-side: a disagreement about whether a child's recording may be played is
+        // not a routine 4xx.
+        tracing::error!(
+            "retention disagreement for finding {finding_id}: consent said {retention:?}, storage refused"
+        );
+        return Err(ApiError::Gone(
+            "this recording was not retained for review".to_owned(),
+        ));
+    }
+    if upstream.status() == reqwest::StatusCode::NOT_FOUND {
+        return Err(ApiError::NotFound);
+    }
+    if !upstream.status().is_success() {
+        tracing::warn!("audio read upstream status {}", upstream.status());
+        return Err(ApiError::Upstream("audio storage error".to_owned()));
+    }
+
+    let object: serde_json::Value = upstream.json().await.map_err(|e| {
+        tracing::error!("audio read parse error: {e}");
+        ApiError::Upstream("audio storage returned an invalid response".to_owned())
+    })?;
+
+    let overlapping: i64 = row.try_get("overlapping").unwrap_or(0);
+    Ok(Json(serde_json::json!({
+        "audioBase64": object.get("audioBase64").cloned().unwrap_or(serde_json::Value::Null),
+        "auditEventId": audit_id,
+        "chunkId": chunk_id,
+        // How much of the word this chunk actually covers, so a client can say "part of this word is
+        // in the next chunk" instead of playing a fragment as though it were the whole thing.
+        "chunksOverlappingFinding": overlapping,
+        "endMs": object.get("endMs").cloned().unwrap_or(serde_json::Value::Null),
+        "findingEndMs": row.try_get::<i32, _>("finding_end_ms").unwrap_or(0),
+        "findingStartMs": row.try_get::<i32, _>("finding_start_ms").unwrap_or(0),
+        "sampleRate": object.get("sampleRate").cloned().unwrap_or(serde_json::Value::Null),
+        "startMs": object.get("startMs").cloned().unwrap_or(serde_json::Value::Null),
+    })))
+}
+
 pub async fn create_teacher_review(
     State(state): State<AppState>,
     method: axum::http::Method,

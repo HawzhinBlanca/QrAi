@@ -55,6 +55,142 @@ function audioStatus(audioRetention, hasAudio) {
   return hasAudio ? "available" : "not-captured";
 }
 
+/**
+ * GET /v1/tajweed-findings/{id}/audio — review.rs `get_finding_audio` (ADR-0037).
+ *
+ * The recitation a finding is about, for the person judging it. The bytes travel THROUGH here rather
+ * than via a signed URL handed to the client: a URL that grants access is a credential outliving the
+ * check that produced it, unrevocable when consent is withdrawn mid-window, and its audit record
+ * would say a link was issued rather than that a recording was heard.
+ *
+ * Roles are exactly `createTeacherReview`'s — whoever can RECORD A DECISION about the finding.
+ * Scholar is deliberately absent even though a scholar can read the finding queue: reviewing content
+ * for religious accuracy does not require listening to a particular child's voice.
+ *
+ * Order: authenticate -> authorize -> find in tenant -> consent -> AUDIT -> fetch. The audit row is
+ * written before the bytes are requested so a transfer that dies halfway is still recorded, and
+ * after authorization so an unauthenticated caller cannot write rows by asking.
+ */
+export async function getFindingAudio(req, reply, ctx) {
+  const resolved = await resolveActor(req, ctx);
+  if (resolved.delegate) return proxy(req, reply, ctx.upstream);
+  const { actor } = resolved;
+
+  requireAnyRole(actor, ["teacher", "admin", "ops"]);
+
+  const findingId = req.params.id;
+  const prepared = await ctx.db.withTenant(actor.tenantId, async (tx) => {
+    const [row] = await tx`
+      SELECT rs.learner_id, cr.audio_retention,
+             ac.id AS chunk_id,
+             wa.start_ms AS finding_start_ms, wa.end_ms AS finding_end_ms,
+             (SELECT count(*) FROM audio_chunks c2
+               WHERE c2.session_id = wa.session_id AND c2.tenant_id = tf.tenant_id
+                 AND c2.start_ms < wa.end_ms AND c2.end_ms > wa.start_ms) AS overlapping
+      FROM tajweed_findings tf
+      JOIN word_alignments wa ON wa.id = tf.alignment_id
+      LEFT JOIN recitation_sessions rs ON rs.id = wa.session_id
+      LEFT JOIN consent_records cr ON cr.id = rs.consent_record_id
+      LEFT JOIN audio_chunks ac ON ac.session_id = wa.session_id
+           AND ac.tenant_id = tf.tenant_id
+           AND ac.start_ms < wa.end_ms AND ac.end_ms > wa.start_ms
+      WHERE tf.id = ${findingId} AND tf.tenant_id = ${actor.tenantId}
+      ORDER BY ac.start_ms ASC NULLS LAST
+      LIMIT 1`;
+
+    // 404 whether the finding does not exist or belongs to another tenant: distinguishing them lets
+    // a teacher in one tenant confirm a finding id in another.
+    if (!row) throw NotFound();
+
+    const status = audioStatus(row.audio_retention ?? null, row.chunk_id != null);
+
+    // EVERY authorized attempt is audited, not only the ones that return bytes: an attempt on a
+    // discarded recording is at least as interesting as a successful one. The outcome is recorded
+    // WITH the attempt, so the row never claims audio was heard when it was not.
+    const auditId = newId("audit");
+    await tx`
+      INSERT INTO audit_events (id, tenant_id, actor_id, action, subject_type, subject_id, metadata)
+      VALUES (${auditId}, ${actor.tenantId}, ${actor.userId}, 'recitation.audio.read',
+              'tajweed_finding', ${findingId},
+              ${tx.json({
+                trace_id: traceId(req),
+                outcome: status,
+                chunk_id: row.chunk_id ?? null,
+                learner_id: row.learner_id ?? null,
+              })})`;
+
+    return {
+      status,
+      auditId,
+      chunkId: row.chunk_id ?? null,
+      learnerId: row.learner_id ?? null,
+      findingStartMs: Number(row.finding_start_ms ?? 0),
+      findingEndMs: Number(row.finding_end_ms ?? 0),
+      overlapping: Number(row.overlapping ?? 0),
+    };
+  });
+
+  // OUTSIDE the transaction, deliberately. `withTenant` wraps `sql.begin`, so throwing inside it
+  // rolls the transaction back — and the audit row with it. An audited refusal that erases its own
+  // audit row is worse than no audit at all, because it looks like nobody asked. Rust has the same
+  // shape for the same reason: `tx.commit()` runs before the status is acted on.
+  //
+  // 410 Gone, not 404. The finding exists and the recording DID exist; the learner asked for it to
+  // be destroyed and it was. A 404 reads as "we lost it" and a teacher keeps coming back.
+  if (prepared.status === "discarded") {
+    throw new ApiError("this recording was discarded at the learner's request", 410);
+  }
+  if (prepared.status === "unknown") {
+    throw new ApiError("retention for this recording cannot be established", 410);
+  }
+  if (prepared.status !== "available" || !prepared.chunkId || !prepared.learnerId) throw NotFound();
+
+  // The object key's PARTS, never the key — and the tenant is the ACTOR's, never a value read from
+  // the row. A tenant id taken from data is a tenant id an attacker can influence.
+  let upstream;
+  try {
+    upstream = await fetch(`${ctx.mlInferenceUrl}/v1/audio-objects:read`, {
+      method: "POST",
+      headers: { "content-type": "application/json", "x-ml-api-key": ctx.mlApiKey },
+      body: JSON.stringify({
+        tenantId: actor.tenantId,
+        learnerId: prepared.learnerId,
+        chunkId: prepared.chunkId,
+      }),
+    });
+  } catch {
+    throw new ApiError("audio storage unavailable", 502);
+  }
+
+  if (upstream.status === 410) {
+    // ml-inference checks the retention stored ALONGSIDE the bytes. Reaching here means the two
+    // records disagree — the consent row said retain, the object said otherwise. Refuse.
+    throw new ApiError("this recording was not retained for review", 410);
+  }
+  if (upstream.status === 404) throw NotFound();
+  if (!upstream.ok) throw new ApiError("audio storage error", 502);
+
+  let object;
+  try {
+    object = await upstream.json();
+  } catch {
+    throw new ApiError("audio storage returned an invalid response", 502);
+  }
+
+  // json! keys, alphabetical.
+  return reply.send({
+    audioBase64: object.audioBase64 ?? null,
+    auditEventId: prepared.auditId,
+    chunkId: prepared.chunkId,
+    chunksOverlappingFinding: prepared.overlapping,
+    endMs: object.endMs ?? null,
+    findingEndMs: prepared.findingEndMs,
+    findingStartMs: prepared.findingStartMs,
+    sampleRate: object.sampleRate ?? null,
+    startMs: object.startMs ?? null,
+  });
+}
+
 /** POST /v1/teacher-reviews — review.rs:9 */
 export async function createTeacherReview(req, reply, ctx) {
   const resolved = await resolveActor(req, ctx);
