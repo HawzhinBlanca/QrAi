@@ -644,6 +644,17 @@ async function predictAlignment(requestBody) {
 }
 
 // === Real tajweed prediction ===
+/**
+ * The response-level confidence when the analysis produced no findings.
+ *
+ * This was `0.95`, which read as "we checked and are 95% sure there is nothing wrong" — an
+ * assertion nothing here can make. Zero findings from a text scan means the passage contains no
+ * detectable rule occurrence, which says nothing about the recitation and carries no certainty of
+ * its own. `0` matches what the per-finding confidences now report and why
+ * (see NO_MEASURED_CONFIDENCE in tajweed.js).
+ */
+const NO_TAJWEED_CONFIDENCE = 0;
+
 async function predictTajweed(requestBody) {
   const startedAt = performance.now();
   const traceId = extractTraceId(requestBody);
@@ -685,7 +696,7 @@ async function predictTajweed(requestBody) {
     }));
     confidence = findings.length > 0
       ? findings.reduce((sum, f) => sum + f.confidence, 0) / findings.length
-      : 0.95;
+      : NO_TAJWEED_CONFIDENCE;
   } else {
     // Run real tajweed analysis
     const canonicalWords = getCanonicalWords(quranRef.surahNumber, quranRef.ayahStart, quranRef.ayahEnd);
@@ -702,7 +713,7 @@ async function predictTajweed(requestBody) {
     }));
     confidence = findings.length > 0
       ? findings.reduce((sum, f) => sum + f.confidence, 0) / findings.length
-      : 0.95;
+      : NO_TAJWEED_CONFIDENCE;
   }
 
   const auditEventId = appendAudit(tenantId, "ml.tajweed.predicted", sessionId, {

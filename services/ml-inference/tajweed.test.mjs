@@ -8,6 +8,7 @@
 
 import test from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { analyzeWord, analyzeAyah } from "./tajweed.js";
 
 const rules = (word) => analyzeWord("w", word).map((f) => f.rule);
@@ -91,3 +92,81 @@ test(
     assert.ok(rules("ثُمَّ").includes("ghunnah"), "meem mushaddad");
   },
 );
+
+// ─────────────────────────────────────────────────────────────────────────────────────────────────
+// The `confidence` field, and why it is what it is.
+//
+// These detectors are deterministic and unit-tested against real Uthmani word forms — the tests
+// above pin actual fixed bugs. What was never measured is a CONFIDENCE. There is no model here, no
+// dataset, no precision/recall, no evaluation of any kind. The engine used to attach nine different
+// hand-typed decimals (ikhfa 0.80, idgham 0.82, iqlab 0.83, tafkhim 0.84, madd-maleki 0.85,
+// shaddah 0.86, qalqalah 0.87, madd-tabii 0.88, ghunnah 0.90) which ranked the rules against each
+// other with nothing behind the ranking.
+//
+// That was not cosmetic. `canShowLearnerFacingAiOutput` (packages/contracts) gates learner-visible
+// AI output on `confidence >= 0.82`, so those literals decided which rules a learner could ever be
+// shown. ikhfa sat at 0.80 and could NEVER clear it — a teacher could review an ikhfa finding,
+// approve it, and the learner would still never see it, silently, because of a typed constant.
+// idgham sat at exactly 0.82, one hundredth from the same fate.
+//
+// A finding derived from canonical text says the same thing for every learner who ever recites the
+// passage; it carries no evidence about how THIS learner recited. So the honest confidence for it is
+// `0` — "no assertion" — which is already this codebase's idiom for exactly that (ml_proxy.rs:215
+// and routes/ml-proxy.mjs:106 both zero the confidence when withholding). It fails the gate on
+// confidence, deliberately and uniformly, instead of passing it on a fabricated number.
+// ─────────────────────────────────────────────────────────────────────────────────────────────────
+
+/** The real gate, transcribed from packages/contracts canShowLearnerFacingAiOutput. */
+const LEARNER_MIN_CONFIDENCE = 0.82;
+
+const everyFinding = () => {
+  const found = new Map();
+  // One word or pair per rule, using the same real bundle forms the tests above use.
+  for (const w of ["قَالَ", "ٱلرَّحِيمِ", "نُور", "يَٰٓأَيُّهَا", "أَحَدٌ", "قُلْ", "ٱلطَّارِقِ", "إِنَّ"]) {
+    for (const f of analyzeWord("w", w)) found.set(f.rule, f);
+  }
+  for (const [a, b] of [["مَن", "يَعْمَلْ"], ["مِن", "قَبْلِكَ"], ["مِنۢ", "بَعْدِ"], ["عَنۢ", "بَعْضٍ"]]) {
+    for (const f of analyzeAyah("a", [{ id: "1", text: a }, { id: "2", text: b }])) found.set(f.rule, f);
+  }
+  return [...found.values()];
+};
+
+test("no canonical-text finding claims a confidence it never measured", () => {
+  const findings = everyFinding();
+  assert.ok(findings.length >= 6, `expected several rules to fire, got ${findings.length}`);
+  for (const f of findings) {
+    assert.equal(
+      f.confidence,
+      0,
+      `${f.rule} reports confidence ${f.confidence}. Nothing measures that. A text-derived finding ` +
+        "carries no evidence about how this learner recited, so it asserts none.",
+    );
+  }
+});
+
+test("learner visibility does not depend on WHICH rule fired", () => {
+  const findings = everyFinding();
+  const clears = (f) => f.confidence >= LEARNER_MIN_CONFIDENCE;
+  const passing = findings.filter(clears).map((f) => f.rule);
+  const failing = findings.filter((f) => !clears(f)).map((f) => f.rule);
+
+  assert.equal(
+    passing.length === 0 || failing.length === 0,
+    true,
+    "some rules clear the learner-confidence gate and others do not, purely because of the number " +
+      `attached to them: through=[${passing}] blocked=[${failing}]. That is how ikhfa became ` +
+      "permanently invisible to learners while madd was not.",
+  );
+});
+
+test("the gate this test relies on is the real one — 0.82, not a number invented here", () => {
+  const contracts = readFileSync(
+    new URL("../../packages/contracts/src/index.ts", import.meta.url),
+    "utf8",
+  );
+  assert.match(
+    contracts,
+    /record\.confidence\s*>=\s*0\.82/,
+    "canShowLearnerFacingAiOutput no longer thresholds at 0.82; LEARNER_MIN_CONFIDENCE above is stale",
+  );
+});

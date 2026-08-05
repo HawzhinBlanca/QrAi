@@ -48,7 +48,7 @@ export const TENANT = "hikmah-pilot-erbil";
 export const OTHER_TENANT = "tenant-quran-ai";
 
 /** Matches integration.rs:47-58 — the seeded identities the dev-header path maps roles onto. */
-const ROLE_USER_IDS = {
+export const ROLE_USER_IDS = {
   learner: "learner-1",
   teacher: "teacher-1",
   scholar: "scholar-1",

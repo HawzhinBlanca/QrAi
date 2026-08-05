@@ -68,28 +68,31 @@ pub async fn create_privacy_export(
     State(state): State<AppState>,
     method: axum::http::Method,
     headers: HeaderMap,
-    Json(req): Json<PrivacyJobRequest>,
+    body: JsonBody<PrivacyJobRequest>,
 ) -> Result<Json<PrivacyJob>, ApiError> {
-    create_privacy_job(state, method, headers, req, PrivacyJobKind::Export).await
+    create_privacy_job(state, method, headers, body, PrivacyJobKind::Export).await
 }
 
 pub async fn create_privacy_delete(
     State(state): State<AppState>,
     method: axum::http::Method,
     headers: HeaderMap,
-    Json(req): Json<PrivacyJobRequest>,
+    body: JsonBody<PrivacyJobRequest>,
 ) -> Result<Json<PrivacyJob>, ApiError> {
-    create_privacy_job(state, method, headers, req, PrivacyJobKind::Delete).await
+    create_privacy_job(state, method, headers, body, PrivacyJobKind::Delete).await
 }
 
 async fn create_privacy_job(
     state: AppState,
     method: axum::http::Method,
     headers: HeaderMap,
-    req: PrivacyJobRequest,
+    body: JsonBody<PrivacyJobRequest>,
     kind: PrivacyJobKind,
 ) -> Result<Json<PrivacyJob>, ApiError> {
     let actor = crate::auth::resolve_actor(&method, &headers, &state).await?;
+    // Parsed after authentication and before authorization: `require_self_or_any` below reads
+    // `req.learner_id`, so it cannot move any earlier than this.
+    let Json(req) = body?;
     // Authorization FIRST, and it must stay first: it is what makes the existence check below safe.
     // A learner may only ever pass their own id, so only admin/ops — already trusted with every row
     // in the tenant — can reach a 404 at all. Inverting these two would turn the 404 into a learner

@@ -31,10 +31,11 @@ pub async fn create_teacher_review(
     State(state): State<AppState>,
     method: axum::http::Method,
     headers: HeaderMap,
-    Json(req): Json<TeacherReviewRequest>,
+    body: JsonBody<TeacherReviewRequest>,
 ) -> Result<Json<TeacherReview>, ApiError> {
     let actor = crate::auth::resolve_actor(&method, &headers, &state).await?;
     actor.require_any(&[ActorRole::Teacher, ActorRole::Admin, ActorRole::Ops])?;
+    let Json(req) = body?;
 
     let mut tx = crate::begin_tenant_tx(&state.pool, &actor.tenant_id).await?;
 
@@ -235,10 +236,11 @@ pub async fn create_scholar_approval(
     State(state): State<AppState>,
     method: axum::http::Method,
     headers: HeaderMap,
-    Json(req): Json<ScholarApprovalRequest>,
+    body: JsonBody<ScholarApprovalRequest>,
 ) -> Result<Json<ScholarApproval>, ApiError> {
     let actor = crate::auth::resolve_actor(&method, &headers, &state).await?;
     actor.require_any(&[ActorRole::Scholar, ActorRole::Admin, ActorRole::Ops])?;
+    let Json(req) = body?;
 
     let mut tx = crate::begin_tenant_tx(&state.pool, &actor.tenant_id).await?;
 
