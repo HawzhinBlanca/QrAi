@@ -472,45 +472,137 @@ test("the route is teacher-and-above, within tenant — a learner cannot read it
 // heard of should surface for a human, not vanish.
 const DECIDED_STATUSES = ["teacher-reviewed", "blocked", "scholar-approved"];
 
-test("the review queue is not full of findings that were already reviewed", async () => {
-  const [{ awaiting }] = await queryJson(
-    `SELECT count(*)::int AS awaiting FROM tajweed_findings
-     WHERE tenant_id = $1 AND review_status NOT IN ('teacher-reviewed','blocked','scholar-approved')`,
+/**
+ * Seed one finding with a controlled review status, confidence, and session age.
+ *
+ * The first version of these tests asserted against WHATEVER the corpus happened to hold —
+ * `awaiting > 200` as a premise. That passed on a machine with a 1986-deep backlog and failed on
+ * CI's freshly migrated database, which has ten. A test coupled to one machine's data is a pin on
+ * today's state, which is the defect this whole file exists to catch; so the fixtures now state
+ * what they need instead of hoping for it.
+ *
+ * `startedAt` is what the queue orders by, so it is a parameter rather than `now()`.
+ */
+async function seedQueued({ label, reviewStatus, confidence, startedAtSql }) {
+  const suffix = `${Date.now().toString(36)}-${Math.floor(Math.random() * 1e9)}`;
+  const ids = {
+    audit: `audit-q-${label}-${suffix}`,
+    consent: `consent-q-${label}-${suffix}`,
+    session: `session-q-${label}-${suffix}`,
+    alignment: `wa-q-${label}-${suffix}`,
+    finding: `tf-q-${label}-${suffix}`,
+  };
+  const [learner] = await queryJson(
+    "SELECT id FROM users WHERE tenant_id = $1 AND role = 'learner' ORDER BY id LIMIT 1",
     [TENANT],
   );
-  assert.ok(
-    awaiting > 200,
-    `premise: this test needs more awaiting findings than the page holds, got ${awaiting}. ` +
-      "With fewer, every one fits and the ordering cannot starve anything.",
+  const [model] = await queryJson("SELECT id FROM model_versions ORDER BY id LIMIT 1");
+  const [word] = await queryJson("SELECT id FROM canonical_words WHERE ayah_id = '1:1' LIMIT 1");
+
+  await queryJson(
+    `INSERT INTO audit_events (id, tenant_id, actor_id, action, subject_type, subject_id, metadata)
+     VALUES ($1, $2, $3, 'test.seed', 'test', $1, '{}'::jsonb)`,
+    [ids.audit, TENANT, learner.id],
   );
+  await queryJson(
+    `INSERT INTO consent_records (id, tenant_id, user_id, audio_retention, anonymized_learning,
+       external_asr_processing, guardian_approved, consent_version, audit_event_id)
+     VALUES ($1, $2, $3, 'discard', true, false, true, 'pilot-v1', $4)`,
+    [ids.consent, TENANT, learner.id, ids.audit],
+  );
+  await queryJson(
+    `INSERT INTO recitation_sessions
+       (id, tenant_id, learner_id, quran_ref, source_checksum, model_version_id, mode,
+        practice_plan_id, external_processing_allowed, confidence, review_status, started_at,
+        latency_ms, consent_record_id, consent_snapshot, audit_event_id, language)
+     VALUES ($1, $2, $3, '{}'::jsonb, 'fnv1a32:t', $4, 'guided-recite', 'p', false, 0.0, 'draft',
+             ${startedAtSql}, 0, $5, '{}'::jsonb, $6, 'ar')`,
+    [ids.session, TENANT, learner.id, model.id, ids.consent, ids.audit],
+  );
+  await queryJson(
+    `INSERT INTO word_alignments
+       (id, tenant_id, session_id, word_id, heard_text, start_ms, end_ms, confidence, status,
+        model_version_id, audit_event_id, transcript_source)
+     VALUES ($1, $2, $3, $4, 'x', 0, 100, 0.9, 'matched', $5, $6, 'client-reported')`,
+    [ids.alignment, TENANT, ids.session, word.id, model.id, ids.audit],
+  );
+  await queryJson(
+    `INSERT INTO tajweed_findings
+       (id, tenant_id, alignment_id, rule, severity, confidence, explanation, review_status,
+        source_refs, model_version_id, audit_event_id, analysis_basis)
+     VALUES ($1, $2, $3, 'ghunnah', 'practice', $4, 'e', $5, '[]'::jsonb, $6, $7, 'canonical-text')`,
+    [ids.finding, TENANT, ids.alignment, confidence, reviewStatus, model.id, ids.audit],
+  );
+  return ids.finding;
+}
+
+test("a decided finding never outranks one still awaiting review", async () => {
+  // The ordering rule, stated as the smallest case that can distinguish it — and deliberately NOT as
+  // a claim about how deep the corpus is.
+  //
+  //   decided   HIGH confidence (0.95), OLD session   -> would come first under `confidence DESC`
+  //   awaiting  ZERO confidence,        NEWER session -> must come first under the queue's own rule
+  //
+  // Both are seeded at the very front of the age ordering so neither depends on the backlog: on a
+  // fresh database and on one holding 1986 awaiting findings, the relative order is the same claim.
+  const decided = await seedQueued({
+    label: "decided",
+    reviewStatus: "teacher-reviewed",
+    confidence: 0.95,
+    startedAtSql: "now() - interval '20 years'",
+  });
+  const awaiting = await seedQueued({
+    label: "awaiting",
+    reviewStatus: "teacher-review-required",
+    confidence: 0,
+    startedAtSql: "now() - interval '19 years'",
+  });
 
   for (const [impl, base] of [["shell", shell.baseUrl], ["rust", api.baseUrl]]) {
     const res = await request(base, "/v1/tajweed-findings", { role: "teacher" });
     assert.equal(res.status, 200, `${impl}: ${res.text}`);
-    const decided = res.body.filter((f) => DECIDED_STATUSES.includes(f.reviewStatus));
-    assert.equal(
-      decided.length,
-      0,
-      `${impl}: ${decided.length} of ${res.body.length} findings in the queue are already decided ` +
-        `while ${awaiting} await review. A teacher cannot reach the work.`,
+    const ids = res.body.map((f) => f.id);
+
+    assert.ok(
+      ids.includes(awaiting),
+      `${impl}: a finding awaiting review, older than almost everything, is not in the queue at all`,
+    );
+    const awaitingAt = ids.indexOf(awaiting);
+    const decidedAt = ids.indexOf(decided);
+    assert.ok(
+      decidedAt === -1 || awaitingAt < decidedAt,
+      `${impl}: an already-reviewed finding (confidence 0.95) is ahead of one still awaiting ` +
+        `review (confidence 0) at positions ${decidedAt} and ${awaitingAt}. The queue is ranking ` +
+        "by a number instead of by whether work is needed.",
     );
   }
 });
 
-test("findings whose status names the need are actually IN the queue", async () => {
-  const [{ n }] = await queryJson(
-    `SELECT count(*)::int AS n FROM tajweed_findings
-     WHERE tenant_id = $1 AND review_status = 'teacher-review-required'`,
-    [TENANT],
-  );
-  assert.ok(n > 0, "premise: this tenant has no teacher-review-required findings to look for");
+test("zero confidence does not change a finding's place in the queue", async () => {
+  // The regression ADR-0036 introduced, isolated: two findings awaiting review, same age ordering,
+  // differing ONLY in confidence. Under `confidence DESC` the 0.9 one leads; under the queue's own
+  // rule the older one does, whatever its confidence.
+  const older = await seedQueued({
+    label: "zero",
+    reviewStatus: "ai-suggested",
+    confidence: 0,
+    startedAtSql: "now() - interval '18 years'",
+  });
+  const newer = await seedQueued({
+    label: "high",
+    reviewStatus: "ai-suggested",
+    confidence: 0.9,
+    startedAtSql: "now() - interval '17 years'",
+  });
 
   for (const [impl, base] of [["shell", shell.baseUrl], ["rust", api.baseUrl]]) {
-    const res = await request(base, "/v1/tajweed-findings", { role: "teacher" });
-    const required = res.body.filter((f) => f.reviewStatus === "teacher-review-required");
+    const ids = (await request(base, "/v1/tajweed-findings", { role: "teacher" })).body.map((f) => f.id);
+    assert.ok(ids.includes(older), `${impl}: the zero-confidence finding is missing from the queue`);
     assert.ok(
-      required.length > 0,
-      `${impl}: none of the ${n} teacher-review-required findings appear in the queue`,
+      ids.indexOf(older) < ids.indexOf(newer),
+      `${impl}: the newer high-confidence finding leads the older zero-confidence one. Every ` +
+        "canonical-text finding now carries confidence 0 (ADR-0036), so this ordering would put all " +
+        "new evidence permanently last.",
     );
   }
 });
