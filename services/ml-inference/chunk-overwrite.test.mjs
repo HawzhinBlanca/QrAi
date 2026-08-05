@@ -254,3 +254,120 @@ test("a zero-length or inverted chunk span is also unknown, not taken at face va
     assert.equal(meta.endMs, null, `${label} was recorded as a real endMs (${meta.endMs})`);
   }
 });
+
+// ── Reading a stored chunk back ───────────────────────────────────────────────────────────────────
+//
+// Audio has only ever been written here. Nothing could read it back, which is why a teacher
+// adjudicating a finding has never been able to hear the recitation it is about.
+//
+// The route takes the object key's PARTS — tenantId, learnerId, chunkId — and never the key itself.
+// A key-shaped string would have to be filtered for traversal; three validated segments make
+// traversal structurally impossible instead. Same reason `safeStorageSegment` exists on the write
+// path, applied to the direction where getting it wrong reads arbitrary files off the host.
+//
+// POST rather than GET so the learner id stays out of the URL and therefore out of access logs.
+
+async function readObject(body, key = KEY) {
+  const res = await fetch(`http://127.0.0.1:${PORT}/v1/audio-objects:read`, {
+    method: "POST",
+    headers: { "content-type": "application/json", ...(key ? { "x-ml-api-key": key } : {}) },
+    body: JSON.stringify(body),
+  });
+  let parsed = null;
+  try {
+    parsed = await res.json();
+  } catch {
+    /* non-JSON body */
+  }
+  return { status: res.status, body: parsed };
+}
+
+test("a stored chunk can be read back, bytes and span intact", async () => {
+  await storeRaw({
+    sessionId: "s-read",
+    chunkId: "c-readable",
+    startMs: 640,
+    endMs: 1230,
+    audioRetention: "teacher-review",
+    audioBase64: b64("the-actual-recitation"),
+  });
+
+  const { status, body } = await readObject({ tenantId: TENANT, learnerId: "l1", chunkId: "c-readable" });
+  assert.equal(status, 200, `read failed: ${JSON.stringify(body)}`);
+  assert.equal(
+    Buffer.from(body.audioBase64, "base64").toString("utf8"),
+    "the-actual-recitation",
+    "the bytes returned are not the bytes stored",
+  );
+  assert.equal(body.startMs, 640, "a player needs the span to seek to; it must survive the round trip");
+  assert.equal(body.endMs, 1230);
+});
+
+test("a chunk stored under DISCARD retention is refused, not served", async () => {
+  // Defence in depth, and it is not redundant. platform-api will check consent in the database
+  // before it ever calls here; this checks the retention recorded ALONGSIDE THE BYTES at the moment
+  // they were stored. Two independent records have to agree before a child's recitation is played,
+  // and neither one is the other's cache.
+  await storeRaw({
+    sessionId: "s-read",
+    chunkId: "c-discard",
+    startMs: 0,
+    endMs: 500,
+    audioRetention: "discard",
+    audioBase64: b64("should-never-be-served"),
+  });
+
+  const { status, body } = await readObject({ tenantId: TENANT, learnerId: "l1", chunkId: "c-discard" });
+  assert.equal(status, 410, `expected 410 Gone, got ${status}: ${JSON.stringify(body)}`);
+  assert.doesNotMatch(
+    JSON.stringify(body ?? {}),
+    /should-never-be-served/,
+    "the refusal carried the audio it was refusing to serve",
+  );
+});
+
+test("traversal is impossible in every segment", async () => {
+  for (const seg of ["..", "../..", "a/../../etc", "a\\b", "l1/../l1", ".", "a\0b"]) {
+    for (const field of ["tenantId", "learnerId", "chunkId"]) {
+      const { status } = await readObject({
+        tenantId: TENANT,
+        learnerId: "l1",
+        chunkId: "c-readable",
+        [field]: seg,
+      });
+      assert.equal(
+        status,
+        400,
+        `${field}=${JSON.stringify(seg)} was not rejected as an unsafe segment (got ${status})`,
+      );
+    }
+  }
+});
+
+test("a missing object is 404, and says nothing about what else exists", async () => {
+  const { status, body } = await readObject({ tenantId: TENANT, learnerId: "l1", chunkId: "c-absent" });
+  assert.equal(status, 404);
+  assert.doesNotMatch(
+    JSON.stringify(body ?? {}),
+    /audio-storage|\/Users\/|\/tmp\//,
+    "the 404 leaked a filesystem path",
+  );
+});
+
+test("reading requires the server-side key — this route serves children's voices", async () => {
+  for (const key of ["", "wrong-key"]) {
+    const { status } = await readObject({ tenantId: TENANT, learnerId: "l1", chunkId: "c-readable" }, key);
+    assert.equal(status, 401, `key ${JSON.stringify(key)} was accepted`);
+  }
+});
+
+test("reading a chunk does not write the audio to stderr", async () => {
+  // "Do not log raw audio" is a standing rule, and a read path is where it is easiest to break:
+  // one debug line echoing the response body would put a child's recitation in the service log.
+  const before = stderr.length;
+  await readObject({ tenantId: TENANT, learnerId: "l1", chunkId: "c-readable" });
+  await new Promise((r) => setTimeout(r, 50));
+  const written = stderr.slice(before);
+  assert.doesNotMatch(written, /the-actual-recitation/, "the recitation bytes reached stderr");
+  assert.doesNotMatch(written, /dGhlLWFjdHVhbC1yZWNpdGF0aW9u/, "the base64 recitation reached stderr");
+});
