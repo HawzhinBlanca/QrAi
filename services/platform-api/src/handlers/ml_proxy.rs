@@ -30,9 +30,14 @@ async fn proxy_ml(
     headers: &HeaderMap,
     label: &str,
     path: &str,
-    mut body: serde_json::Value,
+    body: JsonBody<serde_json::Value>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
     let actor = crate::auth::resolve_actor(method, headers, state).await?;
+    // `serde_json::Value` accepts almost anything, so `{}` parsed fine and this route LOOKED like it
+    // authenticated first. Malformed JSON (`{`) did not: it was a 400 naming the parse failure to a
+    // caller with no credentials. Measured — the untyped body hid the same ordering bug the typed
+    // ones had, and a probe that sent only `{}` reported this route as correct.
+    let Json(mut body) = body?;
 
     let obj = body
         .as_object_mut()
@@ -451,7 +456,7 @@ pub async fn proxy_predict_alignment(
     State(state): State<AppState>,
     method: Method,
     headers: HeaderMap,
-    Json(body): Json<serde_json::Value>,
+    body: JsonBody<serde_json::Value>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
     proxy_ml(
         &state,
@@ -469,7 +474,7 @@ pub async fn proxy_predict_tajweed(
     State(state): State<AppState>,
     method: Method,
     headers: HeaderMap,
-    Json(body): Json<serde_json::Value>,
+    body: JsonBody<serde_json::Value>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
     proxy_ml(
         &state,
@@ -496,7 +501,7 @@ pub async fn proxy_asr_transcribe(
     State(state): State<AppState>,
     method: Method,
     headers: HeaderMap,
-    Json(body): Json<serde_json::Value>,
+    body: JsonBody<serde_json::Value>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
     proxy_asr(
         &state,
@@ -515,7 +520,7 @@ pub async fn proxy_asr_force_align(
     State(state): State<AppState>,
     method: Method,
     headers: HeaderMap,
-    Json(body): Json<serde_json::Value>,
+    body: JsonBody<serde_json::Value>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
     proxy_asr(
         &state,
@@ -538,9 +543,10 @@ async fn proxy_asr(
     headers: &HeaderMap,
     path: &str,
     label: &str,
-    body: serde_json::Value,
+    body: JsonBody<serde_json::Value>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
     crate::auth::resolve_actor(method, headers, state).await?;
+    let Json(body) = body?;
 
     let response = state
         .http_client

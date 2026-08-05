@@ -366,7 +366,43 @@ pub enum ApiError {
     /// that saturates the pool is a clear "busy, try again" signal, not indistinguishable from a bug.
     #[error("{0}")]
     Unavailable(String),
+    /// A request-body rejection, carried VERBATIM so it reaches the wire exactly as axum would have
+    /// sent it: its own status (400 syntax / 422 data / 415 content-type) and its own `text/plain`
+    /// message, not this enum's `{"error": …}` JSON envelope.
+    ///
+    /// It exists so a handler can check the CALLER before it parses the body. Taking
+    /// `Result<Json<T>, JsonRejection>` makes the extractor infallible, moving the body error from
+    /// "before the handler runs" to "wherever the handler chooses" — which must be after
+    /// `resolve_actor` and `require_any`. Reconstructing the message here rather than reusing
+    /// axum's response would silently change the bytes an authorized caller sees, trading one
+    /// divergence for another.
+    #[error("{1}")]
+    BodyRejection(StatusCode, String),
 }
+
+/// Verbatim capture, so authorized callers see byte-identical body errors before and after the
+/// reordering. `status()` and `body_text()` are what axum's own `IntoResponse` uses.
+impl From<axum::extract::rejection::JsonRejection> for ApiError {
+    fn from(rejection: axum::extract::rejection::JsonRejection) -> Self {
+        Self::BodyRejection(rejection.status(), rejection.body_text())
+    }
+}
+
+/// An UNPARSED request body: what a handler takes when it must identify the caller first.
+///
+/// `Json<T>` is an axum EXTRACTOR — it runs before the handler function body, so a handler declaring
+/// it has already rejected a malformed body before its first line executes, and `resolve_actor` /
+/// `require_any` never run. That ordering told an anonymous caller the field names of every
+/// authenticated write endpoint: `POST /v1/pilot/invitations` with `{}` and no credentials at all
+/// answered *missing field `learnerId`*. Measured on 16 routes, not deduced.
+///
+/// `Result<Json<T>, JsonRejection>` is itself an extractor and CANNOT fail, which moves the body
+/// error from "before the handler" to wherever the handler unwraps it. Take this, check the caller,
+/// then `let Json(req) = body?;`.
+///
+/// The `?` converts through `From<JsonRejection> for ApiError` above, so an authorized caller's
+/// malformed-body response is byte-for-byte what axum sent before.
+pub type JsonBody<T> = Result<Json<T>, axum::extract::rejection::JsonRejection>;
 
 /// The two SQLSTATEs a caller-supplied NUL byte (`U+0000`) produces, depending on column type:
 ///
@@ -421,6 +457,12 @@ impl From<sqlx::Error> for ApiError {
 
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
+        // Straight back out, before the JSON envelope below can touch it: a body rejection is
+        // text/plain with axum's own wording, and wrapping it in `{"error": …}` would be a wire
+        // change for every authorized caller who sends a malformed body.
+        if let Self::BodyRejection(status, text) = self {
+            return (status, text).into_response();
+        }
         let status = match self {
             Self::Unauthorized => StatusCode::UNAUTHORIZED,
             Self::Forbidden => StatusCode::FORBIDDEN,
@@ -431,6 +473,9 @@ impl IntoResponse for ApiError {
             Self::Database(_) => StatusCode::INTERNAL_SERVER_ERROR,
             Self::Upstream(_) => StatusCode::BAD_GATEWAY,
             Self::Unavailable(_) => StatusCode::SERVICE_UNAVAILABLE,
+            // Returned above. Listed rather than caught by a `_` so that adding a variant later is
+            // still a compile error here instead of silently becoming a 500.
+            Self::BodyRejection(..) => unreachable!("returned before this match"),
         };
         // Database errors get the SAME treatment as Upstream (see its doc comment): the raw sqlx/
         // Postgres error text can embed table/constraint names and, for constraint-violation DETAIL

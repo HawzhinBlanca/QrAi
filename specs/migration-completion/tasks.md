@@ -180,6 +180,35 @@ response's headers or bytes against Rust's:
 | 3 | `serde_json` writes a whole f64 as `100.0`; `JSON.stringify` writes `100` | N10 |
 | 4 | a jsonb column round-trips through a **BTreeMap**, so its keys come back alphabetized | N11 |
 | 5 | `EvalRun`'s metrics are **f32**: narrowed, then printed shortest-for-a-single | N11 |
+| 6 | **caller checked AFTER the body was parsed** — Rust named its schema to anonymous callers | — |
+
+**Divergence 6 — FOUND, then FIXED IN RUST.** In Axum a `Json<T>` argument is an extractor: it runs
+before the handler function body, where `resolve_actor` and `require_any` live. So every Rust handler
+with a JSON body parsed first and identified the caller second. With **no credentials at all**,
+`POST /v1/pilot/invitations` answered *missing field `learnerId`*. **Sixteen routes**, measured — not
+the six this entry first claimed.
+
+Two corrections to that first write-up, both forced by measurement:
+
+- It is not only *unauthorized* callers. An **unauthenticated** one — no headers whatsoever — got the
+  same disclosure. That is the more serious half, and the first draft missed it.
+- The four ML-proxy routes take an untyped `serde_json::Value`, which accepts `{}`. Probed with `{}`
+  they looked correct; probed with `{` they leaked like the rest. A first pass reported them as
+  already-fine — an artifact of the probe body, not a property of the code.
+
+Fixed by taking `Result<Json<T>, JsonRejection>` — an extractor that **cannot** fail — and unwrapping
+it after the caller checks (`types::JsonBody<T>`). Where authorization genuinely reads the body
+(`require_self_or_any(&req.learner_id, ...)` in `create_session` and `create_privacy_job`) the order
+is authenticate -> parse -> authorize; an anonymous caller is still refused before the parse.
+
+Wire compatibility held exactly: **42 body-error responses (422 / 400 / 415) captured for authorized
+callers before and after, diffed byte-for-byte, no change.** `ApiError::BodyRejection` carries axum's
+own status and text verbatim rather than reconstructing them.
+
+Found because the A/B differ cannot see it: the suite sends valid bodies as authorized roles and
+invalid bodies as authorized roles. **Unidentified caller + invalid body** is the cell nobody wrote.
+Now asserted on both implementations by `tests/api-parity/authz-matrix.test.mjs` with two body
+shapes, because either one alone would have missed part of it.
 
 Three bugs in **my own** work, each caught by the test written for it rather than by review:
 

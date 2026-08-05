@@ -301,7 +301,7 @@ pub async fn update_progress(
     State(state): State<AppState>,
     method: axum::http::Method,
     headers: HeaderMap,
-    Json(req): Json<ProgressUpdate>,
+    body: JsonBody<ProgressUpdate>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
     // ProgressUpdate has no learner_id field -- this always writes the caller's own row (unlike
     // get_progress, which takes an optional learner_id and needs a real ownership/role check).
@@ -310,6 +310,7 @@ pub async fn update_progress(
     // being one. actor_from_headers() already requires a valid, tenant-scoped token, which is the
     // only check this handler needs.
     let actor = crate::auth::resolve_actor(&method, &headers, &state).await?;
+    let Json(req) = body?;
 
     let mut tx = crate::begin_tenant_tx(&state.pool, &actor.tenant_id).await?;
 

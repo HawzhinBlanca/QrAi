@@ -25,9 +25,13 @@ pub async fn create_session(
     State(state): State<AppState>,
     method: axum::http::Method,
     headers: HeaderMap,
-    Json(req): Json<RecitationSessionRequest>,
+    body: JsonBody<RecitationSessionRequest>,
 ) -> Result<Json<RecitationSession>, ApiError> {
     let actor = crate::auth::resolve_actor(&method, &headers, &state).await?;
+    // Authentication first, then the body, then authorization — the middle step cannot move ahead of
+    // the last one here, because the authorization decision READS `req.learner_id`. An anonymous
+    // caller is still refused before their body is parsed, which is the disclosure that mattered.
+    let Json(req) = body?;
     actor.require_self_or_any(&req.learner_id, &[ActorRole::Admin, ActorRole::Ops])?;
 
     if !is_supported_language(&req.language) {
@@ -331,10 +335,11 @@ pub async fn create_realtime_ticket(
     State(state): State<AppState>,
     method: axum::http::Method,
     headers: HeaderMap,
-    Json(req): Json<RealtimeSessionTicketRequest>,
+    body: JsonBody<RealtimeSessionTicketRequest>,
 ) -> Result<Json<RealtimeSessionTicket>, ApiError> {
     let actor = crate::auth::resolve_actor(&method, &headers, &state).await?;
     actor.require_any(&[ActorRole::Learner, ActorRole::Admin, ActorRole::Ops])?;
+    let Json(req) = body?;
 
     let mut tx = crate::begin_tenant_tx(&state.pool, &actor.tenant_id).await?;
 
@@ -740,9 +745,10 @@ pub async fn persist_session_alignments(
     method: axum::http::Method,
     headers: HeaderMap,
     Path(id): Path<String>,
-    Json(req): Json<PersistAlignmentsRequest>,
+    body: JsonBody<PersistAlignmentsRequest>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
     let actor = crate::auth::resolve_actor(&method, &headers, &state).await?;
+    let Json(req) = body?;
     let mut tx = crate::begin_tenant_tx(&state.pool, &actor.tenant_id).await?;
 
     // The session must exist in-tenant; only its learner or staff may write its alignment.
