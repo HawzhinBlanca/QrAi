@@ -236,3 +236,82 @@ test("alignment canonicalText is byte-identical to canonical_words in Postgres",
     assert.equal(a.canonicalText, row.text_uthmani, `word ${a.wordId} text was altered in transit`);
   }
 });
+
+// ── The consent a session reports when its snapshot cannot answer ──────────────────────────────
+//
+// `routes/sessions.mjs:41` states the rule: "Never fabricate a consent the learner may not have
+// given... A default of `anonymized-learning: true` here would silently opt historical learners
+// into training data."
+//
+// Every field falls back INDEPENDENTLY (`b(stored.x, false)`), and those per-field defaults are the
+// reachable half of that rule: `consent_snapshot` is NOT NULL, so the whole-object branch barely
+// fires, but a snapshot written before a field existed — or by a writer that stored a string where
+// a boolean belongs — hits the per-field path. Sessions with `consent_snapshot = '{}'` already
+// exist in this database and are served through it today. Nothing asserted the result.
+test("a consent snapshot that cannot answer yields the MOST RESTRICTIVE consent", async () => {
+  const sessionId = `session-consent-fallback-${process.pid}-${Date.now()}`;
+  const [learner] = await queryJson(
+    "SELECT id FROM users WHERE tenant_id = $1 AND role = 'learner' ORDER BY id LIMIT 1",
+    [TENANT],
+  );
+  const [consentRow] = await queryJson(
+    "SELECT id FROM consent_records WHERE tenant_id = $1 ORDER BY id LIMIT 1",
+    [TENANT],
+  );
+  const [auditRow] = await queryJson(
+    "SELECT id FROM audit_events WHERE tenant_id = $1 ORDER BY id LIMIT 1",
+    [TENANT],
+  );
+
+  // Hostile on purpose, and not merely EMPTY: a string where a boolean belongs and a number where a
+  // string belongs. An implementation that only checked for missing keys would pass an empty
+  // snapshot and still hand back `recordingConsent: "true"` — a truthy value that every downstream
+  // `if (consent.recordingConsent)` would honour.
+  const hostileSnapshot = JSON.stringify({
+    recordingConsent: "true",
+    audioRetention: 123,
+    anonymizedLearning: "yes",
+    guardianApproved: 1,
+  });
+
+  await queryJson(
+    `INSERT INTO recitation_sessions
+       (id, tenant_id, learner_id, quran_ref, source_checksum, model_version_id, mode,
+        practice_plan_id, external_processing_allowed, confidence, review_status, started_at,
+        latency_ms, consent_record_id, consent_snapshot, audit_event_id, language)
+     VALUES ($1, $2, $3, '{"surahNumber":1,"ayahStart":1,"ayahEnd":7,"display":"x"}',
+             'sha256:x', (SELECT id FROM model_versions LIMIT 1), 'guided-recite', 'p', false,
+             0.0, 'draft', now(), 0, $4, $5::jsonb, $6, 'ar')`,
+    [sessionId, TENANT, learner.id, consentRow.id, hostileSnapshot, auditRow.id],
+  );
+
+  try {
+    const path = `/v1/recitation-sessions/${sessionId}`;
+    await assertAB(shell.baseUrl, api.baseUrl, { path, role: "ops" });
+
+    // Absolute, not only A/B. Both implementations defaulting permissively TOGETHER is exactly what
+    // happens when someone resolves a divergence by widening the reference, and a comparison cannot
+    // see it. Same reason the scholar gate on /v1/learner/progress asserts 403 outright.
+    const res = await request(shell.baseUrl, path, { role: "ops" });
+    assert.equal(res.status, 200, res.text);
+    assert.deepEqual(
+      res.body.consent,
+      {
+        recordingConsent: false,
+        audioRetention: "discard",
+        anonymizedLearning: false,
+        externalAsrProcessing: false,
+        guardianApproved: false,
+        consentVersion: "unknown",
+      },
+      "a session whose snapshot could not answer reported a consent the learner never gave",
+    );
+    // Named separately because it is the one the comment calls out: this field decides whether a
+    // child's recorded voice may be used to train a model.
+    assert.equal(res.body.consent.anonymizedLearning, false);
+  } finally {
+    // This row is INSERTed into the shared pilot tenant; leaving it behind would grow the session
+    // list every run and eventually move a LIMIT-bounded assertion elsewhere in the suite.
+    await queryJson("DELETE FROM recitation_sessions WHERE id = $1", [sessionId]);
+  }
+});
