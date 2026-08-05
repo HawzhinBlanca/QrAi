@@ -191,3 +191,48 @@ test("a Bearer token wins over dev headers when both are present", async () => {
   );
   assert.equal(actor.role, "learner", "the signed identity must win over the spoofable one");
 });
+
+// ── The shared gate corpus, executed against the node-api learner gate ────────────────────────────
+//
+// `packages/contracts/fixtures/canonical-gates.json` holds one table of cases for
+// `canShowLearnerFacingAiOutput` — the only thing stopping unreviewed AI output reaching a learner —
+// so that every implementation is held to the same expectations. #358 added the Rust gate and the
+// agents gate to that list and recorded the three that still were not on it. This is one of them:
+// `clearsLearnerGate` in routes/ml-proxy.mjs, the predicate that decides whether a tajweed finding
+// is redacted before it reaches a learner's device.
+//
+// It was covered only by A/B parity, which compares the shell to Rust and is blind to a change
+// applied to both — the hole this whole session opened with.
+import { readFileSync } from "node:fs";
+
+import { clearsLearnerGate } from "../../services/node-api/routes/ml-proxy.mjs";
+
+const GATE_CORPUS = JSON.parse(
+  readFileSync(new URL("../../packages/contracts/fixtures/canonical-gates.json", import.meta.url), "utf8"),
+)["canShowLearnerFacingAiOutput"];
+
+test("the ml-proxy learner gate agrees with the shared corpus on every case", () => {
+  const cases = GATE_CORPUS?.cases;
+  assert.ok(Array.isArray(cases), "canonical-gates.json has no canShowLearnerFacingAiOutput.cases");
+
+  // Fail CLOSED on a shrinking corpus: an empty `cases` makes the loop below vacuous and this test
+  // green while asserting nothing — the same shape as the licence gate that once reported
+  // "0 unapproved" because it had been handed zero packages.
+  assert.ok(
+    cases.length >= 8,
+    `the corpus is down to ${cases.length} cases for the learner gate; it had 11`,
+  );
+  assert.ok(
+    cases.some((c) => c.expected === true) && cases.some((c) => c.expected === false),
+    "the corpus must contain both answers, or a gate hardcoded to false satisfies it — which would " +
+      "withhold every finding from every learner and no negative case would notice",
+  );
+
+  for (const c of cases) {
+    assert.equal(
+      clearsLearnerGate(c.input),
+      c.expected,
+      `ml-proxy disagrees with the shared corpus.\n  case: ${c.name}\n  input: ${JSON.stringify(c.input)}`,
+    );
+  }
+});
