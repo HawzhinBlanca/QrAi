@@ -555,3 +555,93 @@ pub async fn list_session_tajweed_findings(
 
     Ok(Json(out))
 }
+
+#[cfg(test)]
+mod learner_gate_tests {
+    use super::{LEARNER_MIN_CONFIDENCE, clears_learner_gate};
+    use serde_json::json;
+
+    /// `tests/contract/tajweed-gate-parity.test.mjs` proves the TypeScript and Dart gates agree, and
+    /// pins this file's confidence FLOOR by reading the constant out of the source. What it cannot
+    /// do is execute this function: Rust cannot be called from Node.
+    ///
+    /// So the term it never checked here is the STATUS ALLOWLIST — and this is the authoritative
+    /// implementation. ADR-0028 moved enforcement server-side precisely because a client-side gate
+    /// is a display choice, not an authorization boundary. A learner with `curl` and their own token
+    /// gets whatever this function returns.
+    fn sources() -> serde_json::Value {
+        json!([{ "id": "s1", "title": "Tajweed reference", "citation": "Rule 1" }])
+    }
+
+    #[test]
+    fn an_unrecognised_status_is_refused_because_this_is_an_allowlist() {
+        // The failure a denylist produces: any status nobody thought of — a typo, one added upstream
+        // without updating this gate — reaches a learner. Mirrors the "invented status" case the
+        // TypeScript and Dart gates are already held to.
+        assert!(
+            !clears_learner_gate("definitely-fine-honest", 1.0, &sources()),
+            "an unknown review status cleared the server-side learner gate"
+        );
+    }
+
+    #[test]
+    fn exactly_two_statuses_clear_the_gate() {
+        // The control, and it is not optional: every negative assertion in this module is satisfied
+        // by a function hardcoded to `false`, which would withhold ALL feedback — a different bug,
+        // and one no other test here would catch.
+        for status in ["teacher-reviewed", "scholar-approved"] {
+            assert!(
+                clears_learner_gate(status, 0.9, &sources()),
+                "{status} should clear the gate"
+            );
+        }
+        for status in [
+            "draft",
+            "ai-suggested",
+            "teacher-review-required",
+            "blocked",
+        ] {
+            assert!(
+                !clears_learner_gate(status, 0.9, &sources()),
+                "{status} must never clear the gate"
+            );
+        }
+    }
+
+    #[test]
+    fn the_confidence_floor_is_inclusive() {
+        // Which side of 0.82 clears is a real decision and the parity test pins only the NUMBER, not
+        // the comparison. `>` instead of `>=` withholds every finding that lands exactly on the
+        // floor, silently and forever.
+        assert!(clears_learner_gate(
+            "teacher-reviewed",
+            LEARNER_MIN_CONFIDENCE,
+            &sources()
+        ));
+        assert!(!clears_learner_gate(
+            "teacher-reviewed",
+            LEARNER_MIN_CONFIDENCE - 0.001,
+            &sources()
+        ));
+    }
+
+    #[test]
+    fn a_finding_with_no_source_is_refused_however_confident_it_is() {
+        // The whole point of the source term: "never expose learner-facing AI feedback without
+        // source". Confidence cannot buy its way past it.
+        assert!(!clears_learner_gate("teacher-reviewed", 1.0, &json!([])));
+    }
+
+    #[test]
+    fn a_sources_field_that_is_not_an_array_is_refused_rather_than_assumed_present() {
+        // `sources.as_array()` returns None for a string, an object or null. Treating "not an array"
+        // as "has a source" is the fail-OPEN direction, and it is reachable: this value is
+        // deserialized from ml-inference's JSON, which enforces no schema.
+        for shape in [json!(null), json!("s1"), json!({ "id": "s1" }), json!(1)] {
+            assert!(
+                !clears_learner_gate("teacher-reviewed", 1.0, &shape),
+                "a non-array sources value ({shape}) was treated as having a source"
+            );
+        }
+    }
+}
