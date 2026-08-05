@@ -147,3 +147,55 @@ describe("locale capability expiry", () => {
     }
   });
 });
+
+describe("locale direction", () => {
+  /**
+   * Codepoint blocks whose scripts are written right-to-left: Hebrew, Arabic, Syriac, Arabic
+   * Supplement, Thaana, Arabic Extended-A, and the Arabic Presentation Forms.
+   *
+   * Written as `\u` escapes rather than literal characters, per AGENTS.md — a literal Arabic range
+   * in a source file is invisible to review, survives a bad copy-paste, and is the exact shape that
+   * once deleted every Arabic letter from a regex (PR #258).
+   */
+  const RTL_SCRIPT =
+    /[֐-׿؀-ۿ܀-ݏݐ-ݿހ-޿ࢠ-ࣿיִ-﷿ﹰ-﻿]/;
+
+  it("declares a direction that matches each locale's own script", () => {
+    // `App.tsx:382` sets `document.documentElement.dir` from this field, so it decides the reading
+    // direction of the ENTIRE page — including canonical Quran text.
+    //
+    // `App.smoke` already asserts the wiring, but only for `de` (ltr) and `ckb` (rtl): two of the
+    // nine locales, and only ones reachable through the visible picker. `ar` and `ur` are declared
+    // rtl and nothing exercised either. Flipping `ar` to `ltr` — or adding a new Arabic-script
+    // locale as ltr — would render Arabic left to right with every test still green.
+    //
+    // The expectation is DERIVED from `nativeName`'s script rather than compared against a second
+    // hardcoded list. A parallel list is the same claim written twice: it drifts, and it has to be
+    // updated by whoever adds a locale — which is precisely the person who just got it wrong. This
+    // way a new locale is checked the moment it exists, with nothing to keep in sync.
+    for (const locale of localeCapabilities) {
+      const expected = RTL_SCRIPT.test(locale.nativeName) ? "rtl" : "ltr";
+      expect(
+        locale.direction,
+        `${locale.code} (${locale.nativeName}) is written ${expected}, but the manifest declares ${locale.direction}`,
+      ).toBe(expected);
+    }
+  });
+
+  it("the script check can actually tell the two apart", () => {
+    // Guard the guard. If `RTL_SCRIPT` were broken — an empty class, a range that matches
+    // everything — the invariant above would still pass on today's data by agreeing with itself in
+    // the wrong direction. These two pin that it discriminates at all.
+    expect(RTL_SCRIPT.test("العربية"), "the Arabic-script probe must match Arabic").toBe(true);
+    expect(RTL_SCRIPT.test("Deutsch"), "the Arabic-script probe must not match Latin").toBe(false);
+  });
+
+  it("covers every locale, so a new one cannot arrive unchecked", () => {
+    // The invariant loops over whatever is in the manifest, so it silently checks nothing if the
+    // manifest is empty or the field disappears. Both are cheap to rule out.
+    expect(localeCapabilities.length).toBeGreaterThanOrEqual(9);
+    for (const locale of localeCapabilities) {
+      expect(["ltr", "rtl"], `${locale.code} has no usable direction`).toContain(locale.direction);
+    }
+  });
+});
