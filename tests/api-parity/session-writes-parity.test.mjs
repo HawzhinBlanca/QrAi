@@ -286,6 +286,7 @@ test("alignments persist, and synthetic word ids are SKIPPED rather than 500", a
     "sessionId",
     "skippedInvalidStatus",
     "skippedUnknownWord",
+    "skippedUnusableSpan",
     "transcriptSource",
   ]);
   assert.equal(s.body.persisted, 2);
@@ -501,4 +502,121 @@ test("a session past draft is 400, not silently reset", async () => {
     /scholar-approved/,
     "a session a scholar has progressed must not be reset by a learner action",
   );
+});
+
+// ── The evidence a finding points at must exist ───────────────────────────────────────────────────
+//
+// A tajweed finding is anchored to a `word_alignments` row, and that row's `start_ms`/`end_ms` are
+// the only thing saying WHERE in the recitation it happened. A reviewer asked to adjudicate a
+// finding — the whole point of the review queue, and the precondition for ever building an
+// adjudicated corpus — needs to hear that span.
+//
+// Both servers invented one instead of refusing. Rust read the field with
+// `.and_then(|v| v.as_i64()).unwrap_or(0)` (recitation.rs) and the port with
+// `Number.isInteger(a.startMs) ? a.startMs : 0` (session-writes.mjs): a missing, null, string or
+// float timing became the integer 0. A payload carrying no timings at all was stored as a row
+// spanning 0ms to 0ms — a finding pointing at nothing, indistinguishable in the table from one
+// pointing at real audio.
+//
+// Measured in staging before the fix: 2686 tajweed findings, of which 507 (19%) resolved to a
+// zero-length span, and 224 alignments overall. Nothing had ever reported it because a 0 is a
+// perfectly valid integer and every layer accepted it.
+//
+// The web client already refuses to produce one — `liveRecitation.ts:288` computes
+// `endMs = Math.max(startMs + 1, ...)` deliberately. That guard was in the client, which is a
+// display choice, not an authority. The same argument as ADR-0028: the server has to be the one
+// that says no.
+const UNUSABLE_SPANS = [
+  ["no timings at all", {}],
+  ["null timings", { startMs: null, endMs: null }],
+  ["zero-length", { startMs: 500, endMs: 500 }],
+  ["inverted", { startMs: 900, endMs: 400 }],
+  ["negative start", { startMs: -1, endMs: 100 }],
+  ["non-integer startMs", { startMs: "abc", endMs: 100 }],
+  ["fractional startMs", { startMs: 1.5, endMs: 100 }],
+];
+
+test("an alignment with no usable time span is never stored", async () => {
+  const words = await canonicalWordIds(1);
+  // Every case probed and reported together. Failing on the first would hide how many of the seven
+  // are wrong and on which implementation — and that spread is the finding.
+  const wrong = [];
+
+  for (const [label, span] of UNUSABLE_SPANS) {
+    const seen = {};
+    for (const [impl, base] of [["shell", shell.baseUrl], ["rust", api.baseUrl]]) {
+      const sessionId = await freshSession(base);
+      const res = await request(base, `/v1/recitation-sessions/${sessionId}/alignments`, {
+        method: "POST",
+        role: "learner",
+        userId: learnerId,
+        body: {
+          alignments: [
+            { wordId: words[0], heardText: "x", confidence: 0.9, status: "matched", ...span },
+          ],
+        },
+      });
+      const [{ n }] = await queryJson(
+        "SELECT count(*)::int AS n FROM word_alignments WHERE session_id = $1",
+        [sessionId],
+      );
+      seen[impl] = res.status;
+
+      // THE invariant, asserted absolutely against each implementation rather than by comparing
+      // them: no row, therefore no finding can ever be anchored to a span that identifies no audio.
+      if (n !== 0) wrong.push(`${impl} "${label}" stored ${n} row(s) — status ${res.status}`);
+      // And it must be reported, not silently dropped: a client sending unusable timings has to be
+      // able to learn that, or it discovers months later that its findings point nowhere.
+      if (res.status === 200 && res.body?.skippedUnusableSpan !== 1) {
+        wrong.push(
+          `${impl} "${label}" was accepted but skippedUnusableSpan=${res.body?.skippedUnusableSpan}`,
+        );
+      }
+    }
+    // Wire parity on the same input. Before the fix these disagreed: Rust answered 422 for a null,
+    // string or fractional timing while the port accepted all three and wrote a 0-to-0 row.
+    if (seen.shell !== seen.rust) {
+      wrong.push(`"${label}" DIVERGES — shell ${seen.shell} vs rust ${seen.rust}`);
+    }
+  }
+
+  assert.deepEqual(
+    wrong,
+    [],
+    `an alignment carrying no usable time span reached the table. A finding anchored to it points at
+no audio, and nothing downstream can tell that from a finding pointing at real audio:
+  ${wrong.join("\n  ")}`,
+  );
+});
+
+test("a VALID span is still stored, verbatim — the control", async () => {
+  // Without this, every assertion above is satisfied by a handler that refuses ALL alignments,
+  // which would silently end recitation capture entirely.
+  const words = await canonicalWordIds(2);
+
+  for (const [impl, base] of [["shell", shell.baseUrl], ["rust", api.baseUrl]]) {
+    const sessionId = await freshSession(base);
+    const res = await request(base, `/v1/recitation-sessions/${sessionId}/alignments`, {
+      method: "POST",
+      role: "learner",
+      userId: learnerId,
+      body: {
+        alignments: [
+          { wordId: words[0], heardText: "x", startMs: 0, endMs: 100, confidence: 0.9, status: "matched" },
+          { wordId: words[1], heardText: "y", startMs: 640, endMs: 1230, confidence: 0.5, status: "misread" },
+        ],
+      },
+    });
+    assert.equal(res.status, 200, `${impl}: a valid payload was refused — ${res.text}`);
+
+    const rows = await queryJson(
+      "SELECT start_ms, end_ms FROM word_alignments WHERE session_id = $1 ORDER BY start_ms",
+      [sessionId],
+    );
+    assert.deepEqual(
+      rows.map((r) => [Number(r.start_ms), Number(r.end_ms)]),
+      [[0, 100], [640, 1230]],
+      `${impl}: the stored span is not the span that was sent`,
+    );
+  }
 });

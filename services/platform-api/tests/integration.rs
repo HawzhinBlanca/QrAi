@@ -1306,7 +1306,7 @@ async fn teacher_review_author_is_actor_and_realignment_cascades() {
         &format!("/v1/recitation-sessions/{session_id}/alignments"),
         Some("hikmah-pilot-erbil"),
         Some("learner"),
-        json!({ "alignments": [{"wordId": "1:1:1", "heardText": "بسم", "confidence": 0.9, "status": "matched"}] }),
+        json!({ "alignments": [{"wordId": "1:1:1", "heardText": "بسم", "startMs": 0, "endMs": 400, "confidence": 0.9, "status": "matched"}] }),
     )
     .await;
     assert_eq!(persisted.status(), StatusCode::OK);
@@ -1359,7 +1359,7 @@ async fn teacher_review_author_is_actor_and_realignment_cascades() {
         &format!("/v1/recitation-sessions/{session_id}/alignments"),
         Some("hikmah-pilot-erbil"),
         Some("learner"),
-        json!({ "alignments": [{"wordId": "1:1:2", "heardText": "الله", "confidence": 0.95, "status": "matched"}] }),
+        json!({ "alignments": [{"wordId": "1:1:2", "heardText": "الله", "startMs": 400, "endMs": 800, "confidence": 0.95, "status": "matched"}] }),
     )
     .await;
     assert_eq!(
@@ -4339,7 +4339,7 @@ async fn teacher_decision_promotes_the_finding_and_edited_promotes_nothing() {
         &format!("/v1/recitation-sessions/{session_id}/alignments"),
         Some("hikmah-pilot-erbil"),
         Some("learner"),
-        json!({ "alignments": [{"wordId": "1:1:1", "heardText": "بسم", "confidence": 0.9, "status": "matched"}] }),
+        json!({ "alignments": [{"wordId": "1:1:1", "heardText": "بسم", "startMs": 0, "endMs": 400, "confidence": 0.9, "status": "matched"}] }),
     )
     .await;
     assert_eq!(persisted.status(), StatusCode::OK);
@@ -4561,7 +4561,7 @@ async fn tajweed_findings_persist_and_the_learner_can_read_their_own() {
         &format!("/v1/recitation-sessions/{session_id}/alignments"),
         Some("hikmah-pilot-erbil"),
         Some("learner"),
-        json!({ "alignments": [{"wordId": "1:1:1", "heardText": "بسم", "confidence": 0.9, "status": "matched"}] }),
+        json!({ "alignments": [{"wordId": "1:1:1", "heardText": "بسم", "startMs": 0, "endMs": 400, "confidence": 0.9, "status": "matched"}] }),
     )
     .await;
     assert_eq!(persisted.status(), StatusCode::OK);
@@ -4974,7 +4974,7 @@ async fn accepting_an_unsourced_finding_is_refused_but_rejecting_it_is_not() {
         &format!("/v1/recitation-sessions/{session_id}/alignments"),
         Some("hikmah-pilot-erbil"),
         Some("learner"),
-        json!({ "alignments": [{"wordId": "1:1:1", "heardText": "بسم", "confidence": 0.9, "status": "matched"}] }),
+        json!({ "alignments": [{"wordId": "1:1:1", "heardText": "بسم", "startMs": 0, "endMs": 400, "confidence": 0.9, "status": "matched"}] }),
     )
     .await;
     assert_eq!(persisted.status(), StatusCode::OK);
