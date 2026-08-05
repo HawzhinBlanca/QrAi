@@ -350,3 +350,60 @@ test("logout actually REVOKES the session — the cookie stops working afterward
   const row = await sessionFor(cookie.slice("__Host-qrai-pilot=".length));
   assert.ok(row.revoked_at, "revoked_at must be set, not merely implied by a 200");
 });
+
+// ── The window the mint-time check cannot see ───────────────────────────────────────────────────
+//
+// There are THREE layers keeping a pilot cookie learner-only, and until now only two were tested:
+//
+//   1. MINT   pilot.rs:250 / pilot.mjs:141 — a non-learner target is refused 400.
+//             Covered by "a non-learner target is refused, and a missing one is 404".
+//   2. REDEEM pilot.rs:70  / pilot.mjs:57  — the role is checked AGAIN at bootstrap, 403.
+//             Covered by NOTHING. This test.
+//   3. RESOLVE authz.mjs:259 — the role is hardcoded to "learner", never read from the user.
+//             Covered by "a cookie resolves the LEARNER role — it cannot reach a staff-only route".
+//
+// Layer 2 exists for the one case layer 1 structurally cannot cover: an invitation minted for a
+// genuine learner who is PROMOTED before redeeming it. The mint check ran, and passed, hours ago.
+//
+// To be accurate about severity — layer 3 means dropping layer 2 is NOT a privilege escalation: the
+// session would still resolve as a learner. What it would produce is a staff member holding a
+// learner-pinned cookie, hitting 403s on their own routes with nothing anywhere explaining why.
+// That is the failure this refusal converts into an immediate, legible error.
+test("an invitation is refused at REDEEM time if the target stopped being a learner", async () => {
+  const minted = await mint(api.baseUrl, { learnerId });
+  assert.equal(minted.status, 200, minted.text);
+
+  // Promote AFTER minting — this is the whole point, and it is why the mint-time check is not
+  // enough on its own.
+  await queryJson("UPDATE users SET role = 'teacher' WHERE id = $1 AND tenant_id = $2", [
+    learnerId,
+    TENANT,
+  ]);
+
+  try {
+    const { shell: s } = await assertABMutating(shell.baseUrl, api.baseUrl, {
+      name: "redeem an invitation whose target is no longer a learner",
+      probeFor: () => ({
+        path: "/v1/pilot/session/bootstrap",
+        method: "POST",
+        tenant: null,
+        headers: { origin: ORIGIN },
+        body: { token: minted.body.token },
+      }),
+      normalize: (b) => b,
+    });
+    assert.equal(
+      s.status,
+      403,
+      "a promoted user redeemed a pilot invitation and was handed a learner-pinned session",
+    );
+  } finally {
+    // Restore, ALWAYS. `learnerId` is resolved once in `before` and shared by every test in this
+    // file, so leaving it as a teacher would break the rest of the suite in a way that points at
+    // the wrong code — the exact failure mode a leftover row caused in the tajweed suite.
+    await queryJson("UPDATE users SET role = 'learner' WHERE id = $1 AND tenant_id = $2", [
+      learnerId,
+      TENANT,
+    ]);
+  }
+});
