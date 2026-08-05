@@ -34,6 +34,27 @@ const HIGH_RISK_APPROVAL = "high-risk content cannot be auto-approved";
 const UNSOURCED_ACCEPTANCE =
   "a finding with no source cannot be released to a learner; reject it, or have a source added first";
 
+/**
+ * What a reviewer can do with this finding's audio. Mirrors `audio_status` in handlers/review.rs.
+ *
+ *   available     a stored chunk covers the finding's span, and consent permits keeping it
+ *   discarded     consent said `discard`; the recording was destroyed on purpose
+ *   not-captured  retention was permitted, but no audio was stored for this span
+ *   unknown       retention could not be established — never offered for playback
+ *
+ * Consent is checked FIRST and is authoritative. A chunk existing under `discard` consent is a
+ * retention BUG, and answering `available` would invite a teacher to listen to a recording that
+ * should not exist. `discard` means `discarded`, whatever happens to be on disk.
+ *
+ * A missing consent record is `unknown`, not `not-captured`: those are different claims, and only
+ * one of them is true when the row a session's retention policy lives in has gone.
+ */
+function audioStatus(audioRetention, hasAudio) {
+  if (audioRetention === "discard") return "discarded";
+  if (audioRetention === null || audioRetention === undefined) return "unknown";
+  return hasAudio ? "available" : "not-captured";
+}
+
 /** POST /v1/teacher-reviews — review.rs:9 */
 export async function createTeacherReview(req, reply, ctx) {
   const resolved = await resolveActor(req, ctx);
@@ -280,9 +301,21 @@ export async function listTajweedFindings(req, reply, ctx) {
     const rows = await tx`
       SELECT tf.id, tf.alignment_id, wa.word_id, wa.transcript_source, tf.analysis_basis,
              tf.rule, tf.severity,
-             tf.confidence::float8 AS confidence, tf.explanation, tf.review_status, tf.source_refs
+             tf.confidence::float8 AS confidence, tf.explanation, tf.review_status, tf.source_refs,
+             cr.audio_retention,
+             EXISTS (
+               SELECT 1 FROM audio_chunks ac
+               WHERE ac.session_id = wa.session_id
+                 AND ac.tenant_id = tf.tenant_id
+                 AND ac.start_ms < wa.end_ms AND ac.end_ms > wa.start_ms
+             ) AS has_audio
       FROM tajweed_findings tf
       JOIN word_alignments wa ON wa.id = tf.alignment_id
+      -- LEFT, both of them. An INNER join would silently DROP any finding whose session or consent
+      -- record has gone, and a finding vanishing from a review queue is worse than one that cannot
+      -- be played.
+      LEFT JOIN recitation_sessions rs ON rs.id = wa.session_id
+      LEFT JOIN consent_records cr ON cr.id = rs.consent_record_id
       WHERE tf.tenant_id = ${actor.tenantId}
       -- tf.id breaks ties: confidence is NOT unique (findings routinely share 0.9), so with the
       -- LIMIT below Postgres would drop an ARBITRARY subset of the tied rows at the cutoff and
@@ -296,6 +329,8 @@ export async function listTajweedFindings(req, reply, ctx) {
       // canonical-text: the analyser reads the passage's Uthmani text and detects where a rule
       // applies, which is true of the text and identical for every learner.
       analysisBasis: r.analysis_basis ?? "canonical-text",
+      // Whether a reviewer can HEAR the recitation this finding is about, and if not, why.
+      audioStatus: audioStatus(r.audio_retention ?? null, r.has_audio === true),
       confidence: f64(Number(r.confidence ?? 0)),
       explanation: r.explanation ?? "",
       id: r.id ?? "",

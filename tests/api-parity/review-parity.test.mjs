@@ -125,6 +125,8 @@ test("tajweed-findings key order is alphabetical, and the sort has a unique tieb
     // ADR-0033: what the finding is ABOUT. Today always `canonical-text` — the analyser reads the
     // passage's Uthmani text, so a finding is "a rule applies here", not "you recited this wrongly".
     "analysisBasis",
+    // Whether a reviewer can HEAR the recitation this finding is about, and if not, why not.
+    "audioStatus",
     "confidence",
     "explanation",
     "id",
@@ -357,3 +359,90 @@ test("creating a teacher review is teacher/admin/ops — every other role is ref
       });
     }
   });
+
+
+// ── What evidence stands behind a finding a teacher is asked to judge ────────────────────────────
+//
+// A teacher opening the queue is asked to accept or reject a claim about how a child recited. Until
+// this field, nothing told them whether the recording still existed. Measured before it was added:
+// all 2772 findings in this corpus belong to sessions whose consent said `discard`, so the audio was
+// destroyed by design — and the queue looked exactly the same as if it were sitting there unplayed.
+//
+//   available     a stored chunk covers this finding's span, and consent permits keeping it
+//   discarded     consent said `discard`; the recording was destroyed on purpose
+//   not-captured  retention was permitted, but no audio was stored for this span
+//   unknown       retention could not be established — never offered for playback
+//
+// Consent is checked FIRST and is authoritative. A chunk existing under `discard` consent is a
+// retention bug, and answering `available` would invite a teacher to listen to a recording that
+// should not exist. Fail closed: `discard` means `discarded`, whatever is on disk.
+const AUDIO_STATUSES = ["available", "discarded", "not-captured", "unknown"];
+
+test("every finding says whether its audio can be heard, and both implementations agree", async () => {
+  for (const [impl, base] of [["shell", shell.baseUrl], ["rust", api.baseUrl]]) {
+    const res = await request(base, "/v1/tajweed-findings", { role: "teacher" });
+    assert.equal(res.status, 200, `${impl}: ${res.text}`);
+    if (res.body.length === 0) continue;
+    for (const f of res.body) {
+      assert.ok(
+        AUDIO_STATUSES.includes(f.audioStatus),
+        `${impl}: finding ${f.id} reports audioStatus ${JSON.stringify(f.audioStatus)}, which is ` +
+          `not one of ${AUDIO_STATUSES.join("/")}. An unrecognised value is offered to nobody, but ` +
+          "it also tells a teacher nothing.",
+      );
+    }
+  }
+});
+
+test("a finding whose consent said discard says so — not silence", async () => {
+  // The absolute assertion, cross-checked against the database rather than against the other
+  // implementation: the A/B cannot see a change applied to both.
+  const rows = await queryJson(
+    `SELECT tf.id, cr.audio_retention
+     FROM tajweed_findings tf
+     JOIN word_alignments wa ON wa.id = tf.alignment_id
+     JOIN recitation_sessions rs ON rs.id = wa.session_id
+     JOIN consent_records cr ON cr.id = rs.consent_record_id
+     WHERE tf.tenant_id = $1 AND cr.audio_retention = 'discard'
+     LIMIT 25`,
+    [TENANT],
+  );
+  if (rows.length === 0) {
+    assert.fail(
+      "no discard-consent finding in this tenant, so this test proves nothing. It was written " +
+        "against a corpus where ALL 2772 findings were discard — if that changed, re-measure.",
+    );
+  }
+  const byId = new Map(rows.map((r) => [r.id, r.audio_retention]));
+
+  const res = await request(shell.baseUrl, "/v1/tajweed-findings", { role: "teacher" });
+  assert.equal(res.status, 200);
+  const seen = res.body.filter((f) => byId.has(f.id));
+  assert.ok(seen.length > 0, "none of the discard-consent findings came back on the route");
+  for (const f of seen) {
+    assert.equal(
+      f.audioStatus,
+      "discarded",
+      `finding ${f.id} has audio_retention=discard in the database but the route reports ` +
+        `${JSON.stringify(f.audioStatus)}. A teacher would wait for a recording that was destroyed ` +
+        "on purpose.",
+    );
+  }
+});
+
+test("the route is teacher-and-above, within tenant — a learner cannot read it", async () => {
+  // The access rule this field was built under. Asserted here rather than assumed from the matrix,
+  // because it is the rule that decides who may be told a recording exists at all.
+  for (const [impl, base] of [["shell", shell.baseUrl], ["rust", api.baseUrl]]) {
+    assert.equal(
+      (await request(base, "/v1/tajweed-findings", { role: "learner" })).status,
+      403,
+      `${impl}: a learner read the finding queue`,
+    );
+    assert.equal(
+      (await request(base, "/v1/tajweed-findings", { role: "teacher" })).status,
+      200,
+      `${impl}: a teacher could not read the finding queue`,
+    );
+  }
+});
