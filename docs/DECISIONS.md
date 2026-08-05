@@ -1674,3 +1674,61 @@ marker out of literal visibility. A guard that passes for the wrong reason is wo
 since it is counted as coverage. The assertion now asks three separate questions (is it listable as a
 tar, does it carry the gzip magic, is the marker recoverable after decompression) and a plain
 `tar.gz` control proves each one can discriminate.
+
+## ADR-0036 — A text-derived finding asserts no confidence
+
+**Status:** Accepted · **Date:** 2026-08-05 · **Related:** ADR-0033 (analysis basis), ADR-0028 (learner gate)
+
+### Context
+
+`services/ml-inference/tajweed.js` attached a per-rule confidence to every finding: ikhfa 0.80,
+idgham 0.82, iqlab 0.83, tafkhim 0.84, madd-maleki 0.85, shaddah 0.86, qalqalah 0.87,
+madd-tabii 0.88, ghunnah 0.90. Nine hand-typed decimals ranking the rules against one another with
+nothing behind the ranking — no model, no dataset, no precision/recall, no evaluation.
+
+The detectors themselves are fine: deterministic, and unit-tested against real Uthmani word forms
+(`tajweed.test.mjs` pins bugs that were genuinely fixed). "The regex is correct" is simply not a
+confidence, and the two were being conflated.
+
+It was not cosmetic. `canShowLearnerFacingAiOutput` gates learner-visible AI output on
+`confidence >= 0.82`, so those literals decided which rules a learner could ever be shown:
+
+| rule | old value | vs the 0.82 gate |
+|---|---|---|
+| ghunnah, madd-tabii, qalqalah, shaddah, madd-maleki, tafkhim, iqlab | 0.83–0.90 | through |
+| idgham | 0.82 | through, by exactly one hundredth |
+| **ikhfa** | **0.80** | **permanently blocked** |
+
+A teacher could review an ikhfa finding, approve it, and the learner would still never see it —
+silently, because of a constant nobody chose for that purpose.
+
+The response-level confidence was the mean of those numbers, and `0.95` when the analysis found
+nothing at all: "we checked and are 95% sure there is nothing wrong", which nothing here can assert.
+
+### Decision
+
+A finding whose `analysis_basis` is `canonical-text` reports **`confidence: 0`** — no assertion.
+
+`analyzeWord` reads the canonical Uthmani text and nothing else: no audio, no transcript, no timing.
+"An ikhfa occurs here" is true of the passage and identical for every learner who ever recites it.
+It is not evidence that a particular learner did anything. ADR-0033 already records that in
+`analysis_basis`; this makes the number agree with it instead of contradicting it.
+
+`0` is this codebase's existing idiom for "no assertion" — both learner-gate mirrors zero the
+confidence when withholding (`ml_proxy.rs:215/245`, `routes/ml-proxy.mjs:106`).
+
+The `0.82` threshold is NOT changed. It is mirrored in four places with tests on the boundary, and
+it remains meaningful for `acoustic` findings, which will carry a measured confidence.
+
+### Consequences
+
+- Text-derived findings fail the learner confidence gate uniformly and by construction, rather than
+  passing it on fiction. No rule is privileged over another by a typed constant.
+- Staff are unaffected: they receive every finding. The analysis is for a teacher to read.
+- **Existing rows are not migrated.** At the time of writing, staging holds 340 `canonical-text`
+  findings that are `teacher-reviewed` with confidence ≥ 0.82. A teacher genuinely approved each, so
+  the human gate is satisfied and retroactively hiding them is a product decision, not a defect fix.
+  Recorded here rather than done quietly; the producer is fixed, the history is not.
+- Making this a real number requires an acoustic analyser judged against adjudicated labels. That
+  does not exist. Inventing a decimal here would not bring it closer, and did actively obscure the
+  fact that it is missing.
