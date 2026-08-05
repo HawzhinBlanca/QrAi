@@ -21,6 +21,121 @@ fn parse_review_status(value: &str) -> Result<ReviewStatus, ApiError> {
     }
 }
 
+#[derive(Debug, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct IndexAudioChunkRequest {
+    pub session_id: String,
+    pub chunk_id: String,
+    pub object_key: String,
+    #[serde(default)]
+    pub start_ms: serde_json::Value,
+    #[serde(default)]
+    pub end_ms: serde_json::Value,
+    #[serde(default)]
+    pub sample_rate: Option<i32>,
+    // `tenantId` / `learnerId` are DELIBERATELY absent. A caller that can name the tenant can write
+    // a row deciding whose recording a teacher is later played; both come from the signed ticket.
+    // serde drops unknown fields, so sending them is not an error — it simply has no effect, which
+    // `tests/api-parity/audio-index-parity.test.mjs` asserts rather than assumes.
+}
+
+/// `POST /v1/audio-chunks` — the gateway records that a chunk of audio exists (ADR-0037).
+///
+/// The missing half of playback. Audio was stored by ml-inference and NOTHING wrote the row saying
+/// where it is: `audio_chunks` was populated by a test fixture and a smoke script and by nothing
+/// else. Measured before this existed — of 2752 tajweed findings, zero had a session with any audio
+/// row, so no finding could ever resolve to a recording.
+///
+/// ── The credential is the session's own realtime ticket ─────────────────────────────────────────
+/// Not a new shared secret. The gateway already holds a ticket THIS SERVICE minted for the session,
+/// signed with `REALTIME_GATEWAY_TICKET_SECRET`, expiring in `REALTIME_TICKET_TTL_SECONDS`, carrying
+/// tenant, learner and session. Reusing it means the gateway can only index chunks for a session it
+/// was actually admitted to, the scope is one session rather than the whole service, and there is no
+/// third credential to rotate. A shared service key would have granted every session at once, and
+/// forever.
+///
+/// 401 for a missing, malformed, expired, wrongly-signed or wrong-session ticket — one answer, so a
+/// caller cannot tell "this ticket is for another session" from "this signature is wrong".
+pub async fn index_audio_chunk(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    body: JsonBody<IndexAudioChunkRequest>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    // The ticket is checked BEFORE the body is read, for the reason every other handler now does it:
+    // an unidentified caller learns nothing about the request shape.
+    let ticket = headers
+        .get("x-realtime-ticket")
+        .and_then(|v| v.to_str().ok())
+        .ok_or(ApiError::Unauthorized)?
+        .to_owned();
+
+    let Json(req) = body?;
+
+    let claims = quran_ai_shared_ticket::validate_realtime_ticket(
+        &req.session_id,
+        &ticket,
+        &crate::realtime_ticket_secret(),
+        crate::unix_now_seconds(),
+    )
+    .map_err(|_| ApiError::Unauthorized)?;
+
+    // Same rule as `usable_span`: a chunk whose span identifies no audio is unlocatable, and this
+    // index exists so a finding can be located. Refusing here keeps the DB CHECK constraint
+    // (0026_alignment_span_check) from being the only thing holding the line.
+    let Some((start_ms, end_ms)) = usable_span(&req.start_ms, &req.end_ms) else {
+        return Err(ApiError::BadRequest(
+            "startMs/endMs must be integers with 0 <= startMs < endMs".to_owned(),
+        ));
+    };
+
+    let mut tx = crate::begin_tenant_tx(&state.pool, &claims.tenant_id).await?;
+
+    // The session must exist in the ticket's tenant. The ticket alone proves the gateway was
+    // admitted; this proves the row it is about is still there (erasure may have removed it
+    // mid-session, and a chunk indexed against a deleted session is a dangling pointer at best).
+    let session = sqlx::query(
+        "SELECT audit_event_id FROM recitation_sessions WHERE id = $1 AND tenant_id = $2",
+    )
+    .bind(&claims.session_id)
+    .bind(&claims.tenant_id)
+    .fetch_optional(&mut *tx)
+    .await?
+    .ok_or(ApiError::NotFound)?;
+    // Reusing the session's audit event rather than minting one per chunk: a chunk arrives every few
+    // seconds per learner, and an audit row each would bury the events a human actually reads.
+    let audit_event_id: String = session.try_get("audit_event_id").unwrap_or_default();
+
+    // ON CONFLICT DO NOTHING, because the gateway RETRIES a chunk whose response was lost. Failing a
+    // retry would make a delivered chunk look undelivered and the gateway would count a loss that did
+    // not happen — the opposite of what its lossy-session accounting is for.
+    sqlx::query(
+        "INSERT INTO audio_chunks
+            (id, tenant_id, session_id, evidence_id, start_ms, end_ms, sample_rate, status,
+             object_key, audit_event_id)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, 'aligned', $8, $9)
+         ON CONFLICT (id) DO NOTHING",
+    )
+    .bind(&req.chunk_id)
+    .bind(&claims.tenant_id)
+    .bind(&claims.session_id)
+    .bind(&req.chunk_id)
+    .bind(start_ms)
+    .bind(end_ms)
+    .bind(req.sample_rate.unwrap_or(16_000))
+    .bind(&req.object_key)
+    .bind(&audit_event_id)
+    .execute(&mut *tx)
+    .await?;
+
+    tx.commit().await?;
+
+    Ok(Json(serde_json::json!({
+        "chunkId": req.chunk_id,
+        "indexed": true,
+        "sessionId": claims.session_id,
+    })))
+}
+
 pub async fn create_session(
     State(state): State<AppState>,
     method: axum::http::Method,

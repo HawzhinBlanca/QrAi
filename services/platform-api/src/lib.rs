@@ -237,6 +237,12 @@ pub fn platform_router_with_rate_limit(state: AppState, rate_limit: bool) -> Rou
             axum::routing::get(handlers::review::get_finding_audio),
         )
         .route(
+            // ADR-0037: the realtime gateway records that a chunk exists, authenticated with the
+            // session's own ticket. The missing half of playback.
+            "/v1/audio-chunks",
+            axum::routing::post(handlers::recitation::index_audio_chunk),
+        )
+        .route(
             "/v1/realtime-session-tickets",
             axum::routing::post(handlers::recitation::create_realtime_ticket),
         )
