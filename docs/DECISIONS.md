@@ -1732,3 +1732,58 @@ it remains meaningful for `acoustic` findings, which will carry a measured confi
 - Making this a real number requires an acoustic analyser judged against adjudicated labels. That
   does not exist. Inventing a decimal here would not bring it closer, and did actively obscure the
   fact that it is missing.
+
+## ADR-0037 — A teacher hears a recitation through platform-api, and every fetch is audited
+
+**Status:** Accepted · **Date:** 2026-08-05 · **Related:** ADR-0028 (server-side gate), ADR-0031/0033, ADR-0036
+
+### Context
+
+A teacher opening the review queue is asked to accept or reject a claim about how a child recited.
+Until now they could not hear the recitation, and nothing told them why: measured at the time of
+writing, **all 2772 tajweed findings belonged to sessions whose consent said `discard`**, so the
+audio had been destroyed on purpose and the queue looked identical to one where it was simply
+unplayed. ADR-0036 and the `audioStatus` field made that legible. This is about the case where the
+recording *does* exist.
+
+Audio is written by realtime-gateway into ml-inference's object storage. Nothing could read it back:
+ml-inference had a store route and no read route at all.
+
+### Decision
+
+**The bytes travel through platform-api.** A teacher's client never talks to ml-inference and never
+receives a URL that would let it. platform-api resolves the finding, checks the tenant, checks the
+role, checks consent, writes the audit event, and only then asks ml-inference for the object.
+
+The alternative was a short-lived signed URL issued by ml-inference. It is faster and it moves the
+bytes off the platform's critical path, and it was rejected for one reason: a URL that grants access
+is a credential that outlives the check that produced it. It cannot be revoked when consent is
+withdrawn mid-window, it appears in whatever the client does with it, and the audit record would
+say a link was *issued*, not that a recording was *heard*. Slow and accountable beats fast and
+approximate for a child's recorded voice.
+
+**Every fetch is audited**, as its own `audit_events` row, written before the bytes are served so a
+transfer that fails halfway is still recorded as an attempt. Auditing begins after authorization
+succeeds: an unauthenticated caller must not be able to write rows into the audit log.
+
+**ml-inference takes the object key's PARTS, never the key.** `<tenant>/<learner>/<chunk>.bin` as a
+single string would mean filtering a path-shaped value for traversal on the one route that reads
+files off the host. Three segments through `safeStorageSegment` make traversal structurally
+impossible rather than filtered.
+
+**Retention is checked twice, independently.** platform-api reads the learner's consent record from
+Postgres. ml-inference reads the retention written *alongside the bytes* when they were stored, and
+serves nothing unless it says `teacher-review` or `training-opt-in` — its stored default is
+`discard`, so a chunk with no stated retention is refused. Neither check is the other's cache. If
+they disagree, something is wrong and the safe answer is to refuse.
+
+### Consequences
+
+- Audio playback costs a platform-api round trip and holds the bytes in its memory briefly. Accepted:
+  this is a review action by one member of staff at a time, not a learner-facing hot path.
+- The audit log gains a row per playback. That is the point — "who listened to this child's
+  recording, and when" is a question a pilot has to be able to answer.
+- Withdrawal of consent takes effect at the next fetch, with no issued-credential window to expire.
+- **Not yet built:** `audio_chunks` (the DB index) is still written by nothing, so no finding
+  currently resolves to a stored object. The read path exists and is tested; the write path from
+  realtime-gateway to platform-api is the remaining half and is a separate change.

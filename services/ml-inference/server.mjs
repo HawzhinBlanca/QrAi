@@ -924,6 +924,70 @@ function chunkSpan(startMs, endMs) {
   return usable ? { startMs, endMs } : { startMs: null, endMs: null };
 }
 
+/**
+ * Read one stored chunk back, for a teacher adjudicating a finding about it.
+ *
+ * Audio had only ever been written here. Nothing could read it back, which is why a teacher asked to
+ * accept or reject a claim about how a child recited has never been able to hear the recitation.
+ *
+ * ── The key's PARTS, never the key ───────────────────────────────────────────────────────────────
+ * `objectKey` is `<tenant>/<learner>/<chunk>.bin`, and accepting one would mean filtering a
+ * path-shaped string for traversal on the exact route that reads files off the host. Taking the
+ * three segments and validating each with `safeStorageSegment` makes traversal structurally
+ * impossible instead of filtered: a segment containing `/`, `..` or a NUL never becomes a path
+ * component because it never gets past validation.
+ *
+ * ── Retention is checked HERE too, and that is not redundant ─────────────────────────────────────
+ * platform-api checks the learner's consent record in the database before it ever calls this. This
+ * checks the retention that was written ALONGSIDE THE BYTES at the moment they were stored. Two
+ * independent records have to agree before a child's recitation is played back, and neither is the
+ * other's cache — if they disagree, something is wrong and the safe answer is to refuse.
+ *
+ * The default is `discard` (see `storeAudioChunk`), so a chunk stored without a stated retention is
+ * refused rather than served.
+ */
+async function readAudioObject(requestBody) {
+  const tenantId = safeStorageSegment(requestBody.tenantId, "tenantId");
+  const learnerId = safeStorageSegment(requestBody.learnerId, "learnerId");
+  const chunkId = safeStorageSegment(requestBody.chunkId, "chunkId");
+
+  const dir = join(AUDIO_STORAGE_DIR, tenantId, learnerId);
+  const metaPath = join(dir, `${chunkId}.meta.json`);
+  const binPath = join(dir, `${chunkId}.bin`);
+
+  // One message for "no metadata", "no bytes" and "no such learner". A caller that can tell them
+  // apart can map which learners and chunk ids exist, and this route is reachable by anything
+  // holding ML_API_KEY.
+  if (!existsSync(metaPath) || !existsSync(binPath)) {
+    throw httpError(404, "no such audio object");
+  }
+
+  let metadata;
+  try {
+    metadata = JSON.parse(readFileSync(metaPath, "utf8"));
+  } catch {
+    // Unreadable metadata means the retention policy for these bytes is unknown, and unknown is not
+    // permission. Refuse rather than serve on the assumption it was fine.
+    throw httpError(410, "audio retention for this object cannot be established");
+  }
+
+  if (metadata.audioRetention !== "teacher-review" && metadata.audioRetention !== "training-opt-in") {
+    throw httpError(410, "this recording was not retained for review");
+  }
+
+  const audio = readFileSync(binPath);
+  return {
+    objectKey: metadata.objectKey ?? `${tenantId}/${learnerId}/${chunkId}.bin`,
+    audioBase64: audio.toString("base64"),
+    audioSize: audio.length,
+    sampleRate: metadata.sampleRate ?? null,
+    // Nullable by construction — see `chunkSpan`. A player that cannot seek is better than one that
+    // seeks to an invented position.
+    startMs: metadata.startMs ?? null,
+    endMs: metadata.endMs ?? null,
+  };
+}
+
 async function storeAudioChunk(requestBody) {
   const tenantId = safeStorageSegment(requestBody.tenantId, "tenantId");
   const learnerId = safeStorageSegment(requestBody.learnerId, "learnerId");
@@ -1286,6 +1350,14 @@ async function route(request, response) {
       throw httpError(400, "tenantId query parameter is required");
     }
     jsonResponse(response, 200, readTenantAuditEvents(tenantId));
+    return;
+  }
+
+  if (request.method === "POST" && url.pathname === "/v1/audio-objects:read") {
+    const body = await readJson(request);
+    // The response carries a child's recorded voice. It is returned and never logged: no
+    // `console`/`appendAudit` call on this path touches the payload.
+    jsonResponse(response, 200, await readAudioObject(body));
     return;
   }
 
