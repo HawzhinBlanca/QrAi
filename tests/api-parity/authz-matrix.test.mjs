@@ -32,7 +32,7 @@ import assert from "node:assert/strict";
 import { readFileSync, readdirSync } from "node:fs";
 import test, { after, before } from "node:test";
 
-import { TENANT, request, startApi, startShell } from "./lib/harness.mjs";
+import { ROLE_USER_IDS, TENANT, request, startApi, startShell } from "./lib/harness.mjs";
 
 let api;
 let shell;
@@ -189,93 +189,152 @@ for (const row of POST_MATRIX) {
 }
 
 /**
- * ── A MEASURED DIVERGENCE, pinned rather than quietly carried ───────────────────────────────────
+ * ── THE CALLER IS IDENTIFIED BEFORE THE BODY IS READ ────────────────────────────────────────────
  *
- * With an INVALID body, the two implementations refuse an unauthorized caller for different reasons
- * and with different statuses:
+ * This started as a pin on a divergence and is now an assertion that it is gone. Keeping the history
+ * because the measurement is the point:
  *
- *   shell  403 {"error":"actor is not allowed to perform this action"}
- *   rust   422 Failed to deserialize the JSON body into the target type: missing field `learnerId`
+ *   before   rust  422  Failed to deserialize the JSON body ... missing field `learnerId`
+ *   after    rust  401  {"error":"missing or invalid authorization"}
  *
- * The cause is structural, not a transcription slip. In Axum a `Json<T>` argument is an EXTRACTOR:
- * it runs before the handler function body, and `actor.require_any(..)` lives inside that body. So
- * every Rust handler with a typed body validates before it authorizes. The Node port calls
- * `resolveActor` + `requireAnyRole` first and reads `req.body` afterwards, so it authorizes before
- * it validates.
+ * In Axum a `Json<T>` argument is an EXTRACTOR — it runs before the handler function body, where
+ * `resolve_actor` and `require_any` live. So every Rust handler with a typed body answered the
+ * request schema first and checked the caller second. With **no credentials at all**,
+ * `POST /v1/pilot/invitations` named its own required field. Sixteen routes, measured.
  *
- * Neither behaviour is a bug on its own; the DIVERGENCE is, because the brief for this port is
- * strict wire compatibility. Two things make it worth pinning rather than silently repairing:
+ * The first version of this file recorded that as a six-route divergence, which UNDERSTATED it twice
+ * over. It is not six routes but sixteen, and the caller need not merely be unauthorized — they need
+ * not be authenticated. The four ML-proxy routes hid it behind an untyped `serde_json::Value` body:
+ * `{}` deserializes fine, so they looked correct until probed with malformed JSON. A test whose
+ * input can only produce one answer proves nothing, which is why both bodies are sent below.
  *
- *  - The safer implementation is the one that diverges. Rust hands an unauthorized caller the field
- *    names of a request schema it has no right to submit. Making Node "match" would mean adding that
- *    disclosure to every privileged write, so this is a decision to take deliberately and in one
- *    direction, not a difference to paper over from whichever side is easier to edit.
- *  - It is exactly the cell no A/B probe visits. The suite sends valid bodies as authorized roles and
- *    invalid bodies as authorized roles; UNAUTHORIZED + INVALID is the combination nobody wrote, and
- *    it is where six privileged writes disagree.
+ * Fixed in Rust by taking `Result<Json<T>, JsonRejection>` — an extractor that cannot fail — and
+ * unwrapping it after the caller checks. Authorized callers' body errors are byte-identical:
+ * 42 responses across 422/400/415 captured before and after, diffed, no change.
  *
- * This test asserts what each side ACTUALLY does today, so the day either one changes — including
- * the day someone resolves the divergence — it says so out loud instead of drifting.
+ * What this asserts is the PROPERTY, not the port: a caller who fails identification must be refused
+ * without learning anything about the body they sent, on BOTH implementations.
  */
-const AUTHZ_BEFORE_BODY = [
+const CALLER_CHECKED_FIRST = [
+  // Role-gated: a wrong-role caller must be refused before the body is parsed.
   { key: "POST /v1/auth/token", path: "/v1/auth/token", denied: "learner" },
   { key: "POST /v1/pilot/invitations", path: "/v1/pilot/invitations", denied: "learner" },
   { key: "POST /v1/agent-runs", path: "/v1/agent-runs", denied: "learner" },
   { key: "POST /v1/scholar-approvals", path: "/v1/scholar-approvals", denied: "learner" },
   { key: "POST /v1/teacher-reviews", path: "/v1/teacher-reviews", denied: "learner" },
   { key: "POST /v1/realtime-session-tickets", path: "/v1/realtime-session-tickets", denied: "scholar" },
+  // Authentication-only: no role gate, but an ANONYMOUS caller must still learn nothing.
+  { key: "POST /v1/learner/progress", path: "/v1/learner/progress" },
+  { key: "POST /v1/recitation-sessions", path: "/v1/recitation-sessions" },
+  { key: "POST /v1/recitation-sessions/{id}/alignments", path: "/v1/recitation-sessions/no-such/alignments" },
+  { key: "POST /v1/privacy/export", path: "/v1/privacy/export" },
+  { key: "POST /v1/privacy/delete", path: "/v1/privacy/delete" },
+  // Untyped `serde_json::Value` bodies — the ones `{}` alone could not have caught.
+  { key: "POST /v1/ml/alignments:predict", path: "/v1/ml/alignments:predict" },
+  { key: "POST /v1/ml/tajweed-findings:predict", path: "/v1/ml/tajweed-findings:predict" },
+  { key: "POST /v1/asr/transcribe", path: "/v1/asr/transcribe" },
+  { key: "POST /v1/asr/force-align", path: "/v1/asr/force-align" },
+  // No actor at all; the caller check is the ORIGIN allowlist, which is still a check on the caller.
+  { key: "POST /v1/pilot/session/bootstrap", path: "/v1/pilot/session/bootstrap", anonymousStatus: 403 },
 ];
 
-/** The route keys the shell is actually serving; anything else it proxies, so it answers as Rust. */
-const PORTED = new Set(
-  (process.env.NODE_API_PORTED ?? "")
-    .split(",")
-    .map((s) => s.trim())
-    .filter(Boolean),
-);
+/**
+ * Two shapes of bad body, deliberately.
+ *
+ * `{}` is valid JSON that fails a TYPED schema — and silently succeeds against an untyped
+ * `serde_json::Value`, which is exactly how the ML routes looked innocent. `{` fails everywhere.
+ * Sending only the first would have reproduced the original mis-measurement.
+ */
+const BAD_BODIES = [
+  ["valid JSON, wrong shape", "{}"],
+  ["malformed JSON", "{"],
+];
 
-for (const row of AUTHZ_BEFORE_BODY) {
-  test(`${row.key} — rust validates the body BEFORE authorizing; the shell does not`, async () => {
-    const opts = { method: "POST", role: row.denied, body: {} };
+const SCHEMA_LEAK = /deserialize|missing field|invalid type|Failed to parse/i;
 
-    const rust = await request(rustUrl, row.path, opts);
-    assert.equal(
-      rust.status,
-      422,
-      `${row.key}: Rust answered ${rust.status} to an unauthorized caller with an invalid body. ` +
-        "It has answered 422 (the Json<T> extractor rejecting before the handler runs). If this is " +
-        "now 403 the ordering was changed in Rust — good, but update the shell and this test together.",
-    );
-    assert.match(
-      rust.text,
-      /Failed to deserialize the JSON body/,
-      `${row.key}: Rust's 422 no longer carries the deserialization detail. That detail reaching an ` +
-        "unauthorized caller is the reason this divergence is recorded; if it is gone, re-measure.",
-    );
+/** Raw POST, bypassing `request()`'s JSON encoding so a malformed body stays malformed. */
+async function rawPost(base, path, identity) {
+  const res = await fetch(`${base}${path}`, {
+    method: "POST",
+    headers: { "content-type": "application/json", ...identity },
+    body: identity.__body,
+  });
+  return { status: res.status, text: await res.text() };
+}
 
-    if (!PORTED.has(row.key)) return; // proxied: the shell IS Rust here, so there is nothing of its own to assert
-
-    const nodeShell = await request(shell.baseUrl, row.path, opts);
-    assert.equal(
-      nodeShell.status,
-      403,
-      `${row.key}: the shell answered ${nodeShell.status}. It authorizes before it reads the body, ` +
-        "so an unauthorized caller with an invalid body gets 403.",
-    );
-    assert.doesNotMatch(
-      nodeShell.text,
-      /deserialize|missing field/i,
-      `${row.key}: the shell's refusal now leaks body-schema detail to an unauthorized caller`,
-    );
-
-    assert.notEqual(
-      nodeShell.status,
-      rust.status,
-      `${row.key}: shell and Rust now AGREE on this cell. The divergence this test records is ` +
-        "resolved — delete this test and add the route to POST_MATRIX with a valid body.",
-    );
+for (const row of CALLER_CHECKED_FIRST) {
+  test(`${row.key} — an ANONYMOUS caller is refused without being told the body shape`, async () => {
+    const expected = row.anonymousStatus ?? 401;
+    for (const [label, raw] of BAD_BODIES) {
+      for (const [impl, base] of implementations()) {
+        const res = await rawPost(base, row.path, { __body: raw });
+        assert.equal(
+          res.status,
+          expected,
+          `${impl}: ${row.key} with ${label} and NO credentials answered ${res.status}, not ${expected}. ` +
+            "The caller check must run before the body is parsed.",
+        );
+        assert.doesNotMatch(
+          res.text,
+          SCHEMA_LEAK,
+          `${impl}: ${row.key} described the request body to a caller it had not identified — ` +
+            `${JSON.stringify(res.text).slice(0, 120)}`,
+        );
+      }
+    }
   });
 }
+
+for (const row of CALLER_CHECKED_FIRST.filter((r) => r.denied)) {
+  test(`${row.key} — a WRONG-ROLE caller is refused without being told the body shape`, async () => {
+    for (const [label, raw] of BAD_BODIES) {
+      for (const [impl, base] of implementations()) {
+        const res = await rawPost(base, row.path, {
+          __body: raw,
+          "x-user-id": ROLE_USER_IDS[row.denied],
+          "x-user-role": row.denied,
+          "x-tenant-id": TENANT,
+        });
+        assert.equal(
+          res.status,
+          403,
+          `${impl}: ${row.key} as ${row.denied} with ${label} answered ${res.status}, not 403. ` +
+            "Authorization must run before the body is parsed.",
+        );
+        assert.doesNotMatch(
+          res.text,
+          SCHEMA_LEAK,
+          `${impl}: ${row.key} described the request body to an unauthorized ${row.denied}`,
+        );
+      }
+    }
+  });
+}
+
+/**
+ * The premise both tests above depend on: those bodies must actually be REJECTED once a caller gets
+ * past the gate. If they were somehow acceptable, every assertion above would pass while proving
+ * nothing about ordering at all — the requests would simply be succeeding.
+ */
+test("the bodies used above really are rejected once the caller is authorized", async () => {
+  for (const [label, raw] of BAD_BODIES) {
+    const res = await rawPost(rustUrl, "/v1/pilot/invitations", {
+      __body: raw,
+      "x-user-id": ROLE_USER_IDS.admin,
+      "x-user-role": "admin",
+      "x-tenant-id": TENANT,
+    });
+    assert.ok(
+      res.status === 400 || res.status === 422,
+      `an ADMIN sending ${label} got ${res.status}; if this body is acceptable, the tests above are vacuous`,
+    );
+    assert.match(
+      res.text,
+      SCHEMA_LEAK,
+      "an authorized caller must still get axum's own body error — this is the byte-compatibility half",
+    );
+  }
+});
 
 /**
  * The guard that keeps the table above honest.
@@ -299,7 +358,9 @@ test("every role gate in the shell has a row in this matrix", () => {
   const covered = new Set([
     ...GET_MATRIX.map((r) => r.key),
     ...POST_MATRIX.map((r) => r.key),
-    ...AUTHZ_BEFORE_BODY.map((r) => r.key),
+    // Only the role-gated rows count here: the rest of CALLER_CHECKED_FIRST covers routes whose
+    // sole caller check is authentication, which is not a `requireAnyRole` call site.
+    ...CALLER_CHECKED_FIRST.filter((r) => r.denied).map((r) => r.key),
   ]);
 
   assert.equal(

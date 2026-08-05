@@ -36,10 +36,11 @@ pub async fn create_agent_run(
     State(state): State<AppState>,
     method: axum::http::Method,
     headers: HeaderMap,
-    Json(req): Json<AgentRunRequest>,
+    body: JsonBody<AgentRunRequest>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
     let actor = crate::auth::resolve_actor(&method, &headers, &state).await?;
     actor.require_any(&[ActorRole::Scholar, ActorRole::Admin, ActorRole::Ops])?;
+    let Json(req) = body?;
 
     let mut tx = crate::begin_tenant_tx(&state.pool, &actor.tenant_id).await?;
 

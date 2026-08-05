@@ -10,7 +10,7 @@ pub async fn issue_token(
     State(state): State<AppState>,
     method: axum::http::Method,
     headers: HeaderMap,
-    Json(req): Json<TokenRequest>,
+    body: JsonBody<TokenRequest>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
     // Minting a JWT for an arbitrary user is an admin/ops operation. Without this check
     // anyone who knows a (user_id, tenant_id, role) tuple could forge a session for any
@@ -18,6 +18,7 @@ pub async fn issue_token(
     // to their own tenant.
     let caller = crate::auth::resolve_actor(&method, &headers, &state).await?;
     caller.require_any(&[ActorRole::Admin, ActorRole::Ops])?;
+    let Json(req) = body?;
     if caller.tenant_id != req.tenant_id {
         return Err(ApiError::Forbidden);
     }
