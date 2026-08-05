@@ -32,6 +32,31 @@ const traceId = (req) => req.headers["x-trace-id"] ?? null;
  * `audio_retention` and `anonymized_learning` are REQUIRED — a body missing either is a 422 from
  * the extractor, not a consent record with an invented retention policy.
  */
+/**
+ * The time span an alignment claims, or `null` if it does not identify any audio.
+ *
+ * A faithful mirror of `usable_span` in handlers/recitation.rs — the same three conditions, in the
+ * same order, so a payload refused there is refused here.
+ *
+ * `start_ms`/`end_ms` are the ONLY record of where in a recitation a word was heard, and a tajweed
+ * finding is anchored to the alignment row. A finding whose span is 0ms-to-0ms points at nothing: a
+ * reviewer asked to adjudicate it has nothing to listen to, and the row is indistinguishable in the
+ * table from one pointing at real audio. Measured in staging before this existed: 2686 findings, of
+ * which 507 (19%) resolved to a zero-length span.
+ *
+ * `Number.isInteger` is the mirror of serde_json's `as_i64`, which likewise reports nothing for a
+ * string, a bool, null, or a float with a fractional part. The previous code here was
+ * `Number.isInteger(a.startMs) ? a.startMs : 0` — it asked the right question and then answered a
+ * different one, turning every unusable timing into the integer 0.
+ */
+function usableSpan(startMs, endMs) {
+  if (!Number.isInteger(startMs) || !Number.isInteger(endMs)) return null;
+  if (startMs < 0 || endMs <= startMs) return null;
+  // int4, matching the column and Rust's i32::try_from.
+  if (startMs > 2147483647 || endMs > 2147483647) return null;
+  return { startMs, endMs };
+}
+
 function consentFrom(raw) {
   if (!raw || typeof raw !== "object") throw new RejectionError("consent is required", 422);
   if (!AUDIO_RETENTIONS.includes(raw.audioRetention)) {
@@ -260,11 +285,19 @@ export async function persistSessionAlignments(req, reply, ctx) {
 
     let persisted = 0;
     let skippedUnknownWord = 0;
+    let skippedUnusableSpan = 0;
     for (const a of valid) {
       // Only real canonical words satisfy the word_id FK. Synthetic ids ("extra-N") are EXPECTED to
       // be absent — an "extra" word the learner said that is not in the canonical text.
       if (!knownWords.has(a.wordId)) {
         skippedUnknownWord += 1;
+        continue;
+      }
+      // Mirrors `usable_span` in recitation.rs. Skipped and COUNTED like an unknown word, so one bad
+      // timing does not discard the rest of the batch.
+      const span = usableSpan(a.startMs, a.endMs);
+      if (span === null) {
+        skippedUnusableSpan += 1;
         continue;
       }
       await tx`
@@ -273,8 +306,8 @@ export async function persistSessionAlignments(req, reply, ctx) {
            model_version_id, audit_event_id, transcript_source)
         VALUES (${newId("word-alignment")}, ${actor.tenantId}, ${sessionId}, ${a.wordId},
                 ${typeof a.heardText === "string" ? a.heardText : ""},
-                ${Number.isInteger(a.startMs) ? a.startMs : 0},
-                ${Number.isInteger(a.endMs) ? a.endMs : 0},
+                ${span.startMs},
+                ${span.endMs},
                 ${Math.min(Math.max(Number(a.confidence) || 0, 0), 1)}::float8::numeric,
                 ${a.status}, ${modelVersion}, ${auditId}, 'client-reported')`;
       persisted += 1;
@@ -297,6 +330,7 @@ export async function persistSessionAlignments(req, reply, ctx) {
       sessionId,
       skippedInvalidStatus: invalidStatus.length,
       skippedUnknownWord,
+      skippedUnusableSpan,
       // Hardcoded, matching the Rust original: this route's words come from whatever the caller
       // sent, so it can only ever mint `client-reported`. `server-derived` belongs to
       // finalize_session, which is not ported (Phase 7) and takes no words from a caller at all.

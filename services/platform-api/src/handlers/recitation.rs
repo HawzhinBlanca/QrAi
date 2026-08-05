@@ -497,12 +497,49 @@ pub struct PersistAlignmentInput {
     pub word_id: String,
     #[serde(default)]
     pub heard_text: String,
+    // Taken as raw JSON rather than `i32`, so an absent, null, string or fractional timing lands in
+    // the same place as a zero-length or inverted one: `usable_span` below. Typed as `i32` with
+    // `#[serde(default)]`, an ABSENT timing silently became 0 and a wrong-typed one was a 422 — two
+    // different answers to one question, and the port's answer was a third (it accepted everything).
     #[serde(default)]
-    pub start_ms: i32,
+    pub start_ms: serde_json::Value,
     #[serde(default)]
-    pub end_ms: i32,
+    pub end_ms: serde_json::Value,
     pub confidence: f64,
     pub status: String,
+}
+
+/// The time span an alignment claims, or `None` if it does not identify any audio.
+///
+/// `start_ms`/`end_ms` are the ONLY record of where in a recitation a word was heard, and a tajweed
+/// finding is anchored to the alignment row. So a finding whose span is 0ms-to-0ms points at nothing:
+/// a reviewer asked to adjudicate it — the whole purpose of the review queue, and the precondition
+/// for ever assembling an adjudicated corpus — has nothing to listen to, and the row is
+/// indistinguishable in the table from one pointing at real audio.
+///
+/// Measured in staging before this existed: 2686 tajweed findings, of which 507 (19%) resolved to a
+/// zero-length span. Nothing reported it, because 0 is a perfectly valid integer and every layer
+/// accepted it.
+///
+/// The web client already refuses to PRODUCE one — `liveRecitation.ts` computes
+/// `endMs = Math.max(startMs + 1, ...)` deliberately. That guard lived in a client, which is a
+/// display choice rather than an authority; this is the same argument as ADR-0028.
+///
+/// Requires `0 <= start < end`. Zero-length is refused because a word takes time to say; negative is
+/// refused because it is a position in a recording.
+pub(crate) fn usable_span(
+    start: &serde_json::Value,
+    end: &serde_json::Value,
+) -> Option<(i32, i32)> {
+    // `as_i64` returns None for a string, a bool, null, and for a float like 1.5 — serde_json only
+    // reports an integer when the JSON number genuinely had no fractional part.
+    let start = start.as_i64()?;
+    let end = end.as_i64()?;
+    if start < 0 || end <= start {
+        return None;
+    }
+    // A span past i32 is not a recitation timestamp; the column is int4 and would error anyway.
+    Some((i32::try_from(start).ok()?, i32::try_from(end).ok()?))
 }
 
 #[derive(Debug, serde::Deserialize)]
@@ -686,6 +723,7 @@ async fn persist_alignments_in_tx(
 
     let mut persisted = 0i64;
     let mut skipped_unknown_word = 0i64;
+    let mut skipped_unusable_span = 0i64;
     for a in valid {
         // Only real canonical words satisfy the word_id FK; synthetic ids ("extra-N") are EXPECTED to
         // be absent (an "extra" word the learner said that isn't in the canonical text) — not an error.
@@ -693,6 +731,14 @@ async fn persist_alignments_in_tx(
             skipped_unknown_word += 1;
             continue;
         }
+        // Skipped and COUNTED, the same way an unknown word is, rather than failing the whole batch:
+        // one bad timing among fifty must not discard forty-nine good ones. The count goes back in
+        // the response, so a client sending unusable timings learns it instead of finding out later
+        // that its findings point nowhere.
+        let Some((start_ms, end_ms)) = usable_span(&a.start_ms, &a.end_ms) else {
+            skipped_unusable_span += 1;
+            continue;
+        };
         let wa_id = next_id("word-alignment");
         sqlx::query(
             "INSERT INTO word_alignments
@@ -704,8 +750,8 @@ async fn persist_alignments_in_tx(
         .bind(session_id)
         .bind(&a.word_id)
         .bind(&a.heard_text)
-        .bind(a.start_ms)
-        .bind(a.end_ms)
+        .bind(start_ms)
+        .bind(end_ms)
         .bind(a.confidence.clamp(0.0, 1.0))
         .bind(&a.status)
         .bind(&model_version)
@@ -732,6 +778,7 @@ async fn persist_alignments_in_tx(
         "persisted": persisted,
         "skippedInvalidStatus": skipped_invalid_status,
         "skippedUnknownWord": skipped_unknown_word,
+        "skippedUnusableSpan": skipped_unusable_span,
         // On the wire so a caller is never left assuming its words were recorded as measured
         // evidence. `client-reported` here is not a failure — it is the honest label for practice
         // the server did not witness.
@@ -1025,8 +1072,12 @@ pub async fn finalize_session(
                             .and_then(|v| v.as_str())
                             .unwrap_or_default()
                             .to_owned(),
-                        start_ms: a.get("startMs").and_then(|v| v.as_i64()).unwrap_or(0) as i32,
-                        end_ms: a.get("endMs").and_then(|v| v.as_i64()).unwrap_or(0) as i32,
+                        // Passed through as raw JSON, absent included, so the ML-derived path is held
+                        // to the same `usable_span` rule as the client-reported one. It had the
+                        // identical `.unwrap_or(0)`: an aligner that returned no timing produced a
+                        // 0ms-to-0ms row indistinguishable from a real one.
+                        start_ms: a.get("startMs").cloned().unwrap_or(serde_json::Value::Null),
+                        end_ms: a.get("endMs").cloned().unwrap_or(serde_json::Value::Null),
                         confidence: a.get("confidence").and_then(|v| v.as_f64()).unwrap_or(0.0),
                         status: a
                             .get("status")

@@ -382,7 +382,7 @@ components:
 
     PersistAlignmentsResult:
       type: object
-      required: [sessionId, persisted, skippedInvalidStatus, skippedUnknownWord, transcriptSource, auditEventId]
+      required: [sessionId, persisted, skippedInvalidStatus, skippedUnknownWord, skippedUnusableSpan, transcriptSource, auditEventId]
       properties:
         sessionId: { type: string, minLength: 1 }
         persisted: { type: integer, minimum: 0 }
@@ -390,6 +390,19 @@ components:
         # problem from one skipped because its id is not canonical, and collapsing them hides which.
         skippedInvalidStatus: { type: integer, minimum: 0 }
         skippedUnknownWord: { type: integer, minimum: 0 }
+        # An alignment whose startMs/endMs do not identify any audio: absent, null, non-integer,
+        # negative, zero-length or inverted. Requires 0 <= startMs < endMs.
+        #
+        # `start_ms`/`end_ms` are the ONLY record of WHERE in a recitation a word was heard, and a
+        # tajweed finding is anchored to the alignment row. Before this count existed, both servers
+        # coerced an unusable timing to the integer 0, so a finding could be anchored to a 0ms-to-0ms
+        # span — pointing at no audio, and indistinguishable in the table from one pointing at real
+        # audio. A reviewer asked to adjudicate it has nothing to listen to.
+        #
+        # Skipped and counted rather than failing the batch, like skippedUnknownWord: one bad timing
+        # must not discard forty-nine good ones. A client seeing this above zero is sending timings
+        # that will never become evidence.
+        skippedUnusableSpan: { type: integer, minimum: 0 }
         # ADR-0030. This route can only ever return `client-reported`: its words came from the
         # request body. `server-derived` belongs to finalize, which takes no words from a caller.
         # On the wire so a client is never left assuming its words became measured evidence.
