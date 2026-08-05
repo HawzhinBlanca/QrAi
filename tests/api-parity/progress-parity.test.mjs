@@ -204,6 +204,26 @@ test("weekly: a scholar is refused at the FIRST gate, before ownership is consid
   assert.equal(res.status, 403);
 });
 
+test("a scholar is refused on GET /v1/learner/progress too, not only on weekly", async () => {
+  // The SAME two-gate structure guards both progress routes — require_any([learner, teacher,
+  // admin, ops]) then require_self_or_any(id, [teacher, admin, ops]) — and until now only WEEKLY
+  // was ever probed with a scholar. `handlers/progress.rs:81` carries the note that its author's
+  // first attempt put scholar in the allowlist, "which would have been a real privilege widening".
+  // The route where that was caught by hand is the one nothing checked.
+  //
+  // Asserted A/B: a Node port that widened the list on this route only would otherwise diverge in
+  // silence, since no probe here ever sent a scholar.
+  await assertAB(shell.baseUrl, api.baseUrl, { path: "/v1/learner/progress", role: "scholar" });
+
+  const res = await request(shell.baseUrl, "/v1/learner/progress", { role: "scholar" });
+  assert.equal(res.status, 403, "a scholar reached the learner progress route");
+
+  // ...and refused at the FIRST gate, so the refusal cannot be mistaken for an ownership failure
+  // that a scholar might pass by asking for their own id.
+  const own = await request(shell.baseUrl, "/v1/learner/progress?learnerId=scholar-1", { role: "scholar" });
+  assert.equal(own.status, 403, "a scholar asking for their OWN row got past the first gate");
+});
+
 test("the weekly day shape is pinned — accuracy is null, not 0, when no words were aligned",
   async () => {
     const res = await request(shell.baseUrl, "/v1/learner/progress/weekly", learner);
