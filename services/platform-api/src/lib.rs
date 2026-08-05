@@ -231,6 +231,12 @@ pub fn platform_router_with_rate_limit(state: AppState, rate_limit: bool) -> Rou
             axum::routing::get(handlers::review::list_tajweed_findings),
         )
         .route(
+            // ADR-0037: the recitation a finding is about, proxied through here so the tenant check,
+            // the consent check and the audit event all happen in one place the client cannot skip.
+            "/v1/tajweed-findings/{id}/audio",
+            axum::routing::get(handlers::review::get_finding_audio),
+        )
+        .route(
             "/v1/realtime-session-tickets",
             axum::routing::post(handlers::recitation::create_realtime_ticket),
         )

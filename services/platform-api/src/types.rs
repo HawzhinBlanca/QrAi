@@ -366,6 +366,14 @@ pub enum ApiError {
     /// that saturates the pool is a clear "busy, try again" signal, not indistinguishable from a bug.
     #[error("{0}")]
     Unavailable(String),
+    /// The thing existed and is deliberately gone — not lost, not pending, not forbidden.
+    ///
+    /// Used for a recitation a learner asked to have destroyed. A 404 there reads as "we lost it" or
+    /// "not yet" and a teacher keeps coming back; 403 reads as "ask for access" and invites someone
+    /// to try. 410 is the only one of the three that says what actually happened, and it is the
+    /// honest answer to give about consent being honoured.
+    #[error("{0}")]
+    Gone(String),
     /// A request-body rejection, carried VERBATIM so it reaches the wire exactly as axum would have
     /// sent it: its own status (400 syntax / 422 data / 415 content-type) and its own `text/plain`
     /// message, not this enum's `{"error": …}` JSON envelope.
@@ -473,6 +481,7 @@ impl IntoResponse for ApiError {
             Self::Database(_) => StatusCode::INTERNAL_SERVER_ERROR,
             Self::Upstream(_) => StatusCode::BAD_GATEWAY,
             Self::Unavailable(_) => StatusCode::SERVICE_UNAVAILABLE,
+            Self::Gone(_) => StatusCode::GONE,
             // Returned above. Listed rather than caught by a `_` so that adding a variant later is
             // still a compile error here instead of silently becoming a 500.
             Self::BodyRejection(..) => unreachable!("returned before this match"),

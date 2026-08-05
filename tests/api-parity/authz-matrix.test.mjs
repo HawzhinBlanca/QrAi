@@ -110,6 +110,15 @@ const GET_MATRIX = [
     path: "/v1/recitation-sessions/no-such-session/alignments",
     allow: ["teacher", "admin", "ops"],
   },
+  {
+    // ADR-0037. Scholar is deliberately ABSENT even though a scholar can read the finding queue
+    // itself: this is a child's recorded voice, and only the roles that can record a decision about
+    // the finding need to hear it. That asymmetry is the reason this row is worth its own line —
+    // copying the list from `GET /v1/tajweed-findings` would have been the natural mistake.
+    key: "GET /v1/tajweed-findings/{id}/audio",
+    path: "/v1/tajweed-findings/no-such-finding/audio",
+    allow: ["teacher", "admin", "ops"],
+  },
 ];
 
 for (const row of GET_MATRIX) {
