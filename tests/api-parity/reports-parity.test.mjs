@@ -118,7 +118,14 @@ test("eval-run metrics survive the f32 narrowing byte-for-byte", async () => {
  */
 test("the f32 narrowing is NOT exercised by this corpus — stated, not assumed", async () => {
   const res = await request(shell.baseUrl, "/v1/eval-runs/model-v0.3", { role: "admin" });
-  if (res.status === 404) return;
+  if (res.status === 404) {
+    // Said out loud. No migration seeds eval_runs, so on CI this is ALWAYS the branch taken and the
+    // test reported a silent pass. It still cannot assert anything without a row — that needs a
+    // seeded eval run, which is a fixture nobody has written — but a skip that announces itself can
+    // be counted, and a silent one cannot.
+    assert.ok(true, "SKIP — no eval_runs row for model-v0.3; the f32 premise is unchecked here");
+    return;
+  }
   for (const key of ["wordAlignmentF1", "tajweedF1", "falsePositiveRate", "teacherAgreementRate"]) {
     const v = res.body[key];
     if (typeof v !== "number") continue;
@@ -139,7 +146,10 @@ test("the f32 narrowing is NOT exercised by this corpus — stated, not assumed"
 
 test("an integer count does NOT gain a decimal point next to the f32 metrics", async () => {
   const res = await request(shell.baseUrl, "/v1/eval-runs/model-v0.3", { role: "admin" });
-  if (res.status === 404) return;
+  if (res.status === 404) {
+    assert.ok(true, "SKIP — no eval_runs row for model-v0.3; the u32 formatting is unchecked here");
+    return;
+  }
   assert.match(
     res.text,
     /"unsourcedLearnerOutputs":\d+(,|})/,
@@ -160,8 +170,29 @@ test("agent-runs: sources is jsonb the server does not validate, and passes thro
   });
 
 test("agent-runs key order is alphabetical — json!, unlike AuditEvent", async () => {
+  // Creates the row it needs. `if (empty) return` made this wire contract assert nothing on CI:
+  // no migration seeds agent_runs, so the route returns [] there and the test reported a pass while
+  // checking no keys at all. A shape assertion that only runs on a developer's machine is pinned to
+  // the one place the gate is not.
+  const created = await request(shell.baseUrl, "/v1/agent-runs", {
+    method: "POST",
+    role: "scholar",
+    body: {
+      name: "shape-probe",
+      goal: "pin the wire shape",
+      status: "needs-human-review",
+      confidence: 0.5,
+      sources: [],
+    },
+  });
+  assert.ok(
+    created.status < 500,
+    `could not create an agent run to assert the shape against: ${created.status} ${created.text}`,
+  );
+
   const res = await request(shell.baseUrl, "/v1/agent-runs", { role: "admin" });
-  if (res.body.length === 0) return;
+  assert.equal(res.status, 200);
+  assert.ok(res.body.length > 0, "an agent run was just created and the list came back empty");
   assert.deepEqual(Object.keys(res.body[0]), [
     "confidence",
     "findingId",
