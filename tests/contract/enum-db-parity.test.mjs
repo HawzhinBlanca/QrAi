@@ -134,3 +134,124 @@ test("the database enforces exactly the audio retentions the contract offers", a
     await client.end();
   }
 });
+
+/**
+ * The span a finding points at, enforced by the TABLE rather than by whoever wrote the row.
+ *
+ * `usable_span` (handlers/recitation.rs) and `usableSpan` (routes/session-writes.mjs) already refuse
+ * an alignment that identifies no audio. Two implementations of one rule, and the whole theme of
+ * this week's work is that two implementations agreeing proves nothing about a third — a migration,
+ * a backfill, a fixture script, a psql session at 3am, or the next port. The CHECK constraint is the
+ * only place the rule holds regardless of who is writing.
+ *
+ * `word_alignments` already had CHECK constraints on `confidence` (0..1), `status` and
+ * `transcript_source`. It had none on the span, so `start_ms`/`end_ms` — the ONLY record of WHERE in
+ * a recitation a word was heard, and what a tajweed finding is anchored to — accepted anything an
+ * int4 could hold: negative, zero-length, inverted.
+ *
+ * These probe the constraint DIRECTLY with SQL, not through an API, because going through an API
+ * would prove the application check works and say nothing about the table.
+ */
+/**
+ * A tenant that actually owns alignments.
+ *
+ * DATABASE_URL connects as `quran_ai_app` — nosuperuser, nobypassrls, the production role — so every
+ * tenant-owned row is invisible until `app.tenant_id` is set, exactly as `begin_tenant_tx` does it.
+ * Probing without this returned zero rows and the control test read that as "the constraint refused
+ * my insert", which would have been a false red for a real reason: RLS working.
+ */
+async function anyTenant(client) {
+  const { rows } = await client.query("SELECT id FROM institutions ORDER BY id LIMIT 1");
+  assert.ok(rows.length === 1, "no institution row — this probe needs a tenant to set RLS context to");
+  return rows[0].id;
+}
+
+const UNUSABLE_SPANS_SQL = [
+  ["zero-length", 500, 500],
+  ["inverted", 900, 400],
+  ["negative start", -1, 100],
+  ["negative both", -50, -10],
+];
+
+test("the table itself refuses an alignment span that identifies no audio", async (t) => {
+  if (!DATABASE_URL) return t.skip("no DATABASE_URL — this leg needs the live constraint");
+  const client = new pg.Client({ connectionString: DATABASE_URL });
+  await client.connect();
+  try {
+    // The constraint must EXIST. A behavioural probe alone would also pass if the insert were
+    // refused for some unrelated reason (a NOT NULL, an FK), so name it first.
+    const tenant = await anyTenant(client);
+    const { rows: found } = await client.query(
+      `SELECT pg_get_constraintdef(oid) AS def FROM pg_constraint
+       WHERE conrelid = 'word_alignments'::regclass AND conname = $1`,
+      ["word_alignments_span_identifies_audio"],
+    );
+    assert.equal(
+      found.length,
+      1,
+      "word_alignments has no span CHECK constraint. It has one for confidence, status and " +
+        "transcript_source; the span — the only thing saying WHERE a finding happened — had none.",
+    );
+
+    // Every write is inside a transaction that is rolled back, so this test never leaves a row
+    // behind and never depends on one existing.
+    for (const [label, startMs, endMs] of UNUSABLE_SPANS_SQL) {
+      await client.query("BEGIN");
+      await client.query("SELECT set_config('app.tenant_id', $1, true)", [tenant]);
+      let refused = false;
+      let detail = "";
+      try {
+        await client.query(
+          `INSERT INTO word_alignments
+             (id, tenant_id, session_id, word_id, heard_text, start_ms, end_ms, confidence, status,
+              model_version_id, audit_event_id, transcript_source)
+           SELECT 'wa-span-probe', wa.tenant_id, wa.session_id, wa.word_id, 'x', $1, $2, 0.9,
+                  'matched', wa.model_version_id, wa.audit_event_id, 'client-reported'
+           FROM word_alignments wa LIMIT 1`,
+          [startMs, endMs],
+        );
+      } catch (err) {
+        refused = true;
+        detail = err.message;
+      }
+      await client.query("ROLLBACK");
+
+      assert.ok(
+        refused,
+        `the table accepted a "${label}" span (${startMs} -> ${endMs}). A finding anchored to it ` +
+          "points at no audio, and no application check can stop a writer that does not run one.",
+      );
+      assert.match(
+        detail,
+        /word_alignments_span_identifies_audio/,
+        `"${label}" was refused, but by something other than the span constraint: ${detail}`,
+      );
+    }
+  } finally {
+    await client.end();
+  }
+});
+
+test("and still accepts a real span — the control", async (t) => {
+  if (!DATABASE_URL) return t.skip("no DATABASE_URL — this leg needs the live constraint");
+  // Without this, every assertion above is satisfied by a constraint that refuses EVERYTHING, which
+  // would silently end alignment capture rather than clean it up.
+  const client = new pg.Client({ connectionString: DATABASE_URL });
+  await client.connect();
+  try {
+    await client.query("BEGIN");
+    await client.query("SELECT set_config('app.tenant_id', $1, true)", [await anyTenant(client)]);
+    const { rowCount } = await client.query(
+      `INSERT INTO word_alignments
+         (id, tenant_id, session_id, word_id, heard_text, start_ms, end_ms, confidence, status,
+          model_version_id, audit_event_id, transcript_source)
+       SELECT 'wa-span-probe-ok', wa.tenant_id, wa.session_id, wa.word_id, 'x', 640, 1230, 0.9,
+              'matched', wa.model_version_id, wa.audit_event_id, 'client-reported'
+       FROM word_alignments wa LIMIT 1`,
+    );
+    assert.equal(rowCount, 1, "a 640ms-to-1230ms span was refused; the constraint is too strict");
+    await client.query("ROLLBACK");
+  } finally {
+    await client.end();
+  }
+});
