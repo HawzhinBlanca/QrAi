@@ -848,6 +848,69 @@ pub async fn list_session_tajweed_findings(
 }
 
 #[cfg(test)]
+mod audio_status_tests {
+    use super::audio_status;
+
+    /// `audio_status` decides what a reviewer is TOLD about a learner's recording, and until this
+    /// module it had no Rust test at all — its only guard was the JS parity layer.
+    ///
+    /// Measured: replacing the whole function with `"xyzzy"` leaves `cargo test` at 97 passed, 0
+    /// failed. Only `review-parity` and `audio-playback-parity` noticed. That is real coverage, one
+    /// layer out, and it means a Rust-side refactor can break this while the crate's own suite stays
+    /// green — the same reasoning `learner_gate_tests` below gives for pinning the status allowlist
+    /// here: this is the authoritative implementation, and Rust cannot be called from Node.
+    ///
+    /// Found by cargo-mutants: four surviving mutants on this function, including both match-guard
+    /// flips, all of which this module kills.
+    #[test]
+    fn consent_is_authoritative_and_checked_before_the_disk() {
+        // The case that matters most. A stored chunk under `discard` consent is a RETENTION BUG;
+        // answering "available" would invite a teacher to play a recording that should not exist.
+        assert_eq!(audio_status(Some("discard".to_owned()), true), "discarded");
+        assert_eq!(audio_status(Some("discard".to_owned()), false), "discarded");
+    }
+
+    #[test]
+    fn a_missing_consent_record_is_unknown_not_a_guess() {
+        // "unknown" and "not-captured" are different CLAIMS, and only one of them is true when the
+        // row holding a session's retention policy has gone. Never offered for playback either way.
+        assert_eq!(audio_status(None, false), "unknown");
+        assert_eq!(audio_status(None, true), "unknown");
+    }
+
+    #[test]
+    fn permitted_retention_reports_what_is_actually_on_disk() {
+        for retention in ["teacher-review", "training-opt-in"] {
+            assert_eq!(audio_status(Some(retention.to_owned()), true), "available");
+            assert_eq!(
+                audio_status(Some(retention.to_owned()), false),
+                "not-captured"
+            );
+        }
+    }
+
+    #[test]
+    fn every_branch_returns_a_distinct_answer() {
+        // Four states that mean four different things to the person deciding whether to wait for a
+        // recording. Two of them collapsing into one is how a teacher ends up waiting for audio that
+        // was destroyed on purpose — and a constant-returning implementation passes every assertion
+        // above that happens to expect that constant.
+        let all = [
+            audio_status(Some("discard".to_owned()), true),
+            audio_status(None, false),
+            audio_status(Some("teacher-review".to_owned()), true),
+            audio_status(Some("teacher-review".to_owned()), false),
+        ];
+        let distinct: std::collections::BTreeSet<&str> = all.iter().copied().collect();
+        assert_eq!(
+            distinct.len(),
+            4,
+            "two audio states report the same string: {all:?}"
+        );
+    }
+}
+
+#[cfg(test)]
 mod learner_gate_tests {
     use super::{LEARNER_MIN_CONFIDENCE, clears_learner_gate};
     use serde_json::json;
