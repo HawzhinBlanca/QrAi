@@ -5,7 +5,7 @@
 
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { mkdtempSync } from "node:fs";
+import { mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -469,4 +469,71 @@ test("fixture output starts normally once acknowledged — smoke and eval still 
 test("the default path is unaffected — no flag, no acknowledgement, normal boot", async () => {
   const { code, stderr } = await bootWith({});
   assert.equal(code, null, `the service refuses to start with no fixture flags at all:\n${stderr}`);
+});
+
+// ── The external-ASR consent gate, held to the shared corpus ─────────────────────────────────────
+//
+// packages/contracts/fixtures/canonical-gates.json describes `canUseExternalAsr` as "the only thing
+// stopping audio leaving without guardian consent", and pins all four combinations "so a port cannot
+// implement OR by mistake". Five code sites implement that rule — contracts, recitation.rs:160,
+// session-writes.mjs:129, and TWO expressions in this file (server.mjs:473 and :1184) — and only the
+// reference was ever checked against the corpus.
+//
+// The test above covers exactly one combination, for a CHILD profile. The rule is not about children:
+// an adult learner's recording must not leave either. These run the corpus's four cases through the
+// real decision on the default profile, and assert on the AUDIT TRAIL rather than the return value —
+// `privacy.external-asr.called` is the record of audio actually being sent, which is the thing the
+// rule exists to prevent.
+
+const ASR_CORPUS = JSON.parse(
+  readFileSync(new URL("../../packages/contracts/fixtures/canonical-gates.json", import.meta.url), "utf8"),
+)["canUseExternalAsr"];
+
+test("no combination the corpus forbids ever sends audio to external ASR", async () => {
+  const cases = ASR_CORPUS?.cases ?? [];
+  assert.equal(cases.length, 4, `the corpus should pin all four combinations, found ${cases.length}`);
+  assert.ok(
+    cases.some((c) => c.expected === true) && cases.some((c) => c.expected === false),
+    "the corpus must contain both answers, or a gate hardcoded to false satisfies it — which would " +
+      "silently disable external ASR entirely rather than gate it",
+  );
+
+  const wrong = [];
+  for (const c of cases) {
+    const { externalAsrProcessing, guardianApproved } = c.input;
+    const tenantId = `asr-corpus-${externalAsrProcessing}-${guardianApproved}-${Date.now()}`;
+    // In this hermetic suite there IS no ASR service, so "the audio was sent" manifests two ways: an
+    // audited `privacy.external-asr.called`, or `transcribeAudio` throwing on a fetch to nothing.
+    // Both mean the gate let it through; only "neither happened" means it was stopped.
+    let attempted = false;
+    try {
+      await predictAlignment({
+      tenantId,
+      sessionId: "s-corpus",
+      // NOT a child profile: this rule is about consent, not about age, and the child check is an
+      // ADDITIONAL condition layered on top of it (server.mjs:481).
+      externalAsrRequested: true,
+      consent: { externalAsrProcessing, guardianApproved },
+      audioBase64: "AAAA",
+        quranRef: { surahNumber: 1, ayahStart: 1, ayahEnd: 7, display: "Al-Fatihah 1:1-7" },
+      });
+    } catch {
+      attempted = true;
+    }
+    attempted ||= lastEvent(tenantId, "privacy.external-asr.called") !== undefined;
+
+    if (attempted !== c.expected) {
+      wrong.push(
+        `${c.name}: corpus says ${c.expected ? "permitted" : "FORBIDDEN"}, audio was ` +
+          `${attempted ? "SENT" : "not sent"}`,
+      );
+    }
+  }
+
+  assert.deepEqual(
+    wrong,
+    [],
+    `the external-ASR gate disagrees with the corpus that describes it as the only thing stopping\n` +
+      `audio leaving without guardian consent:\n  ${wrong.join("\n  ")}`,
+  );
 });
