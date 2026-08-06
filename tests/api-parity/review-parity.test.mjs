@@ -557,6 +557,41 @@ const DECIDED_STATUSES = ["teacher-reviewed", "blocked", "scholar-approved"];
  */
 const seeded = [];
 
+test("the ancient-fixture population stays inside the queue's page", async () => {
+  // ── A canary for a failure that arrives disguised as something else ──────────────────────────────
+  // The queue returns its highest-priority 200 findings, ordered oldest-recitation-first. Several
+  // tests backdate a fixture specifically to rank inside that page:
+  //
+  //   seedQueued (this file)                                    now() - 17..18 years
+  //   list_tajweed_findings_returns_the_seeded_finding…         now() - 10 years
+  //
+  // Nothing coordinates them. They compete for the same 200 slots, and the one that reaches further
+  // back wins. Measured the day it first mattered: 208 ancient awaiting findings against a LIMIT of
+  // 200, and the loser failed with "no discard-consent finding came back on the route" — a message
+  // about redaction, describing a paging problem, in a test that had done nothing wrong.
+  //
+  // `seedQueued` now deletes what it creates, so the population should not grow. This says so out
+  // loud, and fails with the actual reason BEFORE anyone has to rediscover it from a symptom three
+  // files away.
+  const [{ n }] = await queryJson(
+    `SELECT count(*)::int AS n
+       FROM tajweed_findings tf
+       JOIN word_alignments wa ON wa.id = tf.alignment_id
+       JOIN recitation_sessions rs ON rs.id = wa.session_id
+      WHERE tf.tenant_id = $1
+        AND tf.review_status NOT IN ('teacher-reviewed', 'blocked', 'scholar-approved')
+        AND rs.started_at < now() - interval '5 years'`,
+    [TENANT],
+  );
+  assert.ok(
+    n < 200,
+    `${n} awaiting findings are backdated more than 5 years, and the queue route returns 200. ` +
+      `Fixtures that backdate to rank first are crowding each other off page one — the next test to ` +
+      `fail will report something that sounds unrelated. Find what is seeding them and make it clean ` +
+      `up, or the ones already there and delete them.`,
+  );
+});
+
 async function seedQueued({ label, reviewStatus, confidence, startedAtSql }) {
   const suffix = `${Date.now().toString(36)}-${Math.floor(Math.random() * 1e9)}`;
   const ids = {
