@@ -1554,6 +1554,23 @@ const AUDIO_TTL_REVIEW_HOURS = Number(process.env.AUDIO_RETENTION_REVIEW_TTL_HOU
 // - 'teacher-review': delete after AUDIO_TTL_REVIEW_HOURS (default: 7 days)
 // - 'training-opt-in': keep indefinitely (skip)
 // Files without metadata default to 'discard' behavior.
+/**
+ * How long audio under this retention mode may be kept, in hours.
+ *
+ * Extracted from the retention sweep so a test can execute it. It is the ml-inference half of
+ * `mustDiscardAudio` (packages/contracts): anything this returns the DISCARD ttl for is a recording
+ * that function must agree is obliged to be destroyed. They used to disagree on an unrecognised
+ * mode — this one applied the discard TTL, that one answered "you may keep it" — and nothing
+ * noticed, because the contract function had no caller and no corpus case had shown either an
+ * out-of-vocabulary value.
+ *
+ * `training-opt-in` is handled by the caller (kept indefinitely, no TTL at all), so it never
+ * reaches here.
+ */
+export function retentionTtlHours(retention) {
+  return retention === "teacher-review" ? AUDIO_TTL_REVIEW_HOURS : AUDIO_TTL_DISCARD_HOURS;
+}
+
 setInterval(async () => {
   try {
     const now = Date.now();
@@ -1587,9 +1604,7 @@ setInterval(async () => {
           // training-opt-in: keep indefinitely
           if (retention === "training-opt-in") continue;
 
-          const ttlMs = retention === "teacher-review"
-            ? AUDIO_TTL_REVIEW_HOURS * 60 * 60 * 1000
-            : AUDIO_TTL_DISCARD_HOURS * 60 * 60 * 1000;
+          const ttlMs = retentionTtlHours(retention) * 60 * 60 * 1000;
 
           try {
             const stat = fs.statSync(fullPath);

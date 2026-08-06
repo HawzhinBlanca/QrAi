@@ -537,3 +537,69 @@ test("no combination the corpus forbids ever sends audio to external ASR", async
       `audio leaving without guardian consent:\n  ${wrong.join("\n  ")}`,
   );
 });
+
+// ── The retention sweep and the contract gate must agree on every mode ────────────────────────────
+//
+// `mustDiscardAudio` (packages/contracts) had NO CALLER — one of two exported contract functions
+// nothing referenced. So its disagreement with this service went unnoticed: it answered
+// `retention === "discard"`, a denylist of one, while the sweep here has always applied the discard
+// TTL to anything it does not recognise.
+//
+// They matched on every value in the vocabulary and differed on the one OUTSIDE it, in the direction
+// that matters — the contract function said "you may keep it" for a child's recording held under a
+// policy nobody can state. `services/shared-ticket` carries `audio_retention` as a deliberately
+// unvalidated string on the stated grounds that an unknown value "can only shorten retention", which
+// is true only if every consumer treats unknown as discard.
+//
+// This runs the corpus through BOTH, so the agreement is pinned rather than coincidental.
+
+const RETENTION_CORPUS = JSON.parse(
+  readFileSync(new URL("../../packages/contracts/fixtures/canonical-gates.json", import.meta.url), "utf8"),
+)["mustDiscardAudio"];
+
+test("the retention sweep destroys exactly what the contract says must be destroyed", async () => {
+  const { mustDiscardAudio } = await import("../../packages/contracts/src/index.ts");
+  const { retentionTtlHours } = await import("./server.mjs");
+
+  const cases = RETENTION_CORPUS?.cases ?? [];
+  assert.ok(cases.length >= 5, `the retention corpus is down to ${cases.length} cases; it had 5`);
+  assert.ok(
+    cases.some((c) => c.expected === true) && cases.some((c) => c.expected === false),
+    "the corpus must contain both answers, or a gate hardcoded either way satisfies it",
+  );
+
+  // The premise the comparison rests on: if the two TTLs were configured equal, "is this the discard
+  // TTL" could not distinguish anything and every case would pass for the wrong reason.
+  assert.notEqual(
+    retentionTtlHours("discard"),
+    retentionTtlHours("teacher-review"),
+    "the discard and review TTLs are equal, so this test cannot tell them apart — set " +
+      "AUDIO_RETENTION_DISCARD_TTL_HOURS and AUDIO_RETENTION_REVIEW_TTL_HOURS to different values",
+  );
+
+  const wrong = [];
+  for (const c of cases) {
+    const retention = c.input;
+    const contractSaysDestroy = mustDiscardAudio(retention);
+    // `training-opt-in` never reaches the TTL branch — the sweep `continue`s on it — so the sweep's
+    // answer for it is "keep forever", which is `false` for "must destroy".
+    const sweepSaysDestroy =
+      retention === "training-opt-in" ? false : retentionTtlHours(retention) === retentionTtlHours("discard");
+
+    if (contractSaysDestroy !== sweepSaysDestroy) {
+      wrong.push(
+        `${JSON.stringify(retention)}: contract says ${contractSaysDestroy ? "DESTROY" : "keep"}, ` +
+          `sweep says ${sweepSaysDestroy ? "DESTROY" : "keep"}`,
+      );
+    }
+    if (contractSaysDestroy !== c.expected) {
+      wrong.push(`${JSON.stringify(retention)}: contract disagrees with the corpus`);
+    }
+  }
+
+  assert.deepEqual(
+    wrong,
+    [],
+    `the retention gate and the sweep that enforces it disagree:\n  ${wrong.join("\n  ")}`,
+  );
+});
