@@ -444,7 +444,12 @@ export async function startShell({ upstream, env = {}, timeoutMs = 20_000 }) {
       ...(MUTATION ? (MUTATIONS[MUTATION] ?? {}) : {}),
       PLATFORM_API_UPSTREAM: upstream,
       NODE_API_BIND: `127.0.0.1:${port}`,
-      NODE_API_PORTED: process.env.NODE_API_PORTED ?? "",
+      // The CALLER's value wins over the ambient one. This line sits after `...env`, so it used to
+      // discard `startShell({ env: { NODE_API_PORTED: … } })` silently — the shell then ported
+      // nothing, proxied everything to Rust, and the test measured Rust while its author believed it
+      // was measuring Node. That is the same failure the `SHELL_URLS` guard exists to stop, reached
+      // by a different road, and it cost a measurement in this very session before being noticed.
+      NODE_API_PORTED: env.NODE_API_PORTED ?? process.env.NODE_API_PORTED ?? "",
     },
     stdio: ["ignore", "pipe", "pipe"],
   });
