@@ -1,0 +1,55 @@
+{
+  "$comment": [
+    "What each shipped locale actually CLAIMS, who stands behind it, and when that claim expires.",
+    "P2.2 in specs/readiness-recovery-10-10/tasks.md.",
+    "",
+    "WHY THIS FILE EXISTS. The app registers nine languages and ships strings for one. `ckb.json` is",
+    "literally `{}` — zero Kurdish strings — and `i18n/index.ts` sets `lng: \"ckb\"`, so Kurdish is the",
+    "DEFAULT language. With `fallbackLng: \"en\"` every string resolves to English, silently, and the",
+    "interface a Kurdish-first product presents to a Kurdish learner is entirely English.",
+    "",
+    "Nothing said so. `tests/i18n/locale-parity.test.mjs` checks that every key in a locale is",
+    "well-formed, and an EMPTY locale satisfies every one of those rules vacuously: no key can carry a",
+    "dropped interpolation variable, or be identical to the English, or be an empty string, if there",
+    "is no key. The gate was green because there was nothing to check, which is not the same as being",
+    "right.",
+    "",
+    "This file makes the claim explicit so a test can hold the code to it, and so a human reading one",
+    "file can see what is real. `reviewer: null` is not a placeholder to be tidied away — it is the",
+    "statement that NOBODY has reviewed these strings, which is exactly what P2.4 asks for and does",
+    "not have.",
+    "",
+    "STATUSES",
+    "  complete     every English key is present, reviewed by a named person, not expired.",
+    "  partial      some keys present and reviewed; the rest fall back to English by design.",
+    "  placeholder  registered so the language can be SELECTED, with no strings behind it. Everything",
+    "               the user sees is English. Offering it is a product decision, not a translation.",
+    "",
+    "The tests in tests/i18n/locale-parity.test.mjs assert this file against the locale files",
+    "themselves, in BOTH directions: a locale claiming more coverage than it has fails, and so does",
+    "one claiming less. A manifest that can drift from the thing it describes is decoration."
+  ],
+  "referenceLocale": "en",
+  "locales": {
+    "en": {
+      "status": "complete",
+      "keys": 384,
+      "reviewer": "source language — authored here, not translated",
+      "reviewExpires": null
+    },
+    "ckb": {
+      "status": "placeholder",
+      "keys": 0,
+      "reviewer": null,
+      "reviewExpires": null,
+      "note": "Central Kurdish (Sorani). The app's DEFAULT language and an option in the language picker, with zero strings. Every label a Kurdish learner sees is English via fallback. P2.4 covers getting these written and independently reviewed, including Quranic terminology; until then this row is the honest description of the product."
+    },
+    "ar": { "status": "placeholder", "keys": 0, "reviewer": null, "reviewExpires": null },
+    "tr": { "status": "placeholder", "keys": 0, "reviewer": null, "reviewExpires": null },
+    "ur": { "status": "placeholder", "keys": 0, "reviewer": null, "reviewExpires": null },
+    "id": { "status": "placeholder", "keys": 0, "reviewer": null, "reviewExpires": null },
+    "ms": { "status": "placeholder", "keys": 0, "reviewer": null, "reviewExpires": null },
+    "fr": { "status": "placeholder", "keys": 0, "reviewer": null, "reviewExpires": null },
+    "de": { "status": "placeholder", "keys": 0, "reviewer": null, "reviewExpires": null }
+  }
+}
