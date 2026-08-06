@@ -3,7 +3,7 @@
   "scope": "specs/api-parity-suite/plan.md option B (approved 2026-07-31)",
   "totals": {
     "ported": 36,
-    "mechanical-remainder": 48,
+    "mechanical-remainder": 50,
     "deferred-to-phase-7": 10
   },
   "tests": [
@@ -567,6 +567,18 @@
       "rustLine": 4142,
       "status": "mechanical-remainder",
       "reason": "P5.3 fault test for the kill-switch exemptions (/metrics, /ready). Engaging maintenance mode 503s every other route, so it cannot be expressed in the A/B harness, whose servers must serve normally for the rest of the run."
+    },
+    {
+      "rustTest": "a_database_outage_on_a_data_route_is_a_generic_500_that_names_nothing",
+      "rustLine": 4163,
+      "status": "mechanical-remainder",
+      "reason": "P5.3 fault test. Needs a pool that never connects, which cannot exist in the A/B harness — every other test in that run requires a live Postgres. Asserts the measured behaviour (503 via PoolTimedOut, not the 500 its author first assumed) and that the body names neither the role, the password, the host nor the table."
+    },
+    {
+      "rustTest": "a_database_error_never_returns_the_postgres_text_to_the_caller",
+      "rustLine": 4229,
+      "status": "mechanical-remainder",
+      "reason": "P5.3 redaction test. Constructs ApiError::Database directly with a real Postgres unique-violation message, because a dead pool yields PoolTimedOut and can never reach that variant. Pins that a learner's email address in a constraint DETAIL is not returned to the caller. No HTTP surface to port."
     }
   ]
 }
