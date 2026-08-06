@@ -216,6 +216,14 @@ if [[ "$FAST" != "yes" ]]; then
   run "test: audio retention reaches stored audio (real processes)" \
     "cargo build --manifest-path $GW && node --test tests/gateway/audio-retention-e2e.test.mjs"
 
+  # The other half of "fail the chunk, never lose the audio". Two unit tests cover the
+  # index-failure counter and BOTH call `record_index_failure()` directly, so they prove the counter
+  # counts and not that a real failure reaches it — measured: deleting the production call left the
+  # gateway suite at 47 passed, 0 failed. This drives a real websocket with PLATFORM_API_URL pointed
+  # at a server that answers 500, then asserts the counter moved AND the audio is still on disk.
+  run "test: an index failure is reported and the audio survives (real processes)" \
+    "cargo build --manifest-path $GW && node --test tests/gateway/index-failure-e2e.test.mjs"
+
   # DB-gated integration tests — only when a live Postgres answers and allows authentication. Skipped, not faked.
   can_auth="no"
   if command -v psql >/dev/null 2>&1; then

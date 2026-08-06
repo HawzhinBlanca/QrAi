@@ -4144,6 +4144,117 @@ async fn readiness_reports_503_when_postgres_is_unreachable_while_liveness_holds
     );
 }
 
+/// P5.3 fault test — a database outage on a DATA route.
+///
+/// `readiness_reports_503_when_postgres_is_unreachable_while_liveness_holds` covers `/ready` and
+/// `/health`. Nothing covered a route that actually queries, and those are the ones a learner is
+/// holding when the database goes away.
+///
+/// MEASURED, not assumed: this is a 503, not a 500. I expected the latter — a refused connection
+/// looked like `sqlx::Error::Io`, which `From<sqlx::Error>` maps to `Database` (500). It is not:
+/// sqlx retries inside `acquire` until `acquire_timeout` elapses and surfaces `PoolTimedOut`, which
+/// maps to `Unavailable`. 503 is the better answer anyway — it tells a client and a load balancer to
+/// back off and retry, which is exactly right for an outage — but this test asserts what the code
+/// does rather than what its author expected, and says which one was which.
+///
+/// The leak list is the point. A learner holding this response gets a message that names nothing:
+/// not the role, not the password in the URL, not the host, not the table.
+#[tokio::test]
+async fn a_database_outage_on_a_data_route_is_a_generic_500_that_names_nothing() {
+    // `connect_lazy` at a port with nothing behind it: the pool exists, every acquire fails, and the
+    // failure is a refused connection rather than a hang — deterministic, no timeout to wait out.
+    let pool = sqlx::postgres::PgPoolOptions::new()
+        .max_connections(1)
+        .acquire_timeout(std::time::Duration::from_secs(2))
+        .connect_lazy("postgresql://quran_ai_app:secret-password@127.0.0.1:1/quran_ai")
+        .expect("lazy pool");
+    let router = platform_router_with_rate_limit(
+        AppState::with_header_auth(pool, "test-jwt-secret", true),
+        false,
+    );
+
+    let response = send_json(
+        &router,
+        Method::GET,
+        "/v1/learner/progress",
+        Some("hikmah-pilot-erbil"),
+        Some("learner"),
+        Value::Null,
+    )
+    .await;
+    assert_eq!(
+        response.status(),
+        StatusCode::SERVICE_UNAVAILABLE,
+        "a data route during a database outage should be a 503 — retryable, not a client error and \
+         not an unexplained 500"
+    );
+
+    let body: Value = read_json(response).await;
+    assert_eq!(
+        body,
+        json!({"error": "the service is busy; please try again in a moment"}),
+        "the response body must be the fixed message, never the sqlx error text"
+    );
+
+    // Named individually rather than by a substring search on the whole body: this is the list of
+    // things the redaction exists to keep out, and a future reader should see it.
+    let text = body.to_string();
+    for leaked in [
+        "quran_ai_app",
+        "secret-password",
+        "127.0.0.1",
+        "learner_progress",
+        "pool",
+        "timed out",
+    ] {
+        assert!(
+            !text.to_lowercase().contains(leaked),
+            "the error body names {leaked:?}: {text}"
+        );
+    }
+}
+
+/// P5.3 — the database-error redaction, pinned with the payload it exists for.
+///
+/// The test above cannot reach this path: a dead pool yields `PoolTimedOut`/`Unavailable`, whose
+/// message is a fixed string already. `ApiError::Database` is the variant that carries
+/// `sqlx::Error::to_string()`, and on a constraint violation Postgres puts the table name, the
+/// constraint name AND THE CONFLICTING VALUE in that string — a learner's email address, verbatim.
+///
+/// `into_response` logs the detail with `tracing::error!` and returns "a database error occurred".
+/// That redaction is one `self.to_string()` away from being undone and nothing tested it, so this
+/// constructs the variant with a real Postgres unique-violation message and asserts the learner's
+/// email does not come back out.
+#[tokio::test]
+async fn a_database_error_never_returns_the_postgres_text_to_the_caller() {
+    let leaky = "duplicate key value violates unique constraint \"users_email_key\"\n\
+                 DETAIL: Key (email)=(amina@example.org) already exists.";
+    let response =
+        quran_ai_platform_api::types::ApiError::Database(leaky.to_owned()).into_response();
+
+    assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+
+    let body: Value = read_json(response).await;
+    assert_eq!(
+        body,
+        json!({"error": "a database error occurred"}),
+        "the caller must get the fixed message, not the Postgres text"
+    );
+
+    let text = body.to_string();
+    for leaked in [
+        "amina@example.org",
+        "users_email_key",
+        "duplicate key",
+        "DETAIL",
+    ] {
+        assert!(
+            !text.contains(leaked),
+            "the error body carries {leaked:?} out to the caller: {text}"
+        );
+    }
+}
+
 /// P5.3 fault test — the kill-switch must not blind the people using it.
 ///
 /// `maintenance_guard` exempts three paths: `/health`, `/ready`, `/metrics`. The test above covers
