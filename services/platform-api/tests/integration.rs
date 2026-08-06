@@ -5319,6 +5319,142 @@ async fn seed_session_for(router: &axum::Router, checksum: &str) -> String {
 /// their recitation.
 ///
 /// Three of the four ways a finding fails the gate get a row each, so no one row can carry the test.
+/// P6.1 journey — the ONE transition the whole review gate exists to control.
+///
+/// Every piece of this was already tested and the crossing was not.
+/// `learner_gets_withheld_findings_redacted_and_staff_get_them_intact` seeds findings ALREADY in
+/// each state and checks redaction at that instant.
+/// `teacher_decision_promotes_the_finding_and_edited_promotes_nothing` submits a decision and
+/// asserts the DATABASE afterwards. Neither watches one finding cross the boundary and asks what
+/// the learner can read on the other side, which is the only question the gate is for.
+///
+/// So: one finding, three observations, through the API each time.
+///
+/// The fixture is sourced and above the confidence floor DELIBERATELY. `canShowLearnerFacingAiOutput`
+/// gates on review status AND confidence >= 0.82 AND at least one source; if the fixture failed any
+/// of the others, "still redacted" would hold for a reason that has nothing to do with the teacher,
+/// and the test would pass while the review gate did nothing. Review status is left as the only
+/// variable.
+///
+/// The rejected half matters more than the accepted half. An `accepted` finding that stays hidden is
+/// a visible bug — a teacher approves something and nothing happens. A `rejected` finding that
+/// becomes visible is silent: the learner is shown a judgement about their recitation that a teacher
+/// looked at and refused.
+#[tokio::test]
+async fn a_finding_becomes_visible_to_the_learner_only_when_a_teacher_accepts_it() {
+    let state = test_state();
+    let router = platform_router_with_rate_limit(test_state(), false);
+    let session_id = seed_session_for(&router, "p61journey").await;
+
+    const SOURCED: &str = r#"[{"id":"s1","title":"Scholar Board","citation":"policy"}]"#;
+
+    /// What the learner can actually read for one finding id, right now.
+    async fn learner_sees(
+        router: &axum::Router,
+        session_id: &str,
+        finding_id: &str,
+    ) -> serde_json::Value {
+        let response = send_json(
+            router,
+            Method::GET,
+            &format!("/v1/recitation-sessions/{session_id}/tajweed-findings"),
+            Some("hikmah-pilot-erbil"),
+            Some("learner"),
+            Value::Null,
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let findings: Vec<Value> = read_json(response).await;
+        findings
+            .into_iter()
+            .find(|f| f["id"] == json!(finding_id))
+            .unwrap_or_else(|| {
+                panic!("finding {finding_id} is not on the learner's session at all")
+            })
+    }
+
+    for (label, word_id, decision, visible_after) in [
+        ("accepted", "1:1:1", "accepted", true),
+        ("rejected", "1:1:2", "rejected", false),
+    ] {
+        let finding_id = seed_finding_for_gate(
+            &state.pool,
+            &session_id,
+            label,
+            word_id,
+            "ai-suggested",
+            0.9,
+            SOURCED,
+        )
+        .await;
+
+        // 1. Before any human has looked at it, the content is withheld.
+        let before = learner_sees(&router, &session_id, &finding_id).await;
+        assert_eq!(
+            before["withheld"],
+            json!(true),
+            "{label}: an unreviewed finding was shown to the learner before any teacher saw it"
+        );
+        assert_eq!(
+            before["rule"],
+            json!(""),
+            "{label}: the rule leaked before review: {before}"
+        );
+
+        // 2. A teacher decides.
+        let review = send_json(
+            &router,
+            Method::POST,
+            "/v1/teacher-reviews",
+            Some("hikmah-pilot-erbil"),
+            Some("teacher"),
+            // `teacherId` is required by the schema and IGNORED by the handler, which uses the
+            // authenticated actor — asserted by its own test. Sent as a wrong value on purpose so
+            // this fixture cannot be read as the source of the review's author.
+            json!({
+                "findingId": finding_id,
+                "teacherId": "ignored-should-use-actor",
+                "decision": decision,
+                "note": "n",
+            }),
+        )
+        .await;
+        assert_eq!(
+            review.status(),
+            StatusCode::OK,
+            "{label}: the review was not recorded"
+        );
+
+        // 3. And the learner reads the SAME finding again.
+        let after = learner_sees(&router, &session_id, &finding_id).await;
+        if visible_after {
+            assert_eq!(
+                after["withheld"],
+                json!(false),
+                "{label}: a teacher accepted this finding and the learner still cannot see it: {after}"
+            );
+            assert_ne!(
+                after["rule"],
+                json!(""),
+                "{label}: accepted, but the content is still blank: {after}"
+            );
+        } else {
+            assert_eq!(
+                after["withheld"],
+                json!(true),
+                "{label}: a teacher REJECTED this finding and the learner can now read it. They are \
+                 being shown a judgement about their own recitation that a teacher looked at and \
+                 refused: {after}"
+            );
+            assert_eq!(
+                after["rule"],
+                json!(""),
+                "{label}: rejected, and the rule is readable anyway: {after}"
+            );
+        }
+    }
+}
+
 #[tokio::test]
 #[ignore = "requires live Postgres"]
 async fn learner_gets_withheld_findings_redacted_and_staff_get_them_intact() {
