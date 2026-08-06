@@ -312,6 +312,16 @@ if [[ "$FAST" != "yes" ]]; then
   # transitive AGPL arrival changes the obligations of the whole distribution and turns up the same
   # silent way the undici advisory did — through someone else's lockfile bump.
   run "guard: dependency licences (P4.4)" "node scripts/check-licenses.mjs --self-test && node scripts/check-licenses.mjs"
+  # A model version may not CLAIM it passed evaluation without one that passes.
+  # `modelEvalPassesReleaseGate` encoded the bar and had NO caller — one reference outside its own
+  # unit test, its own definition — while `model_versions.status` said `eval-passed` with nothing
+  # checking it. This finally gives that gate a caller. DB-gated, like the other live-Postgres legs.
+  if [[ -n "${DATABASE_URL:-}" ]] && pg_isready -q -d "$DATABASE_URL" 2>/dev/null; then
+    run "guard: model eval claims (P3.5)" \
+      "node --experimental-strip-types scripts/check-model-eval-claims.mjs --self-test && node --experimental-strip-types scripts/check-model-eval-claims.mjs"
+  else
+    say "guard: model eval claims — SKIPPED (no reachable Postgres)"
+  fi
 
   if [[ "$RELEASE" == "yes" ]]; then
     # smoke:all drives proof, SQL, browser, API, gateway, ML, and privacy
