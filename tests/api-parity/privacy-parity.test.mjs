@@ -28,6 +28,20 @@ import {
   uniqueSuffix,
 } from "./lib/harness.mjs";
 
+/**
+ * The routes this file is ABOUT, served by the shell rather than proxied to Rust.
+ *
+ * Taken from the `NODE_API_PORTED=…` line in the header above, which every parity file carried and
+ * none of them set. A file run directly therefore got a shell that proxied everything, so its
+ * "shell" side WAS Rust and a Node-only defect could not fail it — the configuration a person
+ * actually uses proved the least. Only verify.sh's second pass set the variable, so the same file
+ * meant two different things depending on who ran it.
+ *
+ * `startShell` unions this with the ambient value, so verify.sh's exhaustive pass still serves every
+ * PORTABLE route.
+ */
+const PORTED = "POST /v1/privacy/export,POST /v1/privacy/delete";
+
 let api;
 let shell;
 /**
@@ -57,7 +71,7 @@ before(async () => {
   const env = { ML_INFERENCE_URL: mlMock.url };
   api = await startApi({ env });
   rustUrl = api.upstreamUrl ?? api.baseUrl;
-  shell = await startShell({ upstream: rustUrl, env });
+  shell = await startShell({ upstream: rustUrl, env: { ...env, NODE_API_PORTED: PORTED } });
 });
 
 after(async () => {
@@ -329,7 +343,7 @@ test("ORDER 2 vs 3: an unknown learner is 404 even when the ML service is DOWN",
   // must not survive in the outage case.
   const deadUrl = "http://127.0.0.1:1";
   const deadApi = await startApi({ env: { ML_INFERENCE_URL: deadUrl } });
-  const deadShell = await startShell({ upstream: deadApi.upstreamUrl ?? deadApi.baseUrl, env: { ML_INFERENCE_URL: deadUrl } });
+  const deadShell = await startShell({ upstream: deadApi.upstreamUrl ?? deadApi.baseUrl, env: { NODE_API_PORTED: PORTED, ML_INFERENCE_URL: deadUrl } });
   try {
     const { shell: s } = await assertABMutating(deadShell.baseUrl, deadApi.baseUrl, {
       name: "delete an unknown learner with ML down",

@@ -34,6 +34,21 @@ import test, { after, before } from "node:test";
 
 import { ROLE_USER_IDS, TENANT, request, startApi, startShell } from "./lib/harness.mjs";
 
+/**
+ * Every route this matrix covers, served by the shell rather than proxied.
+ *
+ * The header says `NODE_API_PORTED="$(…PORTABLE…)"` and nothing set it, so a direct run gave this
+ * file a shell that proxied everything — its "shell" column WAS Rust, and the whole point of the
+ * file is that the two columns are asserted separately. Read from `server.mjs` for the same reason
+ * verify.sh reads it: a hand-copied list here would be a second list to drift.
+ */
+const PORTED = (() => {
+  const src = readFileSync(new URL("../../services/node-api/server.mjs", import.meta.url), "utf8");
+  const m = /export const PORTABLE = \[([^\]]*)\]/s.exec(src);
+  if (!m) throw new Error("could not read PORTABLE out of server.mjs");
+  return [...m[1].matchAll(/"([^"]+)"/g)].map((x) => x[1]).join(",");
+})();
+
 let api;
 let shell;
 /**
@@ -56,7 +71,7 @@ before(async () => {
   rustUrl = api.upstreamUrl ?? api.baseUrl;
   // Point the shell at the binary rather than at `api.baseUrl`: under PARITY_THROUGH_SHELL that would
   // chain shell -> shell -> rust, and "the shell" would be measuring another copy of itself.
-  shell = await startShell({ upstream: rustUrl });
+  shell = await startShell({ upstream: rustUrl, env: { NODE_API_PORTED: PORTED } });
 });
 
 after(async () => {

@@ -444,12 +444,22 @@ export async function startShell({ upstream, env = {}, timeoutMs = 20_000 }) {
       ...(MUTATION ? (MUTATIONS[MUTATION] ?? {}) : {}),
       PLATFORM_API_UPSTREAM: upstream,
       NODE_API_BIND: `127.0.0.1:${port}`,
-      // The CALLER's value wins over the ambient one. This line sits after `...env`, so it used to
-      // discard `startShell({ env: { NODE_API_PORTED: … } })` silently — the shell then ported
-      // nothing, proxied everything to Rust, and the test measured Rust while its author believed it
-      // was measuring Node. That is the same failure the `SHELL_URLS` guard exists to stop, reached
-      // by a different road, and it cost a measurement in this very session before being noticed.
-      NODE_API_PORTED: env.NODE_API_PORTED ?? process.env.NODE_API_PORTED ?? "",
+      // The caller's routes UNIONED with the ambient ones — deliberately not either alone.
+      //
+      // This line sits after `...env`, so it used to discard
+      // `startShell({ env: { NODE_API_PORTED: … } })` silently: the shell ported nothing, proxied
+      // everything to Rust, and the test measured Rust while its author believed it was measuring
+      // Node. Same failure the `SHELL_URLS` guard exists to stop, by a different road.
+      //
+      // Union rather than override, because the two sources mean different things. A file's own list
+      // says "these are the routes I am about" and must hold when the file is run directly, which is
+      // how a person runs it. The ambient list is verify.sh's second pass saying "serve every
+      // PORTABLE route", and letting a file narrow that would quietly shrink the pass that exists to
+      // be exhaustive. Union satisfies both: standalone the file gets its own routes, and under
+      // verify.sh it gets a superset.
+      NODE_API_PORTED: [env.NODE_API_PORTED, process.env.NODE_API_PORTED]
+        .filter((v) => typeof v === "string" && v.trim() !== "")
+        .join(","),
     },
     stdio: ["ignore", "pipe", "pipe"],
   });

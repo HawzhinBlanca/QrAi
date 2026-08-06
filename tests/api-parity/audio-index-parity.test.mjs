@@ -1,7 +1,13 @@
 /**
  * POST /v1/audio-chunks — the gateway records that a chunk of audio exists (ADR-0037).
  *
- *   NODE_API_PORTED="POST /v1/audio-chunks" node --test tests/api-parity/audio-index-parity.test.mjs
+ *   node --test tests/api-parity/audio-index-parity.test.mjs
+ *
+ * This file used to document `NODE_API_PORTED="POST /v1/audio-chunks"`. That command has never
+ * worked: the route has no Node handler and is not in PORTABLE, so the shell refuses to boot with
+ * `NODE_API_PORTED names an unportable route`. Nobody ran it. The "shell" side here is therefore a
+ * PROXY to Rust by necessity, which is the harness-soundness half of the A/B rather than a claim
+ * about a port — and that is correct for a route nobody has ported.
  *
  * The missing half of playback. Audio was stored by ml-inference and NOTHING wrote the row that says
  * where it is, so `audio_chunks` was populated by a test fixture and a smoke script and by nothing

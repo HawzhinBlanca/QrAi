@@ -15,6 +15,20 @@ import test, { after, before } from "node:test";
 import { assertAB, assertABMutating } from "./lib/ab.mjs";
 import { TENANT, queryJson, request, startApi, startShell, uniqueSuffix } from "./lib/harness.mjs";
 
+/**
+ * The routes this file is ABOUT, served by the shell rather than proxied to Rust.
+ *
+ * Taken from the `NODE_API_PORTED=…` line in the header above, which every parity file carried and
+ * none of them set. A file run directly therefore got a shell that proxied everything, so its
+ * "shell" side WAS Rust and a Node-only defect could not fail it — the configuration a person
+ * actually uses proved the least. Only verify.sh's second pass set the variable, so the same file
+ * meant two different things depending on who ran it.
+ *
+ * `startShell` unions this with the ambient value, so verify.sh's exhaustive pass still serves every
+ * PORTABLE route.
+ */
+const PORTED = "POST /v1/learner/progress,GET /v1/learner/progress/weekly";
+
 let api;
 let shell;
 /**
@@ -36,7 +50,7 @@ let rustUrl;
 before(async () => {
   api = await startApi({});
   rustUrl = api.upstreamUrl ?? api.baseUrl;
-  shell = await startShell({ upstream: rustUrl });
+  shell = await startShell({ upstream: rustUrl, env: { NODE_API_PORTED: PORTED } });
 });
 
 after(async () => {

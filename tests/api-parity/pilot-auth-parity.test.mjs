@@ -24,6 +24,20 @@ import { TENANT, queryJson, request, startApi, startShell } from "./lib/harness.
 
 const ORIGIN = "http://localhost:5173";
 
+/**
+ * The routes this file is ABOUT, served by the shell rather than proxied to Rust.
+ *
+ * Taken from the `NODE_API_PORTED=…` line in the header above, which every parity file carried and
+ * none of them set. A file run directly therefore got a shell that proxied everything, so its
+ * "shell" side WAS Rust and a Node-only defect could not fail it — the configuration a person
+ * actually uses proved the least. Only verify.sh's second pass set the variable, so the same file
+ * meant two different things depending on who ran it.
+ *
+ * `startShell` unions this with the ambient value, so verify.sh's exhaustive pass still serves every
+ * PORTABLE route.
+ */
+const PORTED = "GET /v1/learner/progress,POST /v1/learner/progress";
+
 let api;
 let shell;
 /**
@@ -55,7 +69,7 @@ let learners;
 before(async () => {
   api = await startApi({ env: { CORS_ALLOWED_ORIGINS: ORIGIN } });
   rustUrl = api.upstreamUrl ?? api.baseUrl;
-  shell = await startShell({ upstream: rustUrl, env: { CORS_ALLOWED_ORIGINS: ORIGIN } });
+  shell = await startShell({ upstream: rustUrl, env: { NODE_API_PORTED: PORTED, CORS_ALLOWED_ORIGINS: ORIGIN } });
   const rows = await queryJson(
     "SELECT id FROM users WHERE tenant_id = $1 AND role = 'learner' ORDER BY id LIMIT 2",
     [TENANT],
