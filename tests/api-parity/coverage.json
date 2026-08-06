@@ -3,7 +3,7 @@
   "scope": "specs/api-parity-suite/plan.md option B (approved 2026-07-31)",
   "totals": {
     "ported": 36,
-    "mechanical-remainder": 50,
+    "mechanical-remainder": 51,
     "deferred-to-phase-7": 10
   },
   "tests": [
@@ -579,6 +579,12 @@
       "rustLine": 4229,
       "status": "mechanical-remainder",
       "reason": "P5.3 redaction test. Constructs ApiError::Database directly with a real Postgres unique-violation message, because a dead pool yields PoolTimedOut and can never reach that variant. Pins that a learner's email address in a constraint DETAIL is not returned to the caller. No HTTP surface to port."
+    },
+    {
+      "rustTest": "a_finding_becomes_visible_to_the_learner_only_when_a_teacher_accepts_it",
+      "rustLine": 5344,
+      "status": "mechanical-remainder",
+      "reason": "P6.1 journey test. Watches ONE finding cross the teacher-review boundary through the API — withheld before, readable after an acceptance, still withheld after a rejection. Not an A/B probe: the assertion is on the learner's view at three points in time, and each observation mutates state the next one reads, which the byte differ cannot express."
     }
   ]
 }
