@@ -433,6 +433,19 @@ export async function listTajweedFindings(req, reply, ctx) {
 
   requireAnyRole(actor, ["teacher", "scholar", "admin", "ops"]);
 
+  // `offset` reaches SQL, so it is parsed STRICTLY rather than coerced — a string, a negative or a
+  // float is a clean 400 naming the parameter. Mirrors the same parse in handlers/review.rs.
+  const rawOffset = req.query.offset;
+  let offset = 0;
+  if (rawOffset !== undefined) {
+    // Number("") is 0 and Number("1.5") is 1.5: both would otherwise slip through a bare Number().
+    offset = /^\d+$/.test(String(rawOffset)) ? Number(rawOffset) : NaN;
+    if (!Number.isSafeInteger(offset) || offset < 0) {
+      throw new ApiError("offset must be a non-negative integer", 400);
+    }
+  }
+
+  let totalAwaiting = 0;
   const body = await ctx.db.withTenant(actor.tenantId, async (tx) => {
     const rows = await tx`
       SELECT tf.id, tf.alignment_id, wa.word_id, wa.transcript_source, tf.analysis_basis,
@@ -479,7 +492,15 @@ export async function listTajweedFindings(req, reply, ctx) {
       -- tf.id still breaks ties: started_at is not unique across a session's findings.
       ORDER BY (tf.review_status IN ('teacher-reviewed', 'blocked', 'scholar-approved')),
                rs.started_at ASC NULLS FIRST, tf.id
-      LIMIT 200`;
+      LIMIT 200 OFFSET ${offset}`;
+
+    // How deep the queue actually is — a HEADER, not a wrapper object, because the response has
+    // always been a bare array and every client reads it that way.
+    const [{ total }] = await tx`
+      SELECT count(*)::int AS total FROM tajweed_findings
+      WHERE tenant_id = ${actor.tenantId}
+        AND review_status NOT IN ('teacher-reviewed', 'blocked', 'scholar-approved')`;
+    totalAwaiting = total;
 
     return rows.map((r) => ({
       // json! keys, alphabetical.
@@ -505,5 +526,5 @@ export async function listTajweedFindings(req, reply, ctx) {
     }));
   });
 
-  return reply.send(body);
+  return reply.header("x-total-awaiting", String(totalAwaiting)).send(body);
 }

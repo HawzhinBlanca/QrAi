@@ -712,3 +712,93 @@ test("the queue is truncated and nothing on the wire says so — a recorded gap"
   // Printed, not asserted: the point is that the number is knowable from the gate.
   console.log(`    note: ${awaiting} findings await review; this route returns at most 200 and says nothing about the rest`);
 });
+
+// ── The queue was traversable only to its first page ──────────────────────────────────────────────
+//
+// `LIMIT 200` with no offset means a queue deeper than 200 has findings NO teacher can reach,
+// whatever the order. Reordering (the previous iteration) changed WHO was unreachable — from
+// "everything that needs review" to "the most recent arrivals" — it did not remove the cap.
+// Measured: 1986 findings awaiting review, 200 reachable, and nothing on the wire said so.
+//
+// `offset` makes the rest reachable; `x-total-awaiting` makes the depth visible without changing the
+// response from an array to an object, which would break every existing client. Both implementations
+// must agree, and the A/B compares headers, so the count is parity-checked too.
+
+test("the queue is traversable past its first page", async () => {
+  const [{ awaiting }] = await queryJson(
+    `SELECT count(*)::int AS awaiting FROM tajweed_findings
+     WHERE tenant_id = $1 AND review_status NOT IN ('teacher-reviewed','blocked','scholar-approved')`,
+    [TENANT],
+  );
+  if (awaiting <= 200) {
+    assert.ok(true, `SKIP — only ${awaiting} findings await review, so there is no second page here`);
+    return;
+  }
+
+  for (const [impl, base] of [["shell", shell.baseUrl], ["rust", api.baseUrl]]) {
+    const page1 = await request(base, "/v1/tajweed-findings", { role: "teacher" });
+    const page2 = await request(base, "/v1/tajweed-findings?offset=200", { role: "teacher" });
+    assert.equal(page1.status, 200, `${impl}: ${page1.text}`);
+    assert.equal(page2.status, 200, `${impl}: ${page2.text}`);
+
+    assert.ok(page2.body.length > 0, `${impl}: offset=200 returned nothing; the queue is still capped`);
+    const first = new Set(page1.body.map((f) => f.id));
+    const overlap = page2.body.filter((f) => first.has(f.id));
+    assert.deepEqual(
+      overlap.map((f) => f.id),
+      [],
+      `${impl}: page 2 repeats ${overlap.length} finding(s) from page 1 — a teacher would review the ` +
+        "same work twice and still never reach the end",
+    );
+  }
+});
+
+test("the queue says how deep it is, so truncation is not silent", async () => {
+  const [{ awaiting }] = await queryJson(
+    `SELECT count(*)::int AS awaiting FROM tajweed_findings
+     WHERE tenant_id = $1 AND review_status NOT IN ('teacher-reviewed','blocked','scholar-approved')`,
+    [TENANT],
+  );
+
+  for (const [impl, base] of [["shell", shell.baseUrl], ["rust", api.baseUrl]]) {
+    const res = await request(base, "/v1/tajweed-findings", { role: "teacher" });
+    const total = res.headers.get("x-total-awaiting");
+    assert.ok(total !== null, `${impl}: no x-total-awaiting header — the page size still hides the depth`);
+    assert.equal(
+      Number(total),
+      awaiting,
+      `${impl}: the header says ${total} awaiting; the database says ${awaiting}`,
+    );
+  }
+});
+
+test("a hostile offset is refused, not coerced into something", async () => {
+  // `offset` reaches SQL. A string, a negative, or a float must be a clean refusal rather than a
+  // value the driver decides how to interpret.
+  for (const [impl, base] of [["shell", shell.baseUrl], ["rust", api.baseUrl]]) {
+    // The last three are the ones that DISTINGUISH a strict parse from `Number()`. A mutation
+    // replacing the digits-only test with a bare `Number(rawOffset)` ran GREEN against the first
+    // five, because `Number.isSafeInteger` already rejects NaN, negatives, fractions and Infinity.
+    // `Number("0x10")` is 16, `Number(" 5 ")` is 5 and `Number("+5")` is 5 — all silently accepted,
+    // none of them something a caller should be able to write. Rust's `parse::<i64>()` refuses all
+    // three, so without these the two implementations could drift apart unnoticed.
+    for (const bad of [
+      "abc",
+      "-1",
+      "1.5",
+      "1e9999",
+      "'; DROP TABLE tajweed_findings; --",
+      "0x10",
+      " 5 ",
+      "+5",
+    ]) {
+      const res = await request(base, `/v1/tajweed-findings?offset=${encodeURIComponent(bad)}`, {
+        role: "teacher",
+      });
+      assert.ok(
+        res.status === 400 || res.status === 422,
+        `${impl}: offset=${JSON.stringify(bad)} answered ${res.status}, not a refusal`,
+      );
+    }
+  }
+});

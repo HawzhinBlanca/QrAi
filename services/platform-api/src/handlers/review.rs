@@ -558,7 +558,8 @@ pub async fn list_tajweed_findings(
     State(state): State<AppState>,
     method: axum::http::Method,
     headers: HeaderMap,
-) -> Result<Json<Vec<serde_json::Value>>, ApiError> {
+    axum::extract::Query(query): axum::extract::Query<std::collections::HashMap<String, String>>,
+) -> Result<(HeaderMap, Json<Vec<serde_json::Value>>), ApiError> {
     let actor = crate::auth::resolve_actor(&method, &headers, &state).await?;
     actor.require_any(&[
         ActorRole::Teacher,
@@ -566,6 +567,27 @@ pub async fn list_tajweed_findings(
         ActorRole::Admin,
         ActorRole::Ops,
     ])?;
+
+    // `offset` reaches SQL, so it is parsed STRICTLY rather than coerced. A string, a negative or a
+    // float is a clean 400 naming the parameter — not a value the driver decides how to interpret.
+    // The page size stays 200; what changes is that the rest of the queue is now reachable at all.
+    let offset: i64 = match query.get("offset") {
+        None => 0,
+        // DIGITS ONLY, checked before `parse`. Rust's integer parser accepts a leading `+`, so
+        // `+5` parsed to 5 here while the port's digits-only test refused it — a divergence a
+        // strengthened hostile-input case found. `+` is also the query-string encoding for a space,
+        // so `?offset=+5` is genuinely ambiguous about whether it ever meant 5; refusing it is the
+        // only reading both implementations can share.
+        Some(raw) => raw
+            .chars()
+            .all(|c| c.is_ascii_digit())
+            .then(|| raw.parse::<i64>().ok())
+            .flatten()
+            .filter(|n| *n >= 0 && !raw.is_empty())
+            .ok_or_else(|| {
+                ApiError::BadRequest("offset must be a non-negative integer".to_owned())
+            })?,
+    };
 
     let mut tx = crate::begin_tenant_tx(&state.pool, &actor.tenant_id).await?;
 
@@ -624,10 +646,24 @@ pub async fn list_tajweed_findings(
          -- ORDER BY feeding a LIMIT needs a unique tiebreaker to be reproducible.
          ORDER BY (tf.review_status IN ('teacher-reviewed', 'blocked', 'scholar-approved')),
                   rs.started_at ASC NULLS FIRST, tf.id
-         LIMIT 200",
+         LIMIT 200 OFFSET $2",
     )
     .bind(&actor.tenant_id)
+    .bind(offset)
     .fetch_all(&mut *tx)
+    .await?;
+
+    // How deep the queue actually is. Returned as a HEADER rather than by wrapping the array in an
+    // object: the response has always been a bare array, and every client reads it that way. A
+    // teacher seeing 200 rows had no way to tell whether that was the whole queue or the first ten
+    // per cent of it — measured at the time of writing, 1986 awaited review.
+    let total_awaiting: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM tajweed_findings
+         WHERE tenant_id = $1
+           AND review_status NOT IN ('teacher-reviewed', 'blocked', 'scholar-approved')",
+    )
+    .bind(&actor.tenant_id)
+    .fetch_one(&mut *tx)
     .await?;
 
     let out = rows
@@ -680,7 +716,15 @@ pub async fn list_tajweed_findings(
 
     tx.commit().await?;
 
-    Ok(Json(out))
+    let mut out_headers = HeaderMap::new();
+    out_headers.insert(
+        "x-total-awaiting",
+        total_awaiting
+            .to_string()
+            .parse()
+            .unwrap_or_else(|_| axum::http::HeaderValue::from_static("0")),
+    );
+    Ok((out_headers, Json(out)))
 }
 
 /// `GET /v1/recitation-sessions/{id}/tajweed-findings` — a learner's own reviewed feedback.
