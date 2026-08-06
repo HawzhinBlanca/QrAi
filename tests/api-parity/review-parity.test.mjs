@@ -20,11 +20,27 @@ import { TENANT, queryJson, request, startApi, startShell } from "./lib/harness.
 
 let api;
 let shell;
+/**
+ * The RUST url, which is not `rustUrl`.
+ *
+ * Under `PARITY_THROUGH_SHELL=1` — the configuration in which this file's A/B is the only thing that
+ * proves anything about the port — `startApi` puts a Node shell in front of the binary and returns
+ * the SHELL as `baseUrl`, exposing Rust as `upstreamUrl`. Wiring `startShell({ upstream:
+ * rustUrl })` and differing against `rustUrl` therefore put Node on BOTH sides of every
+ * `assertAB`: a shell in front of a shell, compared with that inner shell. Identical code cannot
+ * disagree with itself, so the probes passed by construction.
+ *
+ * Measured before this was fixed: a `NODE_ONLY_FIELD` added to Node's `listSurahs` response — a
+ * divergence a byte comparison cannot miss — left `assertAB` GREEN in both verify.sh passes. What
+ * caught it was a literal key-list assertion beside the probe, which is not a comparison at all.
+ */
+let rustUrl;
 let findingId;
 
 before(async () => {
   api = await startApi({});
-  shell = await startShell({ upstream: api.baseUrl });
+  rustUrl = api.upstreamUrl ?? api.baseUrl;
+  shell = await startShell({ upstream: rustUrl });
   const [f] = await queryJson(
     "SELECT id FROM tajweed_findings WHERE tenant_id = $1 ORDER BY id LIMIT 1",
     [TENANT],
@@ -54,19 +70,19 @@ const approvalBody = (overrides = {}) => ({
 
 test("GET /v1/tajweed-findings is byte-identical for every role", async () => {
   for (const role of ROLES) {
-    await assertAB(shell.baseUrl, api.baseUrl, { path: "/v1/tajweed-findings", role });
+    await assertAB(shell.baseUrl, rustUrl, { path: "/v1/tajweed-findings", role });
   }
 });
 
 test("GET /v1/teacher-review-queue is byte-identical for every role", async () => {
   for (const role of ROLES) {
-    await assertAB(shell.baseUrl, api.baseUrl, { path: "/v1/teacher-review-queue", role });
+    await assertAB(shell.baseUrl, rustUrl, { path: "/v1/teacher-review-queue", role });
   }
 });
 
 test("GET /v1/scholar-approvals is byte-identical for every role", async () => {
   for (const role of ROLES) {
-    await assertAB(shell.baseUrl, api.baseUrl, { path: "/v1/scholar-approvals", role });
+    await assertAB(shell.baseUrl, rustUrl, { path: "/v1/scholar-approvals", role });
   }
 });
 
@@ -90,7 +106,7 @@ test("the three read routes have THREE different role lists", async () => {
 test("a teacher may READ approvals but not CREATE one", async () => {
   // …and this is the asymmetry that makes it worth stating: the read list includes teacher, the
   // create list does not.
-  const { shell: s } = await assertABMutating(shell.baseUrl, api.baseUrl, {
+  const { shell: s } = await assertABMutating(shell.baseUrl, rustUrl, {
     name: "teacher creates a scholar approval",
     probeFor: () => ({
       path: "/v1/scholar-approvals",
@@ -194,7 +210,7 @@ test("scholar-approved with NO sources is 400, and writes nothing", async () => 
     [TENANT],
   );
 
-  const { shell: s } = await assertABMutating(shell.baseUrl, api.baseUrl, {
+  const { shell: s } = await assertABMutating(shell.baseUrl, rustUrl, {
     name: "approve with no sources",
     probeFor: () => ({
       path: "/v1/scholar-approvals",
@@ -220,7 +236,7 @@ test("scholar-approved at HIGH risk is 400, and writes nothing", async () => {
     [TENANT],
   );
 
-  const { shell: s } = await assertABMutating(shell.baseUrl, api.baseUrl, {
+  const { shell: s } = await assertABMutating(shell.baseUrl, rustUrl, {
     name: "approve high-risk content",
     probeFor: () => ({
       path: "/v1/scholar-approvals",
@@ -242,7 +258,7 @@ test("scholar-approved at HIGH risk is 400, and writes nothing", async () => {
 
 test("the two refusals apply ONLY to scholar-approved — draft and blocked are unaffected", async () => {
   for (const status of ["draft", "blocked"]) {
-    const { shell: s } = await assertABMutating(shell.baseUrl, api.baseUrl, {
+    const { shell: s } = await assertABMutating(shell.baseUrl, rustUrl, {
       name: `${status} with no sources at high risk`,
       probeFor: () => ({
         path: "/v1/scholar-approvals",
@@ -258,7 +274,7 @@ test("the two refusals apply ONLY to scholar-approved — draft and blocked are 
 });
 
 test("when BOTH refusals apply, the SOURCES message wins — the order is contract", async () => {
-  const { shell: s } = await assertABMutating(shell.baseUrl, api.baseUrl, {
+  const { shell: s } = await assertABMutating(shell.baseUrl, rustUrl, {
     name: "approve high-risk with no sources",
     probeFor: () => ({
       path: "/v1/scholar-approvals",
@@ -352,7 +368,7 @@ test("a teacher review is attributed to the caller, and needs a REAL finding", a
 });
 
 test("reviewing a nonexistent finding is 404, not a 500 from the FK", async () => {
-  const { shell: s } = await assertABMutating(shell.baseUrl, api.baseUrl, {
+  const { shell: s } = await assertABMutating(shell.baseUrl, rustUrl, {
     name: "review a nonexistent finding",
     probeFor: () => ({
       path: "/v1/teacher-reviews",
@@ -368,7 +384,7 @@ test("reviewing a nonexistent finding is 404, not a 500 from the FK", async () =
 test("creating a teacher review is teacher/admin/ops — every other role is refused identically",
   async () => {
     for (const role of ["learner", "scholar", "teacher", "admin", "ops"]) {
-      await assertABMutating(shell.baseUrl, api.baseUrl, {
+      await assertABMutating(shell.baseUrl, rustUrl, {
         name: `teacher review as ${role}`,
         probeFor: () => ({
           path: "/v1/teacher-reviews",
@@ -406,7 +422,7 @@ test("creating a teacher review is teacher/admin/ops — every other role is ref
 const AUDIO_STATUSES = ["available", "discarded", "not-captured", "unknown"];
 
 test("every finding says whether its audio can be heard, and both implementations agree", async () => {
-  for (const [impl, base] of [["shell", shell.baseUrl], ["rust", api.baseUrl]]) {
+  for (const [impl, base] of [["shell", shell.baseUrl], ["rust", rustUrl]]) {
     const res = await request(base, "/v1/tajweed-findings", { role: "teacher" });
     assert.equal(res.status, 200, `${impl}: ${res.text}`);
     if (res.body.length === 0) continue;
@@ -460,7 +476,7 @@ test("a finding whose consent said discard says so — not silence", async () =>
 test("the route is teacher-and-above, within tenant — a learner cannot read it", async () => {
   // The access rule this field was built under. Asserted here rather than assumed from the matrix,
   // because it is the rule that decides who may be told a recording exists at all.
-  for (const [impl, base] of [["shell", shell.baseUrl], ["rust", api.baseUrl]]) {
+  for (const [impl, base] of [["shell", shell.baseUrl], ["rust", rustUrl]]) {
     assert.equal(
       (await request(base, "/v1/tajweed-findings", { role: "learner" })).status,
       403,
@@ -585,7 +601,7 @@ test("a decided finding never outranks one still awaiting review", async () => {
     startedAtSql: "now() - interval '19 years'",
   });
 
-  for (const [impl, base] of [["shell", shell.baseUrl], ["rust", api.baseUrl]]) {
+  for (const [impl, base] of [["shell", shell.baseUrl], ["rust", rustUrl]]) {
     const res = await request(base, "/v1/tajweed-findings", { role: "teacher" });
     assert.equal(res.status, 200, `${impl}: ${res.text}`);
     const ids = res.body.map((f) => f.id);
@@ -622,7 +638,7 @@ test("zero confidence does not change a finding's place in the queue", async () 
     startedAtSql: "now() - interval '17 years'",
   });
 
-  for (const [impl, base] of [["shell", shell.baseUrl], ["rust", api.baseUrl]]) {
+  for (const [impl, base] of [["shell", shell.baseUrl], ["rust", rustUrl]]) {
     const ids = (await request(base, "/v1/tajweed-findings", { role: "teacher" })).body.map((f) => f.id);
     assert.ok(ids.includes(older), `${impl}: the zero-confidence finding is missing from the queue`);
     assert.ok(
@@ -662,7 +678,7 @@ test("the page is exactly the longest-waiting awaiting findings — not a confid
     [TENANT],
   );
 
-  for (const [impl, base] of [["shell", shell.baseUrl], ["rust", api.baseUrl]]) {
+  for (const [impl, base] of [["shell", shell.baseUrl], ["rust", rustUrl]]) {
     const res = await request(base, "/v1/tajweed-findings", { role: "teacher" });
     assert.deepEqual(
       res.body.map((f) => f.id),
@@ -735,7 +751,7 @@ test("the queue is traversable past its first page", async () => {
     return;
   }
 
-  for (const [impl, base] of [["shell", shell.baseUrl], ["rust", api.baseUrl]]) {
+  for (const [impl, base] of [["shell", shell.baseUrl], ["rust", rustUrl]]) {
     const page1 = await request(base, "/v1/tajweed-findings", { role: "teacher" });
     const page2 = await request(base, "/v1/tajweed-findings?offset=200", { role: "teacher" });
     assert.equal(page1.status, 200, `${impl}: ${page1.text}`);
@@ -760,7 +776,7 @@ test("the queue says how deep it is, so truncation is not silent", async () => {
     [TENANT],
   );
 
-  for (const [impl, base] of [["shell", shell.baseUrl], ["rust", api.baseUrl]]) {
+  for (const [impl, base] of [["shell", shell.baseUrl], ["rust", rustUrl]]) {
     const res = await request(base, "/v1/tajweed-findings", { role: "teacher" });
     const total = res.headers.get("x-total-awaiting");
     assert.ok(total !== null, `${impl}: no x-total-awaiting header — the page size still hides the depth`);
@@ -775,7 +791,7 @@ test("the queue says how deep it is, so truncation is not silent", async () => {
 test("a hostile offset is refused, not coerced into something", async () => {
   // `offset` reaches SQL. A string, a negative, or a float must be a clean refusal rather than a
   // value the driver decides how to interpret.
-  for (const [impl, base] of [["shell", shell.baseUrl], ["rust", api.baseUrl]]) {
+  for (const [impl, base] of [["shell", shell.baseUrl], ["rust", rustUrl]]) {
     // The last three are the ones that DISTINGUISH a strict parse from `Number()`. A mutation
     // replacing the digits-only test with a bare `Number(rawOffset)` ran GREEN against the first
     // five, because `Number.isSafeInteger` already rejects NaN, negatives, fractions and Infinity.

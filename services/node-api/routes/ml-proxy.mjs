@@ -118,6 +118,19 @@ function redactWithheldFindings(result) {
   }
 }
 
+/**
+ * The caller's trace, exactly as `extract_trace_id` (auth.rs:311) reads it: trimmed, and absent when
+ * empty. Not `req.headers["x-trace-id"] ?? null` — the other Node routes use that, but here the value
+ * crosses into another service's audit record, and " " forwarded as a trace is a trace that joins
+ * nothing while looking like it does.
+ */
+function callerTrace(req) {
+  const raw = req.headers["x-trace-id"];
+  if (typeof raw !== "string") return null;
+  const trimmed = raw.trim();
+  return trimmed === "" ? null : trimmed;
+}
+
 /** The shared ML path — `proxy_ml` (ml_proxy.rs:19). */
 async function proxyMl(req, reply, ctx, label, path) {
   const resolved = await resolveActor(req, ctx);
@@ -138,6 +151,16 @@ async function proxyMl(req, reply, ctx, label, path) {
 
   // Server-authoritative tenant: ignore whatever the client claimed.
   const forwarded = { ...body, tenantId: actor.tenantId };
+
+  // The trace has to cross the boundary or the two audit trails cannot be joined (P5.3). This
+  // service audits the trace from `x-trace-id`; ml-inference audits `requestBody.traceId`. The
+  // forward carried neither, so one side recorded the caller's trace, the other recorded null, and
+  // "which ML call produced this finding" had no answer.
+  //
+  // Overwritten rather than defaulted, exactly like `tenantId` above: a caller who can set
+  // `traceId` in the body can make the two services disagree about their own audit trail.
+  const trace = callerTrace(req);
+  if (trace !== null) forwarded.traceId = trace;
 
   if (typeof body.sessionId === "string") {
     const row = await ctx.db.withTenant(actor.tenantId, async (tx) => {
@@ -192,12 +215,20 @@ async function proxyAsr(req, reply, ctx, label, path) {
 
   // Authentication alone is the control here, and that is deliberate: there is no tenantId to
   // override because transcribe/force-align perform no tenant-scoped writes — they return
-  // recognized text and timestamps. The body is forwarded UNCHANGED.
+  // recognized text and timestamps. The body is otherwise forwarded unchanged — except for the
+  // trace, without which the ASR service audits null while this one audits the caller's, and the
+  // two records of the same audio cannot be joined.
+  const trace = callerTrace(req);
+  const body =
+    trace !== null && req.body !== null && typeof req.body === "object" && !Array.isArray(req.body)
+      ? { ...req.body, traceId: trace }
+      : req.body;
+
   const result = await forward({
     url: `${ctx.asrInferenceUrl}${path}`,
     keyHeader: "x-asr-api-key",
     keyValue: ctx.asrApiKey,
-    body: req.body,
+    body,
     label,
     service: "ASR",
   });

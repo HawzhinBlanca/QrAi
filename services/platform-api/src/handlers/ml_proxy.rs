@@ -62,6 +62,21 @@ async fn proxy_ml(
         serde_json::Value::String(actor.tenant_id.clone()),
     );
 
+    // ── The trace has to cross the boundary, or the two audit trails cannot be joined (P5.3) ────
+    // Both services audit a trace: this one takes it from `x-trace-id` and writes it into
+    // `audit_events.metadata.trace_id`; ml-inference takes it from `requestBody.traceId` and writes
+    // it into its own log. The forward used to carry content-type, the API key and content-length,
+    // and nothing else — so this service recorded the caller's trace, ml-inference recorded null,
+    // and "which ML call produced this finding" had no answer on the one path where a learner's
+    // audio meets a model.
+    //
+    // Overwritten rather than defaulted, exactly like `tenantId` above: `traceId` in the body is
+    // caller-controlled, and a caller able to set it could make the two services disagree about
+    // their own audit trail.
+    if let Some(trace) = crate::auth::extract_trace_id(headers) {
+        obj.insert("traceId".to_owned(), serde_json::Value::String(trace));
+    }
+
     // Server-authoritative CONSENT. The ML service (services/ml-inference) decides external-ASR and
     // child-safety gating from the request body's `consent` object — so a client that re-supplies
     // `consent: { guardianApproved: true, externalAsrProcessing: true }` on an analysis request could
@@ -546,7 +561,14 @@ async fn proxy_asr(
     body: JsonBody<serde_json::Value>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
     crate::auth::resolve_actor(method, headers, state).await?;
-    let Json(body) = body?;
+    let Json(mut body) = body?;
+
+    // Same as the ML proxy: without this the ASR service audits a null trace while this one audits
+    // the caller's, and the two records of the same audio cannot be joined.
+    if let (Some(obj), Some(trace)) = (body.as_object_mut(), crate::auth::extract_trace_id(headers))
+    {
+        obj.insert("traceId".to_owned(), serde_json::Value::String(trace));
+    }
 
     let response = state
         .http_client

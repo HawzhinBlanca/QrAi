@@ -33,10 +33,26 @@ const KEY = new TextEncoder().encode(JWT_SECRET);
 
 let api;
 let shell;
+/**
+ * The RUST url, which is not `rustUrl`.
+ *
+ * Under `PARITY_THROUGH_SHELL=1` — the configuration in which this file's A/B is the only thing that
+ * proves anything about the port — `startApi` puts a Node shell in front of the binary and returns
+ * the SHELL as `baseUrl`, exposing Rust as `upstreamUrl`. Wiring `startShell({ upstream:
+ * rustUrl })` and differing against `rustUrl` therefore put Node on BOTH sides of every
+ * `assertAB`: a shell in front of a shell, compared with that inner shell. Identical code cannot
+ * disagree with itself, so the probes passed by construction.
+ *
+ * Measured before this was fixed: a `NODE_ONLY_FIELD` added to Node's `listSurahs` response — a
+ * divergence a byte comparison cannot miss — left `assertAB` GREEN in both verify.sh passes. What
+ * caught it was a literal key-list assertion beside the probe, which is not a comparison at all.
+ */
+let rustUrl;
 
 before(async () => {
   api = await startApi({});
-  shell = await startShell({ upstream: api.baseUrl });
+  rustUrl = api.upstreamUrl ?? api.baseUrl;
+  shell = await startShell({ upstream: rustUrl });
 });
 
 after(async () => {
@@ -97,13 +113,13 @@ test("a token minted by EITHER implementation is accepted by the OTHER", async (
 
   const fromShell = (await request(shell.baseUrl, "/v1/auth/token", { method: "POST", ...admin, body }))
     .body.token;
-  const fromRust = (await request(api.baseUrl, "/v1/auth/token", { method: "POST", ...admin, body }))
+  const fromRust = (await request(rustUrl, "/v1/auth/token", { method: "POST", ...admin, body }))
     .body.token;
   assert.ok(fromShell && fromRust);
 
   // Cross-verify by USING each token as a credential against the other service.
   for (const [label, token, baseUrl] of [
-    ["shell-minted token -> rust", fromShell, api.baseUrl],
+    ["shell-minted token -> rust", fromShell, rustUrl],
     ["rust-minted token -> shell", fromRust, shell.baseUrl],
   ]) {
     const res = await request(baseUrl, "/v1/learner/progress", {
@@ -118,7 +134,7 @@ test("a token minted by EITHER implementation is accepted by the OTHER", async (
 test("only admin and ops may mint — every other role is refused identically", async () => {
   const learner = await anyLearner();
   for (const role of ["learner", "teacher", "scholar", "admin", "ops"]) {
-    await assertABMutating(shell.baseUrl, api.baseUrl, {
+    await assertABMutating(shell.baseUrl, rustUrl, {
       name: `mint as ${role}`,
       probeFor: () => ({
         path: "/v1/auth/token",
@@ -137,7 +153,7 @@ test("only admin and ops may mint — every other role is refused identically", 
 
 test("minting ACROSS tenants is 403, not a silent cross-tenant token", async () => {
   const learner = await anyLearner();
-  await assertABMutating(shell.baseUrl, api.baseUrl, {
+  await assertABMutating(shell.baseUrl, rustUrl, {
     name: "admin of tenant A mints for tenant B",
     probeFor: () => ({
       path: "/v1/auth/token",
@@ -150,7 +166,7 @@ test("minting ACROSS tenants is 403, not a silent cross-tenant token", async () 
 });
 
 test("an unknown user is 401 — NOT 404, which would confirm the id does not exist", async () => {
-  const { shell: s } = await assertABMutating(shell.baseUrl, api.baseUrl, {
+  const { shell: s } = await assertABMutating(shell.baseUrl, rustUrl, {
     name: "mint for a nonexistent user",
     probeFor: () => ({
       path: "/v1/auth/token",
@@ -165,7 +181,7 @@ test("an unknown user is 401 — NOT 404, which would confirm the id does not ex
 
 test("a role that disagrees with the stored row is 403 — the request cannot promote a user", async () => {
   const learner = await anyLearner();
-  const { shell: s } = await assertABMutating(shell.baseUrl, api.baseUrl, {
+  const { shell: s } = await assertABMutating(shell.baseUrl, rustUrl, {
     name: "mint a learner an admin token",
     probeFor: () => ({
       path: "/v1/auth/token",
@@ -205,7 +221,7 @@ test("the audit event records the CALLER as actor and the target as subject", as
 
 test("a malformed body is rejected with the same status on both", async () => {
   for (const body of [{}, { userId: "x" }, { userId: "x", tenantId: TENANT }, { userId: 1, tenantId: 2, role: 3 }]) {
-    await assertABMutating(shell.baseUrl, api.baseUrl, {
+    await assertABMutating(shell.baseUrl, rustUrl, {
       name: `malformed ${JSON.stringify(body)}`,
       probeFor: () => ({ path: "/v1/auth/token", method: "POST", ...admin, body }),
       // Rust's 422 body is serde's own error text with line/column offsets — a recorded, unfixed
@@ -216,7 +232,7 @@ test("a malformed body is rejected with the same status on both", async () => {
 });
 
 test("an unauthenticated request cannot mint", async () => {
-  await assertAB(shell.baseUrl, api.baseUrl, {
+  await assertAB(shell.baseUrl, rustUrl, {
     path: "/v1/auth/token",
     method: "POST",
     tenant: null,

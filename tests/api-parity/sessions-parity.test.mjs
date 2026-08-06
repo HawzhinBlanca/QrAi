@@ -21,11 +21,27 @@ import { TENANT, queryJson, request, startApi, startShell } from "./lib/harness.
 
 let api;
 let shell;
+/**
+ * The RUST url, which is not `rustUrl`.
+ *
+ * Under `PARITY_THROUGH_SHELL=1` — the configuration in which this file's A/B is the only thing that
+ * proves anything about the port — `startApi` puts a Node shell in front of the binary and returns
+ * the SHELL as `baseUrl`, exposing Rust as `upstreamUrl`. Wiring `startShell({ upstream:
+ * rustUrl })` and differing against `rustUrl` therefore put Node on BOTH sides of every
+ * `assertAB`: a shell in front of a shell, compared with that inner shell. Identical code cannot
+ * disagree with itself, so the probes passed by construction.
+ *
+ * Measured before this was fixed: a `NODE_ONLY_FIELD` added to Node's `listSurahs` response — a
+ * divergence a byte comparison cannot miss — left `assertAB` GREEN in both verify.sh passes. What
+ * caught it was a literal key-list assertion beside the probe, which is not a comparison at all.
+ */
+let rustUrl;
 let session;
 
 before(async () => {
   api = await startApi({});
-  shell = await startShell({ upstream: api.baseUrl });
+  rustUrl = api.upstreamUrl ?? api.baseUrl;
+  shell = await startShell({ upstream: rustUrl });
   const [row] = await queryJson(
     `SELECT s.id, s.learner_id FROM recitation_sessions s
      WHERE s.tenant_id = $1
@@ -52,7 +68,7 @@ const ROLES = ["learner", "teacher", "scholar", "admin", "ops"];
 
 test("GET /v1/recitation-sessions is byte-identical for every role", async () => {
   for (const role of ROLES) {
-    await assertAB(shell.baseUrl, api.baseUrl, { path: "/v1/recitation-sessions", role });
+    await assertAB(shell.baseUrl, rustUrl, { path: "/v1/recitation-sessions", role });
   }
 });
 
@@ -83,7 +99,7 @@ test("list_sessions keys are ALPHABETICAL — json!, and quranRef is an untyped 
 
 test("GET /v1/recitation-sessions/{id} is byte-identical for every role", async () => {
   for (const role of ROLES) {
-    await assertAB(shell.baseUrl, api.baseUrl, { path: `/v1/recitation-sessions/${session.id}`, role });
+    await assertAB(shell.baseUrl, rustUrl, { path: `/v1/recitation-sessions/${session.id}`, role });
   }
 });
 
@@ -148,14 +164,14 @@ test("the f32 narrowing on session confidence is NOT exercised by this corpus", 
 test("a learner may read their OWN session and is 403 on another learner's", async () => {
   // Ownership is checked AFTER the row is found, so "not yours" is 403 and "does not exist" is 404.
   // Collapsing them would be a small privacy improvement and a behaviour change; it is transcribed.
-  const { shell: own } = await assertAB(shell.baseUrl, api.baseUrl, {
+  const { shell: own } = await assertAB(shell.baseUrl, rustUrl, {
     path: `/v1/recitation-sessions/${session.id}`,
     role: "learner",
     userId: session.learner_id,
   });
   assert.equal(own.status, 200, "the owning learner must be able to read it");
 
-  const { shell: other } = await assertAB(shell.baseUrl, api.baseUrl, {
+  const { shell: other } = await assertAB(shell.baseUrl, rustUrl, {
     path: `/v1/recitation-sessions/${session.id}`,
     role: "learner",
     userId: "learner-someone-else",
@@ -165,7 +181,7 @@ test("a learner may read their OWN session and is 403 on another learner's", asy
 
 test("an unknown session id is 404, identically", async () => {
   for (const id of ["no-such-session", "..%2Fetc", "%20"]) {
-    const { shell: s } = await assertAB(shell.baseUrl, api.baseUrl, {
+    const { shell: s } = await assertAB(shell.baseUrl, rustUrl, {
       path: `/v1/recitation-sessions/${id}`,
       role: "admin",
     });
@@ -175,7 +191,7 @@ test("an unknown session id is 404, identically", async () => {
 
 test("GET /v1/learners/active is byte-identical and NOT truncated", async () => {
   for (const role of ROLES) {
-    await assertAB(shell.baseUrl, api.baseUrl, { path: "/v1/learners/active", role });
+    await assertAB(shell.baseUrl, rustUrl, { path: "/v1/learners/active", role });
   }
   const res = await request(shell.baseUrl, "/v1/learners/active", { role: "admin" });
   assert.equal(res.status, 200);
@@ -194,7 +210,7 @@ test("GET /v1/learners/active is byte-identical and NOT truncated", async () => 
 
 test("GET .../alignments is byte-identical for every role", async () => {
   for (const role of ROLES) {
-    await assertAB(shell.baseUrl, api.baseUrl, {
+    await assertAB(shell.baseUrl, rustUrl, {
       path: `/v1/recitation-sessions/${session.id}/alignments`,
       role,
     });
@@ -204,7 +220,7 @@ test("GET .../alignments is byte-identical for every role", async () => {
 test("alignments: an UNKNOWN session is an empty array, not a 404", async () => {
   // Transcribed, not improved. A 404 here would tell a caller which session ids exist in the
   // tenant, and this endpoint has no ownership check to lean on.
-  const { shell: s } = await assertAB(shell.baseUrl, api.baseUrl, {
+  const { shell: s } = await assertAB(shell.baseUrl, rustUrl, {
     path: "/v1/recitation-sessions/no-such-session/alignments",
     role: "admin",
   });
@@ -287,7 +303,7 @@ test("a consent snapshot that cannot answer yields the MOST RESTRICTIVE consent"
 
   try {
     const path = `/v1/recitation-sessions/${sessionId}`;
-    await assertAB(shell.baseUrl, api.baseUrl, { path, role: "ops" });
+    await assertAB(shell.baseUrl, rustUrl, { path, role: "ops" });
 
     // Absolute, not only A/B. Both implementations defaulting permissively TOGETHER is exactly what
     // happens when someone resolves a divergence by widening the reference, and a comparison cannot

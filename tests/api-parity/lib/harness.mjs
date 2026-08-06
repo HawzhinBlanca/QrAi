@@ -418,6 +418,20 @@ export function uniqueSuffix() {
  * `NODE_API_PORTED` decides which routes the shell serves itself; unset means it proxies everything,
  * which is the configuration N2's acceptance requires the whole existing suite to pass under.
  */
+/**
+ * Every base url in this process that is served by the NODE SHELL rather than by Rust.
+ *
+ * Exists so `assertAB` can refuse to compare an implementation with itself. Under
+ * `PARITY_THROUGH_SHELL=1`, `startApi().baseUrl` IS a shell — so the natural-looking
+ * `assertAB(shell.baseUrl, api.baseUrl, …)` put Node on both sides and passed by construction. That
+ * wiring was in 13 of the 16 parity files and hid a measured `Meccan` vs `MECCAN` divergence in
+ * canonical surah metadata across both verify.sh passes.
+ *
+ * A convention cannot prevent that — the wrong call is the one that reads correctly. A registry the
+ * differ consults can, because the shell registers itself the moment it starts.
+ */
+export const SHELL_URLS = new Set();
+
 export async function startShell({ upstream, env = {}, timeoutMs = 20_000 }) {
   const port = await reservePort();
   const child = spawn(process.execPath, ["services/node-api/server.mjs"], {
@@ -467,6 +481,8 @@ export async function startShell({ upstream, env = {}, timeoutMs = 20_000 }) {
     await sleep(50);
   }
 
+  SHELL_URLS.add(baseUrl);
+
   return {
     baseUrl,
     port,
@@ -474,6 +490,7 @@ export async function startShell({ upstream, env = {}, timeoutMs = 20_000 }) {
       return stderr;
     },
     async stop() {
+      SHELL_URLS.delete(baseUrl);
       if (exited) return;
       child.kill("SIGTERM");
       const hard = Date.now() + 5_000;

@@ -26,6 +26,21 @@ const ORIGIN = "http://localhost:5173";
 
 let api;
 let shell;
+/**
+ * The RUST url, which is not `rustUrl`.
+ *
+ * Under `PARITY_THROUGH_SHELL=1` — the configuration in which this file's A/B is the only thing that
+ * proves anything about the port — `startApi` puts a Node shell in front of the binary and returns
+ * the SHELL as `baseUrl`, exposing Rust as `upstreamUrl`. Wiring `startShell({ upstream:
+ * rustUrl })` and differing against `rustUrl` therefore put Node on BOTH sides of every
+ * `assertAB`: a shell in front of a shell, compared with that inner shell. Identical code cannot
+ * disagree with itself, so the probes passed by construction.
+ *
+ * Measured before this was fixed: a `NODE_ONLY_FIELD` added to Node's `listSurahs` response — a
+ * divergence a byte comparison cannot miss — left `assertAB` GREEN in both verify.sh passes. What
+ * caught it was a literal key-list assertion beside the probe, which is not a comparison at all.
+ */
+let rustUrl;
 
 /**
  * Two REAL seeded learners, looked up rather than named.
@@ -39,7 +54,8 @@ let learners;
 
 before(async () => {
   api = await startApi({ env: { CORS_ALLOWED_ORIGINS: ORIGIN } });
-  shell = await startShell({ upstream: api.baseUrl, env: { CORS_ALLOWED_ORIGINS: ORIGIN } });
+  rustUrl = api.upstreamUrl ?? api.baseUrl;
+  shell = await startShell({ upstream: rustUrl, env: { CORS_ALLOWED_ORIGINS: ORIGIN } });
   const rows = await queryJson(
     "SELECT id FROM users WHERE tenant_id = $1 AND role = 'learner' ORDER BY id LIMIT 2",
     [TENANT],
@@ -55,7 +71,7 @@ after(async () => {
 
 /** Mint an invitation and bootstrap a session THROUGH RUST. Returns { cookie, csrf, learnerId }. */
 async function bootstrapSession(learnerId = learners[0]) {
-  const minted = await request(api.baseUrl, "/v1/pilot/invitations", {
+  const minted = await request(rustUrl, "/v1/pilot/invitations", {
     method: "POST",
     role: "admin",
     body: { learnerId },
@@ -64,7 +80,7 @@ async function bootstrapSession(learnerId = learners[0]) {
   const inviteToken = minted.body.token ?? minted.body.inviteToken;
   assert.ok(inviteToken, `no invite token in ${JSON.stringify(minted.body)}`);
 
-  const booted = await request(api.baseUrl, "/v1/pilot/session/bootstrap", {
+  const booted = await request(rustUrl, "/v1/pilot/session/bootstrap", {
     method: "POST",
     tenant: null,
     headers: { origin: ORIGIN },
@@ -83,7 +99,7 @@ const asPilot = (cookie, extra = {}) => ({
 
 test("a valid pilot cookie resolves to the learner, identically on both", async () => {
   const { cookie, learnerId } = await bootstrapSession();
-  const { shell: s } = await assertAB(shell.baseUrl, api.baseUrl, {
+  const { shell: s } = await assertAB(shell.baseUrl, rustUrl, {
     path: "/v1/learner/progress",
     ...asPilot(cookie),
   });
@@ -96,7 +112,7 @@ test("a cookie resolves the LEARNER role — it cannot reach a staff-only route"
   const { cookie } = await bootstrapSession();
   // A pilot session is always ActorRole::Learner. If the port defaulted to any other role this
   // would become a privilege escalation with a cookie anyone can obtain from an invitation.
-  const { shell: s } = await assertAB(shell.baseUrl, api.baseUrl, {
+  const { shell: s } = await assertAB(shell.baseUrl, rustUrl, {
     path: "/v1/audit-events",
     ...asPilot(cookie),
   });
@@ -105,7 +121,7 @@ test("a cookie resolves the LEARNER role — it cannot reach a staff-only route"
 
 test("a garbage cookie value is refused, not crashed on", async () => {
   for (const value of ["__Host-qrai-pilot=nonsense", "__Host-qrai-pilot=", "__Host-qrai-pilot=%00"]) {
-    const { shell: s } = await assertAB(shell.baseUrl, api.baseUrl, {
+    const { shell: s } = await assertAB(shell.baseUrl, rustUrl, {
       path: "/v1/learner/progress",
       ...asPilot(value),
     });
@@ -120,7 +136,7 @@ test("the pilot cookie is found among OTHER cookies, with and without spaces", a
     `theme=dark;${cookie};lang=ckb`,
     `${cookie}; theme=dark`,
   ]) {
-    const { shell: s } = await assertAB(shell.baseUrl, api.baseUrl, {
+    const { shell: s } = await assertAB(shell.baseUrl, rustUrl, {
       path: "/v1/learner/progress",
       ...asPilot(header),
     });
@@ -134,7 +150,7 @@ test("a cookie whose NAME merely contains the prefix is not mistaken for it", as
   // the cookie boundary accepts it, and the value is attacker-chosen.
   const { cookie } = await bootstrapSession();
   const forged = `x${cookie}`;
-  const { shell: s } = await assertAB(shell.baseUrl, api.baseUrl, {
+  const { shell: s } = await assertAB(shell.baseUrl, rustUrl, {
     path: "/v1/learner/progress",
     ...asPilot(forged),
   });
@@ -147,7 +163,7 @@ const postBody = { quality: 4, ayahRef: "2:1" };
 
 test("a mutating request with NO Origin is 403 — before CSRF is even considered", async () => {
   const { cookie, csrf } = await bootstrapSession();
-  const { shell: s } = await assertAB(shell.baseUrl, api.baseUrl, {
+  const { shell: s } = await assertAB(shell.baseUrl, rustUrl, {
     path: "/v1/learner/progress",
     method: "POST",
     body: postBody,
@@ -158,7 +174,7 @@ test("a mutating request with NO Origin is 403 — before CSRF is even considere
 
 test("a mutating request from a DISALLOWED Origin is 403", async () => {
   const { cookie, csrf } = await bootstrapSession();
-  const { shell: s } = await assertAB(shell.baseUrl, api.baseUrl, {
+  const { shell: s } = await assertAB(shell.baseUrl, rustUrl, {
     path: "/v1/learner/progress",
     method: "POST",
     body: postBody,
@@ -169,7 +185,7 @@ test("a mutating request from a DISALLOWED Origin is 403", async () => {
 
 test("a mutating request with an allowed Origin but NO CSRF header is 401", async () => {
   const { cookie } = await bootstrapSession();
-  const { shell: s } = await assertAB(shell.baseUrl, api.baseUrl, {
+  const { shell: s } = await assertAB(shell.baseUrl, rustUrl, {
     path: "/v1/learner/progress",
     method: "POST",
     body: postBody,
@@ -182,7 +198,7 @@ test("a mutating request with the WRONG CSRF token is 401", async () => {
   const { cookie } = await bootstrapSession();
   const other = await bootstrapSession(learners[1]);
   for (const bad of ["", "nope", other.csrf]) {
-    const { shell: s } = await assertAB(shell.baseUrl, api.baseUrl, {
+    const { shell: s } = await assertAB(shell.baseUrl, rustUrl, {
       path: "/v1/learner/progress",
       method: "POST",
       body: postBody,
@@ -194,7 +210,7 @@ test("a mutating request with the WRONG CSRF token is 401", async () => {
 
 test("a GET needs neither Origin nor CSRF — the checks are for MUTATING methods only", async () => {
   const { cookie } = await bootstrapSession();
-  const { shell: s } = await assertAB(shell.baseUrl, api.baseUrl, {
+  const { shell: s } = await assertAB(shell.baseUrl, rustUrl, {
     path: "/v1/learner/progress",
     ...asPilot(cookie),
   });
@@ -273,7 +289,7 @@ test("an expired session is 401 even though the cookie is otherwise valid", asyn
      WHERE learner_id = $2 AND tenant_id = $1`,
     [TENANT, learnerId],
   );
-  const { shell: s } = await assertAB(shell.baseUrl, api.baseUrl, {
+  const { shell: s } = await assertAB(shell.baseUrl, rustUrl, {
     path: "/v1/learner/progress",
     ...asPilot(cookie),
   });
@@ -285,14 +301,14 @@ test("a bearer token WINS over a cookie when both are present", async () => {
   // cookie first would silently resolve a different identity for a request carrying both — which is
   // exactly what a browser sends when a staff user has a stale pilot cookie.
   const { cookie } = await bootstrapSession();
-  const minted = await request(api.baseUrl, "/v1/auth/token", {
+  const minted = await request(rustUrl, "/v1/auth/token", {
     method: "POST",
     role: "admin",
     body: { userId: learners[1], tenantId: TENANT, role: "learner" },
   });
   assert.equal(minted.status, 200, minted.text);
 
-  const { shell: s } = await assertAB(shell.baseUrl, api.baseUrl, {
+  const { shell: s } = await assertAB(shell.baseUrl, rustUrl, {
     path: "/v1/learner/progress",
     tenant: null,
     headers: { cookie, authorization: `Bearer ${minted.body.token}` },

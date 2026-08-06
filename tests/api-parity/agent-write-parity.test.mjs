@@ -22,11 +22,27 @@ import { TENANT, queryJson, request, startApi, startShell } from "./lib/harness.
 
 let api;
 let shell;
+/**
+ * The RUST url, which is not `rustUrl`.
+ *
+ * Under `PARITY_THROUGH_SHELL=1` — the configuration in which this file's A/B is the only thing that
+ * proves anything about the port — `startApi` puts a Node shell in front of the binary and returns
+ * the SHELL as `baseUrl`, exposing Rust as `upstreamUrl`. Wiring `startShell({ upstream:
+ * rustUrl })` and differing against `rustUrl` therefore put Node on BOTH sides of every
+ * `assertAB`: a shell in front of a shell, compared with that inner shell. Identical code cannot
+ * disagree with itself, so the probes passed by construction.
+ *
+ * Measured before this was fixed: a `NODE_ONLY_FIELD` added to Node's `listSurahs` response — a
+ * divergence a byte comparison cannot miss — left `assertAB` GREEN in both verify.sh passes. What
+ * caught it was a literal key-list assertion beside the probe, which is not a comparison at all.
+ */
+let rustUrl;
 let learnerId;
 
 before(async () => {
   api = await startApi({});
-  shell = await startShell({ upstream: api.baseUrl });
+  rustUrl = api.upstreamUrl ?? api.baseUrl;
+  shell = await startShell({ upstream: rustUrl });
   const [l] = await queryJson(
     "SELECT id FROM users WHERE tenant_id = $1 AND role = 'learner' ORDER BY id LIMIT 1",
     [TENANT],
@@ -64,7 +80,7 @@ const countRuns = async () => {
 };
 
 test("recording a run returns the alphabetical shape — and NOT the list route's shape", async () => {
-  const { shell: s } = await assertABMutating(shell.baseUrl, api.baseUrl, {
+  const { shell: s } = await assertABMutating(shell.baseUrl, rustUrl, {
     name: "create agent run",
     probeFor: () => ({ path: "/v1/agent-runs", method: "POST", role: "admin", body: runBody() }),
     normalize: norm,
@@ -85,7 +101,7 @@ test("recording a run returns the alphabetical shape — and NOT the list route'
 
 test("recording is scholar/admin/ops — every other role is refused identically", async () => {
   for (const role of ["learner", "teacher", "scholar", "admin", "ops"]) {
-    await assertABMutating(shell.baseUrl, api.baseUrl, {
+    await assertABMutating(shell.baseUrl, rustUrl, {
       name: `create agent run as ${role}`,
       probeFor: () => ({ path: "/v1/agent-runs", method: "POST", role, body: runBody() }),
       normalize: norm,
@@ -110,7 +126,7 @@ test("approved requires ALL THREE conditions — each one alone is refused", asy
   ];
 
   for (const c of cases) {
-    const { shell: s } = await assertABMutating(shell.baseUrl, api.baseUrl, {
+    const { shell: s } = await assertABMutating(shell.baseUrl, rustUrl, {
       name: `approved with ${JSON.stringify(c)}`,
       probeFor: () => ({
         path: "/v1/agent-runs",
@@ -132,7 +148,7 @@ test("approved requires ALL THREE conditions — each one alone is refused", asy
 });
 
 test("0.82 exactly is ALLOWED — the boundary is >=, not >", async () => {
-  const { shell: s } = await assertABMutating(shell.baseUrl, api.baseUrl, {
+  const { shell: s } = await assertABMutating(shell.baseUrl, rustUrl, {
     name: "approved at exactly 0.82",
     probeFor: () => ({
       path: "/v1/agent-runs",
@@ -147,7 +163,7 @@ test("0.82 exactly is ALLOWED — the boundary is >=, not >", async () => {
 
 test("BOTH reviewed statuses satisfy the gate", async () => {
   for (const reviewStatus of ["teacher-reviewed", "scholar-approved"]) {
-    const { shell: s } = await assertABMutating(shell.baseUrl, api.baseUrl, {
+    const { shell: s } = await assertABMutating(shell.baseUrl, rustUrl, {
       name: `approved via ${reviewStatus}`,
       probeFor: () => ({
         path: "/v1/agent-runs",
@@ -163,7 +179,7 @@ test("BOTH reviewed statuses satisfy the gate", async () => {
 
 test("the gate applies ONLY to approved — every other status is unaffected", async () => {
   for (const status of ["queued", "running", "needs-human-review", "blocked"]) {
-    const { shell: s } = await assertABMutating(shell.baseUrl, api.baseUrl, {
+    const { shell: s } = await assertABMutating(shell.baseUrl, rustUrl, {
       name: `${status} with nothing satisfied`,
       probeFor: () => ({
         path: "/v1/agent-runs",
@@ -184,7 +200,7 @@ test("an invalid status or reviewStatus is a clean 400, not an opaque 500 from t
     ["status", "definitely-not-a-status"],
     ["reviewStatus", "definitely-not-a-review-status"],
   ]) {
-    const { shell: s } = await assertABMutating(shell.baseUrl, api.baseUrl, {
+    const { shell: s } = await assertABMutating(shell.baseUrl, rustUrl, {
       name: `${field} = ${value}`,
       probeFor: () => ({
         path: "/v1/agent-runs",
@@ -201,7 +217,7 @@ test("an invalid status or reviewStatus is a clean 400, not an opaque 500 from t
 
 test("confidence outside [0,1] is 400", async () => {
   for (const confidence of [-0.1, 1.1, 99]) {
-    const { shell: s } = await assertABMutating(shell.baseUrl, api.baseUrl, {
+    const { shell: s } = await assertABMutating(shell.baseUrl, rustUrl, {
       name: `confidence ${confidence}`,
       probeFor: () => ({
         path: "/v1/agent-runs",
@@ -219,7 +235,7 @@ test("confidence outside [0,1] is 400", async () => {
 test("learnerId is checked ONLY when present — absent is legitimate", async () => {
   // A learner-less run is normal: the mistake-pattern and practice-plan agents both write them.
   // Firing on absent-vs-unknown would break the agents service silently.
-  const { shell: absent } = await assertABMutating(shell.baseUrl, api.baseUrl, {
+  const { shell: absent } = await assertABMutating(shell.baseUrl, rustUrl, {
     name: "run with no learnerId",
     probeFor: () => ({ path: "/v1/agent-runs", method: "POST", role: "admin", body: runBody() }),
     normalize: norm,
@@ -227,7 +243,7 @@ test("learnerId is checked ONLY when present — absent is legitimate", async ()
   assert.equal(absent.status, 200, absent.text);
   assert.equal(absent.body.learnerId, null);
 
-  const { shell: known } = await assertABMutating(shell.baseUrl, api.baseUrl, {
+  const { shell: known } = await assertABMutating(shell.baseUrl, rustUrl, {
     name: "run with a real learnerId",
     probeFor: () => ({
       path: "/v1/agent-runs",
@@ -239,7 +255,7 @@ test("learnerId is checked ONLY when present — absent is legitimate", async ()
   });
   assert.equal(known.status, 200, known.text);
 
-  const { shell: unknown } = await assertABMutating(shell.baseUrl, api.baseUrl, {
+  const { shell: unknown } = await assertABMutating(shell.baseUrl, rustUrl, {
     name: "run with an unknown learnerId",
     probeFor: () => ({
       path: "/v1/agent-runs",
@@ -279,7 +295,7 @@ test("echoed sources come back with keys alphabetized, though they never reach t
 test("lastEvent defaults to the empty string, not null", async () => {
   const body = runBody();
   delete body.lastEvent;
-  const { shell: s } = await assertABMutating(shell.baseUrl, api.baseUrl, {
+  const { shell: s } = await assertABMutating(shell.baseUrl, rustUrl, {
     name: "run with no lastEvent",
     probeFor: () => ({ path: "/v1/agent-runs", method: "POST", role: "admin", body }),
     normalize: norm,

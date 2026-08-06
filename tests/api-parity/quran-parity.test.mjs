@@ -33,10 +33,26 @@ import { queryJson, request, startApi, startShell } from "./lib/harness.mjs";
 
 let api;
 let shell;
+/**
+ * The RUST url, which is not `rustUrl`.
+ *
+ * Under `PARITY_THROUGH_SHELL=1` — the configuration in which this file's A/B is the only thing that
+ * proves anything about the port — `startApi` puts a Node shell in front of the binary and returns
+ * the SHELL as `baseUrl`, exposing Rust as `upstreamUrl`. Wiring `startShell({ upstream:
+ * rustUrl })` and differing against `rustUrl` therefore put Node on BOTH sides of every
+ * `assertAB`: a shell in front of a shell, compared with that inner shell. Identical code cannot
+ * disagree with itself, so the probes passed by construction.
+ *
+ * Measured before this was fixed: a `NODE_ONLY_FIELD` added to Node's `listSurahs` response — a
+ * divergence a byte comparison cannot miss — left `assertAB` GREEN in both verify.sh passes. What
+ * caught it was a literal key-list assertion beside the probe, which is not a comparison at all.
+ */
+let rustUrl;
 
 before(async () => {
   api = await startApi({});
-  shell = await startShell({ upstream: api.baseUrl });
+  rustUrl = api.upstreamUrl ?? api.baseUrl;
+  shell = await startShell({ upstream: rustUrl });
 });
 
 after(async () => {
@@ -47,7 +63,7 @@ after(async () => {
 const pub = { tenant: null };
 
 test("GET /v1/quran/surahs — 114 surahs, declaration-order keys, identical bytes", async () => {
-  const { shell: s } = await assertAB(shell.baseUrl, api.baseUrl, { path: "/v1/quran/surahs", ...pub });
+  const { shell: s } = await assertAB(shell.baseUrl, rustUrl, { path: "/v1/quran/surahs", ...pub });
   assert.equal(s.status, 200);
   assert.equal(s.body.length, 114, "the seeded corpus is the whole Quran");
   assert.deepEqual(
@@ -59,7 +75,7 @@ test("GET /v1/quran/surahs — 114 surahs, declaration-order keys, identical byt
 
 test("GET /v1/quran/surahs/{n} — identical bytes, alphabetical keys", async () => {
   for (const n of [1, 2, 114]) {
-    const { shell: s } = await assertAB(shell.baseUrl, api.baseUrl, { path: `/v1/quran/surahs/${n}`, ...pub });
+    const { shell: s } = await assertAB(shell.baseUrl, rustUrl, { path: `/v1/quran/surahs/${n}`, ...pub });
     assert.equal(s.status, 200);
     assert.deepEqual(Object.keys(s.body), ["ayahs", "surahNumber"], "json! is BTreeMap-backed");
     assert.deepEqual(Object.keys(s.body.ayahs[0]), [
@@ -74,7 +90,7 @@ test("GET /v1/quran/surahs/{n} — identical bytes, alphabetical keys", async ()
 
 test("GET /v1/quran/ayahs/{s}/{a} — identical bytes, words included", async () => {
   for (const [s_, a] of [[1, 1], [2, 255], [114, 6]]) {
-    const { shell: s } = await assertAB(shell.baseUrl, api.baseUrl, { path: `/v1/quran/ayahs/${s_}/${a}`, ...pub });
+    const { shell: s } = await assertAB(shell.baseUrl, rustUrl, { path: `/v1/quran/ayahs/${s_}/${a}`, ...pub });
     assert.equal(s.status, 200);
     assert.deepEqual(Object.keys(s.body), [
       "ayahNumber",
@@ -149,7 +165,7 @@ test("ayah 1:1 still begins with U+FEFF — the byte a trim() would silently eat
 
 test("a missing surah or ayah is 404 with the shared error body", async () => {
   for (const path of ["/v1/quran/surahs/999", "/v1/quran/surahs/0", "/v1/quran/surahs/-1", "/v1/quran/ayahs/1/999"]) {
-    const { shell: s } = await assertAB(shell.baseUrl, api.baseUrl, { path, ...pub });
+    const { shell: s } = await assertAB(shell.baseUrl, rustUrl, { path, ...pub });
     assert.equal(s.status, 404);
     assert.deepEqual(s.body, { error: "record not found" });
   }
@@ -173,7 +189,7 @@ test("a non-integer path parameter is a 400 in text/plain, byte-identical", asyn
     "/v1/quran/ayahs/1/abc",
     "/v1/quran/ayahs/abc/1",
   ]) {
-    const { shell: s } = await assertAB(shell.baseUrl, api.baseUrl, { path, ...pub });
+    const { shell: s } = await assertAB(shell.baseUrl, rustUrl, { path, ...pub });
     assert.equal(s.status, 400, `${path} must be 400, not 404`);
     assert.match(s.headers.get("content-type") ?? "", /^text\/plain/);
     assert.match(s.text, /^Invalid URL: Cannot parse/);
