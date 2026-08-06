@@ -51,11 +51,15 @@ const ML_KEY = "index-failure-e2e-ml-key";
 const METRICS_TOKEN = "index-failure-e2e-metrics-token";
 
 let gateway;
+let forwardGateway;
 let ml;
+let mlStub;
 let platformStub;
 let gatewayPort;
+let forwardGatewayPort;
 let storageDir;
 let indexCalls = 0;
+let mlStubCalls = 0;
 let stderr = "";
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -86,7 +90,9 @@ before(async () => {
   storageDir = mkdtempSync(join(tmpdir(), "index-failure-e2e-"));
   const mlPort = await freePort();
   const stubPort = await freePort();
+  const mlStubPort = await freePort();
   gatewayPort = await freePort();
+  forwardGatewayPort = await freePort();
 
   ml = spawn(process.execPath, [ML_ENTRY], {
     cwd: root,
@@ -115,6 +121,15 @@ before(async () => {
   });
   await new Promise((r) => platformStub.listen(stubPort, "127.0.0.1", r));
 
+  // A SECOND failure mode needs a second gateway: `ML_INFERENCE_URL` is read once at startup, so a
+  // gateway cannot be made to fail delivery and succeed at it in the same process.
+  mlStub = createHttpServer((req, res) => {
+    mlStubCalls += 1;
+    res.writeHead(500, { "content-type": "application/json" });
+    res.end(JSON.stringify({ error: "ml unavailable" }));
+  });
+  await new Promise((r) => mlStub.listen(mlStubPort, "127.0.0.1", r));
+
   gateway = spawn(GATEWAY_BIN, [], {
     cwd: root,
     env: {
@@ -140,19 +155,47 @@ before(async () => {
     stderr += `[gateway] ${d}`;
   });
   await waitForHealth(`http://127.0.0.1:${gatewayPort}/health`, "realtime-gateway");
+
+  forwardGateway = spawn(GATEWAY_BIN, [], {
+    cwd: root,
+    env: {
+      ...process.env,
+      REALTIME_GATEWAY_BIND: `127.0.0.1:${forwardGatewayPort}`,
+      REALTIME_GATEWAY_TICKET_SECRET: SECRET,
+      GATEWAY_TENANT_ID: TENANT,
+      // The ML service ANSWERS 500. Delivery fails, so nothing is ever stored and indexing is never
+      // attempted — which is exactly the distinction the two counters exist to make.
+      ML_INFERENCE_URL: `http://127.0.0.1:${mlStubPort}`,
+      ML_API_KEY: ML_KEY,
+      PLATFORM_API_URL: `http://127.0.0.1:${stubPort}`,
+      METRICS_TOKEN,
+      ALLOW_INSECURE_DEFAULTS: "",
+      ALLOW_INSECURE_SECRETS: "1",
+      GATEWAY_ALLOW_MISSING_ORIGIN: "1",
+      DISABLE_RATE_LIMIT: "1",
+      RUST_BACKTRACE: "1",
+    },
+    stdio: ["ignore", "ignore", "pipe"],
+  });
+  forwardGateway.stderr.on("data", (d) => {
+    stderr += `[gateway-fwd] ${d}`;
+  });
+  await waitForHealth(`http://127.0.0.1:${forwardGatewayPort}/health`, "realtime-gateway (forward)");
 });
 
 after(async () => {
   gateway?.kill("SIGKILL");
+  forwardGateway?.kill("SIGKILL");
   ml?.kill("SIGKILL");
   await new Promise((r) => platformStub?.close(r) ?? r());
+  await new Promise((r) => mlStub?.close(r) ?? r());
   if (storageDir) rmSync(storageDir, { recursive: true, force: true });
 });
 
-function streamOneChunk(sessionId, ticket) {
+function streamOneChunk(sessionId, ticket, port = gatewayPort) {
   return new Promise((resolve, reject) => {
     const url =
-      `ws://127.0.0.1:${gatewayPort}/v1/recitation-sessions/${encodeURIComponent(sessionId)}/audio` +
+      `ws://127.0.0.1:${port}/v1/recitation-sessions/${encodeURIComponent(sessionId)}/audio` +
       `?ticket=${encodeURIComponent(ticket)}`;
     const socket = new WebSocket(url);
     const timer = setTimeout(() => {
@@ -175,8 +218,8 @@ function streamOneChunk(sessionId, ticket) {
 }
 
 /** The /metrics body, read the way an operator reads it. */
-async function scrapeMetrics() {
-  const res = await fetch(`http://127.0.0.1:${gatewayPort}/metrics`, {
+async function scrapeMetrics(port = gatewayPort) {
+  const res = await fetch(`http://127.0.0.1:${port}/metrics`, {
     headers: { "x-metrics-token": METRICS_TOKEN },
   });
   assert.equal(res.status, 200, `/metrics refused the scrape: ${res.status}`);
@@ -241,5 +284,59 @@ test("an index failure is REPORTED, and the audio it could not index is still th
   assert.ok(
     files.some((f) => !f.endsWith(".meta.json")),
     `the audio payload is gone after an index failure — found ${JSON.stringify(files)}`,
+  );
+});
+
+test("a DELIVERY failure is counted as a forward failure, not an index failure", async () => {
+  // Same shape as the test above, one layer earlier — and measured the same way. Deleting
+  // `forward_gateway.record_forward_failure()` from the production path leaves the gateway suite at
+  // 47 Rust tests and 11 JS tests, all green: three unit tests call the recorder directly and
+  // nothing drives the real path.
+  //
+  // The two counters must stay distinguishable. A storage/ML outage loses the ANALYSIS; an index
+  // outage leaves the recording on disk and merely unfindable. They need different repairs, so a
+  // dashboard that cannot tell them apart sends an operator to fix the wrong thing.
+  const sessionId = "session-forward-failure";
+  const ticket = issueRealtimeTicket(
+    {
+      sessionId,
+      tenantId: TENANT,
+      learnerId: LEARNER,
+      externalAsrProcessing: false,
+      audioRetention: "teacher-review",
+      expiresAtUnixSeconds: Math.floor(Date.now() / 1000) + 300,
+      nonce: newNonce(),
+    },
+    SECRET,
+  );
+
+  await streamOneChunk(sessionId, ticket, forwardGatewayPort);
+
+  let forwardFailures = 0;
+  let indexFailures = 0;
+  for (let i = 0; i < 100; i += 1) {
+    const body = await scrapeMetrics(forwardGatewayPort);
+    forwardFailures = Number(
+      /realtime_gateway_chunks_forward_failed_total (\d+)/.exec(body)?.[1] ?? -1,
+    );
+    indexFailures = Number(/realtime_gateway_chunks_index_failed_total (\d+)/.exec(body)?.[1] ?? -1);
+    if (forwardFailures > 0) break;
+    await sleep(100);
+  }
+
+  assert.ok(
+    forwardFailures > 0,
+    `realtime_gateway_chunks_forward_failed_total is ${forwardFailures} after the ML service ` +
+      `answered 500 ${mlStubCalls} time(s). The analysis was lost and no counter says so.` +
+      `${stderr ? `\n${stderr}` : ""}`,
+  );
+  assert.ok(mlStubCalls > 0, "the gateway never attempted to deliver the chunk at all");
+
+  assert.equal(
+    indexFailures,
+    0,
+    `a delivery failure was also counted as an index failure (${indexFailures}). Indexing is only ` +
+      `attempted after delivery SUCCEEDS — counting both makes an ML outage read as a database ` +
+      `outage on the dashboard, and the two need different repairs.`,
   );
 });
