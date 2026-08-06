@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
@@ -251,6 +252,64 @@ test("and still accepts a real span — the control", async (t) => {
     );
     assert.equal(rowCount, 1, "a 640ms-to-1230ms span was refused; the constraint is too strict");
     await client.query("ROLLBACK");
+  } finally {
+    await client.end();
+  }
+});
+
+/**
+ * The shared gate corpus must cover every review status the DATABASE can hold.
+ *
+ * `packages/contracts/fixtures/canonical-gates.json` is the one table four implementations of
+ * `canShowLearnerFacingAiOutput` are now held to (#358, #370). Its value is entirely a function of
+ * which cases are in it — and nothing checked that it covered the vocabulary it is deciding over.
+ *
+ * Measured when this was written: the CHECK constraint on `tajweed_findings.review_status` allows
+ * six values and the corpus exercised five. The missing one was `blocked` — which is exactly what
+ * `TeacherDecision::Rejected` produces (handlers/review.rs). So every gate implementation was
+ * verified against a table with no case for "a teacher looked at this and said no", the single most
+ * consequential outcome of the review workflow.
+ *
+ * Cross-referenced against `pg_constraint` rather than a list written here, for the same reason the
+ * enum tests above are: a second hand-maintained copy of a closed set is a second thing to drift,
+ * and the one that gets forgotten is always the checker.
+ */
+test("the learner-gate corpus covers every review status the database allows", async (t) => {
+  if (!DATABASE_URL) return t.skip("no DATABASE_URL — this leg needs the live constraint");
+  const client = new pg.Client({ connectionString: DATABASE_URL });
+  await client.connect();
+  try {
+    const allowed = await allowedValues(client, "tajweed_findings", "review_status");
+
+    const corpus = JSON.parse(
+      readFileSync(
+        join(here, "..", "..", "packages", "contracts", "fixtures", "canonical-gates.json"),
+        "utf8",
+      ),
+    );
+    const cases = corpus.canShowLearnerFacingAiOutput?.cases ?? [];
+    assert.ok(cases.length > 0, "the corpus has no learner-gate cases at all");
+
+    const covered = new Set(cases.map((c) => c.input?.reviewStatus).filter((s) => typeof s === "string"));
+    const missing = allowed.filter((status) => !covered.has(status));
+
+    assert.deepEqual(
+      missing,
+      [],
+      `the corpus decides over review statuses it has never been shown: ${missing.join(", ")}.\n` +
+        "Every implementation of the learner gate is verified against this table, so a status " +
+        "missing from it is a status no implementation is checked on — including `blocked`, which " +
+        "is what a teacher REJECTING a finding produces.",
+    );
+
+    // The corpus should not invent statuses either: a case for a value the database cannot hold
+    // tests a situation that cannot occur, and reads as coverage.
+    const invented = [...covered].filter((s) => s !== "" && !allowed.includes(s) && s !== "under-review");
+    assert.deepEqual(
+      invented,
+      [],
+      `the corpus has cases for statuses the database cannot store: ${invented.join(", ")}`,
+    );
   } finally {
     await client.end();
   }

@@ -167,6 +167,22 @@
         "expected": false
       },
       {
+        "name": "blocked: a teacher REJECTED this finding",
+        "$comment": "The outcome of TeacherDecision::Rejected (handlers/review.rs sets review_status to 'blocked'). It was absent from this corpus until a test cross-referenced the tajweed_findings CHECK constraint and found the vocabulary had six values while the table exercised five -- so every implementation of the gate was verified without ever being shown the single most consequential result of the review workflow: a human looking at a judgement about a child's recitation and saying no. Confidence and sources are deliberately GENEROUS here; neither may rescue a rejection.",
+        "input": {
+          "confidence": 0.99,
+          "reviewStatus": "blocked",
+          "sources": [
+            {
+              "id": "scholar-board",
+              "title": "Scholar Board",
+              "citation": "Approved tajweed note"
+            }
+          ]
+        },
+        "expected": false
+      },
+      {
         "name": "FAILS CLOSED: unrecognized reviewStatus must block, never pass",
         "$comment": "THE most important case in this corpus. reviewStatus arrives from an HTTP JSON body with no server-side schema enforcement, so a typo or a future upstream status lands here as an unknown string. An allowlist returns false; a denylist of known-bad statuses would return TRUE and leak unreviewed output to a learner. A port using a language enum (Dart, Rust) may reject or coerce this value instead of evaluating it -- that port is wrong even if its own tests pass.",
         "input": {
