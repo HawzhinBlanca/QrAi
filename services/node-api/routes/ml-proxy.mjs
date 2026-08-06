@@ -78,7 +78,16 @@ const ANALYSIS_STAFF = ["admin", "ops"];
  * not heard of, and failing open here hands a learner an unreviewed judgement.
  * tests/contract/tajweed-gate-parity.test.mjs pins the floor across every implementation.
  */
-function clearsLearnerGate(finding) {
+// Exported for the corpus test in tests/node-api/authz.test.mjs, and for no other caller.
+//
+// packages/contracts/fixtures/canonical-gates.json exists so that every implementation of this rule
+// is held to ONE table of cases. This one could not be: it was module-private, so the corpus listed
+// it under "does NOT load this file" and it was covered only by A/B parity — which is blind to a
+// change applied to both implementations, the exact hole this session opened with.
+//
+// Exporting a pure predicate so a test can execute it is a smaller price than a safety gate nobody
+// can hold to the shared table.
+export function clearsLearnerGate(finding) {
   const approved =
     finding?.reviewStatus === "teacher-reviewed" || finding?.reviewStatus === "scholar-approved";
   const confidence = typeof finding?.confidence === "number" ? finding.confidence : 0;

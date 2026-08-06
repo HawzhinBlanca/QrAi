@@ -13,7 +13,7 @@
     "    yes  packages/contracts/tests/canonical-gates-fixtures.test.ts   (the reference)",
     "    yes  services/platform-api  handlers/review.rs learner_gate_corpus_tests  (authoritative)",
     "    yes  services/agents        agents.test.mjs",
-    "    NO   services/node-api/routes/ml-proxy.mjs   clearsLearnerGate is module-private",
+    "    yes  services/node-api  tests/node-api/authz.test.mjs  (clearsLearnerGate, ml-proxy)",
     "    NO   services/node-api/routes/agent-write.mjs  the gate is inline in the handler",
     "    NO   apps/flutter/lib/src/api/models.dart   isLearnerVisible; Dart cannot be run from Node,",
     "         and tests/contract/tajweed-gate-parity.test.mjs compares it by EXTRACTING its constants",
