@@ -26,10 +26,26 @@ import { startApi, startShell } from "./lib/harness.mjs";
 
 let api;
 let shell;
+/**
+ * The RUST url, which is not `rustUrl`.
+ *
+ * Under `PARITY_THROUGH_SHELL=1` — the configuration in which this file's A/B is the only thing that
+ * proves anything about the port — `startApi` puts a Node shell in front of the binary and returns
+ * the SHELL as `baseUrl`, exposing Rust as `upstreamUrl`. Wiring `startShell({ upstream:
+ * rustUrl })` and differing against `rustUrl` therefore put Node on BOTH sides of every
+ * `assertAB`: a shell in front of a shell, compared with that inner shell. Identical code cannot
+ * disagree with itself, so the probes passed by construction.
+ *
+ * Measured before this was fixed: a `NODE_ONLY_FIELD` added to Node's `listSurahs` response — a
+ * divergence a byte comparison cannot miss — left `assertAB` GREEN in both verify.sh passes. What
+ * caught it was a literal key-list assertion beside the probe, which is not a comparison at all.
+ */
+let rustUrl;
 
 before(async () => {
   api = await startApi({ env: { METRICS_TOKEN: "scrape-secret" } });
-  shell = await startShell({ upstream: api.baseUrl, env: { METRICS_TOKEN: "scrape-secret" } });
+  rustUrl = api.upstreamUrl ?? api.baseUrl;
+  shell = await startShell({ upstream: rustUrl, env: { METRICS_TOKEN: "scrape-secret" } });
 });
 
 after(async () => {
@@ -38,13 +54,13 @@ after(async () => {
 });
 
 test("GET /health is identical", async () => {
-  const { shell: s } = await assertAB(shell.baseUrl, api.baseUrl, { path: "/health", tenant: null });
+  const { shell: s } = await assertAB(shell.baseUrl, rustUrl, { path: "/health", tenant: null });
   assert.equal(s.status, 200);
   assert.equal(s.text, "ok", "the body is the literal string ok, not JSON");
 });
 
 test("GET /ready is identical, and reports the DB it can actually reach", async () => {
-  const { shell: s } = await assertAB(shell.baseUrl, api.baseUrl, { path: "/ready", tenant: null });
+  const { shell: s } = await assertAB(shell.baseUrl, rustUrl, { path: "/ready", tenant: null });
   assert.equal(s.status, 200, "both processes reach Postgres in this suite");
   assert.equal(s.text, "ready");
 });
@@ -69,7 +85,7 @@ function expositionShape(text) {
 }
 
 test("GET /metrics with a correct token: same status, same content-type, same exposition shape", async () => {
-  const { shell: s } = await assertAB(shell.baseUrl, api.baseUrl, {
+  const { shell: s } = await assertAB(shell.baseUrl, rustUrl, {
     path: "/metrics",
     tenant: null,
     headers: { "x-metrics-token": "scrape-secret" },
@@ -89,8 +105,8 @@ test("GET /metrics with a correct token: same status, same content-type, same ex
 });
 
 test("GET /metrics fails closed identically: no token and wrong token are both 404", async () => {
-  await assertAB(shell.baseUrl, api.baseUrl, { path: "/metrics", tenant: null });
-  await assertAB(shell.baseUrl, api.baseUrl, {
+  await assertAB(shell.baseUrl, rustUrl, { path: "/metrics", tenant: null });
+  await assertAB(shell.baseUrl, rustUrl, {
     path: "/metrics",
     tenant: null,
     headers: { "x-metrics-token": "nope" },
@@ -98,6 +114,6 @@ test("GET /metrics fails closed identically: no token and wrong token are both 4
 });
 
 test("the 404 hides existence rather than reporting an outage — /health still answers 200", async () => {
-  const { shell: s } = await assertAB(shell.baseUrl, api.baseUrl, { path: "/health", tenant: null });
+  const { shell: s } = await assertAB(shell.baseUrl, rustUrl, { path: "/health", tenant: null });
   assert.equal(s.status, 200);
 });

@@ -15,7 +15,7 @@
  */
 import assert from "node:assert/strict";
 
-import { request } from "./harness.mjs";
+import { SHELL_URLS, request } from "./harness.mjs";
 
 /**
  * Headers a proxy legitimately changes, and comparing them would produce noise rather than findings.
@@ -50,6 +50,22 @@ function comparableHeaders(headers) {
 export async function assertAB(shellUrl, apiUrl, probe) {
   const { name, path, compareBody, skipHeaders = [], ...options } = probe;
   const label = name ?? `${options.method ?? "GET"} ${path}`;
+
+  // ── The B side must be RUST ─────────────────────────────────────────────────────────────────────
+  // Under `PARITY_THROUGH_SHELL=1`, `startApi().baseUrl` is a Node shell and Rust is `upstreamUrl`.
+  // `assertAB(shell.baseUrl, api.baseUrl, …)` therefore compared Node with Node — a shell in front of
+  // a shell, differed against that inner shell — and no divergence between the implementations could
+  // ever fail it. Measured: `Meccan` from Rust vs `MECCAN` from Node on canonical surah metadata left
+  // all 10 probes in quran-parity GREEN in both verify.sh passes.
+  //
+  // Thrown, not asserted, and thrown BEFORE the requests: a differ that cannot differ should not
+  // report a passing comparison, and this must fire even inside a `t.skip`ped or try/caught probe.
+  if (SHELL_URLS.has(apiUrl)) {
+    throw new Error(
+      `${label}: the B side of the differ is a Node shell (${apiUrl}), so this compares Node with ` +
+        `itself and cannot fail. Pass the Rust url — \`api.upstreamUrl ?? api.baseUrl\`.`,
+    );
+  }
 
   const [shell, api] = await Promise.all([
     request(shellUrl, path, options),

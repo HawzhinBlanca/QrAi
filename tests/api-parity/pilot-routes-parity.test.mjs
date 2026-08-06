@@ -23,12 +23,28 @@ const ORIGIN = "http://localhost:5173";
 
 let api;
 let shell;
+/**
+ * The RUST url, which is not `rustUrl`.
+ *
+ * Under `PARITY_THROUGH_SHELL=1` — the configuration in which this file's A/B is the only thing that
+ * proves anything about the port — `startApi` puts a Node shell in front of the binary and returns
+ * the SHELL as `baseUrl`, exposing Rust as `upstreamUrl`. Wiring `startShell({ upstream:
+ * rustUrl })` and differing against `rustUrl` therefore put Node on BOTH sides of every
+ * `assertAB`: a shell in front of a shell, compared with that inner shell. Identical code cannot
+ * disagree with itself, so the probes passed by construction.
+ *
+ * Measured before this was fixed: a `NODE_ONLY_FIELD` added to Node's `listSurahs` response — a
+ * divergence a byte comparison cannot miss — left `assertAB` GREEN in both verify.sh passes. What
+ * caught it was a literal key-list assertion beside the probe, which is not a comparison at all.
+ */
+let rustUrl;
 let learnerId;
 let staffId;
 
 before(async () => {
   api = await startApi({ env: { CORS_ALLOWED_ORIGINS: ORIGIN } });
-  shell = await startShell({ upstream: api.baseUrl, env: { CORS_ALLOWED_ORIGINS: ORIGIN } });
+  rustUrl = api.upstreamUrl ?? api.baseUrl;
+  shell = await startShell({ upstream: rustUrl, env: { CORS_ALLOWED_ORIGINS: ORIGIN } });
   const [learner] = await queryJson(
     "SELECT id FROM users WHERE tenant_id = $1 AND role = 'learner' ORDER BY id LIMIT 1",
     [TENANT],
@@ -94,7 +110,7 @@ function parseCookie(raw) {
 
 test("minting is admin/ops only, and refusals are identical", async () => {
   for (const role of ["learner", "teacher", "scholar", "admin", "ops"]) {
-    await assertABMutating(shell.baseUrl, api.baseUrl, {
+    await assertABMutating(shell.baseUrl, rustUrl, {
       name: `mint as ${role}`,
       probeFor: () => ({
         path: "/v1/pilot/invitations",
@@ -132,7 +148,7 @@ test("the minted body has the right keys, alphabetically, and the token is shown
 });
 
 test("a non-learner target is refused, and a missing one is 404", async () => {
-  await assertABMutating(shell.baseUrl, api.baseUrl, {
+  await assertABMutating(shell.baseUrl, rustUrl, {
     name: "mint for a non-learner",
     probeFor: () => ({
       path: "/v1/pilot/invitations",
@@ -142,7 +158,7 @@ test("a non-learner target is refused, and a missing one is 404", async () => {
     }),
     normalize: (b) => b,
   });
-  await assertABMutating(shell.baseUrl, api.baseUrl, {
+  await assertABMutating(shell.baseUrl, rustUrl, {
     name: "mint for a nonexistent user",
     probeFor: () => ({
       path: "/v1/pilot/invitations",
@@ -169,7 +185,7 @@ test("ttlHours is clamped to [1, 720] — no immortal invitations", async () => 
 // ── bootstrap ──────────────────────────────────────────────────────────────────────────────────
 
 test("bootstrap sets a cookie with EVERY __Host- attribute the browser requires", async () => {
-  const minted = await mint(api.baseUrl, { learnerId });
+  const minted = await mint(rustUrl, { learnerId });
   const res = await boot(shell.baseUrl, minted.body.token);
   assert.equal(res.status, 200, res.text);
 
@@ -190,10 +206,10 @@ test("bootstrap sets a cookie with EVERY __Host- attribute the browser requires"
 });
 
 test("the bootstrap cookie is byte-identical to Rust's, attribute for attribute", async () => {
-  const a = await mint(api.baseUrl, { learnerId });
-  const b = await mint(api.baseUrl, { learnerId });
+  const a = await mint(rustUrl, { learnerId });
+  const b = await mint(rustUrl, { learnerId });
   const fromShell = await boot(shell.baseUrl, a.body.token);
-  const fromRust = await boot(api.baseUrl, b.body.token);
+  const fromRust = await boot(rustUrl, b.body.token);
 
   const strip = (res) =>
     res.headers
@@ -204,9 +220,9 @@ test("the bootstrap cookie is byte-identical to Rust's, attribute for attribute"
 });
 
 test("bootstrap requires an allowed Origin, before it even looks at the token", async () => {
-  const minted = await mint(api.baseUrl, { learnerId });
+  const minted = await mint(rustUrl, { learnerId });
   for (const headers of [{}, { origin: "" }, { origin: "https://evil.example" }]) {
-    const { shell: s } = await assertABMutating(shell.baseUrl, api.baseUrl, {
+    const { shell: s } = await assertABMutating(shell.baseUrl, rustUrl, {
       name: `bootstrap origin ${JSON.stringify(headers)}`,
       probeFor: () => ({
         path: "/v1/pilot/session/bootstrap",
@@ -225,10 +241,10 @@ test("bootstrap requires an allowed Origin, before it even looks at the token", 
 });
 
 test("an invitation is SINGLE USE — the second redemption is 401", async () => {
-  const minted = await mint(api.baseUrl, { learnerId });
+  const minted = await mint(rustUrl, { learnerId });
   assert.equal((await boot(shell.baseUrl, minted.body.token)).status, 200);
 
-  const { shell: s } = await assertABMutating(shell.baseUrl, api.baseUrl, {
+  const { shell: s } = await assertABMutating(shell.baseUrl, rustUrl, {
     name: "redeem a consumed invitation",
     probeFor: () => ({
       path: "/v1/pilot/session/bootstrap",
@@ -243,7 +259,7 @@ test("an invitation is SINGLE USE — the second redemption is 401", async () =>
 });
 
 test("an unknown token is 401 — the same answer as consumed and expired", async () => {
-  const { shell: s } = await assertABMutating(shell.baseUrl, api.baseUrl, {
+  const { shell: s } = await assertABMutating(shell.baseUrl, rustUrl, {
     name: "bootstrap with an unknown token",
     probeFor: () => ({
       path: "/v1/pilot/session/bootstrap",
@@ -258,7 +274,7 @@ test("an unknown token is 401 — the same answer as consumed and expired", asyn
 });
 
 test("bootstrap stores only the session HASH and sets both expiries", async () => {
-  const minted = await mint(api.baseUrl, { learnerId });
+  const minted = await mint(rustUrl, { learnerId });
   const res = await boot(shell.baseUrl, minted.body.token);
   assert.equal(res.status, 200);
   assert.deepEqual(Object.keys(res.body), [
@@ -286,7 +302,7 @@ test("bootstrap stores only the session HASH and sets both expiries", async () =
 // ── logout ─────────────────────────────────────────────────────────────────────────────────────
 
 test("logout clears the cookie identically, with or without a session", async () => {
-  const minted = await mint(api.baseUrl, { learnerId });
+  const minted = await mint(rustUrl, { learnerId });
   const booted = await boot(shell.baseUrl, minted.body.token);
   const cookie = booted.headers
     .getSetCookie()
@@ -294,7 +310,7 @@ test("logout clears the cookie identically, with or without a session", async ()
     .split(";")[0];
 
   for (const headers of [{ cookie }, {}, { cookie: "__Host-qrai-pilot=nonsense" }]) {
-    const { shell: s } = await assertABMutating(shell.baseUrl, api.baseUrl, {
+    const { shell: s } = await assertABMutating(shell.baseUrl, rustUrl, {
       name: `logout with ${JSON.stringify(headers)}`,
       probeFor: () => ({
         path: "/v1/pilot/session/logout",
@@ -320,7 +336,7 @@ test("logout clears the cookie identically, with or without a session", async ()
 });
 
 test("logout actually REVOKES the session — the cookie stops working afterwards", async () => {
-  const minted = await mint(api.baseUrl, { learnerId });
+  const minted = await mint(rustUrl, { learnerId });
   const booted = await boot(shell.baseUrl, minted.body.token);
   const cookie = booted.headers
     .getSetCookie()
@@ -370,7 +386,7 @@ test("logout actually REVOKES the session — the cookie stops working afterward
 // learner-pinned cookie, hitting 403s on their own routes with nothing anywhere explaining why.
 // That is the failure this refusal converts into an immediate, legible error.
 test("an invitation is refused at REDEEM time if the target stopped being a learner", async () => {
-  const minted = await mint(api.baseUrl, { learnerId });
+  const minted = await mint(rustUrl, { learnerId });
   assert.equal(minted.status, 200, minted.text);
 
   // Promote AFTER minting — this is the whole point, and it is why the mint-time check is not
@@ -381,7 +397,7 @@ test("an invitation is refused at REDEEM time if the target stopped being a lear
   ]);
 
   try {
-    const { shell: s } = await assertABMutating(shell.baseUrl, api.baseUrl, {
+    const { shell: s } = await assertABMutating(shell.baseUrl, rustUrl, {
       name: "redeem an invitation whose target is no longer a learner",
       probeFor: () => ({
         path: "/v1/pilot/session/bootstrap",

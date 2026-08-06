@@ -18,10 +18,26 @@ import { request, startApi, startShell } from "./lib/harness.mjs";
 
 let api;
 let shell;
+/**
+ * The RUST url, which is not `rustUrl`.
+ *
+ * Under `PARITY_THROUGH_SHELL=1` — the configuration in which this file's A/B is the only thing that
+ * proves anything about the port — `startApi` puts a Node shell in front of the binary and returns
+ * the SHELL as `baseUrl`, exposing Rust as `upstreamUrl`. Wiring `startShell({ upstream:
+ * rustUrl })` and differing against `rustUrl` therefore put Node on BOTH sides of every
+ * `assertAB`: a shell in front of a shell, compared with that inner shell. Identical code cannot
+ * disagree with itself, so the probes passed by construction.
+ *
+ * Measured before this was fixed: a `NODE_ONLY_FIELD` added to Node's `listSurahs` response — a
+ * divergence a byte comparison cannot miss — left `assertAB` GREEN in both verify.sh passes. What
+ * caught it was a literal key-list assertion beside the probe, which is not a comparison at all.
+ */
+let rustUrl;
 
 before(async () => {
   api = await startApi({});
-  shell = await startShell({ upstream: api.baseUrl });
+  rustUrl = api.upstreamUrl ?? api.baseUrl;
+  shell = await startShell({ upstream: rustUrl });
 });
 
 after(async () => {
@@ -33,7 +49,7 @@ const ROLES = ["learner", "teacher", "scholar", "admin", "ops"];
 
 test("GET /v1/agent-runs is byte-identical for EVERY role, allowed or refused", async () => {
   for (const role of ROLES) {
-    await assertAB(shell.baseUrl, api.baseUrl, { path: "/v1/agent-runs", role });
+    await assertAB(shell.baseUrl, rustUrl, { path: "/v1/agent-runs", role });
   }
 });
 
@@ -54,7 +70,7 @@ test("agent-runs allows scholar; audit and eval do NOT — three different lists
 
 test("GET /v1/audit-events is byte-identical for every role", async () => {
   for (const role of ROLES) {
-    await assertAB(shell.baseUrl, api.baseUrl, { path: "/v1/audit-events", role });
+    await assertAB(shell.baseUrl, rustUrl, { path: "/v1/audit-events", role });
   }
 });
 
@@ -75,7 +91,7 @@ test("audit events keep DECLARATION order — AuditEvent is a struct, not a json
 
 test("GET /v1/eval-runs/{v}: a missing model version is 404, identically", async () => {
   for (const path of ["/v1/eval-runs/no-such-model", "/v1/eval-runs/..%2Fetc", "/v1/eval-runs/%20"]) {
-    await assertAB(shell.baseUrl, api.baseUrl, { path, role: "admin" });
+    await assertAB(shell.baseUrl, rustUrl, { path, role: "admin" });
   }
 });
 
@@ -101,7 +117,7 @@ test("eval-run metrics survive the f32 narrowing byte-for-byte", async () => {
       return;
     }
   }
-  await assertAB(shell.baseUrl, api.baseUrl, { path: "/v1/eval-runs/model-v0.3", role: "admin" });
+  await assertAB(shell.baseUrl, rustUrl, { path: "/v1/eval-runs/model-v0.3", role: "admin" });
 });
 
 /**

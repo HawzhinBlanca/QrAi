@@ -18,12 +18,28 @@ import { TENANT, queryJson, request, startApi, startShell } from "./lib/harness.
 
 let api;
 let shell;
+/**
+ * The RUST url, which is not `rustUrl`.
+ *
+ * Under `PARITY_THROUGH_SHELL=1` — the configuration in which this file's A/B is the only thing that
+ * proves anything about the port — `startApi` puts a Node shell in front of the binary and returns
+ * the SHELL as `baseUrl`, exposing Rust as `upstreamUrl`. Wiring `startShell({ upstream:
+ * rustUrl })` and differing against `rustUrl` therefore put Node on BOTH sides of every
+ * `assertAB`: a shell in front of a shell, compared with that inner shell. Identical code cannot
+ * disagree with itself, so the probes passed by construction.
+ *
+ * Measured before this was fixed: a `NODE_ONLY_FIELD` added to Node's `listSurahs` response — a
+ * divergence a byte comparison cannot miss — left `assertAB` GREEN in both verify.sh passes. What
+ * caught it was a literal key-list assertion beside the probe, which is not a comparison at all.
+ */
+let rustUrl;
 let learnerId;
 let modelVersion;
 
 before(async () => {
   api = await startApi({});
-  shell = await startShell({ upstream: api.baseUrl });
+  rustUrl = api.upstreamUrl ?? api.baseUrl;
+  shell = await startShell({ upstream: rustUrl });
   const [l] = await queryJson(
     "SELECT id FROM users WHERE tenant_id = $1 AND role = 'learner' ORDER BY id LIMIT 1",
     [TENANT],
@@ -68,7 +84,7 @@ const createOn = (baseUrl, body) =>
 // ── create_session ─────────────────────────────────────────────────────────────────────────────
 
 test("creating a session returns the same struct, in declaration order", async () => {
-  const { shell: s } = await assertABMutating(shell.baseUrl, api.baseUrl, {
+  const { shell: s } = await assertABMutating(shell.baseUrl, rustUrl, {
     name: "create session",
     probeFor: () => ({
       path: "/v1/recitation-sessions",
@@ -108,7 +124,7 @@ test("externalProcessingAllowed needs BOTH consent and guardian approval", async
     [false, true, false],
     [true, true, true],
   ]) {
-    const { shell: s } = await assertABMutating(shell.baseUrl, api.baseUrl, {
+    const { shell: s } = await assertABMutating(shell.baseUrl, rustUrl, {
       name: `consent asr=${externalAsrProcessing} guardian=${guardianApproved}`,
       probeFor: () => ({
         path: "/v1/recitation-sessions",
@@ -152,7 +168,7 @@ test("creating a session WRITES a consent record, not just a snapshot", async ()
  * same caller, against the two different targets that produce them.
  */
 test("an unknown learner is 404 but ONLY for a caller allowed to ask; others get 403", async () => {
-  const { shell: asAdmin } = await assertABMutating(shell.baseUrl, api.baseUrl, {
+  const { shell: asAdmin } = await assertABMutating(shell.baseUrl, rustUrl, {
     name: "admin creates for a nonexistent learner",
     probeFor: () => ({
       path: "/v1/recitation-sessions",
@@ -164,7 +180,7 @@ test("an unknown learner is 404 but ONLY for a caller allowed to ask; others get
   });
   assert.equal(asAdmin.status, 404, "an admin may ask, and gets the honest answer");
 
-  const { shell: asLearner } = await assertABMutating(shell.baseUrl, api.baseUrl, {
+  const { shell: asLearner } = await assertABMutating(shell.baseUrl, rustUrl, {
     name: "learner creates for someone else",
     probeFor: () => ({
       path: "/v1/recitation-sessions",
@@ -183,7 +199,7 @@ test("an unknown learner is 404 but ONLY for a caller allowed to ask; others get
 });
 
 test("a teacher may NOT open a session for a learner — only admin/ops", async () => {
-  const { shell: s } = await assertABMutating(shell.baseUrl, api.baseUrl, {
+  const { shell: s } = await assertABMutating(shell.baseUrl, rustUrl, {
     name: "teacher creates for a learner",
     probeFor: () => ({
       path: "/v1/recitation-sessions",
@@ -197,7 +213,7 @@ test("a teacher may NOT open a session for a learner — only admin/ops", async 
 });
 
 test("an unknown modelVersion is 400 NAMING it — not the shared 404", async () => {
-  const { shell: s } = await assertABMutating(shell.baseUrl, api.baseUrl, {
+  const { shell: s } = await assertABMutating(shell.baseUrl, rustUrl, {
     name: "create with an unknown model version",
     probeFor: () => ({
       path: "/v1/recitation-sessions",
@@ -218,7 +234,7 @@ test("an unknown modelVersion is 400 NAMING it — not the shared 404", async ()
 
 test("an unsupported language is 400 naming the allowed set", async () => {
   for (const language of ["klingon", "", "AR", "ar-SA"]) {
-    const { shell: s } = await assertABMutating(shell.baseUrl, api.baseUrl, {
+    const { shell: s } = await assertABMutating(shell.baseUrl, rustUrl, {
       name: `language ${JSON.stringify(language)}`,
       probeFor: () => ({
         path: "/v1/recitation-sessions",
@@ -254,7 +270,7 @@ async function canonicalWordIds(n) {
 test("alignments persist, and synthetic word ids are SKIPPED rather than 500", async () => {
   const words = await canonicalWordIds(2);
   const shellSession = await freshSession(shell.baseUrl);
-  const rustSession = await freshSession(api.baseUrl);
+  const rustSession = await freshSession(rustUrl);
 
   const alignments = [
     { wordId: words[0], heardText: "x", startMs: 0, endMs: 100, confidence: 0.9, status: "matched" },
@@ -266,7 +282,7 @@ test("alignments persist, and synthetic word ids are SKIPPED rather than 500", a
     { wordId: words[0], heardText: "w", startMs: 300, endMs: 400, confidence: 0.3, status: "matche" },
   ];
 
-  const { shell: s } = await assertABMutating(shell.baseUrl, api.baseUrl, {
+  const { shell: s } = await assertABMutating(shell.baseUrl, rustUrl, {
     name: "persist alignments",
     probeFor: (side) => ({
       path: `/v1/recitation-sessions/${side === "shell" ? shellSession : rustSession}/alignments`,
@@ -348,8 +364,8 @@ test("modelVersion: absent DEFAULTS, present-and-unknown is REFUSED", async () =
   assert.equal(row.model_version_id, "model-v0.3");
 
   const shellSession = await freshSession(shell.baseUrl);
-  const rustSession = await freshSession(api.baseUrl);
-  const { shell: s } = await assertABMutating(shell.baseUrl, api.baseUrl, {
+  const rustSession = await freshSession(rustUrl);
+  const { shell: s } = await assertABMutating(shell.baseUrl, rustUrl, {
     name: "persist with an unknown modelVersion",
     probeFor: (side) => ({
       path: `/v1/recitation-sessions/${side === "shell" ? shellSession : rustSession}/alignments`,
@@ -404,7 +420,7 @@ test("re-recording REPLACES the prior alignment and AUDITS what it destroyed", a
 });
 
 test("alignments on an unknown session are 404, and on someone else's are 403", async () => {
-  const { shell: unknown } = await assertABMutating(shell.baseUrl, api.baseUrl, {
+  const { shell: unknown } = await assertABMutating(shell.baseUrl, rustUrl, {
     name: "alignments for an unknown session",
     probeFor: () => ({
       path: "/v1/recitation-sessions/no-such-session/alignments",
@@ -417,8 +433,8 @@ test("alignments on an unknown session are 404, and on someone else's are 403", 
   assert.equal(unknown.status, 404);
 
   const shellSession = await freshSession(shell.baseUrl);
-  const rustSession = await freshSession(api.baseUrl);
-  const { shell: notMine } = await assertABMutating(shell.baseUrl, api.baseUrl, {
+  const rustSession = await freshSession(rustUrl);
+  const { shell: notMine } = await assertABMutating(shell.baseUrl, rustUrl, {
     name: "alignments for another learner's session",
     probeFor: (side) => ({
       path: `/v1/recitation-sessions/${side === "shell" ? shellSession : rustSession}/alignments`,
@@ -464,9 +480,9 @@ test("sending to teacher flips draft -> teacher-review-required, and is idempote
 
 test("only the OWNER may send — there is no staff override", async () => {
   const shellSession = await freshSession(shell.baseUrl);
-  const rustSession = await freshSession(api.baseUrl);
+  const rustSession = await freshSession(rustUrl);
   for (const role of ["teacher", "admin", "ops", "scholar"]) {
-    const { shell: s } = await assertABMutating(shell.baseUrl, api.baseUrl, {
+    const { shell: s } = await assertABMutating(shell.baseUrl, rustUrl, {
       name: `send as ${role}`,
       probeFor: (side) => ({
         path: `/v1/recitation-sessions/${side === "shell" ? shellSession : rustSession}/request-teacher-review`,
@@ -481,12 +497,12 @@ test("only the OWNER may send — there is no staff override", async () => {
 
 test("a session past draft is 400, not silently reset", async () => {
   const shellSession = await freshSession(shell.baseUrl);
-  const rustSession = await freshSession(api.baseUrl);
+  const rustSession = await freshSession(rustUrl);
   for (const id of [shellSession, rustSession]) {
     await queryJson("UPDATE recitation_sessions SET review_status = 'scholar-approved' WHERE id = $1", [id]);
   }
 
-  const { shell: s } = await assertABMutating(shell.baseUrl, api.baseUrl, {
+  const { shell: s } = await assertABMutating(shell.baseUrl, rustUrl, {
     name: "send an already-approved session",
     probeFor: (side) => ({
       path: `/v1/recitation-sessions/${side === "shell" ? shellSession : rustSession}/request-teacher-review`,
@@ -544,7 +560,7 @@ test("an alignment with no usable time span is never stored", async () => {
 
   for (const [label, span] of UNUSABLE_SPANS) {
     const seen = {};
-    for (const [impl, base] of [["shell", shell.baseUrl], ["rust", api.baseUrl]]) {
+    for (const [impl, base] of [["shell", shell.baseUrl], ["rust", rustUrl]]) {
       const sessionId = await freshSession(base);
       const res = await request(base, `/v1/recitation-sessions/${sessionId}/alignments`, {
         method: "POST",
@@ -594,7 +610,7 @@ test("a VALID span is still stored, verbatim — the control", async () => {
   // which would silently end recitation capture entirely.
   const words = await canonicalWordIds(2);
 
-  for (const [impl, base] of [["shell", shell.baseUrl], ["rust", api.baseUrl]]) {
+  for (const [impl, base] of [["shell", shell.baseUrl], ["rust", rustUrl]]) {
     const sessionId = await freshSession(base);
     const res = await request(base, `/v1/recitation-sessions/${sessionId}/alignments`, {
       method: "POST",

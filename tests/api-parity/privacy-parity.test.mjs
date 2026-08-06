@@ -30,6 +30,21 @@ import {
 
 let api;
 let shell;
+/**
+ * The RUST url, which is not `rustUrl`.
+ *
+ * Under `PARITY_THROUGH_SHELL=1` — the configuration in which this file's A/B is the only thing that
+ * proves anything about the port — `startApi` puts a Node shell in front of the binary and returns
+ * the SHELL as `baseUrl`, exposing Rust as `upstreamUrl`. Wiring `startShell({ upstream:
+ * rustUrl })` and differing against `rustUrl` therefore put Node on BOTH sides of every
+ * `assertAB`: a shell in front of a shell, compared with that inner shell. Identical code cannot
+ * disagree with itself, so the probes passed by construction.
+ *
+ * Measured before this was fixed: a `NODE_ONLY_FIELD` added to Node's `listSurahs` response — a
+ * divergence a byte comparison cannot miss — left `assertAB` GREEN in both verify.sh passes. What
+ * caught it was a literal key-list assertion beside the probe, which is not a comparison at all.
+ */
+let rustUrl;
 let mlMock;
 let mlCalls;
 
@@ -41,7 +56,8 @@ before(async () => {
   });
   const env = { ML_INFERENCE_URL: mlMock.url };
   api = await startApi({ env });
-  shell = await startShell({ upstream: api.baseUrl, env });
+  rustUrl = api.upstreamUrl ?? api.baseUrl;
+  shell = await startShell({ upstream: rustUrl, env });
 });
 
 after(async () => {
@@ -130,7 +146,7 @@ test("export returns the manifest shape and DELETES NOTHING", async () => {
   const shellL = await seedLearner("exp-s");
   const rustL = await seedLearner("exp-r");
 
-  const { shell: s } = await assertABMutating(shell.baseUrl, api.baseUrl, {
+  const { shell: s } = await assertABMutating(shell.baseUrl, rustUrl, {
     name: "privacy export",
     probeFor: (side) => ({
       path: "/v1/privacy/export",
@@ -270,7 +286,7 @@ test("ORDER 1: a learner asking about SOMEONE ELSE is 403, never 404", async () 
   // which learner ids exist by reading 404-against-403.
   const l = await seedLearner("order1");
   for (const path of ["/v1/privacy/export", "/v1/privacy/delete"]) {
-    const { shell: s } = await assertABMutating(shell.baseUrl, api.baseUrl, {
+    const { shell: s } = await assertABMutating(shell.baseUrl, rustUrl, {
       name: `${path} as another learner`,
       probeFor: () => ({
         path,
@@ -287,7 +303,7 @@ test("ORDER 1: a learner asking about SOMEONE ELSE is 403, never 404", async () 
 
 test("ORDER 2: an admin asking about an UNKNOWN learner is 404, not a 500 from the FK", async () => {
   for (const path of ["/v1/privacy/export", "/v1/privacy/delete"]) {
-    const { shell: s } = await assertABMutating(shell.baseUrl, api.baseUrl, {
+    const { shell: s } = await assertABMutating(shell.baseUrl, rustUrl, {
       name: `${path} for an unknown learner`,
       probeFor: () => ({
         path,
@@ -313,7 +329,7 @@ test("ORDER 2 vs 3: an unknown learner is 404 even when the ML service is DOWN",
   // must not survive in the outage case.
   const deadUrl = "http://127.0.0.1:1";
   const deadApi = await startApi({ env: { ML_INFERENCE_URL: deadUrl } });
-  const deadShell = await startShell({ upstream: deadApi.baseUrl, env: { ML_INFERENCE_URL: deadUrl } });
+  const deadShell = await startShell({ upstream: deadApi.upstreamUrl ?? deadApi.baseUrl, env: { ML_INFERENCE_URL: deadUrl } });
   try {
     const { shell: s } = await assertABMutating(deadShell.baseUrl, deadApi.baseUrl, {
       name: "delete an unknown learner with ML down",

@@ -17,10 +17,26 @@ import { TENANT, queryJson, request, startApi, startShell, uniqueSuffix } from "
 
 let api;
 let shell;
+/**
+ * The RUST url, which is not `rustUrl`.
+ *
+ * Under `PARITY_THROUGH_SHELL=1` — the configuration in which this file's A/B is the only thing that
+ * proves anything about the port — `startApi` puts a Node shell in front of the binary and returns
+ * the SHELL as `baseUrl`, exposing Rust as `upstreamUrl`. Wiring `startShell({ upstream:
+ * rustUrl })` and differing against `rustUrl` therefore put Node on BOTH sides of every
+ * `assertAB`: a shell in front of a shell, compared with that inner shell. Identical code cannot
+ * disagree with itself, so the probes passed by construction.
+ *
+ * Measured before this was fixed: a `NODE_ONLY_FIELD` added to Node's `listSurahs` response — a
+ * divergence a byte comparison cannot miss — left `assertAB` GREEN in both verify.sh passes. What
+ * caught it was a literal key-list assertion beside the probe, which is not a comparison at all.
+ */
+let rustUrl;
 
 before(async () => {
   api = await startApi({});
-  shell = await startShell({ upstream: api.baseUrl });
+  rustUrl = api.upstreamUrl ?? api.baseUrl;
+  shell = await startShell({ upstream: rustUrl });
 });
 
 after(async () => {
@@ -38,7 +54,7 @@ function normalizeProgress(body) {
 
 test("POST /v1/learner/progress — same SM-2 result on both, for a first-ever review", async () => {
   const suffix = uniqueSuffix();
-  await assertABMutating(shell.baseUrl, api.baseUrl, {
+  await assertABMutating(shell.baseUrl, rustUrl, {
     name: "POST progress (first review, quality 5)",
     probeFor: (side) => ({
       path: "/v1/learner/progress",
@@ -61,7 +77,7 @@ test("the SM-2 progression matches Rust step for step, not just on the first rev
   for (const [i, quality] of qualities.entries()) {
     for (const [side, baseUrl] of [
       ["shell", shell.baseUrl],
-      ["rust", api.baseUrl],
+      ["rust", rustUrl],
     ]) {
       const res = await request(baseUrl, "/v1/learner/progress", {
         method: "POST",
@@ -116,7 +132,7 @@ test("quality is clamped to 0..5 BEFORE it is stored, not just before sm2_update
   // learner_progress.last_quality has CHECK (0..5). An unclamped write violates it and fails the
   // whole request with a 500 instead of persisting the review.
   const suffix = uniqueSuffix();
-  await assertABMutating(shell.baseUrl, api.baseUrl, {
+  await assertABMutating(shell.baseUrl, rustUrl, {
     name: "POST progress (quality 99)",
     probeFor: (side) => ({
       path: "/v1/learner/progress",
@@ -183,7 +199,7 @@ test("concurrent reviews of the SAME ayah do not lose updates", async () => {
 });
 
 test("GET /v1/learner/progress/weekly is byte-identical", async () => {
-  await assertAB(shell.baseUrl, api.baseUrl, { path: "/v1/learner/progress/weekly", ...learner });
+  await assertAB(shell.baseUrl, rustUrl, { path: "/v1/learner/progress/weekly", ...learner });
 });
 
 test("weekly: a learner may not read another learner's week; staff may", async () => {
@@ -192,7 +208,7 @@ test("weekly: a learner may not read another learner's week; staff may", async (
     { path: "/v1/learner/progress/weekly?learnerId=learner-someone-else", role: "teacher" },
     { path: "/v1/learner/progress/weekly?learnerId=learner-someone-else", role: "scholar" },
   ]) {
-    await assertAB(shell.baseUrl, api.baseUrl, probe);
+    await assertAB(shell.baseUrl, rustUrl, probe);
   }
 });
 
@@ -213,7 +229,7 @@ test("a scholar is refused on GET /v1/learner/progress too, not only on weekly",
   //
   // Asserted A/B: a Node port that widened the list on this route only would otherwise diverge in
   // silence, since no probe here ever sent a scholar.
-  await assertAB(shell.baseUrl, api.baseUrl, { path: "/v1/learner/progress", role: "scholar" });
+  await assertAB(shell.baseUrl, rustUrl, { path: "/v1/learner/progress", role: "scholar" });
 
   const res = await request(shell.baseUrl, "/v1/learner/progress", { role: "scholar" });
   assert.equal(res.status, 403, "a scholar reached the learner progress route");

@@ -23,6 +23,21 @@ import { TENANT, queryJson, request, startApi, startMockUpstream, startShell } f
 
 let api;
 let shell;
+/**
+ * The RUST url, which is not `rustUrl`.
+ *
+ * Under `PARITY_THROUGH_SHELL=1` — the configuration in which this file's A/B is the only thing that
+ * proves anything about the port — `startApi` puts a Node shell in front of the binary and returns
+ * the SHELL as `baseUrl`, exposing Rust as `upstreamUrl`. Wiring `startShell({ upstream:
+ * rustUrl })` and differing against `rustUrl` therefore put Node on BOTH sides of every
+ * `assertAB`: a shell in front of a shell, compared with that inner shell. Identical code cannot
+ * disagree with itself, so the probes passed by construction.
+ *
+ * Measured before this was fixed: a `NODE_ONLY_FIELD` added to Node's `listSurahs` response — a
+ * divergence a byte comparison cannot miss — left `assertAB` GREEN in both verify.sh passes. What
+ * caught it was a literal key-list assertion beside the probe, which is not a comparison at all.
+ */
+let rustUrl;
 let mock;
 let received;
 let learnerId;
@@ -37,7 +52,8 @@ before(async () => {
   });
   const env = { ML_INFERENCE_URL: mock.url, ASR_INFERENCE_URL: mock.url };
   api = await startApi({ env });
-  shell = await startShell({ upstream: api.baseUrl, env });
+  rustUrl = api.upstreamUrl ?? api.baseUrl;
+  shell = await startShell({ upstream: rustUrl, env });
 
   const [row] = await queryJson(
     `SELECT s.id, s.learner_id FROM recitation_sessions s
@@ -71,7 +87,7 @@ const mlProbe = (body, extra = {}) => ({
 
 test("the forwarded tenantId is the ACTOR's, never the client's claim", async () => {
   received.length = 0;
-  const { shell: s } = await assertABMutating(shell.baseUrl, api.baseUrl, {
+  const { shell: s } = await assertABMutating(shell.baseUrl, rustUrl, {
     name: "ml predict with a forged tenantId",
     probeFor: () => mlProbe({ tenantId: "tenant-somewhere-else", words: [] }),
     normalize: (b) => b,
@@ -100,7 +116,7 @@ test("the forwarded consent is the STORED record, never the client's claim", asy
     [sessionId],
   );
 
-  const { shell: s } = await assertABMutating(shell.baseUrl, api.baseUrl, {
+  const { shell: s } = await assertABMutating(shell.baseUrl, rustUrl, {
     name: "ml predict with forged consent",
     probeFor: () =>
       mlProbe({
@@ -127,7 +143,7 @@ test("the forwarded consent is the STORED record, never the client's claim", asy
 
 test("an unapproved modelVersion is refused, not silently downgraded", async () => {
   for (const modelVersion of ["ml-aligner-v9.9-experimental", "", "ML-ALIGNER-V0.2"]) {
-    const { shell: s } = await assertABMutating(shell.baseUrl, api.baseUrl, {
+    const { shell: s } = await assertABMutating(shell.baseUrl, rustUrl, {
       name: `modelVersion ${JSON.stringify(modelVersion)}`,
       probeFor: () => mlProbe({ modelVersion, words: [] }),
       normalize: (b) => b,
@@ -144,7 +160,7 @@ test("an unapproved modelVersion is refused, not silently downgraded", async () 
 });
 
 test("the APPROVED model passes through", async () => {
-  const { shell: s } = await assertABMutating(shell.baseUrl, api.baseUrl, {
+  const { shell: s } = await assertABMutating(shell.baseUrl, rustUrl, {
     name: "approved model",
     probeFor: () => mlProbe({ modelVersion: "ml-aligner-v0.2", words: [] }),
     normalize: (b) => b,
@@ -156,14 +172,14 @@ test("the APPROVED model passes through", async () => {
 
 test("an unknown sessionId is 403, NOT 404 — the same answer as someone else's", async () => {
   // Identical answers mean this cannot be used to discover which session ids exist in the tenant.
-  const { shell: unknown } = await assertABMutating(shell.baseUrl, api.baseUrl, {
+  const { shell: unknown } = await assertABMutating(shell.baseUrl, rustUrl, {
     name: "ml predict against an unknown session",
     probeFor: () => mlProbe({ sessionId: "session-does-not-exist" }),
     normalize: (b) => b,
   });
   assert.equal(unknown.status, 403);
 
-  const { shell: notMine } = await assertABMutating(shell.baseUrl, api.baseUrl, {
+  const { shell: notMine } = await assertABMutating(shell.baseUrl, rustUrl, {
     name: "ml predict against another learner's session",
     probeFor: () => mlProbe({ sessionId }, { userId: "learner-someone-else" }),
     normalize: (b) => b,
@@ -172,7 +188,7 @@ test("an unknown sessionId is 403, NOT 404 — the same answer as someone else's
 });
 
 test("admin/ops MAY analyse any in-tenant session", async () => {
-  const { shell: s } = await assertABMutating(shell.baseUrl, api.baseUrl, {
+  const { shell: s } = await assertABMutating(shell.baseUrl, rustUrl, {
     name: "admin analyses someone else's session",
     probeFor: () => ({ path: ML_PATH, method: "POST", role: "admin", body: { sessionId } }),
     normalize: (b) => b,
@@ -184,7 +200,7 @@ test("admin/ops MAY analyse any in-tenant session", async () => {
 
 test("a non-object body is 400 with the transcribed message", async () => {
   for (const body of [[], "a string", 42, null]) {
-    const { shell: s } = await assertABMutating(shell.baseUrl, api.baseUrl, {
+    const { shell: s } = await assertABMutating(shell.baseUrl, rustUrl, {
       name: `ml body ${JSON.stringify(body)}`,
       probeFor: () => mlProbe(body),
       normalize: () => null, // serde's 422 text is a recorded divergence; compare the STATUS
@@ -195,7 +211,7 @@ test("a non-object body is 400 with the transcribed message", async () => {
 
 test("an unauthenticated request never reaches the upstream", async () => {
   received.length = 0;
-  const { shell: s } = await assertABMutating(shell.baseUrl, api.baseUrl, {
+  const { shell: s } = await assertABMutating(shell.baseUrl, rustUrl, {
     name: "unauthenticated ml predict",
     probeFor: () => ({ path: ML_PATH, method: "POST", tenant: null, body: { words: [] } }),
     normalize: (b) => b,
@@ -208,7 +224,7 @@ test("the ASR routes forward the body UNCHANGED and add the ASR key", async () =
   received.length = 0;
   for (const path of ["/v1/asr/transcribe", "/v1/asr/force-align"]) {
     const body = { audioBase64: "AAAA", audioFormat: "wav", language: "ar", wordTimestamps: true };
-    const { shell: s } = await assertABMutating(shell.baseUrl, api.baseUrl, {
+    const { shell: s } = await assertABMutating(shell.baseUrl, rustUrl, {
       name: `asr ${path}`,
       probeFor: () => ({ path, method: "POST", role: "learner", userId: learnerId, body }),
       normalize: (b) => b,
@@ -239,7 +255,7 @@ test("a near-miss path is NOT captured by the colon in the route", async () => {
     "/v1/ml/tajweed-findingsXYZ",
     "/v1/ml/alignments:predictX",
   ]) {
-    const { shell: s } = await assertABMutating(shell.baseUrl, api.baseUrl, {
+    const { shell: s } = await assertABMutating(shell.baseUrl, rustUrl, {
       name: `near-miss ${path}`,
       probeFor: () => ({ path, method: "POST", role: "learner", userId: learnerId, body: {} }),
       normalize: (b) => b,
@@ -248,6 +264,77 @@ test("a near-miss path is NOT captured by the colon in the route", async () => {
       s.status,
       404,
       `${path} must not be served — a mid-segment colon read as a parameter would capture it`,
+    );
+  }
+});
+
+// ── P5.3 — a trace must survive the service boundary ─────────────────────────────────────────────
+//
+// Both services audit a trace id. platform-api takes it from `x-trace-id` and writes it into
+// `audit_events.metadata.trace_id`; ml-inference takes it from `requestBody.traceId` and writes it
+// into its own JSONL audit log. Measured before this test existed, the proxy forwarded:
+//
+//     content-type, x-ml-api-key, content-length
+//
+// and nothing else. No trace in the header, none in the body. So platform-api recorded the caller's
+// trace, ml-inference recorded null, and the two audit trails could not be joined: "which ML call
+// produced this finding" had no answer, on the one path where a learner's audio meets a model.
+//
+// The trace the SERVER saw is authoritative, not a `traceId` the caller happens to put in the body —
+// the same reasoning the proxy already applies to `tenantId`, which it overwrites rather than trusts.
+const TRACE_PROXIED_ROUTES = [
+  "/v1/ml/alignments:predict",
+  "/v1/ml/tajweed-findings:predict",
+  "/v1/asr/transcribe",
+  "/v1/asr/force-align",
+];
+
+test("the caller's trace reaches the upstream service on every proxied route", async () => {
+  for (const path of TRACE_PROXIED_ROUTES) {
+    for (const [impl, base] of [["shell", shell.baseUrl], ["rust", rustUrl]]) {
+      received.length = 0;
+      const trace = `trace-${path.replace(/\W/g, "")}-${impl}`;
+
+      await request(base, path, {
+        method: "POST",
+        role: "teacher",
+        headers: { "x-trace-id": trace },
+        // No sessionId: the consent lookup would refuse before the forward, and this test is about
+        // what crosses the boundary, not about consent.
+        body: { quranRef: { surahNumber: 1, ayahStart: 1, ayahEnd: 1, display: "1:1" } },
+      });
+
+      const forwarded = received.at(-1);
+      assert.ok(forwarded, `${impl}: ${path} never reached the upstream at all`);
+      assert.equal(
+        forwarded.body?.traceId,
+        trace,
+        `${impl}: ${path} forwarded no trace — ml-inference audits null while platform-api audits ` +
+          `${trace}, and the two trails cannot be joined`,
+      );
+    }
+  }
+});
+
+test("a caller cannot forge the trace the upstream records", async () => {
+  // `traceId` in the body is caller-controlled. The header is what platform-api audits, so if the
+  // body won, a caller could make the two services disagree about their own audit trail — the exact
+  // thing the proxy already refuses to allow for `tenantId`.
+  for (const [impl, base] of [["shell", shell.baseUrl], ["rust", rustUrl]]) {
+    received.length = 0;
+    await request(base, "/v1/ml/tajweed-findings:predict", {
+      method: "POST",
+      role: "teacher",
+      headers: { "x-trace-id": "trace-from-the-header" },
+      body: {
+        traceId: "trace-the-caller-made-up",
+        quranRef: { surahNumber: 1, ayahStart: 1, ayahEnd: 1, display: "1:1" },
+      },
+    });
+    assert.equal(
+      received.at(-1)?.body?.traceId,
+      "trace-from-the-header",
+      `${impl}: a body-supplied traceId overrode the one the server saw`,
     );
   }
 });
