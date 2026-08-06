@@ -352,6 +352,38 @@ P6 supports R10; and P7 supports R11/R12.
 - [x] P2.5 — Prove RTL focus order, semantics, responsive layouts, errors, forms, charts, screen reader labels, and accessible language selector.
 - [ ] P2.6 — Specify/test actionable unavailable/loading/offline/permission/timeout states for every critical flow.
 
+
+### Local implementation evidence — not a release-status change
+
+- 6 August 2026 (**P2.2**, engineering COMPLETE — the row stays open):
+  `apps/web/src/locales/capability.json` states, per locale, what it claims, who stands behind it,
+  and when that expires. Four tests in `tests/i18n/locale-parity.test.mjs` hold it to the locale
+  files, and the row's three named artefacts map one to one:
+
+  | the row asks for | what exists |
+  |---|---|
+  | capability manifest | every locale in `SUPPORTED_LANGUAGE_CODES` has a row; the manifest may not describe a language the app does not offer, nor omit one it does |
+  | reviewer / expiry | `reviewer` and `reviewExpires` per locale; a status of `complete` or `partial` with no reviewer is REFUSED |
+  | key-parity test | declared key counts must equal the real counts, in BOTH directions — a locale that gains strings without updating its row fails too |
+  | no-fallback test | the DEFAULT language is read out of `i18n/index.ts` and its coverage asserted against the manifest |
+
+  What it FOUND, which is why the row matters: `ckb.json` is `{}`, `i18n/index.ts` sets
+  `lng: "ckb"`, and `fallbackLng` is `en` — so a Kurdish-first product presents an entirely English
+  interface by default, and eight further locales are selectable with nothing behind them. The
+  pre-existing locale rules could not see it: every one of them is "for each key, assert X", and an
+  empty locale satisfies all of them vacuously.
+
+  The default-language test deliberately does not FAIL on that. Changing the app's default language
+  is a product decision (**P2.3**), and a permanently-red gate teaches people to ignore it. It
+  prints the condition on every run instead:
+
+      note: the default language "ckb" is a placeholder — every string a user sees is en via fallback
+
+  The row stays `[ ]` because the ledger rule requires `verify.sh --release`, a retained
+  candidate-bound artifact, and an independent verifier — and because **P2.4** (writing and
+  independently reviewing the Sorani strings) is the work this manifest makes legible, not work it
+  does.
+
 ## Phase 3 — domain, model, and canonical data
 
 - [x] P3.1 — Inventory every learner-visible feedback result, source, review state, model/version, corpus, owner, limitation, and expiry.
@@ -453,6 +485,35 @@ independent verification, or release evidence. P3 remains open.
   `STAGING_RUNBOOK.md` rollback/kill-switch runbook, the P5.5 **engineering** is
   in place. P5.5 stays `[ ]` because "prove ... alerts/dashboards" live + wiring
   alert routing to a receiver + on-call sign-off are the SRE tasks (**P5.7**).
+
+
+- 6 August 2026 (**P3.2**, engineering PARTIAL — the row stays open): the row names four kinds of
+  data — "missing, rejected, expired, or fixture". Two now have gates.
+
+  **fixture.** `ML_USE_GOLDEN_FIXTURES=1` makes ml-inference answer from `golden-evals.json`
+  instead of analysing anything: the alignment branch emits `heardText: w.canonicalText,
+  status: "matched"` — a flawless recitation nobody performed — and the tajweed findings it returns
+  are PERSISTED with `analysis_basis = 'canonical-text'`, indistinguishable from analysis of a real
+  session. The flag set once contaminates the corpus permanently. It now requires
+  `ML_ACKNOWLEDGE_FIXTURE_OUTPUT=1` and the service refuses to start without it.
+
+  **rejected.** The shared gate corpus covered five of the six review statuses the
+  `tajweed_findings` CHECK constraint allows. The missing one was `blocked` — what
+  `TeacherDecision::Rejected` produces. Every implementation of `canShowLearnerFacingAiOutput` was
+  verified against a table that had never been shown a teacher saying no. A denylist enumerating the
+  five old statuses passes 30 of 31 assertions; the case added here is the one that catches it.
+  `tests/contract/enum-db-parity.test.mjs` now asserts corpus completeness against `pg_constraint`,
+  so a status added to the database without a case turns the gate red.
+
+  **missing** is covered in part — `create_teacher_review` refuses to accept an unsourced finding,
+  and the corpus has a no-sources case. **expired** has no gate and no schema: nothing in
+  `tajweed_findings`, `teacher_reviews` or `scholar_approvals` expires. Adding an expiry concept is
+  a design decision (who sets it, how long), not an engineering gap to close unilaterally.
+
+  Related, though not named by this row: `audioStatus` on `/v1/tajweed-findings` now tells a
+  reviewer whether the recitation can be heard — `available` / `discarded` / `not-captured` /
+  `unknown` — where previously all 2772 findings belonged to discard-consent sessions and the queue
+  looked identical to one where the audio was simply unplayed.
 
 ## Phase 4 — privacy, tenancy, and security
 
