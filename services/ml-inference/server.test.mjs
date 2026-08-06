@@ -386,3 +386,87 @@ test("a session with no stored audio says so, rather than returning an empty tra
   assert.equal(res.reason, "no-audio");
   assert.deepEqual(res.recognizedText, []);
 });
+
+// ── P3.2 — fixture output must be a deliberate act, not a flag somebody set once ──────────────────
+//
+// `ML_USE_GOLDEN_FIXTURES=1` makes `predictAlignment` and `predictTajweed` answer from
+// fixtures/golden-evals.json instead of analysing anything. The alignment branch emits
+//
+//     heardText: w.canonicalText,  status: "matched"
+//
+// — a FLAWLESS recitation that nobody performed — and the tajweed branch emits the fixture's
+// findings. Nothing in either payload says it came from a fixture.
+//
+// Those findings persist. `persist_tajweed_findings` (handlers/ml_proxy.rs) writes them to
+// tajweed_findings with `analysis_basis = 'canonical-text'`, exactly like a real one. So the flag
+// being set ONCE — a demo, a staging box, a copied env file — contaminates the corpus permanently,
+// and turning it off later does not un-write the rows. A teacher reviewing one cannot tell it from
+// analysis of a child's actual recitation.
+//
+// The flag is genuinely needed for smoke and eval runs. So it is not removed: it is made a
+// deliberate act. Requesting fixture output now also requires acknowledging what it means, in a
+// variable whose name is the acknowledgement, and the service refuses to start otherwise — the same
+// shape as AUDIO_STORAGE_DRIVER refusing a backend it cannot honour rather than quietly using
+// another one.
+
+import { spawn as spawnGuarded } from "node:child_process";
+
+/** Start the service with the given env and return { code, stderr } once it has settled. */
+function bootWith(env) {
+  return new Promise((resolve) => {
+    const child = spawnGuarded(process.execPath, [new URL("./server.mjs", import.meta.url).pathname], {
+      env: {
+        PATH: process.env.PATH,
+        HOME: process.env.HOME,
+        ML_INFERENCE_PORT: "8397",
+        ML_API_KEY: "boot-guard-test",
+        AUDIO_STORAGE_DIR: mkdtempSync(join(tmpdir(), "ml-boot-")),
+        ...env,
+      },
+      stdio: ["ignore", "ignore", "pipe"],
+    });
+    let stderr = "";
+    child.stderr.on("data", (d) => {
+      stderr += d.toString();
+    });
+    child.once("exit", (code) => resolve({ code, stderr }));
+    // A service that starts successfully never exits; give it a moment, then kill and report that.
+    setTimeout(() => child.kill("SIGKILL"), 1500);
+  });
+}
+
+test("fixture output is REFUSED unless the operator acknowledges what it reports", async () => {
+  const { code, stderr } = await bootWith({ ML_USE_GOLDEN_FIXTURES: "1" });
+  assert.notEqual(
+    code,
+    null,
+    "the service started with ML_USE_GOLDEN_FIXTURES=1 and no acknowledgement — it would report " +
+      "recitations nobody performed, and persist them as though they were real",
+  );
+  assert.match(
+    stderr,
+    /ML_ACKNOWLEDGE_FIXTURE_OUTPUT/,
+    `the refusal must name the variable that unblocks it, or an operator cannot act on it:\n${stderr}`,
+  );
+  // The message has to say WHAT it is refusing, not just that it refused.
+  assert.match(
+    stderr,
+    /nobody performed|not analysed|fixture/i,
+    `the refusal must say what fixture output actually is:\n${stderr}`,
+  );
+});
+
+test("fixture output starts normally once acknowledged — smoke and eval still work", async () => {
+  // The control. Without it every assertion above is satisfied by a service that refuses to start
+  // at all, which would break the smoke and eval runs this flag exists for.
+  const { code, stderr } = await bootWith({
+    ML_USE_GOLDEN_FIXTURES: "1",
+    ML_ACKNOWLEDGE_FIXTURE_OUTPUT: "1",
+  });
+  assert.equal(code, null, `acknowledged fixture mode still refused to start:\n${stderr}`);
+});
+
+test("the default path is unaffected — no flag, no acknowledgement, normal boot", async () => {
+  const { code, stderr } = await bootWith({});
+  assert.equal(code, null, `the service refuses to start with no fixture flags at all:\n${stderr}`);
+});

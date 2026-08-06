@@ -44,6 +44,31 @@ const GOLDEN_CASE_IDS = fixtures.cases.map((c) => c.id);
 // Golden fixtures are ONLY for smoke/eval. By default (flag unset) every request
 // computes real alignment/tajweed — even for the golden refs like Al-Fatihah 1:1-7.
 const USE_GOLDEN_FIXTURES = process.env.ML_USE_GOLDEN_FIXTURES === "1";
+
+// ── Fixture output is a deliberate act, not a flag somebody set once (P3.2) ──────────────────────
+//
+// In fixture mode `predictAlignment` answers with `heardText: w.canonicalText, status: "matched"` —
+// a FLAWLESS recitation that nobody performed — and `predictTajweed` answers with the fixture's
+// findings. Neither payload says it came from a fixture.
+//
+// Those findings PERSIST. `persist_tajweed_findings` (handlers/ml_proxy.rs) writes them to
+// tajweed_findings with `analysis_basis = 'canonical-text'`, indistinguishable from analysis of a
+// child's actual recitation. So the flag being set once — a demo, a staging box, a copied env file —
+// contaminates the corpus permanently, and unsetting it later does not un-write the rows.
+//
+// The flag is genuinely needed, so it is not removed. It now requires a second variable whose NAME
+// is the acknowledgement, so enabling it cannot be done absent-mindedly and shows up in review as
+// what it is. Same shape as AUDIO_STORAGE_DRIVER above: refuse to start rather than do something an
+// operator would not recognise from their config.
+if (USE_GOLDEN_FIXTURES && process.env.ML_ACKNOWLEDGE_FIXTURE_OUTPUT !== "1") {
+  throw new Error(
+    "ML_USE_GOLDEN_FIXTURES=1 makes this service answer from fixtures instead of analysing " +
+      "anything: alignments report a flawless recitation nobody performed, and the tajweed findings " +
+      "it returns are PERSISTED as though they were real analysis of a learner's session. " +
+      "Set ML_ACKNOWLEDGE_FIXTURE_OUTPUT=1 alongside it to confirm that is intended. " +
+      "Refusing to start rather than quietly producing evidence about recitations that never happened.",
+  );
+}
 // === Audio storage abstraction ===
 // Filesystem-only today. AUDIO_STORAGE_DRIVER exists so a future S3/MinIO backend has a place to
 // hang off of, but until one is actually implemented, requesting it must fail loudly at startup —
