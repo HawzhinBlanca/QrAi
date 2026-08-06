@@ -138,3 +138,62 @@ test("the security schemes cover all three auth paths the service accepts", () =
     "pilotCookie",
   ]);
 });
+
+/**
+ * A permissive ARRAY schema must be marked `x-unvalidated`, exactly like a permissive object one.
+ *
+ * The test above says it plainly: "A permissive schema that was NOT marked would validate anything
+ * and read as coverage — the exact false-green this repo keeps finding." It then pins
+ * `x-unvalidated` to three routes BY NAME, which is careful work — and it never looked inside an
+ * array's `items`.
+ *
+ * Measured when this was written: FOUR routes declared `items: { type: object }`, none of them
+ * marked. `{ type: object }` validates every object ever serialized. So the contract described the
+ * shape of the staff review queue, the tajweed findings queue, the scholar approvals list and the
+ * active learners list as "some objects", and the pinned count of unvalidated routes said 3.
+ *
+ * Unlike the ML/ASR proxies — which forward an upstream body this service does not control, and
+ * where the only accurate schema really is "any JSON" — these four shapes are built by handlers in
+ * this repository. They were observed from a running server and written down.
+ */
+test("an array response may not hide behind `items: { type: object }`", () => {
+  const permissive = [];
+
+  const check = (schema, where) => {
+    if (!schema || typeof schema !== "object") return;
+    if (schema.type === "array") {
+      const items = schema.items;
+      const typed =
+        items &&
+        (items.$ref ||
+          items.properties ||
+          items.oneOf ||
+          items.anyOf ||
+          items.allOf ||
+          (items.type && items.type !== "object"));
+      if (!typed) permissive.push(where);
+    }
+  };
+
+  for (const [path, item] of Object.entries(spec.paths)) {
+    for (const [method, op] of Object.entries(item)) {
+      if (!op || typeof op !== "object" || !op.responses) continue;
+      // A route that has declared itself unvalidated has already been counted by the test above.
+      if (op["x-unvalidated"] === true) continue;
+      for (const [code, response] of Object.entries(op.responses)) {
+        const schema = response?.content?.["application/json"]?.schema;
+        check(schema, `${method.toUpperCase()} ${path} -> ${code}`);
+      }
+    }
+  }
+
+  assert.deepEqual(
+    permissive,
+    [],
+    "these array responses validate nothing and are not marked x-unvalidated:\n  " +
+      permissive.join("\n  ") +
+      "\n\nEither give the items a schema — observed from a running server, not read off a struct —" +
+      "\nor mark the operation x-unvalidated so it is COUNTED. Silence is the false-green the" +
+      "\nx-unvalidated test above exists to prevent, and it does not look inside arrays.",
+  );
+});

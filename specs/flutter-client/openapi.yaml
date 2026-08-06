@@ -110,6 +110,65 @@ components:
         withheld: { type: boolean }
       additionalProperties: false
 
+    StaffTajweedFinding:
+      # The tenant-wide STAFF queue's finding shape — NOT SessionTajweedFinding, which is what a
+      # learner's own session read returns. Different audience, different fields: this one carries
+      # provenance a teacher needs to judge the finding and no `withheld` flag, because staff are
+      # never redacted.
+      #
+      # Observed from a running server, not read off a Rust struct. Keys are alphabetical because
+      # the handler builds them with `json!`, which is BTreeMap-backed.
+      type: object
+      required: [analysisBasis, audioStatus, confidence, explanation, id, reviewStatus, rule, severity, sources, transcriptSource, wordId]
+      properties:
+        # ADR-0033 — what the finding is ABOUT. `canonical-text` means a rule applies at this
+        # position in the passage, which is true of the text and identical for every learner.
+        analysisBasis: { type: string, enum: [canonical-text, acoustic] }
+        # ADR-0037 — whether a reviewer can HEAR the recitation, and if not, why not.
+        audioStatus: { type: string, enum: [available, discarded, not-captured, unknown] }
+        # 0 for every canonical-text finding (ADR-0036): nothing measured it.
+        confidence: { type: number, minimum: 0, maximum: 1 }
+        explanation: { type: string }
+        id: { type: string, minLength: 1 }
+        reviewStatus: { type: string, minLength: 1 }
+        rule: { type: string }
+        severity: { type: string }
+        sources: { type: array, items: { type: object } }
+        # ADR-0030 — whether the platform heard the recitation at all.
+        transcriptSource: { type: string, enum: [server-derived, client-reported] }
+        wordId: { type: string }
+      additionalProperties: false
+
+    TeacherReviewQueueEntry:
+      # A recorded teacher DECISION, not a pending item — the name is historical. `findingId` is
+      # nullable because a re-record detaches a review rather than deleting it (ADR-0031).
+      type: object
+      required: [id, tenantId, findingId, teacherId, decision, note, supersededAt, auditEventId]
+      properties:
+        id: { type: string, minLength: 1 }
+        tenantId: { type: string, minLength: 1 }
+        findingId: { type: string, minLength: 1, nullable: true }
+        teacherId: { type: string, minLength: 1 }
+        decision: { type: string, enum: [accepted, rejected, edited] }
+        note: { type: string }
+        supersededAt: { type: string, nullable: true }
+        auditEventId: { type: string, minLength: 1 }
+      additionalProperties: false
+
+    ScholarApprovalListEntry:
+      # The LIST shape, which is not the ScholarApproval struct: `reviewer` rather than `reviewerId`,
+      # and a source COUNT rather than the sources themselves.
+      type: object
+      required: [id, reviewer, risk, sourceCount, status, topic]
+      properties:
+        id: { type: string, minLength: 1 }
+        reviewer: { type: string }
+        risk: { type: string, enum: [low, medium, high] }
+        sourceCount: { type: integer, minimum: 0 }
+        status: { type: string, enum: [draft, scholar-approved, blocked] }
+        topic: { type: string }
+      additionalProperties: false
+
     QuranRef:
       type: object
       required: [surahNumber, ayahStart, ayahEnd, display]
@@ -802,7 +861,9 @@ paths:
       tags: [recitation]
       summary: Distinct active learners. Staff only.
       responses:
-        '200': { description: learners, content: { application/json: { schema: { type: array, items: { type: object } } } } }
+        # An array of learner IDs, not of objects. Observed from a running server: the handler
+        # selects `learner_id` and returns the column.
+        '200': { description: learners, content: { application/json: { schema: { type: array, items: { type: string, minLength: 1 } } } } }
         '403': { $ref: '#/components/responses/Forbidden' }
 
   # ── progress ──────────────────────────────────────────────────────────────────────────────────
@@ -836,12 +897,12 @@ paths:
     get:
       tags: [review]
       responses:
-        '200': { description: findings, content: { application/json: { schema: { type: array, items: { type: object } } } } }
+        '200': { description: findings, content: { application/json: { schema: { type: array, items: { $ref: '#/components/schemas/StaffTajweedFinding' } } } } }
   /v1/teacher-review-queue:
     get:
       tags: [review]
       responses:
-        '200': { description: queue, content: { application/json: { schema: { type: array, items: { type: object } } } } }
+        '200': { description: queue, content: { application/json: { schema: { type: array, items: { $ref: '#/components/schemas/TeacherReviewQueueEntry' } } } } }
   /v1/teacher-reviews:
     post:
       tags: [review]
@@ -879,7 +940,7 @@ paths:
     get:
       tags: [review]
       responses:
-        '200': { description: approvals, content: { application/json: { schema: { type: array, items: { type: object } } } } }
+        '200': { description: approvals, content: { application/json: { schema: { type: array, items: { $ref: '#/components/schemas/ScholarApprovalListEntry' } } } } }
         '401': { $ref: '#/components/responses/Unauthorized' }
     post:
       tags: [review]
