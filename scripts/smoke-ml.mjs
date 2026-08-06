@@ -187,6 +187,11 @@ async function startMlService() {
       // This smoke asserts deterministic golden-fixture behavior, so run ml in fixture
       // mode (it defaults OFF so learners get real computed alignment).
       ML_USE_GOLDEN_FIXTURES: "1",
+      // Required alongside it since P3.2. Fixture mode reports recitations nobody performed, and its
+      // tajweed findings persist as though they were real; the service refuses to start without this
+      // acknowledgement so the choice cannot be made absent-mindedly. A smoke run is exactly the
+      // place it IS intended.
+      ML_ACKNOWLEDGE_FIXTURE_OUTPUT: "1",
     },
     stdio: ["ignore", "pipe", "pipe"],
   });
