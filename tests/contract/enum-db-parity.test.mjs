@@ -118,6 +118,42 @@ test("all three review_status constraints agree with EACH OTHER", async (t) => {
   }
 });
 
+test("the database enforces exactly the teacher decisions the contract offers", async (t) => {
+  // ── Why this enum in particular ─────────────────────────────────────────────────────────────────
+  // `list_teacher_review_queue` parses the stored decision with a match whose fallback is
+  //
+  //     _ => TeacherDecision::Accepted
+  //
+  // so a value the code does not recognise is reported as an ACCEPTANCE — the most permissive
+  // reading of a human judgement, on the enum that decides whether a learner is shown a finding.
+  // That is the opposite of the principle the same file applies to review_status, where the comment
+  // on the queue's ORDER BY says an unrecognised status "should surface for a human rather than
+  // vanish from the queue".
+  //
+  // Found by a surviving cargo-mutants result: "delete match arm 'accepted' in
+  // list_teacher_review_queue" was undetectable, because the fallback produces exactly the value the
+  // deleted arm produced.
+  //
+  // The fallback is unreachable TODAY — `0001_core_schema.sql` constrains the column to the three
+  // values. So the honest fix is not to rewrite the fallback for data that cannot exist; it is to
+  // keep it unreachable. This asserts the database, the contract and therefore the match arms cannot
+  // drift apart: adding a fourth decision on either side fails here, before anything can reach that
+  // `_`.
+  if (!DATABASE_URL) return t.skip("no DATABASE_URL — this leg needs the live constraint");
+  const client = new pg.Client({ connectionString: DATABASE_URL });
+  await client.connect();
+  try {
+    assert.deepEqual(
+      await allowedValues(client, "teacher_reviews", "decision"),
+      contractEnum("TeacherReviewQueueEntry", "decision"),
+      "teacher_reviews.decision and the contract disagree. A value the database accepts and the " +
+        "code does not is read as `accepted` by list_teacher_review_queue — a decision nobody made",
+    );
+  } finally {
+    await client.end();
+  }
+});
+
 test("the database enforces exactly the audio retentions the contract offers", async (t) => {
   // The one whose values decide how long a child's recorded voice is kept. A value the contract
   // offers but the database refuses is a 500 on a consent write; the reverse is a retention mode
