@@ -19,11 +19,18 @@
  *
  * These are the three fields that make this a security boundary rather than a forwarder.
  */
+import { randomUUID } from "node:crypto";
+
 import { ApiError, requireSelfOrAny, resolveActor } from "../lib/authz.mjs";
 import { proxy } from "../lib/proxy.mjs";
 
 /** ml_proxy.rs:32 — the runtime allowlist. An unapproved model is a 400, not a silent downgrade. */
 const APPROVED_MODELS = ["ml-aligner-v0.2"];
+
+const newId = (prefix) => `${prefix}-${randomUUID()}`;
+
+/** `severity` has a CHECK constraint; an unknown value would be a 500 on a learner's request. */
+const SEVERITIES = ["practice", "warning", "critical"];
 
 /**
  * Forward to an internal service and map every failure to a GENERIC 502.
@@ -198,6 +205,14 @@ async function proxyMl(req, reply, ctx, label, path) {
     service: "ML",
   });
 
+  // Store what the model said, so a teacher can review it — `persist_tajweed_findings`
+  // (ml_proxy.rs:297). Measured absent from this service: a prediction served here returned five
+  // findings and wrote ZERO rows, where Rust wrote a finding and an audit event from the same
+  // request. The responses were byte-identical, so the A/B differ could not see it.
+  if (label === "tajweed" && typeof result?.sessionId === "string") {
+    await persistTajweedFindings(ctx, actor, result.sessionId, result, trace);
+  }
+
   // The learner gate applies to the RESPONSE — ml_proxy.rs `redact_withheld_findings`. Everything
   // this route returns is freshly computed and `ai-suggested`, so for a learner the whole set is
   // withheld; it was being sent to their device in full with the client trusted to hide it.
@@ -206,6 +221,99 @@ async function proxyMl(req, reply, ctx, label, path) {
   }
 
   return reply.send(result);
+}
+
+/**
+ * Store the findings a prediction produced — `persist_tajweed_findings` (ml_proxy.rs:297).
+ *
+ * The constraint ORDER is Rust's and is load-bearing:
+ *   1. already-analysed check FIRST, so the common re-run path costs one query
+ *   2. wordId -> alignment id, this session only — no alignments means no evidence to anchor to
+ *   3. the tajweed model resolved BY KIND; anything but exactly one match refuses rather than guesses
+ * and the audit row is inserted before the findings that FK-reference it.
+ *
+ * Everything not-storable is SKIPPED, never a 500: a learner asking for analysis must not get an
+ * error because the model named a word that is not in their alignment set.
+ */
+async function persistTajweedFindings(ctx, actor, sessionId, result, trace) {
+  const findings = Array.isArray(result?.findings) ? result.findings : [];
+  if (findings.length === 0) return;
+
+  await ctx.db.withTenant(actor.tenantId, async (tx) => {
+    const [existing] = await tx`
+      SELECT 1 FROM tajweed_findings tf
+      JOIN word_alignments wa ON wa.id = tf.alignment_id
+      WHERE wa.session_id = ${sessionId} AND wa.tenant_id = ${actor.tenantId} LIMIT 1`;
+    if (existing) return;
+
+    const alignmentRows = await tx`
+      SELECT id, word_id FROM word_alignments
+      WHERE session_id = ${sessionId} AND tenant_id = ${actor.tenantId}`;
+    // "there is no evidence a finding could point at" — not an error, and not a stored finding
+    // floating free of the recitation it is supposedly about.
+    if (alignmentRows.length === 0) return;
+    const alignments = new Map(alignmentRows.map((r) => [r.word_id, r.id]));
+
+    const models = await tx`SELECT id FROM model_versions WHERE kind = 'tajweed' ORDER BY id`;
+    if (models.length !== 1) {
+      // Refusing to guess which model produced these findings. A finding attributed to the wrong
+      // model version is worse than no finding: it is evidence pointing at the wrong thing.
+      throw new ApiError("tajweed findings could not be recorded for review", 502);
+    }
+    const modelVersionId = models[0].id;
+
+    const auditId = newId("audit");
+    // Ordered before the findings, which FK-reference it. `actor_id` REFERENCES users(id), so it is
+    // the authenticated caller — a synthetic 'ml-inference' is a foreign-key violation, which would
+    // surface as a 500 on a learner's analysis request. The caller is the honest answer anyway:
+    // they asked for the analysis.
+    await tx`
+      INSERT INTO audit_events (id, tenant_id, actor_id, action, subject_type, subject_id, metadata)
+      VALUES (${auditId}, ${actor.tenantId}, ${actor.userId}, 'ml.tajweed.persisted',
+              'recitation_session', ${sessionId},
+              ${tx.json({ trace_id: trace, findingCount: findings.length })})`;
+
+    for (const finding of findings) {
+      if (finding === null || typeof finding !== "object") continue;
+      const alignmentId =
+        typeof finding.wordId === "string" ? alignments.get(finding.wordId) : undefined;
+      if (alignmentId === undefined) continue;
+      const severity = typeof finding.severity === "string" ? finding.severity : "";
+      if (!SEVERITIES.includes(severity)) continue;
+
+      const rawConfidence = Number(finding.confidence);
+      const confidence = Number.isFinite(rawConfidence)
+        ? Math.min(1, Math.max(0, rawConfidence))
+        : 0;
+
+      // `review_status` and `analysis_basis` are LITERALS below, never fields read from the ML
+      // response.
+      //
+      // 'ai-suggested': this is a model's opinion, and only `create_teacher_review` may move it
+      // (ADR-0027).
+      //
+      // 'canonical-text': analyzeAyah inspects `word.text` — the canonical Uthmani text — and
+      // nothing else. No audio, no heard text, no timing, no pitch. Every finding it produces is "a
+      // rule applies at this position in the passage", which is true of the text and identical for
+      // every learner who ever recites it. Recording that is what lets a teacher tell it apart from
+      // a judgement about how THIS learner recited. Hardcoded for the same reason
+      // `TranscriptSource::ClientReported` is (ADR-0030): a value read from a response is one
+      // refactor away from being caller-controlled, and this one decides whether a teacher trusts
+      // what they are looking at. When an acoustic analyser exists, writing `acoustic` will be a
+      // deliberate code change with its own review.
+      await tx`
+        INSERT INTO tajweed_findings
+          (id, tenant_id, alignment_id, rule, severity, confidence, explanation,
+           review_status, source_refs, model_version_id, audit_event_id, analysis_basis)
+        VALUES (${newId("tajweed-finding")}, ${actor.tenantId}, ${alignmentId},
+                ${typeof finding.rule === "string" ? finding.rule : ""},
+                ${severity},
+                ${confidence}::float8::numeric,
+                ${typeof finding.explanation === "string" ? finding.explanation : ""},
+                'ai-suggested', ${tx.json(Array.isArray(finding.sources) ? finding.sources : [])},
+                ${modelVersionId}, ${auditId}, 'canonical-text')`;
+    }
+  });
 }
 
 /** The shared ASR path — `proxy_asr` (ml_proxy.rs:211). */
