@@ -456,8 +456,29 @@ export function isNonRecitedMark(text: string): boolean {
   return sawMark;
 }
 
+/**
+ * Is this recording one we are OBLIGED to destroy?
+ *
+ * An ALLOWLIST of the two modes that permit keeping audio — not a denylist containing `"discard"`.
+ * The two agree on every value in the vocabulary and differ on the one outside it, in the direction
+ * that matters: `retention === "discard"` answers FALSE for a mode nobody recognises, which means
+ * "you may keep it" for a child's recording held under a policy no one can state.
+ *
+ * `audio_retention` reaches this from a consent record and from a realtime ticket claim that
+ * `services/shared-ticket` carries as a deliberately UNVALIDATED string, on the stated grounds that
+ * an unknown value "can only shorten retention; it can never extend it". That is only true if every
+ * consumer treats unknown as discard. `services/ml-inference`'s retention sweep always did — it
+ * keeps `training-opt-in` forever, gives `teacher-review` its own TTL, and applies the discard TTL
+ * to everything else. This function did not, and nothing had ever noticed, because it had no caller
+ * and no case in the corpus had shown either implementation an out-of-vocabulary value.
+ *
+ * The parameter type says `AudioRetentionMode`, and that is not a guarantee: this value is
+ * deserialized from JSON and read out of Postgres, so TypeScript's opinion of it is a compile-time
+ * hope. The same reasoning as `canShowLearnerFacingAiOutput`'s status allowlist, which spells it out
+ * at greater length.
+ */
 export function mustDiscardAudio(retention: AudioRetentionMode): boolean {
-  return retention === "discard";
+  return retention !== "teacher-review" && retention !== "training-opt-in";
 }
 
 export function canUseExternalAsr(consent: Pick<ConsentSnapshot, "externalAsrProcessing" | "guardianApproved">): boolean {

@@ -216,7 +216,7 @@
     ]
   },
   "mustDiscardAudio": {
-    "$comment": "Retention gate. Only the literal 'discard' mode forces destruction.",
+    "$comment": "Retention gate: is this recording one we are OBLIGED to destroy? An ALLOWLIST of the two modes that permit keeping audio, not a denylist containing 'discard'. The difference is the out-of-vocabulary case: a denylist answers 'no, you may keep it' for a retention value nobody recognises, which retains a child's recording under a policy no one can state. services/ml-inference's retention sweep has always classified anything it does not recognise as discard-TTL; this function used to disagree with it, and no case here had ever shown either of them an unknown value.",
     "cases": [
       {
         "name": "discard mode destroys audio",
@@ -232,6 +232,17 @@
         "name": "training-opt-in retains",
         "input": "training-opt-in",
         "expected": false
+      },
+      {
+        "name": "FAILS CLOSED: an unrecognised retention mode must be destroyed",
+        "$comment": "The case neither implementation had ever been shown. `audio_retention` reaches this from a consent record and from a ticket claim carried as an unvalidated string (shared-ticket/src/lib.rs says so explicitly, on the grounds that an unknown value can only SHORTEN retention -- which is only true if every consumer treats unknown as discard). A denylist of 'discard' answers false here: keep a recording under a policy nobody can state.",
+        "input": "kept-forever-please",
+        "expected": true
+      },
+      {
+        "name": "FAILS CLOSED: an empty retention mode must be destroyed",
+        "input": "",
+        "expected": true
       }
     ]
   },
