@@ -896,8 +896,30 @@ paths:
   /v1/tajweed-findings:
     get:
       tags: [review]
+      summary: The tenant-wide staff review queue, oldest-waiting first.
+      parameters:
+        # Without this the queue was traversable only to its first page: LIMIT 200 with no offset
+        # meant a deeper queue had findings NO teacher could reach, whatever the order. Measured at
+        # 1986 awaiting against a 200-row page.
+        - name: offset
+          in: query
+          required: false
+          schema: { type: integer, minimum: 0 }
+          description: >-
+            Digits only. A leading `+` is refused as well as a sign, a fraction or a hex literal:
+            `+` is the query-string encoding for a space, so `?offset=+5` is ambiguous about whether
+            it ever meant 5.
       responses:
-        '200': { description: findings, content: { application/json: { schema: { type: array, items: { $ref: '#/components/schemas/StaffTajweedFinding' } } } } }
+        '200':
+          description: findings
+          headers:
+            x-total-awaiting:
+              # How deep the queue is, so truncation is not silent. A header rather than a wrapper
+              # object because this response has always been a bare array and every client reads it
+              # that way.
+              schema: { type: integer, minimum: 0 }
+              description: Findings awaiting review in this tenant, ignoring offset and page size.
+          content: { application/json: { schema: { type: array, items: { $ref: '#/components/schemas/StaffTajweedFinding' } } } }
   /v1/teacher-review-queue:
     get:
       tags: [review]
