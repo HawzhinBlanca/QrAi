@@ -440,28 +440,33 @@ test("every finding says whether its audio can be heard, and both implementation
 test("a finding whose consent said discard says so — not silence", async () => {
   // The absolute assertion, cross-checked against the database rather than against the other
   // implementation: the A/B cannot see a change applied to both.
+  // Correlate FROM the route's own page, not toward it. This used to take an arbitrary unordered
+  // `LIMIT 25` of discard findings and require them to appear on a page the route caps at 200 — with
+  // 3831 findings in the tenant those 25 rarely intersect the page at all, and the test failed
+  // reporting a redaction bug that did not exist. Which findings are on the page is the route's
+  // business; what it says about the ones it DOES return is this test's.
+  const res = await request(shell.baseUrl, "/v1/tajweed-findings", { role: "teacher" });
+  assert.equal(res.status, 200);
+  assert.ok(res.body.length > 0, "the route returned no findings at all, so this test proves nothing");
+
   const rows = await queryJson(
     `SELECT tf.id, cr.audio_retention
      FROM tajweed_findings tf
      JOIN word_alignments wa ON wa.id = tf.alignment_id
      JOIN recitation_sessions rs ON rs.id = wa.session_id
      JOIN consent_records cr ON cr.id = rs.consent_record_id
-     WHERE tf.tenant_id = $1 AND cr.audio_retention = 'discard'
-     LIMIT 25`,
-    [TENANT],
+     WHERE tf.tenant_id = $1 AND cr.audio_retention = 'discard' AND tf.id = ANY($2)`,
+    [TENANT, res.body.map((f) => f.id)],
   );
   if (rows.length === 0) {
     assert.fail(
-      "no discard-consent finding in this tenant, so this test proves nothing. It was written " +
-        "against a corpus where ALL 2772 findings were discard — if that changed, re-measure.",
+      "the route returned no finding whose consent said discard, so this test proves nothing. It " +
+        "was written against a corpus where ALL 2772 findings were discard — if that changed, " +
+        "re-measure.",
     );
   }
   const byId = new Map(rows.map((r) => [r.id, r.audio_retention]));
-
-  const res = await request(shell.baseUrl, "/v1/tajweed-findings", { role: "teacher" });
-  assert.equal(res.status, 200);
   const seen = res.body.filter((f) => byId.has(f.id));
-  assert.ok(seen.length > 0, "none of the discard-consent findings came back on the route");
   for (const f of seen) {
     assert.equal(
       f.audioStatus,
@@ -526,6 +531,18 @@ const DECIDED_STATUSES = ["teacher-reviewed", "blocked", "scholar-approved"];
  *
  * `startedAt` is what the queue orders by, so it is a parameter rather than `now()`.
  */
+/**
+ * Every row `seedQueued` has created in this process, newest first, for the cleanup below.
+ *
+ * Without this the helper was a slow poison. It plants a session dated `now() - 18 years` on EVERY
+ * run and deleted nothing, so the set of ancient awaiting findings grew by two per run forever.
+ * Measured the day it finally mattered: 208 of them, against this route's `LIMIT 200`. The freshly
+ * seeded pair then lands among 208 same-era rows tie-broken by UUID and falls off page one at
+ * random — a test that had been quietly loading the gun for months and fired locally while CI, whose
+ * database is fresh every time, kept passing.
+ */
+const seeded = [];
+
 async function seedQueued({ label, reviewStatus, confidence, startedAtSql }) {
   const suffix = `${Date.now().toString(36)}-${Math.floor(Math.random() * 1e9)}`;
   const ids = {
@@ -576,8 +593,26 @@ async function seedQueued({ label, reviewStatus, confidence, startedAtSql }) {
      VALUES ($1, $2, $3, 'ghunnah', 'practice', $4, 'e', $5, '[]'::jsonb, $6, $7, 'canonical-text')`,
     [ids.finding, TENANT, ids.alignment, confidence, reviewStatus, model.id, ids.audit],
   );
+  seeded.push(ids);
   return ids.finding;
 }
+
+/**
+ * Remove exactly what this file seeded — by id, never by pattern, and in FK-safe order.
+ *
+ * Deletes only rows this process created. Seeds left behind by earlier runs stay: the assertions
+ * above are written to tolerate them, and a test that quietly deletes rows it did not create is a
+ * worse thing to have in a suite than a slow leak.
+ */
+after(async () => {
+  for (const ids of seeded.reverse()) {
+    await queryJson("DELETE FROM tajweed_findings WHERE id = $1", [ids.finding]);
+    await queryJson("DELETE FROM word_alignments WHERE id = $1", [ids.alignment]);
+    await queryJson("DELETE FROM recitation_sessions WHERE id = $1", [ids.session]);
+    await queryJson("DELETE FROM consent_records WHERE id = $1", [ids.consent]);
+    await queryJson("DELETE FROM audit_events WHERE id = $1", [ids.audit]);
+  }
+});
 
 test("a decided finding never outranks one still awaiting review", async () => {
   // The ordering rule, stated as the smallest case that can distinguish it — and deliberately NOT as
@@ -639,8 +674,19 @@ test("zero confidence does not change a finding's place in the queue", async () 
   });
 
   for (const [impl, base] of [["shell", shell.baseUrl], ["rust", rustUrl]]) {
-    const ids = (await request(base, "/v1/tajweed-findings", { role: "teacher" })).body.map((f) => f.id);
+    // WALK the queue rather than assuming both land on page one. The property under test is the
+    // ORDER of these two findings, which is independent of how deep the corpus is; requiring them in
+    // the first 200 made the test fail as soon as `seedQueued`'s own leavings crossed that line.
+    const ids = [];
+    for (let offset = 0; offset < 5_000; offset += 200) {
+      const page = await request(base, `/v1/tajweed-findings?offset=${offset}`, { role: "teacher" });
+      assert.equal(page.status, 200, `${impl}: offset ${offset}: ${page.text}`);
+      ids.push(...page.body.map((f) => f.id));
+      if (page.body.length === 0) break;
+      if (ids.includes(older) && ids.includes(newer)) break;
+    }
     assert.ok(ids.includes(older), `${impl}: the zero-confidence finding is missing from the queue`);
+    assert.ok(ids.includes(newer), `${impl}: the high-confidence finding is missing from the queue`);
     assert.ok(
       ids.indexOf(older) < ids.indexOf(newer),
       `${impl}: the newer high-confidence finding leads the older zero-confidence one. Every ` +
