@@ -7,7 +7,7 @@ import { dirname, join } from "node:path";
 import test, { after, before } from "node:test";
 import { fileURLToPath } from "node:url";
 
-import { issueRealtimeTicket, newNonce } from "../../services/node-api/lib/ticket.mjs";
+import { issueRealtimeTicket, newNonce } from "../../server/src/lib/ticket.mjs";
 
 /**
  * Blocker 3 — the learner's retention choice reaches the stored recording.

@@ -9,7 +9,7 @@ import {
   signTicketPayload,
   ticketPayload,
   verifyRealtimeTicket,
-} from "../../services/node-api/lib/ticket.mjs";
+} from "../../server/src/lib/ticket.mjs";
 
 /**
  * N1 — the Node half of the cross-language ticket vectors.
@@ -188,7 +188,7 @@ test("the committed vectors exercise every retention value the database allows",
   assert.deepEqual(
     [...covered].sort(),
     ["discard", "teacher-review", "training-opt-in"],
-    "the vector set must exercise every value infra/sql/0001_core_schema.sql permits",
+    "the vector set must exercise every value infra/migrations/0001_core_schema.sql permits",
   );
 });
 

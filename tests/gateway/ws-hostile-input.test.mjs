@@ -6,7 +6,7 @@ import { dirname, join } from "node:path";
 import test, { after, before } from "node:test";
 import { fileURLToPath } from "node:url";
 
-import { issueRealtimeTicket, newNonce } from "../../services/node-api/lib/ticket.mjs";
+import { issueRealtimeTicket, newNonce } from "../../server/src/lib/ticket.mjs";
 
 /**
  * G3 — the committed hostile-input sweep of the realtime gateway's WebSocket surface.

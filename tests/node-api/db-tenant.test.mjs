@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test, { after, before } from "node:test";
 
-import { createDb } from "../../services/node-api/lib/db.mjs";
+import { createDb } from "../../server/src/lib/db.mjs";
 
 /**
  * N3 §2.2 — the highest-risk primitive in the whole port.

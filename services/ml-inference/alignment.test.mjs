@@ -63,6 +63,82 @@ test("alignWords flags a skipped word as missed", () => {
   assert.equal(byId["1:1:2"], "missed");
 });
 
+test("alignWords carries only the measured source token span onto an exact canonical match", () => {
+  const canonical = [
+    { id: "1:1:1", text: "بِسْمِ" },
+    { id: "1:1:2", text: "ٱللَّهِ" },
+  ];
+  const recognized = [
+    { text: "بسم", startMs: 120, endMs: 410, confidence: 0.93 },
+    { text: "الله", startMs: 450, endMs: 820, confidence: 0.89 },
+  ];
+
+  const results = alignWords(canonical, recognized);
+  assert.deepEqual(
+    results.map(({ wordId, heardText, status, startMs, endMs }) => ({
+      wordId,
+      heardText,
+      status,
+      startMs,
+      endMs,
+    })),
+    [
+      { wordId: "1:1:1", heardText: "بسم", status: "matched", startMs: 120, endMs: 410 },
+      { wordId: "1:1:2", heardText: "الله", status: "matched", startMs: 450, endMs: 820 },
+    ],
+  );
+});
+
+test("alignWords never fabricates a span for an omitted canonical word", () => {
+  const results = alignWords(
+    [
+      { id: "1:1:1", text: "بسم" },
+      { id: "1:1:2", text: "الله" },
+      { id: "1:1:3", text: "الرحمن" },
+    ],
+    [
+      { text: "بسم", startMs: 0, endMs: 200, confidence: 0.9 },
+      { text: "الرحمن", startMs: 520, endMs: 900, confidence: 0.88 },
+    ],
+  );
+  const omitted = results.find((result) => result.wordId === "1:1:2");
+  assert.equal(omitted.status, "missed");
+  assert.equal(omitted.heardText, "");
+  assert.equal(omitted.startMs, null);
+  assert.equal(omitted.endMs, null);
+});
+
+test("alignWords preserves measured spans for repeats and weak extras without assigning them to misses", () => {
+  const repeated = alignWords(
+    [
+      { id: "1:1:1", text: "بسم" },
+      { id: "1:1:2", text: "الله" },
+    ],
+    [
+      { text: "بسم", startMs: 0, endMs: 180, confidence: 0.91 },
+      { text: "بسم", startMs: 210, endMs: 390, confidence: 0.87 },
+      { text: "الله", startMs: 430, endMs: 720, confidence: 0.92 },
+    ],
+  );
+  const repeatedExtra = repeated.find((result) => result.status === "extra");
+  assert.deepEqual(
+    { heardText: repeatedExtra.heardText, startMs: repeatedExtra.startMs, endMs: repeatedExtra.endMs },
+    { heardText: "بسم", startMs: 0, endMs: 180 },
+  );
+
+  const weak = alignWords(
+    [{ id: "1:1:1", text: "الرحمن" }],
+    [{ text: "زز", startMs: 900, endMs: 1100, confidence: 0.75 }],
+  );
+  const missed = weak.find((result) => result.status === "missed");
+  const weakExtra = weak.find((result) => result.status === "extra");
+  assert.deepEqual([missed.startMs, missed.endMs], [null, null]);
+  assert.deepEqual(
+    [weakExtra.heardText, weakExtra.startMs, weakExtra.endMs],
+    ["زز", 900, 1100],
+  );
+});
+
 const FATIHA = [
   { id: "1:1:1", text: "بسم" },
   { id: "1:1:2", text: "الله" },

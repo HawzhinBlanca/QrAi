@@ -40,7 +40,7 @@ export function checkTrafficShare(serverSrc, totalPairs) {
     served === totalPairs ? MET : UNMET,
     served === 0
       ? `Node serves 0 of ${totalPairs} routes by default (${count} portable). Nothing to cut over.`
-      : `default routing is not the empty set — read services/node-api/server.mjs before trusting this`,
+      : `default routing is not the empty set — read server/src/main.mjs before trusting this`,
   );
 }
 
@@ -199,7 +199,7 @@ async function main() {
 
   const read = (p) => readFileSync(p, "utf8");
   const rustPairs = routePairsFromRust(read("services/platform-api/src/lib.rs"));
-  const openapi = loadOpenapi("specs/flutter-client/openapi.yaml");
+  const openapi = loadOpenapi("packages/contracts/openapi.yaml");
   const fixtures = JSON.parse(read("specs/api-golden-fixtures/fixtures/platform-api.json"));
   const parityText = readdirSync("tests/api-parity")
     .filter((f) => f.endsWith(".mjs"))
@@ -212,7 +212,7 @@ async function main() {
   const readiness = read("specs/readiness-recovery-10-10/tasks.md");
 
   const checks = [
-    checkTrafficShare(read("services/node-api/server.mjs"), rustPairs.length),
+    checkTrafficShare(read("server/src/main.mjs"), rustPairs.length),
     checkOracleCoverage(coveredPairs(rustPairs, fixtures.steps, parityText), rustPairs.length),
     checkSchemaValidation(openapi),
     checkRollbackArtifact(workflows),

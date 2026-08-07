@@ -1,5 +1,3 @@
-version: "3.9"
-
 services:
   # === Database ===
   postgres:
@@ -17,36 +15,34 @@ services:
       # Internal-only service: bind to loopback so it is reachable on the host (debugging, psql,
       # migrations) but NOT from other machines. Only platform-api (8080), the realtime gateway
       # (8081), and the web app are meant to be exposed off-host; postgres/ml/asr stay private.
-      - "127.0.0.1:5433:5432"
+      - "127.0.0.1:${POSTGRES_PORT:-5433}:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
-      - ./infra/sql/0001_core_schema.sql:/docker-entrypoint-initdb.d/01_schema.sql:ro
-      - ./infra/sql/0002_seed_fatihah.sql:/docker-entrypoint-initdb.d/02_seed.sql:ro
-      - ./infra/sql/0003_tenant_rls.sql:/docker-entrypoint-initdb.d/03_rls.sql:ro
-      - ./infra/sql/0004_add_password_hash.sql:/docker-entrypoint-initdb.d/04_password.sql:ro
-      - ./infra/sql/0005_learner_progress.sql:/docker-entrypoint-initdb.d/05_learner_progress.sql:ro
-      - ./infra/sql/0007_seed_surah_names.sql:/docker-entrypoint-initdb.d/06_seed_surah_names.sql:ro
-      - ./infra/sql/0008_session_language.sql:/docker-entrypoint-initdb.d/07_session_language.sql:ro
-      - ./infra/sql/0006_seed_internal.sql:/docker-entrypoint-initdb.d/08_seed_internal.sql:ro
-      - ./infra/sql/0009_learner_progress_rls.sql:/docker-entrypoint-initdb.d/09_learner_progress_rls.sql:ro
-      - ./infra/sql/0010_review_status_check.sql:/docker-entrypoint-initdb.d/10_review_status_check.sql:ro
-      - ./infra/sql/0011_teacher_review_required_status.sql:/docker-entrypoint-initdb.d/11_teacher_review_required_status.sql:ro
-      - ./infra/sql/0012_superuser_only_rls_bypass.sql:/docker-entrypoint-initdb.d/12_superuser_only_rls_bypass.sql:ro
-      - ./infra/sql/0013_unique_email_per_tenant.sql:/docker-entrypoint-initdb.d/13_unique_email_per_tenant.sql:ro
-      - ./infra/sql/0015_teacher_review_scholar_approval_indexes.sql:/docker-entrypoint-initdb.d/15_teacher_review_scholar_approval_indexes.sql:ro
-      - ./infra/sql/0016_missing_tenant_indexes.sql:/docker-entrypoint-initdb.d/16_missing_tenant_indexes.sql:ro
-      - ./infra/sql/0017_eval_runs_index.sql:/docker-entrypoint-initdb.d/17_eval_runs_index.sql:ro
-      - ./infra/sql/0018_agent_run_learner_id.sql:/docker-entrypoint-initdb.d/18_agent_run_learner_id.sql:ro
-      - ./infra/sql/0019_recitation_and_findings_sort_indexes.sql:/docker-entrypoint-initdb.d/19_recitation_and_findings_sort_indexes.sql:ro
-      - ./infra/sql/0020_language_check.sql:/docker-entrypoint-initdb.d/20_language_check.sql:ro
-      - ./infra/sql/0021_pilot_identity.sql:/docker-entrypoint-initdb.d/21_pilot_identity.sql:ro
-      - ./infra/sql/rls-app-role.sql:/tmp/rls-app-role.sql:ro
-      - ./infra/sql/99_init_app_role.sh:/docker-entrypoint-initdb.d/99_init_app_role.sh:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U hawzhin -d quran_ai"]
       interval: 5s
       timeout: 5s
       retries: 5
+
+  # One-shot database boundary. This runs on both fresh and existing volumes; platform-api cannot
+  # start until every checksum-locked migration and restricted-role grant succeeds.
+  migrations:
+    restart: "no"
+    build:
+      context: .
+      dockerfile: server/migrations.Dockerfile
+    environment:
+      MIGRATION_DATABASE_URL: "postgresql://hawzhin:${POSTGRES_PASSWORD}@postgres:5432/quran_ai"
+      APP_DATABASE_PASSWORD: "${APP_DATABASE_PASSWORD:?APP_DATABASE_PASSWORD is required}"
+      APP_DATABASE_ROLE: quran_ai_app
+    command:
+      - sh
+      - -eu
+      - -c
+      - node server/scripts/migrate.mjs && node server/scripts/provision-role.mjs
+    depends_on:
+      postgres:
+        condition: service_healthy
 
   # === Rust Platform API ===
   platform-api:
@@ -55,7 +51,7 @@ services:
       context: .
       dockerfile: services/platform-api/Dockerfile
     environment:
-      DATABASE_URL: "postgresql://quran_ai_app:${POSTGRES_PASSWORD}@postgres:5432/quran_ai"
+      DATABASE_URL: "postgresql://quran_ai_app:${APP_DATABASE_PASSWORD}@postgres:5432/quran_ai"
       JWT_SECRET: "${JWT_SECRET:?JWT_SECRET is required in production}"
       REALTIME_GATEWAY_TICKET_SECRET: "${REALTIME_GATEWAY_TICKET_SECRET:?REALTIME_GATEWAY_TICKET_SECRET is required in production}"
       PLATFORM_API_BIND: "0.0.0.0:8080"
@@ -89,12 +85,48 @@ services:
     ports:
       - "8080:8080"
     depends_on:
-      postgres:
-        condition: service_healthy
+      migrations:
+        condition: service_completed_successfully
     healthcheck:
       # /ready (not /health) so the container is marked unhealthy when Postgres is unreachable —
       # readiness = "can actually serve", liveness /health only means "process up" (P3.6).
       test: ["CMD", "curl", "-f", "http://localhost:8080/ready"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
+  # === Node API shadow ===
+  # Internal observation target only: no host port, no Web/gateway dependency, and Rust remains the
+  # compatibility upstream. W2.4 moves modules into the server package before any traffic cutover.
+  node-api:
+    restart: unless-stopped
+    build:
+      context: .
+      dockerfile: server/Dockerfile
+    environment:
+      DATABASE_URL: "postgresql://quran_ai_app:${APP_DATABASE_PASSWORD}@postgres:5432/quran_ai"
+      JWT_SECRET: "${JWT_SECRET:?JWT_SECRET is required in production}"
+      REALTIME_GATEWAY_TICKET_SECRET: "${REALTIME_GATEWAY_TICKET_SECRET:?REALTIME_GATEWAY_TICKET_SECRET is required in production}"
+      ML_API_KEY: "${ML_API_KEY:?ML_API_KEY is required}"
+      ASR_API_KEY: "${ASR_API_KEY:?ASR_API_KEY is required}"
+      CORS_ALLOWED_ORIGINS: "${CORS_ALLOWED_ORIGINS:-}"
+      ALLOW_INSECURE_DEFAULTS: "${ALLOW_INSECURE_DEFAULTS:-0}"
+      ALLOW_INSECURE_SECRETS: "${ALLOW_INSECURE_SECRETS:-}"
+      METRICS_DEV_OPEN: "${METRICS_DEV_OPEN:-}"
+      METRICS_TOKEN: "${METRICS_TOKEN:-}"
+      NODE_API_BIND: "0.0.0.0:8082"
+      NODE_API_PORTED: "${NODE_API_PORTED:-GET /health,GET /ready}"
+      NODE_API_HEALTHCHECK_URL: "${NODE_API_HEALTHCHECK_URL:-http://127.0.0.1:8082/ready}"
+      PLATFORM_API_UPSTREAM: "http://platform-api:8080"
+      ML_INFERENCE_URL: "http://ml-inference:8090"
+      ASR_INFERENCE_URL: "http://asr-inference:8091"
+    expose:
+      - "8082"
+    depends_on:
+      platform-api:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "node", "server/src/container-healthcheck.mjs"]
       interval: 10s
       timeout: 5s
       retries: 3
@@ -109,6 +141,7 @@ services:
       REALTIME_GATEWAY_BIND: "0.0.0.0:8081"
       REALTIME_GATEWAY_TICKET_SECRET: "${REALTIME_GATEWAY_TICKET_SECRET:?REALTIME_GATEWAY_TICKET_SECRET is required in production}"
       ML_INFERENCE_URL: "http://ml-inference:8090"
+      PLATFORM_API_URL: "http://platform-api:8080"
       GATEWAY_TENANT_ID: "hikmah-pilot-erbil"
       ML_API_KEY: "${ML_API_KEY:?ML_API_KEY is required}"
       # DEPRECATED — see the platform-api block. On this service it ALSO disables the entire CSWSH
@@ -131,6 +164,25 @@ services:
       interval: 10s
       timeout: 5s
       retries: 3
+
+  # Explicit recovery operation, never part of normal startup. Storage sidecars nominate candidates;
+  # tenant-scoped session rows independently prove tenant + learner ownership before any index write.
+  # Run: docker compose --profile operations run --rm audio-index-repair
+  audio-index-repair:
+    profiles: ["operations"]
+    restart: "no"
+    build:
+      context: .
+      dockerfile: server/migrations.Dockerfile
+    environment:
+      DATABASE_URL: "postgresql://quran_ai_app:${APP_DATABASE_PASSWORD}@postgres:5432/quran_ai"
+      AUDIO_STORAGE_DIR: "/data/audio-storage"
+    command: ["node", "server/scripts/repair-audio-index.mjs", "--apply"]
+    volumes:
+      - audio_storage:/data/audio-storage:ro
+    depends_on:
+      migrations:
+        condition: service_completed_successfully
 
   # === ML Inference (Node.js) ===
   ml-inference:
@@ -179,21 +231,27 @@ services:
       # `_load_model()` hits `ModuleNotFoundError: No module named 'transformers'` and every
       # transcribe/align/tajweed request 503s (verified empirically). Switching to the
       # specialized model is a real product/accuracy decision (recitation-tuned vs. generic
-      # transcription) with real costs (transformers as a new prod dependency — pip-audit found it
-      # has real CVEs at the version tajweed-neural currently pins, see docs/DECISIONS.md ADR-0009
-      # for the actual finding and reachability analysis — a larger image, and an HF model download
-      # during build), so it isn't flipped here without an explicit call.
+      # transcription) with real costs (transformers as a new prod dependency with historical
+      # reachability caveats documented in ADR-0009, a larger image, and an HF model download during
+      # build), so it isn't flipped here without an explicit call.
       ASR_MODEL: "base"
+      # Exact SHA-256 embedded in openai-whisper's verified base.pt URL. Readiness independently
+      # resolves that URL digest and refuses traffic when this selected-artifact pin disagrees.
+      ASR_MODEL_DIGEST: "sha256:ed3a0b6b1c0edf879ad9b11b1af5a0e6ab5db9205f891f668f8b0e6c6326e34e"
+      # This is the exact runnable baseline in model-candidates.json. It is intentionally not a
+      # reviewed winner: no approved, consented Kurdish held-out benchmark exists yet.
+      ASR_CANDIDATE_ID: "openai-whisper-base"
       ASR_API_KEY: "${ASR_API_KEY:?ASR_API_KEY is required}"
     ports:
       # Internal-only: loopback bind. Reached only server-side via the platform-api ASR proxy
       # (server-side x-asr-api-key) and ml-inference. Not exposed off-host.
       - "127.0.0.1:8091:8091"
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8091/health"]
+      test: ["CMD", "curl", "-f", "http://localhost:8091/ready"]
       interval: 10s
       timeout: 5s
       retries: 3
+      start_period: 60s
 
   # === Web Frontend ===
   web:

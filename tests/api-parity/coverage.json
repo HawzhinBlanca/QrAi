@@ -4,7 +4,7 @@
   "totals": {
     "ported": 36,
     "mechanical-remainder": 51,
-    "deferred-to-phase-7": 10
+    "deferred-to-phase-7": 12
   },
   "tests": [
     {
@@ -242,7 +242,7 @@
       "reason": "not incident-class under the approved scope B; response shape is pinned by the Phase 5 fixture differ"
     },
     {
-      "rustTest": "ml_proxy_allows_approved_model_version",
+      "rustTest": "ml_proxy_rejects_formerly_approved_model_version",
       "rustLine": 2402,
       "status": "mechanical-remainder",
       "reason": "not incident-class under the approved scope B; response shape is pinned by the Phase 5 fixture differ"
@@ -552,6 +552,18 @@
       "reason": "finalize_session is not ported (Phase 7), so there is no Node route to compare against — the same reason the other two finalize entries are deferred."
     },
     {
+      "rustTest": "finalize_rolls_back_every_alignment_when_one_claimed_span_is_invalid",
+      "rustLine": 5200,
+      "status": "deferred-to-phase-7",
+      "reason": "The Rust-only finalize path now proves atomic rollback when any server-derived alignment claim is invalid. Node has no finalize route to compare against until the planned finalizer port, so this remains explicit deferred work rather than false parity coverage."
+    },
+    {
+      "rustTest": "finalize_refuses_a_valid_producer_that_disagrees_with_the_session_model",
+      "rustLine": 5250,
+      "status": "deferred-to-phase-7",
+      "reason": "W1.8 proves the Rust finalizer refuses a structurally valid producer whose compatibility model disagrees with the session and persists neither a run nor words. The Node finalizer remains W2.6, so there is no second implementation to compare yet."
+    },
+    {
       "rustTest": "weekly_accuracy_excludes_self_reported_words_but_still_counts_them",
       "status": "deferred-to-phase-7",
       "reason": "Needs a learner seeded mid-test via direct pool access to stay isolated from the shared learner-1 day bucket; the parity harness speaks HTTP only."
@@ -581,7 +593,7 @@
       "reason": "P5.3 redaction test. Constructs ApiError::Database directly with a real Postgres unique-violation message, because a dead pool yields PoolTimedOut and can never reach that variant. Pins that a learner's email address in a constraint DETAIL is not returned to the caller. No HTTP surface to port."
     },
     {
-      "rustTest": "a_finding_becomes_visible_to_the_learner_only_when_a_teacher_accepts_it",
+      "rustTest": "teacher_approval_cannot_override_fixture_evidence_or_missing_retained_audio",
       "rustLine": 5344,
       "status": "mechanical-remainder",
       "reason": "P6.1 journey test. Watches ONE finding cross the teacher-review boundary through the API — withheld before, readable after an acceptance, still withheld after a rejection. Not an A/B probe: the assertion is on the learner's view at three points in time, and each observation mutates state the next one reads, which the byte differ cannot express."

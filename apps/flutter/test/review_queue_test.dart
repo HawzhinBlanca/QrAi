@@ -34,6 +34,7 @@ Map<String, Object?> stubFinding({
       'id': id,
       'wordId': '1:1:1',
       'rule': rule,
+      'analysisBasis': 'acoustic',
       'severity': 'warning',
       'explanation': 'Model suggests the noon sakina was not nasalised.',
       'confidence': confidence,

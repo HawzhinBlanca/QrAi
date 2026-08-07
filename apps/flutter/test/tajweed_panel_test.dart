@@ -21,6 +21,7 @@ TajweedFinding finding({
     TajweedFinding.fromJson(<String, dynamic>{
       'wordId': wordId,
       'rule': rule,
+      'analysisBasis': 'acoustic',
       'severity': 'practice',
       'explanation': 'Apply ghunnah on the noon sakina.',
       'reviewStatus': reviewStatus,

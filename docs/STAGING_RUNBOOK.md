@@ -206,6 +206,7 @@ MAINTENANCE_MODE=0 docker compose up -d platform-api
 # Backups: scripts/backup-db.sh (custom-format pg_dump, encrypted, rotated). Restore into a FRESH database.
 # BACKUP_DECRYPTION_KEY is the OFFLINE private key — retrieving it is a rehearsed step of the drill.
 RESTORE_TARGET_URL="postgresql://<user>:<pass>@<host>:5432/quran_ai_restored" \
+RESTORE_APP_DATABASE_PASSWORD="<strong-runtime-password>" \
 BACKUP_DECRYPTION_KEY=/path/to/qrai-backup-private.key \
   bash scripts/restore-db.sh backups/quran_ai-<timestamp>.dump.cms
 ```
@@ -213,7 +214,8 @@ BACKUP_DECRYPTION_KEY=/path/to/qrai-backup-private.key \
 `restore-db.sh` refuses a non-empty target unless `RESTORE_FORCE=1`, and has **no default target** —
 `verify.sh` exports a default `DATABASE_URL` pointing at a real database, so a fallback would let a
 drill overwrite live data. It verifies row counts after restoring and fails loudly rather than
-reporting a partial restore as success.
+reporting a partial restore as success. The target URL must be administrative: restore then applies
+the immutable migration ledger and rotates the restricted application role before verification.
 
 **MEASURED (T1 drill, 2026-07-30): restore of the full corpus completed in <1s** (1-second timer
 resolution) from a 4.9 MB custom-format dump, with all row counts matching the source exactly
@@ -221,6 +223,28 @@ resolution) from a 4.9 MB custom-format dump, with all row counts matching the s
 proved the verification has teeth: restoring a deliberately under-seeded dump reported
 `FAIL canonical_ayahs expected 6236, got 7` and exited 1. Evidence:
 `specs/dr-rehearsal/evidence/T1-restore-drill.log`.
+
+### Repair retained audio that was stored but not indexed
+
+Alert on either a zero `realtime_gateway_audio_index_enabled` gauge or an increase in
+`realtime_gateway_chunks_stored_unindexed_total`. First fix the gateway configuration—the Compose
+service now sets `PLATFORM_API_URL=http://platform-api:8080`—then preview reconciliation:
+
+```bash
+docker compose --profile operations run --rm \
+  audio-index-repair node server/scripts/repair-audio-index.mjs
+```
+
+Review the JSON counts and every refusal. Apply only after the preview is understood:
+
+```bash
+docker compose --profile operations run --rm audio-index-repair
+```
+
+The operation mounts `audio_storage` read-only and uses the restricted `quran_ai_app` database role.
+A sidecar does not grant ownership: its tenant/learner path, metadata, bytes, object key, span, and
+the tenant-scoped session's actual learner must agree. Mismatches remain unindexed, are reported in
+`errors`, and make the CLI exit nonzero. Re-running a successful repair is idempotent.
 
 > **This number is a FLOOR, not a prediction.** Isolated infrastructure, no network latency, no
 > concurrent load, and a 6,236-ayah corpus is not a year of pilot audio.

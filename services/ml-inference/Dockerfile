@@ -13,6 +13,9 @@ RUN apt-get update && apt-get install -y curl && rm -rf /var/lib/apt/lists/*
 # TypeScript, etc.) into an image that needs none of it — pure build-time cost and image bloat.
 COPY packages/ ./packages/
 COPY services/ml-inference/ ./services/ml-inference/
+# The ML orchestrator and Python worker must validate the same immutable acoustic candidate. Keep
+# one checked-in manifest rather than copying model ids/digests into a second source of truth.
+COPY services/asr-inference/acoustic-candidates.json ./services/asr-inference/acoustic-candidates.json
 # Run as a non-root user. The service writes recorded audio to AUDIO_STORAGE_DIR (compose mounts a
 # named volume at /data/audio-storage; without compose it defaults to ./audio-storage under the
 # service dir), so give the user ownership of both so writes succeed and the named volume inherits

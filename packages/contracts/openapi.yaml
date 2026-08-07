@@ -1,0 +1,1565 @@
+openapi: 3.1.0
+
+# F1 — the hand-authored contract for platform-api.
+# specs/flutter-client/plan.md
+#
+# ── Hand-authored, deliberately ─────────────────────────────────────────────────────────────────
+# NOT generated from the Rust. A contract derived from the implementation cannot disagree with it,
+# and a contract that cannot disagree is not a contract — it is a restatement. Every schema here was
+# written from the handler and then CHECKED against live responses by
+# scripts/validate-openapi-responses.mjs (F2), which is what gives it teeth.
+#
+# ── Precedence, so the first disagreement does not get settled by whoever edits fastest ─────────
+#   the golden FIXTURES are authoritative for VALUES  (specs/api-golden-fixtures/)
+#   THIS FILE is authoritative for SHAPES
+# When they disagree the finding is RECORDED, exactly as Phase 5 recorded 200-not-201. Neither is
+# edited to agree with the other: an oracle adjusted to match what it measures has stopped measuring.
+#
+# ── upstream-owned response shapes ──────────────────────────────────────────────────────────────
+# The ML/ASR proxy handlers forward JSON, but the upstreams are in this repository and own explicit
+# response models. W0.2 contracts those producer-owned shapes here and removes the last three
+# `x-unvalidated` escape hatches. A producer change must now update this contract and its fixtures.
+
+info:
+  title: QrAi platform-api
+  version: 0.3.0
+  summary: Quran recitation platform API — the contract every client codes against.
+  description: |
+    42 method+path pairs. Enumerated from services/platform-api/src/lib.rs and asserted by
+    tests/contract/coverage.test.mjs, so adding a route fails the gate until it is contracted.
+
+    Auth is one of three, resolved in this order (services/platform-api/src/auth.rs):
+      1. `Authorization: Bearer <JWT>` — HS256 only.
+      2. `__Host-qrai-pilot` cookie + `x-csrf-token` + an allowlisted `Origin` (pilot learners).
+      3. `x-tenant-id` / `x-user-id` / `x-user-role` dev headers — ONLY when ALLOW_HEADER_AUTH=1,
+         which is off in production. Never rely on this from a client.
+
+servers:
+  - url: http://127.0.0.1:8080
+    description: local dev
+
+tags:
+  - name: ops
+  - name: auth
+  - name: quran
+  - name: recitation
+  - name: progress
+  - name: review
+  - name: privacy
+  - name: pilot
+  - name: proxy
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+    pilotCookie:
+      type: apiKey
+      in: cookie
+      name: __Host-qrai-pilot
+    devHeaderAuth:
+      type: apiKey
+      in: header
+      name: x-user-role
+      description: Dev/CI only. Requires ALLOW_HEADER_AUTH=1; rejected with 401 in production.
+
+  parameters:
+    tenantHeader:
+      name: x-tenant-id
+      in: header
+      schema: { type: string, minLength: 1 }
+
+  schemas:
+    Error:
+      # The message strings are WIRE CONTRACT — Phase 5's differ fails on a changed error string, and
+      # Phase 7's A/B caught three ports of mine that read better and were wrong.
+      type: object
+      required: [error]
+      properties:
+        error: { type: string, minLength: 1 }
+      additionalProperties: false
+
+    SessionTajweedFinding:
+      # A finding as a LEARNER's own session read returns it. Every field is always present: a
+      # withheld one is redacted, never omitted, so a client cannot mistake "not allowed to see it"
+      # for "the server forgot". See the route description for what redaction sets each field to.
+      type: object
+      required: [id, acousticDatasetManifestSha256, acousticDatasetVersion, analysisBasis, audioStatus, auditEventId, calibrationStatus, calibratorArtifactSha256, calibratorId, confidence, endMs, evaluationEvidenceId, evaluationEvidenceSha256, evaluationEvidenceStatus, evidenceId, explanation, modelArtifactSha256, modelVersion, reviewStatus, rule, severity, sources, startMs, withheld, wordId]
+      properties:
+        id: { type: string, minLength: 1 }
+        acousticDatasetManifestSha256: { type: [string, "null"], pattern: '^sha256:[a-f0-9]{64}$' }
+        acousticDatasetVersion: { type: [string, "null"], minLength: 1 }
+        analysisBasis: { type: string, const: acoustic }
+        audioStatus: { type: string, enum: [available, discarded, not-captured, unknown] }
+        auditEventId: { type: string, minLength: 1 }
+        calibrationStatus: { type: string, enum: [calibrated, uncalibrated] }
+        calibratorArtifactSha256: { type: [string, "null"], pattern: '^sha256:[a-f0-9]{64}$' }
+        calibratorId: { type: [string, "null"], minLength: 1 }
+        # Empty string on a withheld finding — WHICH word was recited wrongly is itself a judgement.
+        wordId: { type: string }
+        rule: { type: string }
+        severity: { type: string }
+        # 0 on a withheld finding, so the row fails the shared learner gate on its own values.
+        confidence: { type: number, minimum: 0, maximum: 1 }
+        endMs: { type: integer, minimum: 1 }
+        evaluationEvidenceId: { type: [string, "null"], minLength: 1 }
+        evaluationEvidenceSha256: { type: [string, "null"], pattern: '^sha256:[a-f0-9]{64}$' }
+        evaluationEvidenceStatus: { type: string, enum: [release-trusted, fixture, stale, unverified] }
+        evidenceId: { type: [string, "null"], minLength: 1 }
+        explanation: { type: string }
+        modelArtifactSha256: { type: [string, "null"], pattern: '^sha256:[a-f0-9]{64}$' }
+        modelVersion: { type: string, minLength: 1 }
+        # Survives redaction: "a note is waiting for a teacher" is not a judgement about the person.
+        reviewStatus: { type: string, minLength: 1 }
+        sources: { type: array, items: { $ref: '#/components/schemas/SourceReference' } }
+        startMs: { type: integer, minimum: 0 }
+        withheld: { type: boolean }
+      additionalProperties: false
+
+    StaffTajweedFinding:
+      # The tenant-wide STAFF queue's finding shape — NOT SessionTajweedFinding, which is what a
+      # learner's own session read returns. Different audience, different fields: this one carries
+      # provenance a teacher needs to judge the finding and no `withheld` flag, because staff are
+      # never redacted.
+      #
+      # Observed from a running server, not read off a Rust struct. Keys are alphabetical because
+      # the handler builds them with `json!`, which is BTreeMap-backed.
+      type: object
+      required: [acousticDatasetManifestSha256, acousticDatasetVersion, analysisBasis, audioStatus, auditEventId, calibrationStatus, calibratorArtifactSha256, calibratorId, confidence, endMs, evaluationEvidenceId, evaluationEvidenceSha256, evaluationEvidenceStatus, evidenceId, explanation, id, modelArtifactSha256, modelVersion, reviewStatus, rule, severity, sources, startMs, transcriptSource, withheld, wordId]
+      properties:
+        acousticDatasetManifestSha256: { type: [string, "null"], pattern: '^sha256:[a-f0-9]{64}$' }
+        acousticDatasetVersion: { type: [string, "null"], minLength: 1 }
+        # Instructional text rules are excluded from this learner-performance review queue.
+        analysisBasis: { type: string, const: acoustic }
+        # ADR-0037 — whether a reviewer can HEAR the recitation, and if not, why not.
+        audioStatus: { type: string, enum: [available, discarded, not-captured, unknown] }
+        auditEventId: { type: string, minLength: 1 }
+        calibrationStatus: { type: string, enum: [calibrated, uncalibrated] }
+        calibratorArtifactSha256: { type: [string, "null"], pattern: '^sha256:[a-f0-9]{64}$' }
+        calibratorId: { type: [string, "null"], minLength: 1 }
+        confidence: { type: number, minimum: 0, maximum: 1 }
+        endMs: { type: integer, minimum: 1 }
+        evaluationEvidenceId: { type: [string, "null"], minLength: 1 }
+        evaluationEvidenceSha256: { type: [string, "null"], pattern: '^sha256:[a-f0-9]{64}$' }
+        evaluationEvidenceStatus: { type: string, enum: [release-trusted, fixture, stale, unverified] }
+        evidenceId: { type: [string, "null"], minLength: 1 }
+        explanation: { type: string }
+        id: { type: string, minLength: 1 }
+        modelArtifactSha256: { type: [string, "null"], pattern: '^sha256:[a-f0-9]{64}$' }
+        modelVersion: { type: string, minLength: 1 }
+        reviewStatus: { type: string, minLength: 1 }
+        rule: { type: string }
+        severity: { type: string }
+        sources: { type: array, items: { $ref: '#/components/schemas/SourceReference' } }
+        startMs: { type: integer, minimum: 0 }
+        # ADR-0030 — whether the platform heard the recitation at all.
+        transcriptSource: { type: string, enum: [server-derived, client-reported] }
+        withheld: { type: boolean }
+        wordId: { type: string }
+      additionalProperties: false
+
+    TeacherReviewQueueEntry:
+      # A recorded teacher DECISION, not a pending item — the name is historical. `findingId` is
+      # nullable because a re-record detaches a review rather than deleting it (ADR-0031).
+      type: object
+      required: [id, tenantId, findingId, teacherId, decision, note, supersededAt, auditEventId]
+      properties:
+        id: { type: string, minLength: 1 }
+        tenantId: { type: string, minLength: 1 }
+        findingId: { type: string, minLength: 1, nullable: true }
+        teacherId: { type: string, minLength: 1 }
+        decision: { type: string, enum: [accepted, rejected, edited] }
+        note: { type: string }
+        supersededAt: { type: string, nullable: true }
+        auditEventId: { type: string, minLength: 1 }
+      additionalProperties: false
+
+    ScholarApprovalListEntry:
+      # The LIST shape, which is not the ScholarApproval struct: `reviewer` rather than `reviewerId`,
+      # and a source COUNT rather than the sources themselves.
+      type: object
+      required: [id, reviewer, risk, sourceCount, status, topic]
+      properties:
+        id: { type: string, minLength: 1 }
+        reviewer: { type: string }
+        risk: { type: string, enum: [low, medium, high] }
+        sourceCount: { type: integer, minimum: 0 }
+        status: { type: string, enum: [draft, scholar-approved, blocked] }
+        topic: { type: string }
+      additionalProperties: false
+
+    QuranRef:
+      type: object
+      required: [surahNumber, ayahStart, ayahEnd, display]
+      properties:
+        surahNumber: { type: integer, minimum: 1, maximum: 114 }
+        ayahStart: { type: integer, minimum: 1 }
+        ayahEnd: { type: integer, minimum: 1 }
+        display: { type: string }
+        wordStart: { type: [integer, "null"] }
+        wordEnd: { type: [integer, "null"] }
+      additionalProperties: false
+
+    SourceReference:
+      type: object
+      required: [id, title, citation]
+      properties:
+        id: { type: string, minLength: 1 }
+        title: { type: string, minLength: 1 }
+        citation: { type: string, minLength: 1 }
+        url: { type: [string, "null"] }
+      additionalProperties: false
+
+    ActiveModelComponentAttribution:
+      type: object
+      required: [component, status, implementationId, artifactDigest, datasetVersion, analysisBasis, calibratorId]
+      properties:
+        component:
+          type: string
+          enum: [asr, forced-aligner, quran-aligner, acoustic-scorer, calibrator]
+        status: { type: string, const: active }
+        implementationId: { type: string, minLength: 1 }
+        artifactDigest: { type: string, pattern: '^sha256:[a-f0-9]{64}$' }
+        datasetVersion: { type: string, minLength: 1 }
+        analysisBasis: { type: string, enum: [acoustic, quran-constrained, text-rule] }
+        calibratorId: { type: [string, "null"], minLength: 1 }
+      additionalProperties: false
+
+    UnavailableModelComponentAttribution:
+      type: object
+      required: [component, status, reason]
+      properties:
+        component:
+          type: string
+          enum: [asr, forced-aligner, quran-aligner, acoustic-scorer, calibrator]
+        status: { type: string, const: unavailable }
+        reason: { type: string, minLength: 1 }
+      additionalProperties: false
+
+    ModelComponentAttribution:
+      oneOf:
+        - { $ref: '#/components/schemas/ActiveModelComponentAttribution' }
+        - { $ref: '#/components/schemas/UnavailableModelComponentAttribution' }
+
+    ModelAttribution:
+      description: |
+        Server-authored identity for every producing component used by this result. Runtime
+        validators additionally reject duplicate components, an inactive primary component,
+        calibrator-reference mismatch, legacy-label disagreement, and deployment digest mismatch.
+      type: object
+      required: [schemaVersion, primaryComponent, components]
+      properties:
+        schemaVersion: { type: integer, const: 1 }
+        primaryComponent:
+          type: string
+          enum: [asr, forced-aligner, quran-aligner, acoustic-scorer, calibrator]
+        components:
+          type: array
+          minItems: 1
+          items: { $ref: '#/components/schemas/ModelComponentAttribution' }
+      additionalProperties: false
+
+    TajweedInstructionalAnnotation:
+      description: |
+        A deterministic fact about the canonical Quran text. It is not learner-performance output
+        and deliberately has no confidence, severity, or review state.
+      type: object
+      required: [wordId, rule, explanation, sources, analysisBasis, instructional, tenantId, sourceChecksum, evidenceId, traceId, auditEventId]
+      properties:
+        id: { type: string, minLength: 1 }
+        wordId: { type: string, minLength: 1 }
+        rule: { type: string, minLength: 1 }
+        arabicName: { type: string }
+        category: { type: string }
+        analysisBasis: { type: string, const: text-rule }
+        instructional: { type: boolean, const: true }
+        explanation: { type: string }
+        sources: { type: array, minItems: 1, items: { $ref: '#/components/schemas/SourceReference' } }
+        tenantId: { type: string, minLength: 1 }
+        sourceChecksum: { type: string, minLength: 1 }
+        evidenceId: { type: string, minLength: 1 }
+        traceId: { type: [string, "null"] }
+        auditEventId: { type: string, minLength: 1 }
+      additionalProperties: false
+
+    PredictedTajweedFinding:
+      description: |
+        A learner-performance judgment. Only a span-linked acoustic producer may emit one;
+        canonical text rules belong in TajweedInstructionalAnnotation instead.
+      type: object
+      required: [wordId, rule, severity, explanation, confidence, sources, reviewStatus, analysisBasis, tenantId, sourceChecksum, evidenceId, modelVersion, modelArtifactSha256, acousticDatasetVersion, acousticDatasetManifestSha256, calibratorId, calibratorArtifactSha256, evaluationEvidenceId, evaluationEvidenceSha256, traceId, auditEventId]
+      properties:
+        id: { type: string, minLength: 1 }
+        wordId: { type: string, minLength: 1 }
+        rule: { type: string, minLength: 1 }
+        severity: { type: string, minLength: 1 }
+        explanation: { type: string }
+        confidence: { type: number, minimum: 0, maximum: 1 }
+        sources: { type: array, minItems: 1, items: { $ref: '#/components/schemas/SourceReference' } }
+        reviewStatus: { type: string, enum: [ai-suggested] }
+        analysisBasis: { type: string, const: acoustic }
+        tenantId: { type: string, minLength: 1 }
+        sourceChecksum: { type: string, minLength: 1 }
+        evidenceId: { type: string, minLength: 1 }
+        modelVersion: { type: string, minLength: 1 }
+        modelArtifactSha256: { type: string, pattern: '^sha256:[a-f0-9]{64}$' }
+        acousticDatasetVersion: { type: string, minLength: 1 }
+        acousticDatasetManifestSha256: { type: string, pattern: '^sha256:[a-f0-9]{64}$' }
+        calibratorId: { type: string, minLength: 1 }
+        calibratorArtifactSha256: { type: string, pattern: '^sha256:[a-f0-9]{64}$' }
+        evaluationEvidenceId: { type: string, minLength: 1 }
+        evaluationEvidenceSha256: { type: string, pattern: '^sha256:[a-f0-9]{64}$' }
+        traceId: { type: [string, "null"] }
+        auditEventId: { type: string, minLength: 1 }
+      additionalProperties: false
+
+    TajweedPredictionResponse:
+      description: Exact envelope returned by services/ml-inference/server.mjs::predictTajweed.
+      type: object
+      required: [traceId, fixtureCaseId, tenantId, sessionId, quranRef, evidenceId, modelVersion, auditEventId, annotations, findings, latencyMs, datasetVersion, algorithm]
+      properties:
+        traceId: { type: [string, "null"] }
+        fixtureCaseId: { type: [string, "null"] }
+        tenantId: { type: string, minLength: 1 }
+        sessionId: { type: string, minLength: 1 }
+        quranRef: { $ref: '#/components/schemas/QuranRef' }
+        evidenceId: { type: string, minLength: 1 }
+        modelVersion: { type: string, minLength: 1 }
+        auditEventId: { type: string, minLength: 1 }
+        annotations: { type: array, items: { $ref: '#/components/schemas/TajweedInstructionalAnnotation' } }
+        findings: { type: array, items: { $ref: '#/components/schemas/PredictedTajweedFinding' } }
+        latencyMs: { type: integer, minimum: 1 }
+        datasetVersion: { type: string, minLength: 1 }
+        algorithm: { type: string, minLength: 1 }
+      additionalProperties: false
+
+    TranscriptionWordSegment:
+      description: Exact WordSegment model returned by services/asr-inference/server.py.
+      type: object
+      required: [word, start, end, probability]
+      properties:
+        word: { type: string }
+        start: { type: number }
+        end: { type: number }
+        probability: { type: number }
+      additionalProperties: false
+
+    TranscribeResponse:
+      description: Exact TranscribeResponse model returned by services/asr-inference/server.py.
+      type: object
+      required: [text, language, duration, words, modelVersion, modelAttribution, latencyMs]
+      properties:
+        text: { type: string }
+        language: { type: string, minLength: 1 }
+        duration: { type: number }
+        words: { type: array, items: { $ref: '#/components/schemas/TranscriptionWordSegment' } }
+        modelVersion: { type: string, minLength: 1 }
+        modelAttribution: { $ref: '#/components/schemas/ModelAttribution' }
+        latencyMs: { type: integer, minimum: 1 }
+      additionalProperties: false
+
+    ForcedAlignedWord:
+      description: Exact AlignedWord model returned by services/asr-inference/server.py.
+      type: object
+      required: [word, start, end, score]
+      properties:
+        word: { type: string }
+        start: { type: number }
+        end: { type: number }
+        score: { type: number }
+      additionalProperties: false
+
+    ForceAlignResponse:
+      description: Exact ForceAlignResponse model returned by services/asr-inference/server.py.
+      type: object
+      required: [words, duration, modelVersion, modelAttribution, latencyMs]
+      properties:
+        words: { type: array, items: { $ref: '#/components/schemas/ForcedAlignedWord' } }
+        duration: { type: number }
+        modelVersion: { type: string, minLength: 1 }
+        modelAttribution: { $ref: '#/components/schemas/ModelAttribution' }
+        latencyMs: { type: integer, minimum: 1 }
+      additionalProperties: false
+
+    ExternalAsrDecision:
+      type: object
+      required: [called, reason]
+      properties:
+        called: { type: boolean }
+        reason: { type: string, minLength: 1 }
+      additionalProperties: false
+
+    PredictedWordAlignment:
+      description: Exact word shape emitted by services/ml-inference/server.mjs::predictAlignment.
+      type: object
+      required: [wordId, canonicalText, heardText, startMs, endMs, status, confidence, reviewStatus, tenantId, quranRef, sourceChecksum, evidenceId, modelVersion, traceId, auditEventId]
+      properties:
+        wordId: { type: string, minLength: 1 }
+        canonicalText: { type: string }
+        heardText: { type: string }
+        startMs:
+          type: [integer, "null"]
+          minimum: 0
+          description: Measured source-token start, or null when no audio evidence exists for this row.
+        endMs:
+          type: [integer, "null"]
+          minimum: 1
+          description: Measured source-token end, or null when no audio evidence exists for this row.
+        status: { type: string, enum: [matched, misread, missed, extra, needs-review] }
+        confidence: { type: number, minimum: 0, maximum: 1 }
+        reviewStatus: { type: string, enum: [ai-suggested, teacher-review-required] }
+        tenantId: { type: string, minLength: 1 }
+        quranRef: { $ref: '#/components/schemas/QuranRef' }
+        sourceChecksum: { type: string, minLength: 1 }
+        evidenceId: { type: string, minLength: 1 }
+        modelVersion: { type: string, minLength: 1 }
+        traceId: { type: [string, "null"] }
+        auditEventId: { type: string, minLength: 1 }
+      additionalProperties: false
+
+    AlignmentPredictionResponse:
+      description: Exact envelope returned by services/ml-inference/server.mjs::predictAlignment.
+      type: object
+      required: [traceId, fixtureCaseId, tenantId, sessionId, quranRef, sourceChecksum, evidenceId, modelVersion, modelAttribution, auditEventId, alignments, confidence, reviewStatus, finalizable, nonFinalizedReason, externalAsr, latencyMs, datasetVersion, algorithm]
+      properties:
+        traceId: { type: [string, "null"] }
+        fixtureCaseId: { type: [string, "null"] }
+        tenantId: { type: string, minLength: 1 }
+        sessionId: { type: string, minLength: 1 }
+        quranRef: { $ref: '#/components/schemas/QuranRef' }
+        sourceChecksum: { type: string, minLength: 1 }
+        evidenceId: { type: string, minLength: 1 }
+        modelVersion: { type: string, minLength: 1 }
+        modelAttribution: { $ref: '#/components/schemas/ModelAttribution' }
+        auditEventId: { type: string, minLength: 1 }
+        alignments: { type: array, items: { $ref: '#/components/schemas/PredictedWordAlignment' } }
+        confidence: { type: number, minimum: 0, maximum: 1 }
+        reviewStatus: { type: string, enum: [ai-suggested, teacher-review-required] }
+        finalizable:
+          type: boolean
+          description: True only when every recognized token has server-derived measured span evidence.
+        nonFinalizedReason: { type: [string, "null"] }
+        externalAsr: { $ref: '#/components/schemas/ExternalAsrDecision' }
+        latencyMs: { type: integer, minimum: 1 }
+        datasetVersion: { type: string, minLength: 1 }
+        algorithm: { type: string, minLength: 1 }
+      additionalProperties: false
+
+    WeeklyProgressDay:
+      type: object
+      required: [date, sessions, wordsTotal, wordsMatched, wordsSelfReported, accuracy]
+      properties:
+        date: { type: string, pattern: '^\d{4}-\d{2}-\d{2}$' }
+        sessions: { type: integer, minimum: 0 }
+        wordsTotal: { type: integer, minimum: 0 }
+        wordsMatched: { type: integer, minimum: 0 }
+        wordsSelfReported: { type: integer, minimum: 0 }
+        accuracy: { type: [number, "null"], minimum: 0, maximum: 100 }
+      additionalProperties: false
+
+    WeeklyProgress:
+      type: object
+      required: [learnerId, tenantId, days]
+      properties:
+        learnerId: { type: string, minLength: 1 }
+        tenantId: { type: string, minLength: 1 }
+        days: { type: array, items: { $ref: '#/components/schemas/WeeklyProgressDay' } }
+      additionalProperties: false
+
+    ScholarApproval:
+      type: object
+      required: [id, tenantId, topic, reviewerId, status, risk, sources, auditEventId]
+      properties:
+        id: { type: string, minLength: 1 }
+        tenantId: { type: string, minLength: 1 }
+        topic: { type: string }
+        reviewerId: { type: string, minLength: 1 }
+        status: { type: string, enum: [draft, scholar-approved, blocked] }
+        risk: { type: string, enum: [low, medium, high] }
+        sources: { type: array, items: { $ref: '#/components/schemas/SourceReference' } }
+        auditEventId: { type: string, minLength: 1 }
+      additionalProperties: false
+
+    CreatedAgentRun:
+      description: POST response shape. The GET AgentRun shape additionally carries findingId.
+      type: object
+      required: [id, name, goal, status, confidence, reviewStatus, sources, lastEvent, learnerId]
+      properties:
+        id: { type: string, minLength: 1 }
+        name: { type: string }
+        goal: { type: string }
+        status: { type: string, enum: [queued, running, needs-human-review, approved, blocked] }
+        confidence: { type: number, minimum: 0, maximum: 1 }
+        reviewStatus: { type: string, enum: [draft, ai-suggested, teacher-review-required, teacher-reviewed, scholar-approved, blocked] }
+        sources: { type: array }
+        lastEvent: { type: string }
+        learnerId: { type: [string, "null"] }
+      additionalProperties: false
+
+    Consent:
+      type: object
+      required: [audioRetention, anonymizedLearning, externalAsrProcessing, guardianApproved, consentVersion]
+      properties:
+        # `discard` is the fail-safe default. A missing consent snapshot resolves to the MOST
+        # RESTRICTIVE value (recitation.rs:216-225) — a client must never assume the permissive one.
+        # The variants are `AudioRetention` in types.rs:103, kebab-cased by serde. This list used to
+        # read `[discard, session-only, training-opt-in]`: `session-only` DOES NOT EXIST server-side
+        # and `teacher-review` was missing. A client written from the contract offered a consent
+        # option the API rejects with a 422 — which is exactly what the Flutter client did, and what
+        # no test caught, because every check compared property NAMES and none compared values.
+        # `apps/web` was right all along; it was written against the running service.
+        audioRetention: { type: string, enum: [discard, training-opt-in, teacher-review] }
+        anonymizedLearning: { type: boolean }
+        externalAsrProcessing: { type: boolean }
+        guardianApproved: { type: boolean }
+        consentVersion: { type: string }
+
+    Surah:
+      type: object
+      # All six, and none nullable. `SurahInfo` (handlers/quran.rs:42) is a plain derive(Serialize)
+      # struct of non-Option fields: a null column becomes `""` or `0` via unwrap_or_default, never
+      # an absent key and never a null. Describing four of them as optional-and-nullable called a
+      # response valid that would crash any client reading them as required — which the Dart client
+      # does. Caught by tests/contract/flutter-contract.test.mjs (F-7), not by review.
+      required: [surahNumber, name, arabicName, translation, revelationType, ayahCount]
+      properties:
+        surahNumber: { type: integer, minimum: 1, maximum: 114 }
+        name: { type: string }
+        arabicName: { type: string }
+        translation: { type: string }
+        revelationType: { type: string }
+        ayahCount: { type: integer }
+
+    LearnerProgress:
+      type: object
+      required: [learnerId, tenantId, totalSessions, streak, mastery, nextReviewAt]
+      properties:
+        learnerId: { type: string, minLength: 1 }
+        tenantId: { type: string, minLength: 1 }
+        totalSessions: { type: integer, minimum: 0 }
+        streak: { type: integer, minimum: 0 }
+        # Mean per-card min(repetitions/4, 1), rounded to 3 decimals (progress.rs:119-124).
+        mastery: { type: number, minimum: 0, maximum: 1 }
+        # chrono to_rfc3339 uses SecondsFormat::AutoSi: `+00:00`, NOT `Z`, with 0, 3, 6 OR **9**
+        # fractional digits — whichever shows all non-zero sub-second digits. A client that emits
+        # toISOString() here produces a different string for the same instant.
+        #
+        # The 9-digit case is REAL and this pattern originally omitted it: the CI runner's clock has
+        # nanosecond resolution and produced `...T03:52:33.906960800+00:00`, while the macOS box this
+        # was written on only ever emitted 6. Caught by CI, not locally — a platform-dependent
+        # contract bug that a same-machine test suite cannot see.
+        nextReviewAt:
+          type: [string, "null"]
+          pattern: '^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{3}|\.\d{6}|\.\d{9})?\+00:00$'
+      additionalProperties: false
+
+    RecitationSession:
+      type: object
+      required: [id, tenantId, learnerId, quranRef, reviewStatus]
+      properties:
+        id: { type: string, minLength: 1 }
+        tenantId: { type: string, minLength: 1 }
+        learnerId: { type: string, minLength: 1 }
+        quranRef: { $ref: '#/components/schemas/QuranRef' }
+        reviewStatus:
+          type: string
+          # `blocked` is a real `ReviewStatus` variant (types.rs:111) and was missing here while
+          # `AgentRun.reviewStatus` listed it — the contract disagreeing with itself. A client
+          # built from this could not reason about a session a scholar had blocked.
+          enum: [draft, ai-suggested, teacher-review-required, teacher-reviewed, scholar-approved, blocked]
+        language: { type: [string, "null"] }
+        mode: { type: [string, "null"] }
+        externalProcessingAllowed: { type: [boolean, "null"] }
+
+    RealtimeSessionTicket:
+      type: object
+      required:
+        [sessionId, tenantId, learnerId, expiresAt, allowedSampleRates, externalAsrProcessing, token, auditEventId]
+      properties:
+        sessionId: { type: string, minLength: 1 }
+        tenantId: { type: string, minLength: 1 }
+        learnerId: { type: string, minLength: 1 }
+        # A DECIMAL STRING of unix seconds, not RFC3339 — `expires_at.to_string()` on a u64.
+        expiresAt: { type: string, pattern: '^\d+$' }
+        allowedSampleRates:
+          type: array
+          minItems: 1
+          items: { type: integer, enum: [16000, 24000, 48000] }
+        externalAsrProcessing: { type: boolean }
+        # rt_v2.{session}.{tenant}.{learner}.{bool}.{audioRetention}.{expiry}.{nonce}.{hex hmac-sha256}
+        # audioRetention joined the payload on 2026-08-03: the gateway has no database, so the ticket
+        # is the only way a learner's retention choice can reach ml-inference, which decides how long
+        # the recording is kept. Field count 8 -> 9, hence the version bump.
+        token: { type: string, pattern: '^rt_v2\.[^.]+\.[^.]+\.[^.]+\.(true|false)\.[^.]+\.\d+\.[^.]+\.[0-9a-f]{64}$' }
+        auditEventId: { type: string, minLength: 1 }
+      additionalProperties: false
+
+    AudioChunkIndexResult:
+      type: object
+      required: [chunkId, indexed, sessionId]
+      properties:
+        chunkId: { type: string, minLength: 1 }
+        indexed: { type: boolean, const: true }
+        sessionId: { type: string, minLength: 1 }
+      additionalProperties: false
+
+    FindingAudio:
+      type: object
+      required:
+        [audioBase64, auditEventId, chunkId, chunksOverlappingFinding, endMs, findingEndMs, findingStartMs, sampleRate, startMs]
+      properties:
+        audioBase64: { type: [string, "null"] }
+        auditEventId: { type: string, minLength: 1 }
+        chunkId: { type: string, minLength: 1 }
+        chunksOverlappingFinding: { type: integer, minimum: 0 }
+        endMs: { type: [integer, "null"], minimum: 0 }
+        findingEndMs: { type: integer, minimum: 0 }
+        findingStartMs: { type: integer, minimum: 0 }
+        sampleRate: { type: [integer, "null"], minimum: 1 }
+        startMs: { type: [integer, "null"], minimum: 0 }
+      additionalProperties: false
+
+    PrivacyJob:
+      type: object
+      required: [id, tenantId, learnerId, kind, includedRecords, deletedRecords, audioObjectKeysDeleted, auditEventId]
+      properties:
+        id: { type: string, minLength: 1 }
+        tenantId: { type: string, minLength: 1 }
+        learnerId: { type: string, minLength: 1 }
+        kind: { type: string, enum: [export, delete] }
+        includedRecords: { type: array, items: { type: string } }
+        # An EXPORT must always report an empty deletedRecords. If the `kind == Delete` check were
+        # ever inverted, an export would start deleting the caller's data.
+        deletedRecords: { type: array, items: { type: string } }
+        audioObjectKeysDeleted: { type: array, items: { type: string } }
+        auditEventId: { type: string, minLength: 1 }
+      additionalProperties: false
+
+    AuthToken:
+      # The ONLY snake_case body in the API. A client-side camelCase "tidy up" breaks every caller,
+      # which is why it is pinned here and in the Phase 5 fixtures.
+      type: object
+      required: [token, user_id, tenant_id, role]
+      properties:
+        token: { type: string, minLength: 1 }
+        user_id: { type: string, minLength: 1 }
+        tenant_id: { type: string, minLength: 1 }
+        role: { type: string, enum: [learner, teacher, scholar, admin, ops] }
+        audit_event_id: { type: string }
+      additionalProperties: true
+
+    PilotSession:
+      type: object
+      required: [csrfToken]
+      properties:
+        csrfToken: { type: string, minLength: 1 }
+        learnerId: { type: string }
+        tenantId: { type: string }
+        expiresAt: { type: string }
+      additionalProperties: true
+
+    # ── Added by C3. Every schema below was written from a RESPONSE OBSERVED against a running
+    # server (specs/contract-coverage-closure/plan.md §3), never from reading a Rust struct — a
+    # struct read misses serde attributes, and a schema that describes the code rather than the wire
+    # is the same fabrication `x-unvalidated` exists to make countable.
+
+    Word:
+      type: object
+      # One word of canonical text. `get_ayah` (handlers/quran.rs:147) emits all four unconditionally.
+      required: [id, wordIndex, text, sourceChecksum]
+      properties:
+        id: { type: string, minLength: 1 }
+        wordIndex: { type: integer, minimum: 0 }
+        # Canonical Uthmani text — never normalized, on any tier. Same rule as Ayah.text.
+        text: { type: string, minLength: 1 }
+        sourceChecksum: { type: string, minLength: 1 }
+      additionalProperties: false
+
+    Ayah:
+      type: object
+      required: [id, surahNumber, ayahNumber, text, sourceChecksum]
+      properties:
+        id: { type: string, minLength: 1 }
+        surahNumber: { type: integer, minimum: 1, maximum: 114 }
+        ayahNumber: { type: integer, minimum: 1 }
+        text: { type: string, minLength: 1 }
+        # Provenance of scripture. An empty checksum would mean unverifiable canonical text.
+        sourceChecksum: { type: string, minLength: 1 }
+        # Present on GET /v1/quran/ayahs/{s}/{a}, absent on GET /v1/quran/surahs/{n} — one schema,
+        # two levels of detail, so it is a property but NOT required. It was missing entirely while
+        # `additionalProperties: false` stood, which made this contract REJECT every real
+        # single-ayah response. Nothing noticed because no validator reaches that route.
+        words: { type: array, items: { $ref: '#/components/schemas/Word' } }
+      additionalProperties: false
+
+    SurahAyahs:
+      type: object
+      required: [surahNumber, ayahs]
+      properties:
+        surahNumber: { type: integer, minimum: 1, maximum: 114 }
+        ayahs: { type: array, minItems: 1, items: { $ref: '#/components/schemas/Ayah' } }
+      additionalProperties: false
+
+    EvalRun:
+      type: object
+      required:
+        [modelVersion, datasetVersion, wordAlignmentF1, tajweedF1, falsePositiveRate,
+         teacherAgreementRate, unsourcedLearnerOutputs, passed, evaluationTask, evidenceId,
+         evidenceKind, evidenceEligibility, releaseEligible, evidencePayload,
+         evidencePayloadSha256, candidateId, modelArtifactSha256, datasetManifestSha256,
+         splitManifestSha256, splitId, evaluatorVersion, evaluatorSourceSha256,
+         evaluatorProtocolSha256, rawRowManifestSha256, rawResultsSha256, calibratorId,
+         calibratorArtifactSha256, signerKeyId, signatureAlgorithm, signatureBase64Url, signedAt,
+         evaluationCounts, sliceMetrics]
+      properties:
+        modelVersion: { type: string, minLength: 1 }
+        datasetVersion: { type: string, minLength: 1 }
+        # NUMBERS, not strings. A release gate that received these as strings would compare them as
+        # strings, and "0.9" < "0.85" is true.
+        wordAlignmentF1: { type: number }
+        tajweedF1: { type: number }
+        falsePositiveRate: { type: number }
+        teacherAgreementRate: { type: number }
+        unsourcedLearnerOutputs: { type: integer, minimum: 0 }
+        # Legacy `passed` is retained for compatibility, but it is never release authority by itself.
+        passed: { type: boolean }
+        evaluationTask: { type: [string, "null"], enum: [quran-word-alignment, acoustic-tajweed, null] }
+        evidenceId: { type: [string, "null"] }
+        evidenceKind: { type: string, enum: [legacy-aggregate, row-level-computed-evaluation] }
+        evidenceEligibility: { type: string, enum: [fixture-regression, research-only, release-candidate] }
+        releaseEligible: { type: boolean }
+        evidencePayload: { type: [object, "null"] }
+        evidencePayloadSha256: { type: [string, "null"], pattern: '^sha256:[a-f0-9]{64}$' }
+        candidateId: { type: [string, "null"] }
+        modelArtifactSha256: { type: [string, "null"], pattern: '^sha256:[a-f0-9]{64}$' }
+        datasetManifestSha256: { type: [string, "null"], pattern: '^sha256:[a-f0-9]{64}$' }
+        splitManifestSha256: { type: [string, "null"], pattern: '^sha256:[a-f0-9]{64}$' }
+        splitId: { type: [string, "null"] }
+        evaluatorVersion: { type: [string, "null"] }
+        evaluatorSourceSha256: { type: [string, "null"], pattern: '^sha256:[a-f0-9]{64}$' }
+        evaluatorProtocolSha256: { type: [string, "null"], pattern: '^sha256:[a-f0-9]{64}$' }
+        rawRowManifestSha256: { type: [string, "null"], pattern: '^sha256:[a-f0-9]{64}$' }
+        rawResultsSha256: { type: [string, "null"], pattern: '^sha256:[a-f0-9]{64}$' }
+        calibratorId: { type: [string, "null"] }
+        calibratorArtifactSha256: { type: [string, "null"], pattern: '^sha256:[a-f0-9]{64}$' }
+        signerKeyId: { type: [string, "null"] }
+        signatureAlgorithm: { type: [string, "null"], enum: [Ed25519, null] }
+        signatureBase64Url: { type: [string, "null"], pattern: '^[A-Za-z0-9_-]{86}$' }
+        signedAt: { type: [string, "null"], format: date-time }
+        evaluationCounts: { type: [object, "null"] }
+        sliceMetrics: { type: [array, "null"], items: {} }
+      additionalProperties: false
+
+    AuditEvent:
+      type: object
+      required: [id, tenantId, actorId, action, subjectType, subjectId, traceId]
+      properties:
+        id: { type: string, minLength: 1 }
+        tenantId: { type: string, minLength: 1 }
+        actorId: { type: string }
+        action: { type: string, minLength: 1 }
+        subjectType: { type: string }
+        subjectId: { type: string }
+        # Present but null when the originating request carried no trace header.
+        traceId: { type: [string, "null"] }
+      additionalProperties: false
+
+    TeacherReview:
+      type: object
+      required: [id, tenantId, findingId, teacherId, decision, note, supersededAt, auditEventId]
+      properties:
+        id: { type: string, minLength: 1 }
+        tenantId: { type: string, minLength: 1 }
+        # NULLABLE since ADR-0031. A re-record DETACHES a review instead of deleting it, so a
+        # surviving review can legitimately have no finding. This said `minLength: 1` while the
+        # queue mapped the NULL to `""` — every detached review was a response this schema forbids.
+        findingId: { type: [string, "null"] }
+        # ALWAYS the acting user — review.rs ignores a caller-supplied teacherId. Asserted in
+        # tests/api-parity/db-endpoints.test.mjs.
+        teacherId: { type: string, minLength: 1 }
+        decision: { type: string, enum: [accepted, rejected, edited] }
+        note: { type: string }
+        # RFC3339 when a re-record superseded this review, null while it is about a live finding.
+        # Without it a reader sees a review pointing at no finding and nothing saying why.
+        supersededAt: { type: [string, "null"] }
+        auditEventId: { type: string, minLength: 1 }
+      additionalProperties: false
+
+    RegisterResult:
+      type: object
+      required: [userId, tenantId, displayName, role, token, auditEventId]
+      properties:
+        userId: { type: string, minLength: 1 }
+        tenantId: { type: string, minLength: 1 }
+        displayName: { type: string }
+        role: { type: string, enum: [learner, teacher, scholar, admin, ops] }
+        token: { type: string, minLength: 1 }
+        auditEventId: { type: string, minLength: 1 }
+      additionalProperties: false
+
+    WordAlignment:
+      type: object
+      required: [wordId, status, confidence, startMs, endMs, heardText, canonicalText, transcriptSource, modelVersion, modelAttribution, datasetVersion, evidenceIds, auditEventId]
+      properties:
+        wordId: { type: string, minLength: 1 }
+        # recitation.rs VALID_STATUS. `extra` and `needs-review` are accepted on write; only
+        # `matched` and `misread` currently appear in the staging corpus.
+        status: { type: string, enum: [matched, misread, missed, extra, needs-review] }
+        confidence: { type: number, minimum: 0, maximum: 1 }
+        startMs: { type: integer, minimum: 0 }
+        endMs: { type: integer, minimum: 0 }
+        heardText: { type: [string, "null"] }
+        canonicalText: { type: [string, "null"] }
+        transcriptSource: { type: string, enum: [server-derived, client-reported] }
+        modelVersion:
+          type: string
+          minLength: 1
+          description: Exact compatibility model foreign key stored on this word; never a fallback.
+        modelAttribution:
+          description: Full producer chain for a linked server run; null for legacy/client rows.
+          oneOf:
+            - { $ref: '#/components/schemas/ModelAttribution' }
+            - { type: "null" }
+        datasetVersion:
+          type: [string, "null"]
+          minLength: 1
+        evidenceIds: { type: array, items: { type: string, minLength: 1 } }
+        auditEventId: { type: string, minLength: 1 }
+      additionalProperties: false
+
+    PersistAlignmentsResult:
+      type: object
+      required: [sessionId, persisted, skippedInvalidStatus, skippedUnknownWord, skippedUnusableSpan, transcriptSource, auditEventId]
+      properties:
+        sessionId: { type: string, minLength: 1 }
+        persisted: { type: integer, minimum: 0 }
+        # Counted SEPARATELY on purpose: a word skipped for an unrecognised status is a different
+        # problem from one skipped because its id is not canonical, and collapsing them hides which.
+        skippedInvalidStatus: { type: integer, minimum: 0 }
+        skippedUnknownWord: { type: integer, minimum: 0 }
+        # An alignment whose startMs/endMs do not identify any audio: absent, null, non-integer,
+        # negative, zero-length or inverted. Requires 0 <= startMs < endMs.
+        #
+        # `start_ms`/`end_ms` are the ONLY record of WHERE in a recitation a word was heard, and a
+        # tajweed finding is anchored to the alignment row. Before this count existed, both servers
+        # coerced an unusable timing to the integer 0, so a finding could be anchored to a 0ms-to-0ms
+        # span — pointing at no audio, and indistinguishable in the table from one pointing at real
+        # audio. A reviewer asked to adjudicate it has nothing to listen to.
+        #
+        # Skipped and counted rather than failing the batch, like skippedUnknownWord: one bad timing
+        # must not discard forty-nine good ones. A client seeing this above zero is sending timings
+        # that will never become evidence.
+        skippedUnusableSpan: { type: integer, minimum: 0 }
+        # ADR-0030. This route can only ever return `client-reported`: its words came from the
+        # request body. `server-derived` belongs to finalize, which takes no words from a caller.
+        # On the wire so a client is never left assuming its words became measured evidence.
+        transcriptSource: { type: string, enum: [server-derived, client-reported] }
+        auditEventId: { type: string, minLength: 1 }
+      additionalProperties: false
+
+    RequestTeacherReviewResult:
+      # TWO observed shapes, one per branch: the first request carries `auditEventId`, a repeat
+      # carries `alreadyRequested: true` instead. Both always carry sessionId and reviewStatus, so
+      # only those are required. Observed both ways rather than assumed from the summary line.
+      type: object
+      required: [sessionId, reviewStatus]
+      properties:
+        sessionId: { type: string, minLength: 1 }
+        reviewStatus:
+          type: string
+          # `blocked` is a real `ReviewStatus` variant (types.rs:111) and was missing here while
+          # `AgentRun.reviewStatus` listed it — the contract disagreeing with itself. A client
+          # built from this could not reason about a session a scholar had blocked.
+          enum: [draft, ai-suggested, teacher-review-required, teacher-reviewed, scholar-approved, blocked]
+        auditEventId: { type: string, minLength: 1 }
+        alreadyRequested: { type: boolean }
+      additionalProperties: false
+
+    Sm2State:
+      type: object
+      required: [repetitions, intervalDays, easinessFactor]
+      properties:
+        repetitions: { type: integer, minimum: 0 }
+        # Capped at 3650 — an uncapped interval overflowed `Utc::now() + Duration::days` near
+        # i32::MAX and panicked (fixed in 1675d62).
+        intervalDays: { type: integer, minimum: 0, maximum: 3650 }
+        easinessFactor: { type: number }
+      additionalProperties: false
+
+    ProgressUpdateResult:
+      type: object
+      required: [learnerId, tenantId, ayahRef, quality, sm2State, nextReviewAt]
+      properties:
+        learnerId: { type: string, minLength: 1 }
+        tenantId: { type: string, minLength: 1 }
+        ayahRef: { type: string, minLength: 1 }
+        # Clamped, never rejected — an out-of-range quality is a 200, not a 500.
+        quality: { type: integer, minimum: 0, maximum: 5 }
+        sm2State: { $ref: '#/components/schemas/Sm2State' }
+        # Same chrono AutoSi format as LearnerProgress: `+00:00`, never `Z`, 0/3/6/9 digits.
+        nextReviewAt:
+          type: [string, "null"]
+          pattern: '^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{3}|\.\d{6}|\.\d{9})?\+00:00$'
+      additionalProperties: false
+
+    AgentRun:
+      type: object
+      required: [id, name, goal, status, reviewStatus, confidence, sources, learnerId, findingId, lastEvent]
+      properties:
+        id: { type: string, minLength: 1 }
+        name: { type: string }
+        goal: { type: string }
+        status: { type: string, enum: [queued, running, needs-human-review, approved, blocked] }
+        reviewStatus:
+          type: string
+          enum: [draft, ai-suggested, teacher-review-required, teacher-reviewed, scholar-approved, blocked]
+        confidence: { type: number }
+        # ITEMS ARE UNCONSTRAINED, and that is the honest contract rather than a gap.
+        #
+        # `AgentRunRequest.sources` is a bare `serde_json::Value` (agent.rs:22). The server counts the
+        # array — an approved run with zero sources is refused at write time, which is the review gate
+        # — and otherwise stores and returns whatever the caller sent, verbatim. It normalises
+        # nothing, so no element shape is enforced and none can be contracted.
+        #
+        # I got this wrong TWICE by inferring from samples: first `items: {type: string}` from a row
+        # whose sources was `[]` (an empty array satisfies every item schema), then an object with a
+        # required `url` because every row on my machine happened to have `url: null` present. CI's
+        # rows omit the key entirely. Both drafts were fabrications from a sample, and both were
+        # caught by validating against real data rather than by re-reading the schema.
+        #
+        # Constraining this is a PRODUCT change — the server would have to validate on write.
+        sources: { type: array }
+        learnerId: { type: [string, "null"] }
+        findingId: { type: [string, "null"] }
+        lastEvent: { type: [string, "null"] }
+      additionalProperties: false
+
+    LogoutResult:
+      type: object
+      required: [status]
+      properties:
+        status: { type: string, enum: [logged_out] }
+      additionalProperties: false
+
+  responses:
+    Unauthorized:
+      description: '`missing or invalid authorization` — the string is contract.'
+      content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } }
+    Forbidden:
+      description: '`actor is not allowed to perform this action`'
+      content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } }
+    NotFound:
+      description: '`record not found`'
+      content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } }
+    BadRequest:
+      content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } }
+      description: Validation failure with a handler-authored message.
+    Gone:
+      content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } }
+      description: The resource existed but its retention policy no longer permits access.
+    BadGateway:
+      content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } }
+      description: A required internal dependency failed or returned an invalid response.
+
+security:
+  - bearerAuth: []
+  - pilotCookie: []
+  - devHeaderAuth: []
+
+paths:
+  # ── ops ───────────────────────────────────────────────────────────────────────────────────────
+  /health:
+    get:
+      tags: [ops]
+      security: []
+      summary: Liveness. Stays 200 under MAINTENANCE_MODE, so orchestrators see up-in-maintenance.
+      responses:
+        '200': { description: alive, content: { text/plain: { schema: { type: string, const: ok } } } }
+  /ready:
+    get:
+      tags: [ops]
+      security: []
+      summary: Readiness — answers 200 only when the database pool answers.
+      responses:
+        '200': { description: ready, content: { text/plain: { schema: { type: string, const: ready } } } }
+        '503': { description: pool unavailable, content: { text/plain: { schema: { type: string, const: 'not ready' } } } }
+  /metrics:
+    get:
+      tags: [ops]
+      security: []
+      summary: Prometheus text. Fail-closed.
+      description: |
+        404 — NOT 401 — when unauthorized, deliberately hiding the endpoint's existence.
+        Requires `x-metrics-token` matching METRICS_TOKEN, or ALLOW_INSECURE_DEFAULTS=1.
+      responses:
+        '200': { description: metrics, content: { text/plain: { schema: { type: string } } } }
+        '404': { description: closed — the fail-closed default, and not an error to a client }
+
+  # ── auth ──────────────────────────────────────────────────────────────────────────────────────
+  /v1/auth/token:
+    post:
+      tags: [auth]
+      summary: Mint a JWT for a user. Admin/ops only, same-tenant.
+      requestBody:
+        required: true
+        content: { application/json: { schema: { type: object, required: [userId], properties: { userId: { type: string } } } } }
+      responses:
+        '200': { description: minted, content: { application/json: { schema: { $ref: '#/components/schemas/AuthToken' } } } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+  /v1/auth/register:
+    post:
+      tags: [auth]
+      x-target-status: retired
+      x-retirement-decision: ADR-0038
+      summary: Create a user. An elevated role in another tenant is Forbidden.
+      description: |
+        A duplicate email maps a unique-violation on idx_users_tenant_email_unique to a clean 400 —
+        the SELECT pre-check races under READ COMMITTED, so the constraint is the real gate.
+      responses:
+        '200': { description: created, content: { application/json: { schema: { $ref: '#/components/schemas/RegisterResult' } } } }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+  /v1/auth/login:
+    post:
+      tags: [auth]
+      x-target-status: retired
+      x-retirement-decision: ADR-0038
+      security: []
+      summary: Password login.
+      description: |
+        NEVER early-returns on a missing user — it always runs exactly one bcrypt verify against a
+        decoy hash (user.rs:205-206). A client must not infer account existence from timing either.
+      responses:
+        '200': { description: logged in, content: { application/json: { schema: { $ref: '#/components/schemas/RegisterResult' } } } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  # ── quran ─────────────────────────────────────────────────────────────────────────────────────
+  /v1/quran/surahs:
+    get:
+      tags: [quran]
+      responses:
+        '200':
+          description: All 114 surahs.
+          content:
+            application/json:
+              schema: { type: array, minItems: 114, items: { $ref: '#/components/schemas/Surah' } }
+  /v1/quran/surahs/{surah_number}:
+    get:
+      tags: [quran]
+      summary: 'One surah with every ayah. NO AUTHENTICATION — canonical text is not tenant data.'
+      parameters: [{ name: surah_number, in: path, required: true, schema: { type: integer, minimum: 1, maximum: 114 } }]
+      responses:
+        '200': { description: one surah, content: { application/json: { schema: { $ref: '#/components/schemas/SurahAyahs' } } } }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /v1/quran/ayahs/{surah_number}/{ayah_number}:
+    get:
+      tags: [quran]
+      parameters:
+        - { name: surah_number, in: path, required: true, schema: { type: integer, minimum: 1, maximum: 114 } }
+        - { name: ayah_number, in: path, required: true, schema: { type: integer, minimum: 1 } }
+      responses:
+        '200':
+          description: |
+            Canonical ayah. The text is intentionally NFC-UNSTABLE — 5,771 of 6,236 ayahs change under
+            NFC normalization. A client must never call .normalize() on it
+            (packages/quran-data/fixtures/nfc-vectors.json).
+          content: { application/json: { schema: { $ref: '#/components/schemas/Ayah' } } }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  # ── recitation ────────────────────────────────────────────────────────────────────────────────
+  /v1/recitation-sessions:
+    get:
+      tags: [recitation]
+      summary: List sessions. Staff only — a learner is Forbidden.
+      responses:
+        '200': { description: sessions, content: { application/json: { schema: { type: array, items: { $ref: '#/components/schemas/RecitationSession' } } } } }
+        '403': { $ref: '#/components/responses/Forbidden' }
+    post:
+      tags: [recitation]
+      summary: Create a session. Note 200, not 201.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [learnerId, quranRef, sourceChecksum, language, mode, consent]
+              properties:
+                learnerId: { type: string }
+                quranRef: { $ref: '#/components/schemas/QuranRef' }
+                sourceChecksum: { type: string }
+                language: { type: string }
+                mode: { type: string }
+                practicePlanId: { type: string }
+                consent: { $ref: '#/components/schemas/Consent' }
+      responses:
+        '200':
+          description: |
+            Created. `externalProcessingAllowed` is the AND of ASR consent and guardian approval —
+            never either alone, and it is the server's answer, not the client's request echoed back.
+          content: { application/json: { schema: { $ref: '#/components/schemas/RecitationSession' } } }
+        # 400 also covers a caller-supplied model identity. The server selects the sole configured
+        # alignment implementation and returns it; clients cannot choose or override provenance.
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /v1/recitation-sessions/{id}:
+    get:
+      tags: [recitation]
+      parameters: [{ name: id, in: path, required: true, schema: { type: string } }]
+      responses:
+        '200': { description: session, content: { application/json: { schema: { $ref: '#/components/schemas/RecitationSession' } } } }
+        # 400 also covers a NUL byte (U+0000) anywhere in a string — Postgres text/jsonb
+        # cannot hold one, and this used to surface as a 500 (specs/nul-byte-5xx/).
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { description: 'not found — ALSO returned cross-tenant, so existence never leaks' }
+  /v1/recitation-sessions/{id}/finalize:
+    post:
+      tags: [recitation]
+      summary: Turn a streamed recitation into a reviewable one, server-side.
+      description: |
+        `stored audio chunks -> transcript -> alignment -> persisted word_alignments`. The gateway
+        forwards audio to ml-inference and stops there; without this a streamed recitation produced
+        no transcript, so no alignment, so no finding a teacher could review.
+
+        **The client does not supply the transcript.** Whoever supplies the recognised words decides
+        what the learner is recorded as having said, so it is fetched server-to-server from the
+        service that holds the audio. The caller only names the session.
+
+        **Consent is read from the database, never from the request.** A learner who declined
+        external-ASR processing gets `finalized: false` with a reason and NO stored alignment —
+        deliberately not a fabricated "perfect recitation" one.
+
+        Ownership-scoped: `require_self_or_any(learner_id, [Teacher, Admin, Ops])`.
+      parameters: [{ name: id, in: path, required: true, schema: { type: string } }]
+      responses:
+        '200':
+          description: |
+            `finalized: true` with a persisted count, or `finalized: false` with a reason. A refusal
+            is an ANSWER, not an error — the learner's recitation happened either way.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [sessionId, finalized, reason, persisted]
+                properties:
+                  sessionId: { type: string, minLength: 1 }
+                  finalized: { type: boolean }
+                  reason: { type: string }
+                  persisted: { type: integer }
+                  chunkCount: { type: integer }
+                  auditEventId: { type: string }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        # The ML service is unreachable or answered badly. Detail is logged, never returned.
+        '502': { description: 'the ML service could not produce a transcript or an alignment' }
+  /v1/recitation-sessions/{id}/tajweed-findings:
+    get:
+      tags: [review]
+      summary: A learner's own tajweed findings for one session.
+      description: |
+        Ownership-scoped: `require_self_or_any(learner_id, [Teacher, Admin, Ops])`. A learner reads
+        their OWN session; staff read any session in their tenant. `/v1/tajweed-findings` is the
+        tenant-wide STAFF queue and is a different thing.
+
+        Returns EVERY finding for the session, including the ones that have not cleared review, each
+        with its `reviewStatus` and a `withheld` flag — the client needs them to distinguish "notes
+        are waiting for a teacher" from "no feedback".
+
+        **A withheld finding is REDACTED for a learner.** `rule`, `severity`, `explanation` and
+        `wordId` come back as empty strings, `confidence` as `0`, `sources` as `[]`. Only its
+        existence and its `reviewStatus` survive, because only those are not a judgement about how
+        the person recited. STAFF (teacher/admin/ops) receive every finding intact — reviewing the
+        unreviewed ones is what the teacher queue is for.
+
+        `withheld` means the same thing to both audiences: this finding is not learner-visible. The
+        redacted values are chosen so the row also fails `canShowLearnerFacingAiOutput` on its own
+        merits, so a client that ignores `withheld` still cannot present one as feedback.
+      parameters: [{ name: id, in: path, required: true, schema: { type: string } }]
+      responses:
+        '200':
+          description: findings for this session, newest-confidence first
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/SessionTajweedFinding' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        # A session in ANOTHER tenant is 404 before the ownership check, so this cannot be used to
+        # probe for session ids that exist elsewhere.
+        '404': { $ref: '#/components/responses/NotFound' }
+  /v1/recitation-sessions/{id}/alignments:
+    get:
+      tags: [recitation]
+      parameters: [{ name: id, in: path, required: true, schema: { type: string } }]
+      responses:
+        '200':
+          description: |
+            Word alignments. Cross-tenant answers 200 with an EMPTY array, not 404 — the query filters
+            on the ACTOR's tenant, so another tenant simply matches no rows.
+          content: { application/json: { schema: { type: array, items: { $ref: '#/components/schemas/WordAlignment' } } } }
+    post:
+      tags: [recitation]
+      parameters: [{ name: id, in: path, required: true, schema: { type: string } }]
+      responses:
+        '200': { description: persisted, content: { application/json: { schema: { $ref: '#/components/schemas/PersistAlignmentsResult' } } } }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        # Any supplied model identity is refused. Alignments inherit the identity already selected
+        # and stored on their session; there is no independent fallback.
+        '400': { $ref: '#/components/responses/BadRequest' }
+  /v1/recitation-sessions/{id}/request-teacher-review:
+    post:
+      tags: [recitation]
+      summary: Owner-gated; idempotent.
+      parameters: [{ name: id, in: path, required: true, schema: { type: string } }]
+      responses:
+        '200':
+          description: 'Flips reviewStatus to teacher-review-required; a repeat returns alreadyRequested: true.'
+          content: { application/json: { schema: { $ref: '#/components/schemas/RequestTeacherReviewResult' } } }
+        '403': { $ref: '#/components/responses/Forbidden' }        # 400 also covers a NUL byte (U+0000) anywhere in a string — Postgres text/jsonb
+        # cannot hold one, and this used to surface as a 500 (specs/nul-byte-5xx/).
+        '400': { $ref: '#/components/responses/BadRequest' }
+
+  /v1/realtime-session-tickets:
+    post:
+      tags: [recitation]
+      summary: Mint a realtime audio ticket. Learner/admin/ops ONLY — teacher and scholar are refused.
+      description: |
+        The one credential that crosses a service boundary: realtime-gateway validates this token.
+        externalAsrProcessing comes from the session's stored column, never from the request.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [sessionId]
+              properties:
+                sessionId: { type: string }
+                requestedSampleRates: { type: array, items: { type: integer } }
+      responses:
+        '200': { description: ticket, content: { application/json: { schema: { $ref: '#/components/schemas/RealtimeSessionTicket' } } } }
+        # 400 also covers a NUL byte (U+0000) anywhere in a string — Postgres text/jsonb
+        # cannot hold one, and this used to surface as a 500 (specs/nul-byte-5xx/).
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '422': { description: 'body failed to deserialize — axum rejects before the handler runs' }
+  /v1/audio-chunks:
+    post:
+      tags: [recitation]
+      summary: Index one retained audio chunk using its session-scoped realtime ticket.
+      description: |
+        Internal gateway boundary. Tenant, learner, session, retention and expiry come from the
+        signed ticket; caller-supplied tenantId or learnerId has no authority. Retrying the same
+        chunk id is idempotent.
+      parameters:
+        - name: x-realtime-ticket
+          in: header
+          required: true
+          schema: { type: string, minLength: 1 }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [sessionId, chunkId, objectKey, startMs, endMs]
+              properties:
+                sessionId: { type: string, minLength: 1 }
+                chunkId: { type: string, minLength: 1 }
+                objectKey: { type: string, minLength: 1 }
+                startMs: { type: integer, minimum: 0 }
+                endMs: { type: integer, minimum: 1 }
+                sampleRate: { type: integer, minimum: 1, default: 16000 }
+              description: endMs must be greater than startMs.
+      responses:
+        '200': { description: indexed or already indexed, content: { application/json: { schema: { $ref: '#/components/schemas/AudioChunkIndexResult' } } } }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '422': { description: 'body failed to deserialize — axum rejects before the handler runs' }
+  /v1/learners/active:
+    get:
+      tags: [recitation]
+      summary: Distinct active learners. Staff only.
+      responses:
+        # An array of learner IDs, not of objects. Observed from a running server: the handler
+        # selects `learner_id` and returns the column.
+        '200': { description: learners, content: { application/json: { schema: { type: array, items: { type: string, minLength: 1 } } } } }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+  # ── progress ──────────────────────────────────────────────────────────────────────────────────
+  /v1/learner/progress:
+    get:
+      tags: [progress]
+      summary: Staff may read any in-tenant learner; a learner may read only their own.
+      parameters: [{ name: learnerId, in: query, schema: { type: string } }]
+      responses:
+        '200': { description: progress, content: { application/json: { schema: { $ref: '#/components/schemas/LearnerProgress' } } } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+    post:
+      tags: [progress]
+      summary: Submit an SM-2 review. Quality out of range is CLAMPED, not a 500.
+      responses:
+        '200': { description: updated, content: { application/json: { schema: { $ref: '#/components/schemas/ProgressUpdateResult' } } } }
+        # 400 also covers a NUL byte (U+0000) anywhere in a string — Postgres text/jsonb
+        # cannot hold one, and this used to surface as a 500 (specs/nul-byte-5xx/).
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+  /v1/learner/progress/weekly:
+    get:
+      tags: [progress]
+      responses:
+        '200': { description: real per-day sessions and word accuracy for the last 7 days, content: { application/json: { schema: { $ref: '#/components/schemas/WeeklyProgress' } } } }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+  # ── review ────────────────────────────────────────────────────────────────────────────────────
+  /v1/tajweed-findings:
+    get:
+      tags: [review]
+      summary: The tenant-wide staff review queue, oldest-waiting first.
+      parameters:
+        # Without this the queue was traversable only to its first page: LIMIT 200 with no offset
+        # meant a deeper queue had findings NO teacher could reach, whatever the order. Measured at
+        # 1986 awaiting against a 200-row page.
+        - name: offset
+          in: query
+          required: false
+          schema: { type: integer, minimum: 0 }
+          description: >-
+            Digits only. A leading `+` is refused as well as a sign, a fraction or a hex literal:
+            `+` is the query-string encoding for a space, so `?offset=+5` is ambiguous about whether
+            it ever meant 5.
+      responses:
+        '200':
+          description: findings
+          headers:
+            x-total-awaiting:
+              # How deep the queue is, so truncation is not silent. A header rather than a wrapper
+              # object because this response has always been a bare array and every client reads it
+              # that way.
+              schema: { type: integer, minimum: 0 }
+              description: Findings awaiting review in this tenant, ignoring offset and page size.
+          content: { application/json: { schema: { type: array, items: { $ref: '#/components/schemas/StaffTajweedFinding' } } } }
+  /v1/tajweed-findings/{id}/audio:
+    get:
+      tags: [review]
+      summary: Retrieve the retained audio covering a finding for an authorized reviewer.
+      description: |
+        Teacher, admin and ops only. Every authorized attempt is audited before storage is read.
+        A discarded or indeterminate-retention recording is Gone; an absent finding, cross-tenant
+        finding, or permitted-but-not-captured recording is Not Found.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, minLength: 1 }
+      responses:
+        '200': { description: retained audio and finding span, content: { application/json: { schema: { $ref: '#/components/schemas/FindingAudio' } } } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '410': { $ref: '#/components/responses/Gone' }
+        '502': { $ref: '#/components/responses/BadGateway' }
+  /v1/teacher-review-queue:
+    get:
+      tags: [review]
+      responses:
+        '200': { description: queue, content: { application/json: { schema: { type: array, items: { $ref: '#/components/schemas/TeacherReviewQueueEntry' } } } } }
+  /v1/teacher-reviews:
+    post:
+      tags: [review]
+      summary: Record a teacher decision. A dangling finding_id is a clean 404, not a 500.
+      # Undeclared until the Flutter review queue was written — the SECOND instance of the gap
+      # audit finding #2 found on /v1/privacy/delete: a POST whose requestBody the contract never
+      # described, so a client written from this file alone could not know what to send.
+      # `TeacherReviewRequest` (types.rs:229) is camelCase and has no optional fields.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [findingId, teacherId, decision, note]
+              properties:
+                findingId: { type: string, minLength: 1 }
+                # Required by the struct and IGNORED by the handler: the review author is the
+                # authenticated actor. review.rs says why — trusting this let a teacher attribute a
+                # review to another user, including one in another tenant. Declared because the
+                # deserializer rejects a body without it, not because it decides anything.
+                teacherId: { type: string }
+                decision: { type: string, enum: [accepted, rejected, edited] }
+                # Not optional and not defaulted: serde has no default for this field, so an absent
+                # `note` is a 422 rather than an empty one. A client with nothing to say sends "".
+                note: { type: string }
+              additionalProperties: false
+      responses:
+        '200': { description: recorded, content: { application/json: { schema: { $ref: '#/components/schemas/TeacherReview' } } } }
+        # 400 also covers a NUL byte (U+0000) anywhere in a string — Postgres text/jsonb
+        # cannot hold one, and this used to surface as a 500 (specs/nul-byte-5xx/).
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /v1/scholar-approvals:
+    get:
+      tags: [review]
+      responses:
+        '200': { description: approvals, content: { application/json: { schema: { type: array, items: { $ref: '#/components/schemas/ScholarApprovalListEntry' } } } } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+    post:
+      tags: [review]
+      summary: Record a scholar decision.
+      description: |
+        A `scholar-approved` decision is rejected at HIGH risk regardless of sources, and rejected
+        without at least one source. Both mirror canShowLearnerFacingAiOutput.
+      responses:
+        '200': { description: recorded, content: { application/json: { schema: { $ref: '#/components/schemas/ScholarApproval' } } } }
+        '400': { $ref: '#/components/responses/BadRequest' }
+  /v1/agent-runs:
+    get:
+      tags: [review]
+      x-target-status: retired
+      x-retirement-decision: ADR-0038
+      responses:
+        '200': { description: runs, content: { application/json: { schema: { type: array, items: { $ref: '#/components/schemas/AgentRun' } } } } }
+    post:
+      tags: [review]
+      x-target-status: retired
+      x-retirement-decision: ADR-0038
+      summary: Record an agent run.
+      description: |
+        `approved` requires ALL of: >=1 source, confidence >= 0.82, and a reviewStatus of
+        teacher-reviewed or scholar-approved. `ai-suggested` never qualifies.
+      responses:
+        '200': { description: recorded, content: { application/json: { schema: { $ref: '#/components/schemas/CreatedAgentRun' } } } }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        # A learnerId naming nobody. agent_runs.learner_id REFERENCES users(id); before
+        # specs/fk-surface-sweep/ this was a 500.
+        '404': { $ref: '#/components/responses/NotFound' }
+  /v1/audit-events:
+    get:
+      tags: [review]
+      summary: 'Tenant-scoped audit log, newest first, capped at 200. Admin and Ops only — NOT Teacher.'
+      responses:
+        '200': { description: audit events, content: { application/json: { schema: { type: array, items: { $ref: '#/components/schemas/AuditEvent' } } } } }
+        '403': { $ref: '#/components/responses/Forbidden' }
+  /v1/eval-runs/{model_version}:
+    get:
+      tags: [review]
+      parameters: [{ name: model_version, in: path, required: true, schema: { type: string } }]
+      responses:
+        '200': { description: eval run, content: { application/json: { schema: { $ref: '#/components/schemas/EvalRun' } } } }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  # ── privacy ───────────────────────────────────────────────────────────────────────────────────
+  /v1/privacy/export:
+    post:
+      tags: [privacy]
+      summary: Export a learner's records. Deletes NOTHING.
+      requestBody:
+        required: true
+        content: { application/json: { schema: { type: object, required: [learnerId], properties: { learnerId: { type: string } } } } }
+      responses:
+        '200': { description: export job, content: { application/json: { schema: { $ref: '#/components/schemas/PrivacyJob' } } } }
+        # 400 also covers a NUL byte (U+0000) anywhere in a string — Postgres text/jsonb
+        # cannot hold one, and this used to surface as a 500 (specs/nul-byte-5xx/).
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        # A learner that does not exist in this tenant. privacy_jobs.learner_id REFERENCES
+        # users(id), so before specs/privacy-job-404/ this was a 500 — a permanent failure
+        # wearing the status code of a transient one, on a right-to-erasure endpoint.
+        '404': { $ref: '#/components/responses/NotFound' }
+  /v1/privacy/delete:
+    post:
+      tags: [privacy]
+      summary: Erase a learner. Scoped to ONE learner — other learners' records survive.
+      description: |
+        Also erases audio via the ML service and reports the exact object keys it erased. A
+        cross-tenant delete is Forbidden and must leave the row intact.
+      # Both privacy routes deserialize the SAME `PrivacyJobRequest { learner_id: String }`
+      # (types.rs:305), but only export documented it. A client written from this contract would
+      # have posted an empty body to delete and got a 422 — which is exactly what the Flutter
+      # client did. Caught by tests/contract/flutter-contract.test.mjs (audit finding #2).
+      requestBody:
+        required: true
+        content: { application/json: { schema: { type: object, required: [learnerId], properties: { learnerId: { type: string } } } } }
+      responses:
+        '200': { description: delete job, content: { application/json: { schema: { $ref: '#/components/schemas/PrivacyJob' } } } }
+        # 400 also covers a NUL byte (U+0000) anywhere in a string — Postgres text/jsonb
+        # cannot hold one, and this used to surface as a 500 (specs/nul-byte-5xx/).
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        # A learner that does not exist in this tenant. privacy_jobs.learner_id REFERENCES
+        # users(id), so before specs/privacy-job-404/ this was a 500 — a permanent failure
+        # wearing the status code of a transient one, on a right-to-erasure endpoint.
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  # ── pilot ─────────────────────────────────────────────────────────────────────────────────────
+  /v1/pilot/invitations:
+    post:
+      tags: [pilot]
+      summary: Admin mints a single-use invitation for a learner.
+      responses:
+        '200': { description: invitation, content: { application/json: { schema: { type: object, required: [token], properties: { token: { type: string } } } } } }
+        # 400 also covers a NUL byte (U+0000) anywhere in a string — Postgres text/jsonb
+        # cannot hold one, and this used to surface as a 500 (specs/nul-byte-5xx/).
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+  /v1/pilot/session/bootstrap:
+    post:
+      tags: [pilot]
+      security: []
+      summary: Exchange an invitation for a __Host-qrai-pilot cookie.
+      description: |
+        An unknown token answers 403, NOT 401. Sets `__Host-qrai-pilot` with Secure/HttpOnly/
+        SameSite — attributes a proxy must preserve. NOT usable from a native client: `__Host-`
+        requires a browser origin (migration/plan.md §3.3).
+      responses:
+        '200': { description: session established, content: { application/json: { schema: { $ref: '#/components/schemas/PilotSession' } } } }
+        '403': { description: unknown, consumed, or expired invitation }
+  /v1/pilot/session/logout:
+    post:
+      tags: [pilot]
+      summary: 'Idempotent — succeeds with no cookie, and always sends the clearing Set-Cookie.'
+      responses:
+        '200': { description: cookie cleared, content: { application/json: { schema: { $ref: '#/components/schemas/LogoutResult' } } } }
+
+  # ── proxy ─────────────────────────────────────────────────────────────────────────────────────
+  /v1/ml/alignments:predict:
+    post:
+      tags: [proxy]
+      summary: Forward to ML alignment. Consent is OVERWRITTEN with the stored session consent.
+      description: |
+        Scoped to the CALLER, not just the tenant: passing another learner's sessionId to ride on
+        that session's consent is Forbidden before any upstream forward. An upstream failure is 502.
+      responses:
+        '200': { description: alignment, content: { application/json: { schema: { $ref: '#/components/schemas/AlignmentPredictionResponse' } } } }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '502': { description: upstream ML failure — the message is generic, never a topology leak }
+  /v1/ml/tajweed-findings:predict:
+    post:
+      tags: [proxy]
+      responses:
+        '200': { description: findings, content: { application/json: { schema: { $ref: '#/components/schemas/TajweedPredictionResponse' } } } }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '502': { description: upstream ML failure }
+  /v1/asr/transcribe:
+    post:
+      tags: [proxy]
+      summary: Forward to ASR. The API key stays server-side.
+      responses:
+        '200': { description: transcript, content: { application/json: { schema: { $ref: '#/components/schemas/TranscribeResponse' } } } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '502': { description: upstream ASR failure }
+  /v1/asr/force-align:
+    post:
+      tags: [proxy]
+      responses:
+        '200': { description: forced alignment, content: { application/json: { schema: { $ref: '#/components/schemas/ForceAlignResponse' } } } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '502': { description: upstream ASR failure }

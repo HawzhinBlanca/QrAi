@@ -47,6 +47,25 @@ function getCanonicalWords(ayahStart, ayahEnd) {
 // ALIGNMENT REGRESSION
 // ============================================================================
 
+test("golden: fixture is explicitly ineligible for model, calibration, and release claims", () => {
+  assert.deepEqual(
+    {
+      evidenceKind: goldenEvals.evidenceKind,
+      evidenceEligibility: goldenEvals.evidenceEligibility,
+      modelEvaluationEligible: goldenEvals.modelEvaluationEligible,
+      calibrationEligible: goldenEvals.calibrationEligible,
+      releaseEligible: goldenEvals.releaseEligible,
+    },
+    {
+      evidenceKind: "deterministic-regression-fixture",
+      evidenceEligibility: "fixture-only-not-model-evaluation-or-calibration",
+      modelEvaluationEligible: false,
+      calibrationEligible: false,
+      releaseEligible: false,
+    },
+  );
+});
+
 test("golden: perfect recitation of Al-Fatihah 1:1-7 scores 1.0 confidence", () => {
   const canonical = getCanonicalWords(1, 7);
   assert.equal(canonical.length, 29, `expected 29 canonical words, got ${canonical.length}`);

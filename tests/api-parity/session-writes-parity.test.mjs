@@ -48,7 +48,6 @@ let shell;
  */
 let rustUrl;
 let learnerId;
-let modelVersion;
 
 before(async () => {
   api = await startApi({});
@@ -58,10 +57,8 @@ before(async () => {
     "SELECT id FROM users WHERE tenant_id = $1 AND role = 'learner' ORDER BY id LIMIT 1",
     [TENANT],
   );
-  const [m] = await queryJson("SELECT id FROM model_versions ORDER BY id LIMIT 1");
-  assert.ok(l && m, "this suite needs a seeded learner and a seeded model version");
+  assert.ok(l, "this suite needs a seeded learner");
   learnerId = l.id;
-  modelVersion = m.id;
 });
 
 after(async () => {
@@ -73,7 +70,6 @@ const sessionBody = (overrides = {}) => ({
   learnerId,
   quranRef: { surahNumber: 1, ayahStart: 1, ayahEnd: 7, display: "Al-Fatihah 1:1-7" },
   sourceChecksum: "sha256:test",
-  modelVersion,
   language: "ar",
   consent: {
     recordingConsent: true,
@@ -226,7 +222,7 @@ test("a teacher may NOT open a session for a learner — only admin/ops", async 
   assert.equal(s.status, 403, "the allowlist here is [admin, ops]; teacher is deliberately absent");
 });
 
-test("an unknown modelVersion is 400 NAMING it — not the shared 404", async () => {
+test("a caller-supplied session model identity is refused", async () => {
   const { shell: s } = await assertABMutating(shell.baseUrl, rustUrl, {
     name: "create with an unknown model version",
     probeFor: () => ({
@@ -239,11 +235,7 @@ test("an unknown modelVersion is 400 NAMING it — not the shared 404", async ()
     normalize: normalizeSession,
   });
   assert.equal(s.status, 400);
-  assert.match(
-    s.body.error,
-    /model-does-not-exist/,
-    "this endpoint can fail on learnerId OR modelVersion; a shared message leaves the caller guessing",
-  );
+  assert.match(s.body.error, /server-selected.*must not be supplied/);
 });
 
 test("an unsupported language is 400 naming the allowed set", async () => {
@@ -352,12 +344,10 @@ test("confidence is clamped to [0,1] before it reaches the numeric column", asyn
 /**
  * The provenance rule, and why a 200 was worse than the 500 it replaced.
  *
- * A PRESENT-but-unknown modelVersion used to fall back to "model-v0.3" and return 200. The caller
- * says "this alignment came from model X", the row is stored as model-v0.3, and nothing tells them
- * the label changed — so every downstream "which model produced this?" has a confidently wrong
- * answer. An ABSENT value still defaults, because the caller asserted nothing.
+ * Alignment identity is selected once by the server at session creation. Every alignment write
+ * inherits that stored value; no request can replace it and no independent fallback can drift.
  */
-test("modelVersion: absent DEFAULTS, present-and-unknown is REFUSED", async () => {
+test("alignment writes inherit the session model and refuse every supplied identity", async () => {
   const words = await canonicalWordIds(1);
   const align = [
     { wordId: words[0], heardText: "a", startMs: 0, endMs: 1, confidence: 0.5, status: "matched" },
@@ -370,28 +360,32 @@ test("modelVersion: absent DEFAULTS, present-and-unknown is REFUSED", async () =
     userId: learnerId,
     body: { alignments: align },
   });
-  assert.equal(absent.status, 200, "an absent modelVersion asserts nothing and may default");
+  assert.equal(absent.status, 200, "the server-selected session model is sufficient");
+  const [sessionModel] = await queryJson(
+    "SELECT model_version_id FROM recitation_sessions WHERE id = $1",
+    [absentSession],
+  );
   const [row] = await queryJson(
     "SELECT model_version_id FROM word_alignments WHERE session_id = $1",
     [absentSession],
   );
-  assert.equal(row.model_version_id, "model-v0.3");
+  assert.equal(row.model_version_id, sessionModel.model_version_id);
 
   const shellSession = await freshSession(shell.baseUrl);
   const rustSession = await freshSession(rustUrl);
   const { shell: s } = await assertABMutating(shell.baseUrl, rustUrl, {
-    name: "persist with an unknown modelVersion",
+    name: "persist with a caller modelVersion",
     probeFor: (side) => ({
       path: `/v1/recitation-sessions/${side === "shell" ? shellSession : rustSession}/alignments`,
       method: "POST",
       role: "learner",
       userId: learnerId,
-      body: { alignments: align, modelVersion: "model-does-not-exist" },
+      body: { alignments: align, modelVersion: sessionModel.model_version_id },
     }),
     normalize: (b) => b,
   });
-  assert.equal(s.status, 400, "a stated-but-unknown provenance must be refused, never substituted");
-  assert.match(s.body.error, /model-does-not-exist/);
+  assert.equal(s.status, 400, "even the current server model must not be caller-selected");
+  assert.match(s.body.error, /server-selected.*must not be supplied/);
 });
 
 test("re-recording REPLACES the prior alignment and AUDITS what it destroyed", async () => {

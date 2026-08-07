@@ -27,12 +27,12 @@ not an oversight.
 
 ## MIG1 — RLS discovery: run the real suite as the real restricted role
 
-**Not a fix. A measurement.** `infra/sql/rls-app-role.sql` already provisions `quran_ai_app`
+**Not a fix. A measurement.** `infra/provision/app-role.sql` already provisions `quran_ai_app`
 (`nosuperuser nobypassrls`) and CI already runs it — but nothing has ever connected AS that role.
 `begin_tenant_tx`'s own doc comment admits RLS is a no-op under the superuser dev/CI role.
 
 **Do:**
-1. Locally: `psql "postgresql://hawzhin@localhost:5432/quran_ai" -v app_password="<local-pw>" -f infra/sql/rls-app-role.sql`
+1. Locally: `MIGRATION_DATABASE_URL="postgresql://hawzhin@localhost:5432/quran_ai" APP_DATABASE_PASSWORD="<strong-local-pw>" node server/scripts/provision-role.mjs`
 2. Run: `DATABASE_URL="postgresql://quran_ai_app:<local-pw>@localhost:5432/quran_ai" bash scripts/verify.sh`
    (verify.sh already honors an inherited `DATABASE_URL` — no script change needed for this task.)
 3. Capture the **full** log (pass or fail) to `specs/flutter-node-migration/evidence/mig1-rls-discovery.log`, committed verbatim.

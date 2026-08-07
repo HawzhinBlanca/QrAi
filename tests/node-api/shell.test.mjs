@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { createServer } from "node:http";
 import test, { after, before } from "node:test";
 
-import { buildServer } from "../../services/node-api/server.mjs";
+import { createApplication } from "../../server/src/app.mjs";
 
 /**
  * N2/N3 — the strangler shell: proxy transparency (§3), CORS (§2.4), middleware order (§2.5).
@@ -35,7 +35,7 @@ before(async () => {
 after(() => new Promise((r) => upstream.close(r)));
 
 const start = async (config = {}) => {
-  const app = buildServer({ upstream: upstreamUrl, logger: false, ...config });
+  const app = createApplication({ upstream: upstreamUrl, logger: false, ...config });
   await app.listen({ host: "127.0.0.1", port: 0 });
   const { port } = app.server.address();
   return { app, url: `http://127.0.0.1:${port}`, close: () => app.close() };
@@ -172,7 +172,7 @@ test("access-control-allow-credentials is absent from EVERY response", async () 
 });
 
 test("configuring CORS credentials is refused at BOOT, not at review time", async () => {
-  assert.throws(() => buildServer({ upstream: upstreamUrl, corsCredentials: true }), /hard-banned/);
+  assert.throws(() => createApplication({ upstream: upstreamUrl, corsCredentials: true }), /hard-banned/);
 });
 
 // --- §2.5 middleware order is a security invariant ---
@@ -221,6 +221,6 @@ test("nothing is served locally unless it is explicitly ported", async () => {
   assert.equal(received.length, 1, "an unported route must reach upstream");
 });
 
-test("buildServer refuses to start with no upstream", () => {
-  assert.throws(() => buildServer({}), /upstream is required/);
+test("createApplication refuses to start with no upstream", () => {
+  assert.throws(() => createApplication({}), /upstream is required/);
 });

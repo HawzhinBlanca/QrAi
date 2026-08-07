@@ -7,7 +7,7 @@ import test from "node:test";
 import { fileURLToPath } from "node:url";
 
 const buildEvidenceScript = fileURLToPath(new URL("./release-build-evidence.mjs", import.meta.url));
-const services = ["platform-api", "realtime-gateway", "ml-inference", "asr-inference", "web"];
+const services = ["platform-api", "node-api", "realtime-gateway", "ml-inference", "asr-inference", "web"];
 
 function git(repo, args) {
   return execFileSync("git", args, { cwd: repo, encoding: "utf8" }).trim();

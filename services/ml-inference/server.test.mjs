@@ -4,6 +4,7 @@
 // importing the module here neither binds a port nor keeps the event loop alive.
 
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { test } from "node:test";
 import { mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -14,10 +15,10 @@ import { join } from "node:path";
 // run is hermetic — no accumulation across runs, no writes into the repo's audio-storage/.
 process.env.AUDIO_STORAGE_DIR = mkdtempSync(join(tmpdir(), "ml-inference-test-"));
 
+const mlServer = await import("./server.mjs");
 const { predictAlignment,
   transcribeSession,
-  wavFromPcm16, predictTajweed, createEvalRun, getAuditEvents, safeStorageSegment, route } =
-  await import("./server.mjs");
+  wavFromPcm16, predictTajweed, getAuditEvents, safeStorageSegment, route } = mlServer;
 
 // Minimal mock of the http.IncomingMessage/ServerResponse pair route() needs. GET requests never
 // read a body here, so the mock request only needs `.url`/`.method`; the mock response just
@@ -48,6 +49,66 @@ const lastEvent = (tenantId, action) => {
   const events = getAuditEvents(tenantId).filter((e) => e.action === action);
   return events[events.length - 1];
 };
+
+const transcriptAttribution = {
+  schemaVersion: 1,
+  primaryComponent: "asr",
+  components: [
+    {
+      component: "asr",
+      status: "active",
+      implementationId: "declared-asr-fixture",
+      artifactDigest: `sha256:${"a".repeat(64)}`,
+      datasetVersion: "declared-asr-dataset",
+      analysisBasis: "acoustic",
+      calibratorId: null,
+    },
+  ],
+};
+
+test("alignment attribution is server-authored and digest-bound to the producing implementation", async () => {
+  const res = await predictAlignment({
+    tenantId: "model-attribution",
+    sessionId: "model-attribution-session",
+    recognizedText: ["بِسْمِ"],
+    quranRef: { surahNumber: 1, ayahStart: 1, ayahEnd: 1, display: "Al-Fatihah 1:1" },
+  });
+  const expectedDigest =
+    "sha256:" +
+    createHash("sha256")
+      .update(readFileSync(new URL("./alignment.js", import.meta.url)))
+      .digest("hex");
+
+  assert.equal(res.modelAttribution.schemaVersion, 1);
+  assert.equal(res.modelAttribution.primaryComponent, "quran-aligner");
+  assert.deepEqual(res.modelAttribution.components, [
+    {
+      component: "quran-aligner",
+      status: "active",
+      implementationId: "quran-constrained-levenshtein@1",
+      artifactDigest: expectedDigest,
+      datasetVersion: "alquran-cloud:quran-uthmani:full-quran-2026-06-26",
+      analysisBasis: "quran-constrained",
+      calibratorId: null,
+    },
+  ]);
+  assert.equal(
+    res.modelVersion,
+    res.modelAttribution.components[0].implementationId,
+    "the temporary modelVersion field must be derived from the primary component",
+  );
+
+  await assert.rejects(
+    () =>
+      predictAlignment({
+        tenantId: "client-model-selection",
+        sessionId: "client-model-selection-session",
+        modelVersion: "ml-aligner-v0.2",
+      }),
+    (error) => error.status === 400 && /server-selected/.test(error.message),
+    "even the former allowlisted label must not let a caller select the implementation",
+  );
+});
 
 test("child-profile audio without guardian consent is NOT sent to ASR (consent/child-safety gate)", async () => {
   // Regression: the transcribe call fired on `audioBase64` presence ALONE, decoupled from the
@@ -141,22 +202,27 @@ test("audit events are persisted DURABLY to disk (JSONL), not just held in memor
   );
 });
 
-test("tajweed audit event records the REAL finding count, not the golden fixture's", async () => {
+test("tajweed audit event records real instructional annotations without performance findings", async () => {
   const tenantId = "test-audit-tajweed-honesty";
   const res = await predictTajweed({ tenantId, sessionId: "s-tajweed" });
   const ev = lastEvent(tenantId, "ml.tajweed.predicted");
 
   assert.ok(ev, "an ml.tajweed.predicted audit event was recorded");
   assert.equal(
-    ev.details.findingCount,
-    res.findings.length,
-    "audit findingCount must equal the number of findings in the response",
+    ev.details.annotationCount,
+    res.annotations.length,
+    "audit annotationCount must equal the number of annotations in the response",
   );
-  // The real rule-based analysis of Al-Fatihah 1:1-7 yields many findings, not the fixture's 1.
-  assert.ok(res.findings.length > 1, `expected the real multi-finding analysis, got ${res.findings.length}`);
+  assert.equal(ev.details.findingCount, 0);
+  assert.equal(res.findings.length, 0, "canonical rules are not learner-performance findings");
+  // The real rule-based analysis of Al-Fatihah 1:1-7 yields many annotations, not the fixture's 1.
+  assert.ok(
+    res.annotations.length > 1,
+    `expected the real multi-annotation analysis, got ${res.annotations.length}`,
+  );
 });
 
-test("every returned alignment/finding is stamped with the audit event id it is described by", async () => {
+test("every returned alignment/annotation is stamped with its audit event id", async () => {
   const tenantId = "test-audit-stamp-consistency";
   const align = await predictAlignment({ tenantId, sessionId: "s1" });
   assert.ok(align.alignments.length > 0);
@@ -166,44 +232,17 @@ test("every returned alignment/finding is stamped with the audit event id it is 
   );
 
   const tajweed = await predictTajweed({ tenantId, sessionId: "s2" });
-  assert.ok(tajweed.findings.length > 0);
+  assert.ok(tajweed.annotations.length > 0);
   assert.ok(
-    tajweed.findings.every((f) => f.auditEventId === tajweed.auditEventId),
-    "each finding carries the response's auditEventId",
+    tajweed.annotations.every((annotation) => annotation.auditEventId === tajweed.auditEventId),
+    "each annotation carries the response's auditEventId",
   );
 });
 
-test("createEvalRun ignores caller-supplied metrics — they cannot forge the recorded eval or its pass", async () => {
-  // A caller POSTing garbage (or perfect) metrics must not influence the recorded eval. Previously
-  // `requestBody.metrics ?? fixtureMetrics` let any caller set passed:true with fabricated numbers.
-  const forged = await createEvalRun({
-    modelVersion: "forge-attempt",
-    metrics: {
-      wordAlignmentF1: 0.01,
-      tajweedF1: 0.01,
-      falsePositiveRate: 0.99,
-      teacherAgreementRate: 0.01,
-      unsourcedLearnerOutputs: 999,
-      sourceBackedFindings: 0,
-    },
-  });
-
-  // Accuracy metrics come from the committed offline artifact, not the caller's fabricated 0.01s.
-  assert.notEqual(forged.wordAlignmentF1, 0.01);
-  assert.ok(forged.wordAlignmentF1 >= forged.thresholds.wordAlignmentF1);
-  assert.ok(forged.tajweedF1 >= forged.thresholds.tajweedF1);
-  assert.equal(forged.metricsProvenance.accuracy, "committed-offline-eval");
-
-  // Source-integrity is recomputed live from the committed golden findings, not taken from the
-  // caller's 999 — every golden tajweed finding is sourced, so this is 0.
-  assert.equal(forged.unsourcedLearnerOutputs, 0);
-  assert.ok(forged.sourceBackedFindings > 0);
-  assert.notEqual(forged.sourceBackedFindings, 0);
-  assert.equal(forged.metricsProvenance.sourceIntegrity, "recomputed-live");
-
-  // The fabricated caller metrics did NOT flip the gate to a false fail either — pass reflects the
-  // committed artifact + the live source check.
-  assert.equal(forged.passed, true);
+test("the online ML service exposes no evaluation authority", () => {
+  assert.equal("createEvalRun" in mlServer, false, "evaluation must be produced by the offline evaluator");
+  const source = readFileSync(new URL("./server.mjs", import.meta.url), "utf8");
+  assert.doesNotMatch(source, /url\.pathname === ["']\/v1\/eval-runs["']/);
 });
 
 // safeStorageSegment guards the audio-storage path components. Besides traversal/charset, it must
@@ -316,6 +355,95 @@ test("a real transcript still aligns normally — the fix does not blunt recogni
   assert.ok(res.alignments.every((a) => a.status === "matched"));
 });
 
+test("server-derived measured tokens make an alignment finalizable and keep their exact spans", async () => {
+  const res = await predictAlignment({
+    tenantId: "test-measured-token-alignment",
+    sessionId: "s-measured",
+    quranRef: { surahNumber: 1, ayahStart: 1, ayahEnd: 1, display: "x" },
+    recognizedTokens: [
+      { text: "بِسْمِ", startMs: 20, endMs: 210, confidence: 0.94 },
+      { text: "ٱللَّهِ", startMs: 250, endMs: 540, confidence: 0.91 },
+      { text: "ٱلرَّحْمَٰنِ", startMs: 590, endMs: 990, confidence: 0.88 },
+      { text: "ٱلرَّحِيمِ", startMs: 1040, endMs: 1410, confidence: 0.9 },
+    ],
+    transcriptModelAttribution: transcriptAttribution,
+  });
+
+  assert.equal(res.finalizable, true);
+  assert.equal(res.nonFinalizedReason, null);
+  assert.deepEqual(
+    res.modelAttribution.components.map((component) => component.component),
+    ["asr", "quran-aligner"],
+  );
+  assert.deepEqual(res.modelAttribution.components[0], transcriptAttribution.components[0]);
+  assert.equal(
+    res.datasetVersion,
+    res.modelAttribution.components[1].datasetVersion,
+    "a real prediction must identify the canonical corpus, not the smoke fixture",
+  );
+  assert.deepEqual(
+    res.alignments.map(({ heardText, startMs, endMs }) => ({ heardText, startMs, endMs })),
+    [
+      { heardText: "بِسْمِ", startMs: 20, endMs: 210 },
+      { heardText: "ٱللَّهِ", startMs: 250, endMs: 540 },
+      { heardText: "ٱلرَّحْمَٰنِ", startMs: 590, endMs: 990 },
+      { heardText: "ٱلرَّحِيمِ", startMs: 1040, endMs: 1410 },
+    ],
+  );
+});
+
+test("measured tokens without server transcript attribution are not finalizable evidence", async () => {
+  const res = await predictAlignment({
+    tenantId: "test-unattributed-token-alignment",
+    sessionId: "s-unattributed",
+    quranRef: { surahNumber: 1, ayahStart: 1, ayahEnd: 1, display: "x" },
+    recognizedTokens: [
+      { text: "بِسْمِ", startMs: 20, endMs: 210, confidence: 0.94 },
+    ],
+  });
+
+  assert.equal(res.finalizable, false);
+  assert.equal(res.nonFinalizedReason, "missing-transcript-attribution");
+  assert.ok(res.alignments.every((alignment) => alignment.startMs === null));
+  assert.ok(res.alignments.every((alignment) => alignment.endMs === null));
+});
+
+test("text-only recognition remains useful for practice but is explicitly non-finalizable", async () => {
+  const res = await predictAlignment({
+    tenantId: "test-text-only-alignment",
+    sessionId: "s-text-only",
+    quranRef: { surahNumber: 1, ayahStart: 1, ayahEnd: 1, display: "x" },
+    recognizedText: ["بِسْمِ", "ٱللَّهِ", "ٱلرَّحْمَٰنِ", "ٱلرَّحِيمِ"],
+  });
+
+  assert.equal(res.finalizable, false);
+  assert.equal(res.nonFinalizedReason, "recognized-text-is-not-span-evidence");
+  assert.ok(res.alignments.every((alignment) => alignment.status === "matched"));
+  assert.ok(
+    res.alignments.every((alignment) => alignment.startMs === null && alignment.endMs === null),
+    "text must never be upgraded into a fabricated audio location",
+  );
+});
+
+test("one malformed claimed token refuses the whole finalization without partial alignment evidence", async () => {
+  const res = await predictAlignment({
+    tenantId: "test-malformed-token-alignment",
+    sessionId: "s-malformed",
+    quranRef: { surahNumber: 1, ayahStart: 1, ayahEnd: 1, display: "x" },
+    recognizedTokens: [
+      { text: "بِسْمِ", startMs: 20, endMs: 210, confidence: 0.94 },
+      { text: "ٱللَّهِ", startMs: 250, endMs: 250, confidence: 0.91 },
+    ],
+  });
+
+  assert.equal(res.finalizable, false);
+  assert.equal(res.nonFinalizedReason, "invalid-recognized-spans");
+  assert.equal(res.confidence, 0);
+  assert.ok(res.alignments.every((alignment) => alignment.status === "needs-review"));
+  assert.ok(res.alignments.every((alignment) => alignment.startMs === null));
+  assert.ok(res.alignments.every((alignment) => alignment.endMs === null));
+});
+
 // ── Session transcription from the gateway's stored chunks ──────────────────────────────────────
 
 test("wavFromPcm16 writes a header that DESCRIBES the samples and changes none of them", () => {
@@ -395,15 +523,11 @@ test("a session with no stored audio says so, rather than returning an empty tra
 //     heardText: w.canonicalText,  status: "matched"
 //
 // — a FLAWLESS recitation that nobody performed — and the tajweed branch emits the fixture's
-// findings. Nothing in either payload says it came from a fixture.
+// findings. Tajweed fixture metrics are now stripped into instructional annotations and cannot
+// persist as learner performance. The alignment payload still claims a flawless recitation nobody
+// performed, so fixture mode remains an explicitly acknowledged smoke/regression operation.
 //
-// Those findings persist. `persist_tajweed_findings` (handlers/ml_proxy.rs) writes them to
-// tajweed_findings with `analysis_basis = 'canonical-text'`, exactly like a real one. So the flag
-// being set ONCE — a demo, a staging box, a copied env file — contaminates the corpus permanently,
-// and turning it off later does not un-write the rows. A teacher reviewing one cannot tell it from
-// analysis of a child's actual recitation.
-//
-// The flag is genuinely needed for smoke and eval runs. So it is not removed: it is made a
+// The flag is genuinely needed for smoke and deterministic regression. So it is not removed: it is made a
 // deliberate act. Requesting fixture output now also requires acknowledging what it means, in a
 // variable whose name is the acknowledgement, and the service refuses to start otherwise — the same
 // shape as AUDIO_STORAGE_DRIVER refusing a backend it cannot honour rather than quietly using
@@ -456,9 +580,9 @@ test("fixture output is REFUSED unless the operator acknowledges what it reports
   );
 });
 
-test("fixture output starts normally once acknowledged — smoke and eval still work", async () => {
+test("fixture output starts normally once acknowledged — smoke and regression still work", async () => {
   // The control. Without it every assertion above is satisfied by a service that refuses to start
-  // at all, which would break the smoke and eval runs this flag exists for.
+  // at all, which would break the smoke and regression runs this flag exists for.
   const { code, stderr } = await bootWith({
     ML_USE_GOLDEN_FIXTURES: "1",
     ML_ACKNOWLEDGE_FIXTURE_OUTPUT: "1",

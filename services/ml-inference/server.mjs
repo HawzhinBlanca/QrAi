@@ -14,6 +14,12 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 
 import { normalizeArabic, similarity, alignWords, calculateConfidence } from "./alignment.js";
 import { analyzeAyah, analyzeWord } from "./tajweed.js";
+import {
+  QURAN_ALIGNER_COMPONENT,
+  mergeModelAttributions,
+  quranAlignmentAttribution,
+  validateModelAttribution,
+} from "./model-attribution.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -32,29 +38,41 @@ const fixtures = JSON.parse(readFileSync(FIXTURES_PATH, "utf8"));
 // Load full Quran data
 const QURAN_DATA_DIR = join(__dirname, "..", "..", "packages", "quran-data", "src", "data", "full-quran");
 const manifest = JSON.parse(readFileSync(join(QURAN_DATA_DIR, "manifest.json"), "utf8"));
+const acousticCandidateManifest = JSON.parse(
+  readFileSync(join(__dirname, "..", "asr-inference", "acoustic-candidates.json"), "utf8"),
+);
+const ACOUSTIC_CANDIDATE = acousticCandidateManifest.candidates?.find(
+  (candidate) => candidate.id === acousticCandidateManifest.activeCandidateId,
+);
+if (
+  acousticCandidateManifest.schemaVersion !== 1 ||
+  ACOUSTIC_CANDIDATE?.status !== "shadow-only" ||
+  ACOUSTIC_CANDIDATE?.releaseEligible !== false ||
+  ACOUSTIC_CANDIDATE?.limits?.sampleRate !== 16_000 ||
+  ACOUSTIC_CANDIDATE?.limits?.maxWindowMs !== 15_000
+) {
+  throw new Error("invalid acoustic shadow candidate manifest");
+}
 
 const ML_API_KEY = process.env.ML_API_KEY ?? "smoke-ml-api-key";
 
-const MODEL_VERSION = process.env.ML_MODEL_VERSION ?? "ml-aligner-v0.2";
+const MODEL_VERSION = QURAN_ALIGNER_COMPONENT.implementationId;
 // Upper bound on words per alignment request (both canonical range and recognized text), bounding the
 // O(m·n) alignment DP. Far above any real practice session (the web caps a session at 7 ayahs).
 const MAX_ALIGN_WORDS = 1000;
 const DATASET_VERSION = fixtures.datasetVersion;
 const GOLDEN_CASE_IDS = fixtures.cases.map((c) => c.id);
-// Golden fixtures are ONLY for smoke/eval. By default (flag unset) every request
+// Golden fixtures are ONLY for smoke/regression. By default (flag unset) every request
 // computes real alignment/tajweed — even for the golden refs like Al-Fatihah 1:1-7.
 const USE_GOLDEN_FIXTURES = process.env.ML_USE_GOLDEN_FIXTURES === "1";
 
 // ── Fixture output is a deliberate act, not a flag somebody set once (P3.2) ──────────────────────
 //
 // In fixture mode `predictAlignment` answers with `heardText: w.canonicalText, status: "matched"` —
-// a FLAWLESS recitation that nobody performed — and `predictTajweed` answers with the fixture's
-// findings. Neither payload says it came from a fixture.
-//
-// Those findings PERSIST. `persist_tajweed_findings` (handlers/ml_proxy.rs) writes them to
-// tajweed_findings with `analysis_basis = 'canonical-text'`, indistinguishable from analysis of a
-// child's actual recitation. So the flag being set once — a demo, a staging box, a copied env file —
-// contaminates the corpus permanently, and unsetting it later does not un-write the rows.
+// a FLAWLESS recitation that nobody performed. `predictTajweed` now strips fixture metrics and
+// returns its rules only as non-performance instructional annotations; they cannot persist as
+// learner findings. The alignment fixture is still evidence-shaped and therefore still requires
+// the explicit operator acknowledgement below.
 //
 // The flag is genuinely needed, so it is not removed. It now requires a second variable whose NAME
 // is the acknowledgement, so enabling it cannot be done absent-mindedly and shows up in review as
@@ -63,8 +81,8 @@ const USE_GOLDEN_FIXTURES = process.env.ML_USE_GOLDEN_FIXTURES === "1";
 if (USE_GOLDEN_FIXTURES && process.env.ML_ACKNOWLEDGE_FIXTURE_OUTPUT !== "1") {
   throw new Error(
     "ML_USE_GOLDEN_FIXTURES=1 makes this service answer from fixtures instead of analysing " +
-      "anything: alignments report a flawless recitation nobody performed, and the tajweed findings " +
-      "it returns are PERSISTED as though they were real analysis of a learner's session. " +
+      "anything: alignments report a flawless recitation nobody performed. Tajweed fixture rules " +
+      "are instructional only, but the alignment output remains evidence-shaped. " +
       "Set ML_ACKNOWLEDGE_FIXTURE_OUTPUT=1 alongside it to confirm that is intended. " +
       "Refusing to start rather than quietly producing evidence about recitations that never happened.",
   );
@@ -170,7 +188,6 @@ async function listAudioObjects(tenantId, learnerId) {
   return { audioObjectKeys, metadataObjectKeys };
 }
 
-const evalRuns = new Map();
 const deletionJobs = new Map();
 
 // Path to a tenant's append-only audit JSONL, or null if the tenantId isn't a safe path segment
@@ -400,21 +417,42 @@ function httpError(status, message) {
 
 // === ASR integration ===
 async function transcribeAudio(audioBase64, audioFormat = "webm", language = "ar") {
-  const response = await fetch(`${ASR_SERVICE_URL}/v1/transcribe`, {
-    method: "POST",
-    headers: {
-      "content-type": "application/json",
-      // ASR now requires an API key (like this service does). Server-to-server call, so the key
-      // stays server-side; matches ASR_API_KEY on the ASR service (default dev key in dev/CI).
-      "x-asr-api-key": process.env.ASR_API_KEY ?? "smoke-asr-api-key",
-    },
-    body: JSON.stringify({ audioBase64, audioFormat, language, wordTimestamps: true }),
-  });
+  let response;
+  try {
+    response = await fetch(`${ASR_SERVICE_URL}/v1/transcribe`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        // ASR now requires an API key (like this service does). Server-to-server call, so the key
+        // stays server-side; matches ASR_API_KEY on the ASR service (default dev key in dev/CI).
+        "x-asr-api-key": process.env.ASR_API_KEY ?? "smoke-asr-api-key",
+      },
+      body: JSON.stringify({ audioBase64, audioFormat, language, wordTimestamps: true }),
+    });
+  } catch {
+    throw httpError(502, "ASR service is unavailable");
+  }
   if (!response.ok) {
     const text = await response.text();
     throw httpError(502, `ASR service failed: ${response.status} ${text}`);
   }
-  return response.json();
+
+  let result;
+  try {
+    result = await response.json();
+  } catch {
+    throw httpError(502, "ASR service returned an invalid response");
+  }
+  try {
+    validateModelAttribution(result?.modelAttribution, {
+      legacyModelVersion: result?.modelVersion,
+    });
+  } catch {
+    // Do not forward the bad object or its detail: an internal response is not trusted provenance,
+    // and parsing errors can quote upstream transcript bytes.
+    throw httpError(502, "ASR service returned invalid model attribution");
+  }
+  return result;
 }
 
 /**
@@ -449,8 +487,484 @@ function recognizedWordsFrom(asrResult) {
   return text === "" ? [] : text.split(/\s+/);
 }
 
+const ASR_WINDOW_CORE_SECONDS = 90;
+const ASR_WINDOW_CONTEXT_SECONDS = 2;
+const MAX_SESSION_WINDOWS = 20;
+const ALLOWED_PCM_SAMPLE_RATES = new Set([16000, 24000, 48000]);
+
+class SpanEvidenceError extends Error {
+  constructor(reason, message) {
+    super(message);
+    this.name = "SpanEvidenceError";
+    this.reason = reason;
+  }
+}
+
+function spanEvidenceError(reason, message) {
+  return new SpanEvidenceError(reason, message);
+}
+
+/**
+ * Convert producer-owned word timing into the one session token shape.
+ *
+ * This function changes units only. It never normalizes, strips, or reconstructs Quran text. A
+ * non-empty upstream `words` array is an evidence claim, so one malformed element invalidates the
+ * whole array instead of being dropped or replaced from transcript text.
+ */
+export function recognizedTokensFrom(
+  result,
+  { offsetMs = 0, durationMs = Number.POSITIVE_INFINITY, confidenceField = "probability" } = {},
+) {
+  const words = result?.words;
+  if (!Array.isArray(words)) {
+    throw spanEvidenceError("invalid-recognized-spans", "word timing must be an array");
+  }
+  if (words.length === 0) return null;
+
+  const tokens = [];
+  let previousStartMs = -1;
+  let previousEndMs = -1;
+  for (const word of words) {
+    const text = word?.word;
+    const startSeconds = word?.start;
+    const endSeconds = word?.end;
+    const confidence = word?.[confidenceField];
+    if (
+      typeof text !== "string" || text.length === 0 ||
+      !Number.isFinite(startSeconds) || !Number.isFinite(endSeconds) ||
+      startSeconds < 0 || endSeconds <= startSeconds ||
+      !Number.isFinite(confidence) || confidence < 0 || confidence > 1
+    ) {
+      throw spanEvidenceError("invalid-recognized-spans", "word timing is malformed");
+    }
+
+    const localStartMs = Math.round(startSeconds * 1000);
+    const localEndMs = Math.round(endSeconds * 1000);
+    if (
+      localEndMs <= localStartMs ||
+      localStartMs < previousStartMs ||
+      localEndMs < previousEndMs ||
+      localEndMs > durationMs + 1000
+    ) {
+      throw spanEvidenceError("invalid-recognized-spans", "word timing is non-monotonic or out of bounds");
+    }
+    previousStartMs = localStartMs;
+    previousEndMs = localEndMs;
+    tokens.push({
+      text,
+      startMs: offsetMs + localStartMs,
+      endMs: offsetMs + localEndMs,
+      confidence,
+    });
+  }
+  return tokens;
+}
+
+async function forceAlignRecognizedAudio(audioBase64, audioFormat, transcript) {
+  let response;
+  try {
+    response = await fetch(`${ASR_SERVICE_URL}/v1/force-align`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "x-asr-api-key": process.env.ASR_API_KEY ?? "smoke-asr-api-key",
+      },
+      body: JSON.stringify({ audioBase64, audioFormat, transcript }),
+    });
+  } catch {
+    throw spanEvidenceError("forced-alignment-unavailable", "forced alignment is unavailable");
+  }
+  if (!response.ok) {
+    // Upstream detail may contain model paths or transcript bytes. The reason code is enough for
+    // finalization and the service boundary must not echo the detail.
+    throw spanEvidenceError("forced-alignment-unavailable", "forced alignment is unavailable");
+  }
+  let result;
+  try {
+    result = await response.json();
+  } catch {
+    throw spanEvidenceError("forced-alignment-unavailable", "forced alignment response is invalid");
+  }
+  try {
+    validateModelAttribution(result?.modelAttribution, {
+      legacyModelVersion: result?.modelVersion,
+    });
+    if (result?.modelAttribution?.primaryComponent !== "forced-aligner") throw new Error("wrong component");
+  } catch {
+    throw spanEvidenceError("forced-alignment-unavailable", "forced alignment attribution is invalid");
+  }
+  return result;
+}
+
+/** Build context-bearing worker inputs whose cores partition the session exactly once. */
+export function boundedPcmWindows(pcm, sampleRate) {
+  if (!Buffer.isBuffer(pcm) || pcm.length === 0 || pcm.length % 2 !== 0) {
+    throw spanEvidenceError("inconsistent-audio-format", "PCM16 audio must contain complete samples");
+  }
+  if (!ALLOWED_PCM_SAMPLE_RATES.has(sampleRate)) {
+    throw spanEvidenceError("inconsistent-audio-format", "unsupported PCM sample rate");
+  }
+
+  const totalFrames = pcm.length / 2;
+  const coreFrames = ASR_WINDOW_CORE_SECONDS * sampleRate;
+  const contextFrames = ASR_WINDOW_CONTEXT_SECONDS * sampleRate;
+  const windowCount = Math.ceil(totalFrames / coreFrames);
+  if (windowCount > MAX_SESSION_WINDOWS) {
+    throw spanEvidenceError("session-duration-limit", "session exceeds the bounded window limit");
+  }
+
+  const windows = [];
+  for (let coreStartFrame = 0; coreStartFrame < totalFrames; coreStartFrame += coreFrames) {
+    const coreEndFrame = Math.min(totalFrames, coreStartFrame + coreFrames);
+    const contextStartFrame = Math.max(0, coreStartFrame - contextFrames);
+    const contextEndFrame = Math.min(totalFrames, coreEndFrame + contextFrames);
+    windows.push({
+      pcm: pcm.subarray(contextStartFrame * 2, contextEndFrame * 2),
+      offsetMs: Math.round((contextStartFrame * 1000) / sampleRate),
+      durationMs: Math.round(((contextEndFrame - contextStartFrame) * 1000) / sampleRate),
+      coreStartMs: Math.round((coreStartFrame * 1000) / sampleRate),
+      coreEndMs: Math.round((coreEndFrame * 1000) / sampleRate),
+      final: coreEndFrame === totalFrames,
+    });
+  }
+  return windows;
+}
+
+
+/**
+ * Cut a retained 16 kHz PCM timeline into reference-aware acoustic shadow windows.
+ *
+ * Only spans persisted by server finalization may enter this function. Every core word is owned by
+ * exactly one window; neighbouring words may be included as context, but they are never promoted
+ * into duplicate learner claims. Canonical bytes are copied verbatim and are never normalized.
+ */
+export function planAcousticWindows(pcm, sampleRate, segments, canonicalWords) {
+  const MAX_WINDOW_MS = 15_000;
+  const MAX_CORE_SPAN_MS = 13_000;
+  const CONTEXT_MS = 1_000;
+  if (sampleRate !== 16_000) {
+    throw spanEvidenceError("unsupported-sample-rate", "acoustic shadow inference requires 16 kHz PCM");
+  }
+  if (!Buffer.isBuffer(pcm) || pcm.length === 0 || pcm.length % 2 !== 0) {
+    throw spanEvidenceError("inconsistent-audio-format", "PCM16 audio must contain complete samples");
+  }
+  if (!Array.isArray(segments) || segments.length === 0 || !Array.isArray(canonicalWords)) {
+    throw spanEvidenceError("invalid-server-derived-spans", "acoustic shadow inference requires measured word spans");
+  }
+
+  const durationMs = Math.floor((pcm.length / 2 * 1000) / sampleRate);
+  const canonicalById = new Map();
+  for (const word of canonicalWords) {
+    if (
+      word === null || typeof word !== "object" ||
+      typeof word.id !== "string" || word.id === "" ||
+      typeof word.text !== "string" || word.text === "" ||
+      canonicalById.has(word.id)
+    ) {
+      throw spanEvidenceError("reference-mismatch", "canonical acoustic reference is invalid");
+    }
+    canonicalById.set(word.id, word.text);
+  }
+
+  const measured = [];
+  const seen = new Set();
+  let priorStartMs = -1;
+  let priorEndMs = 0;
+  for (const segment of segments) {
+    const wordId = segment?.wordId;
+    const startMs = segment?.startMs;
+    const endMs = segment?.endMs;
+    if (
+      typeof wordId !== "string" || wordId === "" || seen.has(wordId) ||
+      !canonicalById.has(wordId) ||
+      !Number.isInteger(startMs) || !Number.isInteger(endMs) ||
+      startMs < 0 || endMs <= startMs || endMs > durationMs ||
+      startMs < priorStartMs || startMs < priorEndMs
+    ) {
+      throw spanEvidenceError("invalid-server-derived-spans", "acoustic word spans are invalid");
+    }
+    seen.add(wordId);
+    measured.push({
+      wordId,
+      canonicalText: canonicalById.get(wordId),
+      startMs,
+      endMs,
+    });
+    priorStartMs = startMs;
+    priorEndMs = endMs;
+  }
+
+  const coreGroups = [];
+  for (let index = 0; index < measured.length;) {
+    const group = [measured[index]];
+    let cursor = index + 1;
+    while (
+      cursor < measured.length &&
+      measured[cursor].endMs - group[0].startMs <= MAX_CORE_SPAN_MS
+    ) {
+      group.push(measured[cursor]);
+      cursor += 1;
+    }
+    coreGroups.push(group);
+    index = cursor;
+  }
+
+  return coreGroups.map((core) => {
+    const coreStartMs = core[0].startMs;
+    const coreEndMs = core.at(-1).endMs;
+    let windowStartMs = Math.max(0, coreStartMs - CONTEXT_MS);
+    let windowEndMs = Math.min(durationMs, coreEndMs + CONTEXT_MS);
+    if (windowEndMs - windowStartMs > MAX_WINDOW_MS) {
+      const leftContext = Math.min(CONTEXT_MS, coreStartMs);
+      windowStartMs = coreStartMs - leftContext;
+      windowEndMs = Math.min(durationMs, windowStartMs + MAX_WINDOW_MS);
+      if (windowEndMs < coreEndMs) {
+        windowEndMs = coreEndMs;
+        windowStartMs = Math.max(0, windowEndMs - MAX_WINDOW_MS);
+      }
+    }
+
+    // A context word is useful only when the complete measured span is present. Including a word
+    // that merely overlaps an edge would pair a full canonical reference with truncated audio and
+    // would also create a negative/out-of-window span at the Python boundary.
+    const context = measured.filter(
+      (segment) => segment.startMs >= windowStartMs && segment.endMs <= windowEndMs,
+    );
+    const startFrame = Math.floor(windowStartMs * sampleRate / 1000);
+    const endFrame = Math.ceil(windowEndMs * sampleRate / 1000);
+    const actualStartMs = Math.round(startFrame * 1000 / sampleRate);
+    const actualEndMs = Math.round(endFrame * 1000 / sampleRate);
+    const windowPcm = pcm.subarray(startFrame * 2, endFrame * 2);
+    if (windowPcm.length === 0 || actualEndMs - actualStartMs > MAX_WINDOW_MS) {
+      throw spanEvidenceError("window-duration-limit", "acoustic window exceeds 15 seconds");
+    }
+
+    return {
+      pcm: windowPcm,
+      sampleRate,
+      durationMs: actualEndMs - actualStartMs,
+      offsetMs: actualStartMs,
+      referenceText: context.map((segment) => segment.canonicalText).join(" "),
+      segments: context.map((segment) => ({
+        wordId: segment.wordId,
+        canonicalText: segment.canonicalText,
+        startMs: segment.startMs - actualStartMs,
+        endMs: segment.endMs - actualStartMs,
+      })),
+      coreWordIds: core.map((segment) => segment.wordId),
+    };
+  });
+}
+
+
+function acousticShadowRefusal(reason, { windowCount = 0 } = {}) {
+  return {
+    status: "refused",
+    candidateId: null,
+    qpsProfileId: null,
+    modelVersion: null,
+    observationCount: 0,
+    windowCount,
+    refusalReason: reason,
+  };
+}
+
+function containsConfidenceClaim(value) {
+  if (Array.isArray(value)) return value.some(containsConfidenceClaim);
+  if (value === null || typeof value !== "object") return false;
+  return Object.entries(value).some(
+    ([key, nested]) => key === "confidence" || containsConfidenceClaim(nested),
+  );
+}
+
+function validateAcousticObservationResponse(value, expectedCoreWordIds) {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error("invalid acoustic response");
+  }
+  if (value.status === "refused" || value.status === "unavailable") {
+    if (
+      !Array.isArray(value.observations) || value.observations.length !== 0 ||
+      typeof value.refusalReason !== "string" || value.refusalReason === ""
+    ) {
+      throw new Error("invalid acoustic refusal");
+    }
+    return value;
+  }
+  if (
+    value.status !== "observed" ||
+    value.candidateId !== ACOUSTIC_CANDIDATE.id ||
+    value.qpsProfileId !== ACOUSTIC_CANDIDATE.qps.profileId ||
+    value.qpsProfileChecksum !== ACOUSTIC_CANDIDATE.qps.profileChecksum ||
+    !Array.isArray(value.observations) ||
+    value.observations.length === 0
+  ) {
+    throw new Error("invalid acoustic observation");
+  }
+  validateModelAttribution(value.modelAttribution, { legacyModelVersion: value.modelVersion });
+  const active = value.modelAttribution.components.find(
+    (component) =>
+      component.component === "acoustic-scorer" &&
+      component.status === "active",
+  );
+  if (
+    value.modelAttribution.primaryComponent !== "acoustic-scorer" ||
+    active?.artifactDigest !== ACOUSTIC_CANDIDATE.model.artifactSha256 ||
+    active?.datasetVersion !== ACOUSTIC_CANDIDATE.model.trainingDataset ||
+    active?.calibratorId !== null
+  ) {
+    throw new Error("acoustic observation attribution mismatch");
+  }
+  const expected = JSON.stringify(expectedCoreWordIds);
+  for (const observation of value.observations) {
+    if (
+      observation === null || typeof observation !== "object" || Array.isArray(observation) ||
+      observation.analysisBasis !== "acoustic" ||
+      observation.calibrationStatus !== "uncalibrated" ||
+      JSON.stringify(observation.coreWordIds) !== expected ||
+      !/^sha256:[a-f0-9]{64}$/.test(observation.referenceDigest ?? "") ||
+      containsConfidenceClaim(observation)
+    ) {
+      throw new Error("invalid uncalibrated acoustic observation");
+    }
+  }
+  return value;
+}
+
+async function observeAcousticWindow(window) {
+  let response;
+  try {
+    response = await fetch(`${ASR_SERVICE_URL}/v1/acoustic-tajweed:observe`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "x-asr-api-key": process.env.ASR_API_KEY ?? "smoke-asr-api-key",
+      },
+      body: JSON.stringify({
+        audioBase64: wavFromPcm16(window.pcm, window.sampleRate).toString("base64"),
+        audioFormat: "wav",
+        sampleRate: window.sampleRate,
+        durationMs: window.durationMs,
+        referenceText: window.referenceText,
+        segments: window.segments,
+        coreWordIds: window.coreWordIds,
+      }),
+    });
+  } catch {
+    return { status: "unavailable", observations: [], refusalReason: "acoustic-worker-unavailable" };
+  }
+  if (!response.ok) {
+    return { status: "unavailable", observations: [], refusalReason: "acoustic-worker-unavailable" };
+  }
+  try {
+    return validateAcousticObservationResponse(await response.json(), window.coreWordIds);
+  } catch {
+    return { status: "unavailable", observations: [], refusalReason: "invalid-acoustic-response" };
+  }
+}
+
+async function runAcousticShadow(requestBody, canonicalWords) {
+  const consent = requestBody.consent ?? {};
+  if (
+    !(consent.externalAsrProcessing ?? false) ||
+    !(consent.guardianApproved ?? false)
+  ) {
+    return acousticShadowRefusal("consent-revoked-or-insufficient");
+  }
+  if (!Array.isArray(requestBody.acousticSegments) || requestBody.acousticSegments.length === 0) {
+    return acousticShadowRefusal("no-server-derived-spans");
+  }
+
+  const audio = await loadSessionPcm({
+    tenantId: requestBody.tenantId,
+    learnerId: requestBody.learnerId,
+    sessionId: requestBody.sessionId,
+    traceId: extractTraceId(requestBody),
+  });
+  if (!audio.loaded) return acousticShadowRefusal(audio.reason);
+
+  let windows;
+  try {
+    windows = planAcousticWindows(
+      audio.pcm,
+      audio.sampleRate,
+      requestBody.acousticSegments,
+      canonicalWords,
+    );
+  } catch (error) {
+    if (error instanceof SpanEvidenceError) return acousticShadowRefusal(error.reason);
+    throw error;
+  }
+
+  let observationCount = 0;
+  let modelVersion = null;
+  for (const window of windows) {
+    const response = await observeAcousticWindow(window);
+    if (response.status !== "observed") {
+      return acousticShadowRefusal(response.refusalReason, { windowCount: windows.length });
+    }
+    if (modelVersion !== null && response.modelVersion !== modelVersion) {
+      return acousticShadowRefusal("inconsistent-acoustic-attribution", {
+        windowCount: windows.length,
+      });
+    }
+    modelVersion = response.modelVersion;
+    observationCount += response.observations.length;
+  }
+
+  return {
+    status: "observed",
+    candidateId: ACOUSTIC_CANDIDATE.id,
+    qpsProfileId: ACOUSTIC_CANDIDATE.qps.profileId,
+    modelVersion,
+    observationCount,
+    windowCount: windows.length,
+    refusalReason: null,
+  };
+}
+
+/**
+ * Validate the only request shape that may become persisted audio evidence.
+ *
+ * This does not trim or normalize token text. It checks structure, bounds, and ordering while
+ * preserving the producer's exact bytes. Public API proxies reject this field; the transitional
+ * finalizer reaches this internal keyed endpoint only after fetching the tokens server-to-server
+ * from `transcribeSession`.
+ */
+function measuredRecognizedTokens(value) {
+  if (!Array.isArray(value) || value.length === 0 || value.length > MAX_ALIGN_WORDS) {
+    return { valid: false, tokens: [], reason: "invalid-recognized-spans" };
+  }
+
+  const tokens = [];
+  let previousStartMs = -1;
+  let previousEndMs = -1;
+  for (const token of value) {
+    const text = token?.text;
+    const startMs = token?.startMs;
+    const endMs = token?.endMs;
+    const confidence = token?.confidence;
+    if (
+      token === null || typeof token !== "object" || Array.isArray(token) ||
+      typeof text !== "string" || text.length === 0 || /\s/u.test(text) ||
+      !Number.isInteger(startMs) || !Number.isInteger(endMs) ||
+      startMs < 0 || endMs <= startMs || endMs > 2147483647 ||
+      startMs < previousStartMs || endMs < previousEndMs ||
+      !Number.isFinite(confidence) || confidence < 0 || confidence > 1
+    ) {
+      return { valid: false, tokens: [], reason: "invalid-recognized-spans" };
+    }
+    previousStartMs = startMs;
+    previousEndMs = endMs;
+    tokens.push({ text, startMs, endMs, confidence });
+  }
+  return { valid: true, tokens, reason: null };
+}
+
 // === Real alignment prediction ===
 async function predictAlignment(requestBody) {
+  if (Object.hasOwn(requestBody, "modelVersion") || Object.hasOwn(requestBody, "modelAttribution")) {
+    throw httpError(400, "model identity is server-selected and must not be supplied");
+  }
   const startedAt = performance.now();
   const traceId = extractTraceId(requestBody);
   const tenantId = requiredString(requestBody.tenantId, "tenantId");
@@ -517,6 +1031,9 @@ async function predictAlignment(requestBody) {
   let reviewStatus;
   let wordCount;
   let recognizedCount;
+  let upstreamModelAttribution = null;
+  let finalizable = false;
+  let nonFinalizedReason = "no-recognized-evidence";
 
   if (fixtureCase && USE_GOLDEN_FIXTURES) {
     // Return golden fixture alignment data
@@ -531,6 +1048,8 @@ async function predictAlignment(requestBody) {
       wordId: w.wordId,
       canonicalText: w.canonicalText,
       heardText: w.canonicalText,
+      startMs: null,
+      endMs: null,
       status: "matched",
       confidence: confidence,
       reviewStatus,
@@ -541,6 +1060,10 @@ async function predictAlignment(requestBody) {
       modelVersion: MODEL_VERSION,
       traceId,
     }));
+    // Declared eval fixtures exercise response plumbing. They are not a learner's measured audio
+    // and cannot be upgraded into persistable evidence by carrying fixture timestamps.
+    finalizable = false;
+    nonFinalizedReason = "declared-fixture-is-not-span-evidence";
   } else {
     // Get canonical words for the requested ayah range
     const canonicalWords = getCanonicalWords(quranRef.surahNumber, quranRef.ayahStart, quranRef.ayahEnd);
@@ -564,13 +1087,64 @@ async function predictAlignment(requestBody) {
     let recognizedWords;
     let asrResult = null;
     let recognized = true;
-    if (requestBody.audioBase64 && asrActuallyAllowed) {
+    if (Object.hasOwn(requestBody, "recognizedTokens")) {
+      const measured = measuredRecognizedTokens(requestBody.recognizedTokens);
+      let transcriptAttribution = null;
+      let attributionReason = null;
+      if (!Object.hasOwn(requestBody, "transcriptModelAttribution")) {
+        attributionReason = "missing-transcript-attribution";
+      } else {
+        try {
+          transcriptAttribution = validateModelAttribution(requestBody.transcriptModelAttribution);
+          if (transcriptAttribution.primaryComponent !== "asr") {
+            attributionReason = "invalid-transcript-attribution";
+            transcriptAttribution = null;
+          }
+        } catch {
+          attributionReason = "invalid-transcript-attribution";
+        }
+      }
+      if (measured.valid && transcriptAttribution !== null) {
+        recognizedWords = measured.tokens;
+        upstreamModelAttribution = transcriptAttribution;
+        finalizable = true;
+        nonFinalizedReason = null;
+      } else {
+        // One bad token invalidates the whole evidence set. Aligning a valid prefix would turn a
+        // partial transcript into claims about the rest of the recitation. Measured timings with
+        // no producer identity are equally non-finalizable: a span alone cannot say which model
+        // authored the recognized word.
+        recognizedWords = [];
+        recognized = false;
+        finalizable = false;
+        nonFinalizedReason = measured.valid ? attributionReason : measured.reason;
+      }
+    } else if (requestBody.audioBase64 && asrActuallyAllowed) {
       // Real acoustic ASR: send audio to Whisper service — ONLY when consent (and, for a child
       // profile, guardian approval) actually permits it. Without this gate the audio was sent
       // regardless of the consent decision recorded above. When not allowed, we fall through to the
       // recognizedText / canonical path below and the audio is never processed.
       asrResult = await transcribeAudio(requestBody.audioBase64, requestBody.audioFormat ?? "webm", "ar");
-      recognizedWords = recognizedWordsFrom(asrResult);
+      upstreamModelAttribution = asrResult.modelAttribution;
+      try {
+        const measured = recognizedTokensFrom(asrResult);
+        if (measured === null) {
+          recognizedWords = recognizedWordsFrom(asrResult);
+          recognized = recognizedWords.length > 0;
+          nonFinalizedReason = recognized
+            ? "recognized-text-is-not-span-evidence"
+            : "no-recognized-speech";
+        } else {
+          recognizedWords = measured;
+          finalizable = true;
+          nonFinalizedReason = null;
+        }
+      } catch (error) {
+        if (!(error instanceof SpanEvidenceError)) throw error;
+        recognizedWords = [];
+        recognized = false;
+        nonFinalizedReason = error.reason;
+      }
     } else if (requestBody.recognizedText && Array.isArray(requestBody.recognizedText)) {
       // Every element must be a string; a non-string would throw inside alignWords and
       // surface as a 500. Bad input is a 400.
@@ -578,13 +1152,22 @@ async function predictAlignment(requestBody) {
         throw httpError(400, "recognizedText must be an array of strings");
       }
       recognizedWords = requestBody.recognizedText;
+      recognized = recognizedWords.length > 0;
+      nonFinalizedReason = recognized
+        ? "recognized-text-is-not-span-evidence"
+        : "no-recognized-speech";
     } else if (requestBody.recognizedTextString) {
       // Guard the type: a truthy non-string (number, object, array) would throw a
       // TypeError on .trim() and surface as a 500. Bad input is a 400.
       if (typeof requestBody.recognizedTextString !== "string") {
         throw httpError(400, "recognizedTextString must be a string");
       }
-      recognizedWords = requestBody.recognizedTextString.trim().split(/\s+/);
+      const text = requestBody.recognizedTextString.trim();
+      recognizedWords = text === "" ? [] : text.split(/\s+/);
+      recognized = recognizedWords.length > 0;
+      nonFinalizedReason = recognized
+        ? "recognized-text-is-not-span-evidence"
+        : "no-recognized-speech";
     } else {
       recognizedWords = [];
       recognized = false;
@@ -607,6 +1190,8 @@ async function predictAlignment(requestBody) {
           wordId: w.id,
           canonicalText: w.text,
           heardText: "",
+          startMs: null,
+          endMs: null,
           status: "needs-review",
           confidence: 0,
         }));
@@ -625,6 +1210,8 @@ async function predictAlignment(requestBody) {
       wordId: r.wordId,
       canonicalText: r.canonicalText,
       heardText: r.heardText,
+      startMs: r.startMs ?? null,
+      endMs: r.endMs ?? null,
       status: r.status,
       confidence: r.confidence,
       reviewStatus,
@@ -637,14 +1224,19 @@ async function predictAlignment(requestBody) {
     }));
   }
 
+  const modelAttribution = quranAlignmentAttribution(upstreamModelAttribution);
+
   // Record the ACTUAL computed metrics (see the note above the branch), then stamp every alignment
   // with the resulting event id.
   const auditEventId = appendAudit(tenantId, "ml.alignment.predicted", sessionId, {
     modelVersion: MODEL_VERSION,
+    modelAttribution,
     traceId,
     confidence,
     wordCount,
     recognizedCount,
+    finalizable,
+    nonFinalizedReason,
   });
   alignments = alignments.map((a) => ({ ...a, auditEventId }));
 
@@ -657,30 +1249,27 @@ async function predictAlignment(requestBody) {
     sourceChecksum,
     evidenceId,
     modelVersion: MODEL_VERSION,
+    modelAttribution,
     auditEventId,
     alignments,
     confidence,
     reviewStatus,
+    finalizable,
+    nonFinalizedReason,
     externalAsr,
     latencyMs: Math.max(1, Math.round(performance.now() - startedAt)),
-    datasetVersion: DATASET_VERSION,
+    datasetVersion: fixtureCase && USE_GOLDEN_FIXTURES
+      ? DATASET_VERSION
+      : QURAN_ALIGNER_COMPONENT.datasetVersion,
     algorithm: "quran-constrained-levenshtein",
   };
 }
 
 // === Real tajweed prediction ===
-/**
- * The response-level confidence when the analysis produced no findings.
- *
- * This was `0.95`, which read as "we checked and are 95% sure there is nothing wrong" — an
- * assertion nothing here can make. Zero findings from a text scan means the passage contains no
- * detectable rule occurrence, which says nothing about the recitation and carries no certainty of
- * its own. `0` matches what the per-finding confidences now report and why
- * (see NO_MEASURED_CONFIDENCE in tajweed.js).
- */
-const NO_TAJWEED_CONFIDENCE = 0;
-
 async function predictTajweed(requestBody) {
+  if (Object.hasOwn(requestBody, "modelVersion") || Object.hasOwn(requestBody, "modelAttribution")) {
+    throw httpError(400, "model identity is server-selected and must not be supplied");
+  }
   const startedAt = performance.now();
   const traceId = extractTraceId(requestBody);
   const tenantId = requiredString(requestBody.tenantId, "tenantId");
@@ -692,61 +1281,60 @@ async function predictTajweed(requestBody) {
     ayahEnd: 7,
     display: "Al-Fatihah 1:1-7",
   };
-
-  // Check for golden fixture match
-  const fixtureCase = fixtures.cases.find(
-    (c) => c.quranRef.surahNumber === quranRef.surahNumber &&
-           c.quranRef.ayahStart === quranRef.ayahStart &&
-           c.quranRef.ayahEnd === quranRef.ayahEnd,
+  const canonicalWords = getCanonicalWords(
+    quranRef.surahNumber,
+    quranRef.ayahStart,
+    quranRef.ayahEnd,
   );
 
+  const fixtureCase = fixtures.cases.find(
+    (candidate) =>
+      candidate.quranRef.surahNumber === quranRef.surahNumber &&
+      candidate.quranRef.ayahStart === quranRef.ayahStart &&
+      candidate.quranRef.ayahEnd === quranRef.ayahEnd,
+  );
   const evidenceId = `evidence-${randomUUID()}`;
 
-  // Audit is appended AFTER the branch so findingCount reflects the findings ACTUALLY returned.
-  // With ML_USE_GOLDEN_FIXTURES unset (the default) the golden ref matches `fixtureCase` but the
-  // REAL rule-based analysis runs — previously the audit logged the fixture's finding count (1)
-  // while the response returned the real finding set (dozens), so the audit trail undercounted.
-  let findings;
-  let confidence;
-
+  // Canonical rules and declared fixture rules are instruction, never learner findings.
+  let annotations;
   if (fixtureCase && USE_GOLDEN_FIXTURES) {
-    // Return golden fixture tajweed findings
-    findings = fixtureCase.tajweedFindings.map((f) => ({
-      ...f,
-      reviewStatus: "ai-suggested",
+    annotations = fixtureCase.tajweedFindings.map((finding) => ({
+      id: finding.id,
+      wordId: finding.wordId,
+      rule: finding.rule,
+      explanation: finding.explanation,
+      sources: finding.sources,
+      analysisBasis: "text-rule",
+      instructional: true,
       tenantId,
       sourceChecksum: requestBody.sourceChecksum ?? "fnv1a32:real",
       evidenceId,
       traceId,
     }));
-    confidence = findings.length > 0
-      ? findings.reduce((sum, f) => sum + f.confidence, 0) / findings.length
-      : NO_TAJWEED_CONFIDENCE;
   } else {
-    // Run real tajweed analysis
-    const canonicalWords = getCanonicalWords(quranRef.surahNumber, quranRef.ayahStart, quranRef.ayahEnd);
-    findings = analyzeAyah(
+    annotations = analyzeAyah(
       `${quranRef.surahNumber}:${quranRef.ayahStart}`,
       canonicalWords,
-    ).map((f) => ({
-      ...f,
-      reviewStatus: "ai-suggested",
+    ).map((finding) => ({
+      ...finding,
       tenantId,
       sourceChecksum: requestBody.sourceChecksum ?? "fnv1a32:real",
       evidenceId,
       traceId,
     }));
-    confidence = findings.length > 0
-      ? findings.reduce((sum, f) => sum + f.confidence, 0) / findings.length
-      : NO_TAJWEED_CONFIDENCE;
   }
 
+  // This result is deliberately audit-only. Raw, uncalibrated observations never enter the public
+  // response, findings[], Postgres, teacher review, Flutter, or a learner-facing confidence.
+  const acousticShadow = await runAcousticShadow(requestBody, canonicalWords);
   const auditEventId = appendAudit(tenantId, "ml.tajweed.predicted", sessionId, {
     modelVersion: MODEL_VERSION,
     traceId,
-    findingCount: findings.length,
+    annotationCount: annotations.length,
+    findingCount: 0,
+    acousticShadow,
   });
-  findings = findings.map((f) => ({ ...f, auditEventId }));
+  annotations = annotations.map((annotation) => ({ ...annotation, auditEventId }));
 
   return {
     traceId,
@@ -757,78 +1345,12 @@ async function predictTajweed(requestBody) {
     evidenceId,
     modelVersion: MODEL_VERSION,
     auditEventId,
-    findings,
-    confidence,
-    reviewStatus: "ai-suggested",
+    annotations,
+    findings: [],
     latencyMs: Math.max(1, Math.round(performance.now() - startedAt)),
     datasetVersion: DATASET_VERSION,
     algorithm: "rule-based-tajweed",
   };
-}
-
-// === Eval runs ===
-async function createEvalRun(requestBody) {
-  const modelVersion = requestBody.modelVersion ?? MODEL_VERSION;
-  const fixtureMetrics = fixtures.metrics ?? {};
-
-  const thresholds = fixtures.thresholds ?? {
-    wordAlignmentF1: 0.9,
-    tajweedF1: 0.82,
-    falsePositiveRate: 0.08,
-    teacherAgreementRate: 0.9,
-    unsourcedLearnerOutputs: 0,
-  };
-
-  // Source-integrity is RECOMPUTED here, not trusted from the request or an asserted number: count how
-  // many committed golden tajweed findings actually carry a source. This is the honesty invariant the
-  // service can prove on the spot — every learner-facing tajweed output must be sourced — so if a
-  // golden finding is ever added without sources the eval fails here instead of rubber-stamping a
-  // hand-written count.
-  const goldenFindings = fixtures.cases.flatMap((c) => c.tajweedFindings ?? []);
-  const sourceBackedFindings = goldenFindings.filter(
-    (f) => Array.isArray(f.sources) && f.sources.length > 0,
-  ).length;
-  const unsourcedLearnerOutputs = goldenFindings.length - sourceBackedFindings;
-
-  // The F1 / agreement metrics require a labeled eval set the service does not hold, so they come from
-  // the committed, checksummed golden-evals.json — an OFFLINE eval artifact — NOT from caller-supplied
-  // input. Previously `requestBody.metrics ?? fixtureMetrics` let any caller POST perfect numbers and
-  // force passed:true; the caller no longer influences the recorded metrics or the pass/fail decision.
-  const wordAlignmentF1 = Number(fixtureMetrics.wordAlignmentF1);
-  const tajweedF1 = Number(fixtureMetrics.tajweedF1);
-  const falsePositiveRate = Number(fixtureMetrics.falsePositiveRate);
-  const teacherAgreementRate = Number(fixtureMetrics.teacherAgreementRate);
-
-  const evalRun = {
-    modelVersion,
-    datasetVersion: requestBody.datasetVersion ?? DATASET_VERSION,
-    wordAlignmentF1,
-    tajweedF1,
-    falsePositiveRate,
-    teacherAgreementRate,
-    unsourcedLearnerOutputs,
-    caseCount: fixtures.cases.length,
-    sourceBackedFindings,
-    // Honest provenance so the "proof" surface never overstates what was measured live.
-    metricsProvenance: {
-      sourceIntegrity: "recomputed-live",
-      accuracy: "committed-offline-eval",
-    },
-    thresholds,
-    passed:
-      wordAlignmentF1 >= thresholds.wordAlignmentF1 &&
-      tajweedF1 >= thresholds.tajweedF1 &&
-      falsePositiveRate <= thresholds.falsePositiveRate &&
-      teacherAgreementRate >= thresholds.teacherAgreementRate &&
-      unsourcedLearnerOutputs <= thresholds.unsourcedLearnerOutputs,
-  };
-
-  evalRuns.set(modelVersion, evalRun);
-  appendAudit(requestBody.tenantId ?? "tenant-smoke", "model.eval.completed", modelVersion, {
-    ...evalRun,
-    traceId: extractTraceId(requestBody),
-  });
-  return evalRun;
 }
 
 // === Privacy ===
@@ -1126,7 +1648,7 @@ async function storeAudioChunk(requestBody) {
 export function getAuditEvents(tenantId) {
   return tenantId ? readTenantAuditEvents(tenantId) : [];
 }
-export { predictAlignment, predictTajweed, transcribeSession, createEvalRun, safeStorageSegment, route };
+export { predictAlignment, predictTajweed, transcribeSession, safeStorageSegment, route };
 
 
 /**
@@ -1155,6 +1677,156 @@ export function wavFromPcm16(pcm, sampleRate = 16000, channels = 1) {
   header.write("data", 36);
   header.writeUInt32LE(pcm.length, 40);
   return Buffer.concat([header, pcm]);
+}
+
+
+/**
+ * Assemble one retained session into a validated PCM16 timeline.
+ *
+ * Transcription and acoustic shadow analysis share this loader so missing, expired, gapped, mixed-
+ * rate, or malformed audio can never be interpreted differently by the two inference paths.
+ */
+export async function loadSessionPcm({ tenantId, learnerId, sessionId, traceId = null }) {
+  tenantId = safeStorageSegment(tenantId, "tenantId");
+  learnerId = safeStorageSegment(learnerId, "learnerId");
+  sessionId = requiredString(sessionId, "sessionId");
+  const empty = (reason, extra = {}) => ({
+    loaded: false,
+    reason,
+    pcm: null,
+    sampleRate: null,
+    durationMs: 0,
+    chunkCount: 0,
+    missingChunkIds: [],
+    missingAudioChunkIds: [],
+    ...extra,
+  });
+
+  const dir = join(AUDIO_STORAGE_DIR, tenantId, learnerId);
+  if (!existsSync(dir)) return empty("no-audio");
+
+  const BATCH = 64;
+  async function readAllOf(files, read) {
+    const out = [];
+    for (let i = 0; i < files.length; i += BATCH) {
+      out.push(...(await Promise.all(files.slice(i, i + BATCH).map(read))));
+    }
+    return out;
+  }
+
+  const metaFiles = (await readdirAsync(dir)).filter((file) => file.endsWith(".meta.json"));
+  const chunks = (
+    await readAllOf(metaFiles, async (file) => {
+      try {
+        return JSON.parse(await readFileAsync(join(dir, file), "utf8"));
+      } catch {
+        return null;
+      }
+    })
+  )
+    .filter((metadata) => metadata && metadata.sessionId === sessionId)
+    .sort((left, right) => (left.startMs ?? 0) - (right.startMs ?? 0));
+
+  if (chunks.length === 0) return empty("no-audio");
+  const expired = chunks.some((metadata) => {
+    if (typeof metadata.storedAt !== "string") return false;
+    const storedAt = Date.parse(metadata.storedAt);
+    if (!Number.isFinite(storedAt)) return true;
+    return Date.now() >= storedAt + retentionTtlHours(metadata.audioRetention) * 60 * 60 * 1000;
+  });
+  if (expired) return empty("expired-audio", { chunkCount: chunks.length });
+
+  const read = await readAllOf(chunks, async (metadata) => {
+    try {
+      return {
+        chunkId: metadata.chunkId,
+        metadata,
+        bytes: await readFileAsync(join(dir, `${metadata.chunkId}.bin`)),
+      };
+    } catch {
+      return { chunkId: metadata.chunkId, metadata, bytes: null };
+    }
+  });
+  const available = read.filter((entry) => Buffer.isBuffer(entry.bytes));
+  const present = available.map((entry) => entry.chunkId);
+  const missingAudioChunkIds = read
+    .filter((entry) => !Buffer.isBuffer(entry.bytes))
+    .map((entry) => entry.chunkId);
+  const missingChunkIds = interiorSequenceGaps(present);
+  if (missingChunkIds.length > 0 || missingAudioChunkIds.length > 0) {
+    log("warn", "session is missing chunks that were accepted upstream", {
+      tenantId,
+      sessionId,
+      traceId,
+      storedChunks: present.length,
+      missingChunkIds,
+      missingAudioChunkIds,
+    });
+    return empty("incomplete-audio", {
+      chunkCount: available.length,
+      missingChunkIds,
+      missingAudioChunkIds,
+    });
+  }
+  if (available.length === 0) {
+    return empty("no-audio", {
+      chunkCount: chunks.length,
+      missingChunkIds,
+      missingAudioChunkIds,
+    });
+  }
+
+  const sampleRates = new Set(available.map((entry) => entry.metadata?.sampleRate));
+  const sampleRate = available[0]?.metadata?.sampleRate;
+  const validTimingShape = chunks.every(
+    (metadata, index) =>
+      Number.isInteger(metadata?.startMs) && Number.isInteger(metadata?.endMs) &&
+      metadata.startMs >= 0 && metadata.endMs > metadata.startMs &&
+      (index === 0 || chunks[index - 1].endMs <= metadata.startMs),
+  );
+  const completeTimeline = chunks[0]?.startMs === 0 && chunks.every(
+    (metadata, index) => index === 0 || chunks[index - 1].endMs === metadata.startMs,
+  );
+  const byteLengthsMatchRoundedTimings = available.every((entry) => {
+    const durationMs = entry.metadata.endMs - entry.metadata.startMs;
+    const measuredDurationMs = entry.bytes.length * 1000 / (entry.metadata.sampleRate * 2);
+    // Chunk metadata is integer milliseconds while PCM duration has frame precision. A correctly
+    // rounded boundary may differ by at most half a millisecond; anything beyond that is truncated,
+    // padded, or described with the wrong rate and must still fail closed.
+    return Math.abs(measuredDurationMs - durationMs) <= 0.5;
+  });
+  if (
+    sampleRates.size !== 1 ||
+    !ALLOWED_PCM_SAMPLE_RATES.has(sampleRate) ||
+    !validTimingShape ||
+    !byteLengthsMatchRoundedTimings ||
+    available.some((entry) => entry.bytes.length === 0 || entry.bytes.length % 2 !== 0)
+  ) {
+    return empty("inconsistent-audio-format", {
+      chunkCount: available.length,
+      missingChunkIds,
+      missingAudioChunkIds,
+    });
+  }
+  if (!completeTimeline) {
+    return empty("incomplete-audio", {
+      chunkCount: available.length,
+      missingChunkIds,
+      missingAudioChunkIds,
+    });
+  }
+
+  const pcm = Buffer.concat(available.map((entry) => entry.bytes));
+  return {
+    loaded: true,
+    reason: null,
+    pcm,
+    sampleRate,
+    durationMs: Math.round((pcm.length / 2 * 1000) / sampleRate),
+    chunkCount: available.length,
+    missingChunkIds,
+    missingAudioChunkIds,
+  };
 }
 
 /**
@@ -1191,116 +1863,194 @@ async function transcribeSession(requestBody) {
       transcribed: false,
       reason: "consent-revoked-or-insufficient",
       recognizedText: [],
+      recognizedTokens: [],
       chunkCount: 0,
     };
   }
 
-  const dir = join(AUDIO_STORAGE_DIR, tenantId, learnerId);
-  if (!existsSync(dir)) {
-    return { transcribed: false, reason: "no-audio", recognizedText: [], chunkCount: 0 };
-  }
-
-  // ── Read ASYNCHRONOUSLY, in bounded batches ─────────────────────────────────────────────────
-  //
-  // This used to be `readFileSync` per file: one for every chunk's metadata and one for its bytes.
-  // A fifteen-minute recitation is 9000 chunks, so ~18000 synchronous reads on the event loop —
-  // measured at a 356ms stall (specs/dr-rehearsal/evidence/P5.4-long-audio.log), scaling at roughly
-  // 24ms per audio-minute.
-  //
-  // The problem was never speed. 0.39s to assemble fifteen minutes of audio is fine. It was that
-  // the cost did not land on the session that caused it: for those 356ms every OTHER learner's
-  // analysis request waited. One person finishing a long memorisation session degraded everybody.
-  //
-  // Batched rather than one big `Promise.all`: 9000 concurrent opens is a good way to meet the
-  // process file-descriptor limit, and a session that fails at 9000 chunks and works at 500 is a
-  // worse bug than the stall. 64 keeps the libuv threadpool busy while the loop stays free.
-  const BATCH = 64;
-  async function readAllOf(files, read) {
-    const out = [];
-    for (let i = 0; i < files.length; i += BATCH) {
-      out.push(...(await Promise.all(files.slice(i, i + BATCH).map(read))));
-    }
-    return out;
-  }
-
-  // startMs, not filename: chunk ids are UUIDs, so lexical order is arbitrary and would splice the
-  // recitation out of sequence — which the ASR would faithfully transcribe as a different one.
-  const metaFiles = (await readdirAsync(dir)).filter((f) => f.endsWith(".meta.json"));
-  const chunks = (
-    await readAllOf(metaFiles, async (f) => {
-      try {
-        return JSON.parse(await readFileAsync(join(dir, f), "utf8"));
-      } catch {
-        return null;
-      }
-    })
-  )
-    .filter((m) => m && m.sessionId === sessionId)
-    .sort((a, b) => (a.startMs ?? 0) - (b.startMs ?? 0));
-
-  // A chunk whose bytes are gone (erased, or never stored) is SKIPPED rather than treated as
-  // silence: inserting nothing is more honest than inserting a gap the learner did not leave.
-  // `existsSync` is gone with the rest — a failed read answers the same question without a second
-  // syscall, and without the TOCTOU window between the check and the open.
-  const read = await readAllOf(chunks, async (meta) => {
-    try {
-      return { chunkId: meta.chunkId, bytes: await readFileAsync(join(dir, `${meta.chunkId}.bin`)) };
-    } catch {
-      return null;
-    }
-  });
-  const parts = read.filter(Boolean).map((r) => r.bytes);
-  const present = read.filter(Boolean).map((r) => r.chunkId);
-
-  // What ISN'T here. Skipping a missing chunk silently is honest about the audio and dishonest
-  // about the session: the transcript comes out short, the aligner scores it against the FULL
-  // canonical passage, and words the learner DID recite get recorded as words they missed. That is
-  // the same wrong answer the reconnect collision produced, arriving from an upstream outage
-  // instead of from a bug — and measured in specs/dr-rehearsal/evidence/P5.4-partial-loss-recovery.log.
-  //
-  // The gateway mints `{session}-ws-{NNNN}` from a per-session monotonic cursor, so a hole in that
-  // run is a chunk that was accepted and never stored. No new endpoint and no cross-service call —
-  // it is derivable from what is already on disk, which also means it catches loss from ANY cause
-  // (forward failure, a crashed writer, a bad disk), not only the ones the gateway knew about.
-  const missingChunkIds = interiorSequenceGaps(present);
-  if (missingChunkIds.length > 0) {
-    log("warn", "session is missing chunks that were accepted upstream", {
-      tenantId,
-      sessionId,
-      traceId,
-      storedChunks: present.length,
-      missingChunkIds,
-    });
-  }
-  if (parts.length === 0) {
+  const audio = await loadSessionPcm({ tenantId, learnerId, sessionId, traceId });
+  if (!audio.loaded) {
     return {
       transcribed: false,
-      reason: "no-audio",
+      reason: audio.reason,
       recognizedText: [],
-      chunkCount: chunks.length,
-      missingChunkIds,
+      recognizedTokens: [],
+      chunkCount: audio.chunkCount,
+      missingChunkIds: audio.missingChunkIds,
+      missingAudioChunkIds: audio.missingAudioChunkIds,
     };
   }
 
-  const sampleRate = chunks[0]?.sampleRate ?? 16000;
-  const wav = wavFromPcm16(Buffer.concat(parts), sampleRate);
-  const asr = await transcribeAudio(wav.toString("base64"), "wav", "ar");
+  const {
+    pcm,
+    sampleRate,
+    chunkCount,
+    missingChunkIds,
+    missingAudioChunkIds,
+  } = audio;
+  let windows;
+  try {
+    windows = boundedPcmWindows(pcm, sampleRate);
+  } catch (error) {
+    if (!(error instanceof SpanEvidenceError)) throw error;
+    return {
+      transcribed: false,
+      reason: error.reason,
+      recognizedText: [],
+      recognizedTokens: [],
+      chunkCount,
+      missingChunkIds,
+      missingAudioChunkIds,
+    };
+  }
+
+  const recognizedTokens = [];
+  const transcriptAttributions = [];
+  try {
+    for (const window of windows) {
+      const wav = wavFromPcm16(window.pcm, sampleRate);
+      const audioBase64 = wav.toString("base64");
+      const asr = await transcribeAudio(audioBase64, "wav", "ar");
+      transcriptAttributions.push(asr.modelAttribution);
+      let tokens = recognizedTokensFrom(asr, {
+        offsetMs: window.offsetMs,
+        durationMs: window.durationMs,
+      });
+
+      if (tokens === null) {
+        const transcript = typeof asr?.text === "string" ? asr.text.trim() : "";
+        const words = transcript === "" ? [] : transcript.split(/\s+/);
+        if (words.length === 0) continue;
+        const forced = await forceAlignRecognizedAudio(audioBase64, "wav", transcript);
+        transcriptAttributions.push(forced.modelAttribution);
+        const forcedWords = Array.isArray(forced?.words) ? forced.words : [];
+        if (
+          forcedWords.length !== words.length ||
+          forcedWords.some((word, index) => word?.word !== words[index])
+        ) {
+          throw spanEvidenceError(
+            "invalid-recognized-spans",
+            "forced alignment does not correspond to the recognized transcript",
+          );
+        }
+        tokens = recognizedTokensFrom(forced, {
+          offsetMs: window.offsetMs,
+          durationMs: window.durationMs,
+          confidenceField: "score",
+        });
+      }
+
+      for (const token of tokens ?? []) {
+        const midpointMs = token.startMs + (token.endMs - token.startMs) / 2;
+        if (
+          midpointMs >= window.coreStartMs &&
+          (midpointMs < window.coreEndMs || (window.final && midpointMs <= window.coreEndMs))
+        ) {
+          recognizedTokens.push(token);
+        }
+      }
+    }
+  } catch (error) {
+    const reason = error instanceof SpanEvidenceError
+      ? error.reason
+      : error?.status === 502
+        ? "asr-unavailable"
+        : null;
+    if (reason === null) throw error;
+    return {
+      transcribed: false,
+      reason,
+      recognizedText: [],
+      recognizedTokens: [],
+      chunkCount: chunkCount,
+      windowCount: windows.length,
+      sampleRate,
+      missingChunkIds,
+      missingAudioChunkIds,
+    };
+  }
+
+  if (recognizedTokens.length === 0) {
+    return {
+      transcribed: false,
+      reason: "no-recognized-speech",
+      recognizedText: [],
+      recognizedTokens: [],
+      chunkCount: chunkCount,
+      windowCount: windows.length,
+      sampleRate,
+      missingChunkIds,
+      missingAudioChunkIds,
+    };
+  }
+
+  for (let index = 1; index < recognizedTokens.length; index++) {
+    const previous = recognizedTokens[index - 1];
+    const current = recognizedTokens[index];
+    if (current.startMs < previous.startMs || current.endMs < previous.endMs) {
+      return {
+        transcribed: false,
+        reason: "invalid-recognized-spans",
+        recognizedText: [],
+        recognizedTokens: [],
+        chunkCount: chunkCount,
+        windowCount: windows.length,
+        sampleRate,
+        missingChunkIds,
+        missingAudioChunkIds,
+      };
+    }
+  }
+
+  let modelAttribution;
+  try {
+    modelAttribution = mergeModelAttributions(transcriptAttributions, "asr");
+  } catch (error) {
+    log("warn", "session transcript producer attribution is inconsistent", {
+      tenantId,
+      sessionId,
+      traceId,
+      reason: error instanceof Error ? error.message : "invalid model attribution",
+    });
+    return {
+      transcribed: false,
+      reason: "invalid-model-attribution",
+      recognizedText: [],
+      recognizedTokens: [],
+      chunkCount: chunkCount,
+      windowCount: windows.length,
+      sampleRate,
+      missingChunkIds,
+      missingAudioChunkIds,
+    };
+  }
+  const primary = modelAttribution.components.find(
+    (component) =>
+      component.component === modelAttribution.primaryComponent && component.status === "active",
+  );
 
   appendAudit(tenantId, "privacy.external-asr.called", sessionId, {
     traceId,
     reason: "consent-granted",
-    chunkCount: parts.length,
+    chunkCount: chunkCount,
+    windowCount: windows.length,
   });
 
   return {
     transcribed: true,
     reason: "consent-granted",
-    // Canonical text is never normalised here; these are the ASR's words, passed through.
-    recognizedText: recognizedWordsFrom(asr),
-    chunkCount: parts.length,
+    // Canonical/recognized text is never normalized here; this is a projection of measured tokens.
+    recognizedText: recognizedTokens.map((token) => token.text),
+    recognizedTokens,
+    transcriptSource: "server-derived",
+    modelVersion: primary.implementationId,
+    modelAttribution,
+    chunkCount: chunkCount,
+    windowCount: windows.length,
     sampleRate,
     // Reported even when empty, so a caller can tell "no gaps" from "this build does not check".
     missingChunkIds,
+    missingAudioChunkIds,
   };
 }
 
@@ -1411,11 +2161,6 @@ async function route(request, response) {
 
   if (url.pathname === "/v1/tajweed-findings:predict") {
     jsonResponse(response, 200, await predictTajweed(body));
-    return;
-  }
-
-  if (url.pathname === "/v1/eval-runs") {
-    jsonResponse(response, 200, await createEvalRun(body));
     return;
   }
 

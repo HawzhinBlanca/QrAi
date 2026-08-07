@@ -22,7 +22,7 @@ import { readFileSync } from "node:fs";
 
 import { compileResponseValidators, loadOpenapi, templateFor } from "../tests/contract/lib/openapi.mjs";
 
-const spec = loadOpenapi("specs/flutter-client/openapi.yaml");
+const spec = loadOpenapi("packages/contracts/openapi.yaml");
 const validators = compileResponseValidators(spec);
 const fixtures = JSON.parse(readFileSync("specs/api-golden-fixtures/fixtures/platform-api.json", "utf8"));
 

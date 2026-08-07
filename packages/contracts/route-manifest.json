@@ -1,0 +1,121 @@
+{
+  "version": 1,
+  "baselineSource": "services/platform-api/src/lib.rs",
+  "baselineOperations": [
+    { "method": "GET", "path": "/health", "target": "retain" },
+    { "method": "GET", "path": "/metrics", "target": "retain" },
+    { "method": "GET", "path": "/ready", "target": "retain" },
+    {
+      "method": "GET",
+      "path": "/v1/agent-runs",
+      "target": "retire",
+      "decision": "ADR-0038",
+      "removalGate": "zero-production-callers",
+      "removalState": "blocked-by-transitional-callers",
+      "transitionalCallers": [
+        "apps/web/src/data/platform.ts",
+        "services/agents/server.mjs"
+      ]
+    },
+    { "method": "GET", "path": "/v1/audit-events", "target": "retain" },
+    { "method": "GET", "path": "/v1/eval-runs/{model_version}", "target": "retain" },
+    { "method": "GET", "path": "/v1/learner/progress", "target": "retain" },
+    { "method": "GET", "path": "/v1/learner/progress/weekly", "target": "retain" },
+    { "method": "GET", "path": "/v1/learners/active", "target": "retain" },
+    { "method": "GET", "path": "/v1/quran/ayahs/{surah_number}/{ayah_number}", "target": "retain" },
+    { "method": "GET", "path": "/v1/quran/surahs", "target": "retain" },
+    { "method": "GET", "path": "/v1/quran/surahs/{surah_number}", "target": "retain" },
+    { "method": "GET", "path": "/v1/recitation-sessions", "target": "retain" },
+    { "method": "GET", "path": "/v1/recitation-sessions/{id}", "target": "retain" },
+    { "method": "GET", "path": "/v1/recitation-sessions/{id}/alignments", "target": "retain" },
+    { "method": "GET", "path": "/v1/recitation-sessions/{id}/tajweed-findings", "target": "retain" },
+    { "method": "GET", "path": "/v1/scholar-approvals", "target": "retain" },
+    { "method": "GET", "path": "/v1/tajweed-findings", "target": "retain" },
+    { "method": "GET", "path": "/v1/tajweed-findings/{id}/audio", "target": "retain" },
+    { "method": "GET", "path": "/v1/teacher-review-queue", "target": "retain" },
+    {
+      "method": "POST",
+      "path": "/v1/agent-runs",
+      "target": "retire",
+      "decision": "ADR-0038",
+      "removalGate": "zero-production-callers",
+      "removalState": "blocked-by-transitional-callers",
+      "transitionalCallers": [
+        "apps/web/src/data/platform.ts",
+        "services/agents/server.mjs"
+      ]
+    },
+    { "method": "POST", "path": "/v1/asr/force-align", "target": "retain" },
+    { "method": "POST", "path": "/v1/asr/transcribe", "target": "retain" },
+    { "method": "POST", "path": "/v1/audio-chunks", "target": "retain" },
+    {
+      "method": "POST",
+      "path": "/v1/auth/login",
+      "target": "retire",
+      "decision": "ADR-0038",
+      "removalGate": "zero-production-callers",
+      "removalState": "blocked-by-transitional-callers",
+      "transitionalCallers": [
+        "apps/mobile/App.tsx",
+        "apps/web/src/lib/auth.tsx"
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/v1/auth/register",
+      "target": "retire",
+      "decision": "ADR-0038",
+      "removalGate": "zero-production-callers",
+      "removalState": "blocked-by-transitional-callers",
+      "transitionalCallers": [
+        "apps/web/src/lib/auth.tsx"
+      ]
+    },
+    { "method": "POST", "path": "/v1/auth/token", "target": "retain" },
+    { "method": "POST", "path": "/v1/learner/progress", "target": "retain" },
+    { "method": "POST", "path": "/v1/ml/alignments:predict", "target": "retain" },
+    { "method": "POST", "path": "/v1/ml/tajweed-findings:predict", "target": "retain" },
+    { "method": "POST", "path": "/v1/pilot/invitations", "target": "retain" },
+    { "method": "POST", "path": "/v1/pilot/session/bootstrap", "target": "retain" },
+    { "method": "POST", "path": "/v1/pilot/session/logout", "target": "retain" },
+    { "method": "POST", "path": "/v1/privacy/delete", "target": "retain" },
+    { "method": "POST", "path": "/v1/privacy/export", "target": "retain" },
+    { "method": "POST", "path": "/v1/realtime-session-tickets", "target": "retain" },
+    { "method": "POST", "path": "/v1/recitation-sessions", "target": "retain" },
+    { "method": "POST", "path": "/v1/recitation-sessions/{id}/alignments", "target": "retain" },
+    { "method": "POST", "path": "/v1/recitation-sessions/{id}/finalize", "target": "retain" },
+    { "method": "POST", "path": "/v1/recitation-sessions/{id}/request-teacher-review", "target": "retain" },
+    { "method": "POST", "path": "/v1/scholar-approvals", "target": "retain" },
+    { "method": "POST", "path": "/v1/teacher-reviews", "target": "retain" }
+  ],
+  "targetAdditions": [
+    {
+      "method": "POST",
+      "path": "/v1/device-enrollments:exchange",
+      "feature": "device-enrollment",
+      "decision": "ADR-0038",
+      "implementationStatus": "planned-owner-gated"
+    },
+    {
+      "method": "POST",
+      "path": "/v1/device-sessions:refresh",
+      "feature": "device-session-refresh",
+      "decision": "ADR-0038",
+      "implementationStatus": "planned-owner-gated"
+    },
+    {
+      "method": "DELETE",
+      "path": "/v1/device-sessions/current",
+      "feature": "device-session-revocation",
+      "decision": "ADR-0038",
+      "implementationStatus": "planned-owner-gated"
+    },
+    {
+      "method": "GET",
+      "path": "/v1/learner/recitation-sessions",
+      "feature": "learner-history",
+      "decision": "ADR-0038",
+      "implementationStatus": "planned"
+    }
+  ]
+}

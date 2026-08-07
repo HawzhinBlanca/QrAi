@@ -6,7 +6,7 @@ import { join } from "node:path";
 import test from "node:test";
 import { createCandidateBoundSmokeSummary } from "./smoke-evidence.mjs";
 
-const deployableServices = ["platform-api", "realtime-gateway", "ml-inference", "asr-inference", "web"];
+const deployableServices = ["platform-api", "node-api", "realtime-gateway", "ml-inference", "asr-inference", "web"];
 
 function git(repo, args) {
   return execFileSync("git", args, { cwd: repo, encoding: "utf8" }).trim();

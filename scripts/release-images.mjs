@@ -30,6 +30,7 @@ import { execFileSync } from "node:child_process";
 /** Every service that ships as an image. `postgres` is upstream and already digest-addressable. */
 export const SERVICES = [
   "platform-api",
+  "node-api",
   "realtime-gateway",
   "ml-inference",
   "asr-inference",

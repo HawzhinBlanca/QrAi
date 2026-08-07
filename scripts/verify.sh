@@ -25,6 +25,7 @@ esac
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")/.." && pwd)"
 cd "$ROOT"
 export PATH="/opt/homebrew/opt/postgresql@16/bin:$HOME/.cargo/bin:/opt/homebrew/bin:$PATH"
+CALLER_DATABASE_URL="${DATABASE_URL:-}"
 export DATABASE_URL="${DATABASE_URL:-postgresql://hawzhin@localhost:5432/quran_ai}"
 
 GW="services/realtime-gateway/Cargo.toml"
@@ -36,6 +37,14 @@ if [[ -f "${_here}/stack.env" ]]; then
   # shellcheck disable=SC1091
   source "${_here}/stack.env"
 fi
+# An explicit command/CI input is authoritative. stack.env is only a per-machine default and must
+# not silently redirect a verification run to a different database.
+if [[ -n "$CALLER_DATABASE_URL" ]]; then
+  export DATABASE_URL="$CALLER_DATABASE_URL"
+fi
+# Migration proofs create/drop isolated databases and therefore need an administrative connection.
+# CI's DATABASE_URL is administrative; restricted local stacks can supply a separate explicit URL.
+export MIGRATION_TEST_ADMIN_URL="${MIGRATION_TEST_ADMIN_URL:-$DATABASE_URL}"
 
 # A release verification must never quietly run against a developer's default
 # database or emit its proof into the candidate checkout. The caller supplies a
@@ -44,6 +53,7 @@ fi
 if [[ "$RELEASE" == "yes" ]]; then
   required_release_vars=(
     RELEASE_DATABASE_URL
+    RELEASE_APP_DATABASE_PASSWORD
     RELEASE_SMOKE_ARTIFACT_DIR
     RELEASE_SMOKE_TRACE_ID
     RELEASE_TEST_SUMMARY
@@ -75,6 +85,16 @@ if [[ "$RELEASE" == "yes" ]]; then
     --environment-provider "$RELEASE_ENVIRONMENT_PROVIDER" \
     --smoke-artifact-dir "$RELEASE_SMOKE_ARTIFACT_DIR"; then
     echo "release verification requires clean checkout and external evidence destinations" >&2
+    exit 2
+  fi
+  if ! MIGRATION_DATABASE_URL="$RELEASE_DATABASE_URL" node server/scripts/migrate.mjs; then
+    echo "release verification failed to converge the dedicated database through the migration runner" >&2
+    exit 2
+  fi
+  if ! MIGRATION_DATABASE_URL="$RELEASE_DATABASE_URL" \
+       APP_DATABASE_PASSWORD="$RELEASE_APP_DATABASE_PASSWORD" \
+       node server/scripts/provision-role.mjs; then
+    echo "release verification failed to provision the restricted application role" >&2
     exit 2
   fi
 fi
@@ -109,7 +129,7 @@ run "lint: rust fmt"    "cargo fmt --manifest-path $GW --check && cargo fmt --ma
 run "lint: rust clippy" "cargo clippy --manifest-path $GW -- -D warnings && cargo clippy --manifest-path $API -- -D warnings"
 
 # --- 2. Typecheck (TS workspaces) ---------------------------------------------
-run "typecheck: ts" "pnpm --filter @quran-ai/contracts typecheck && pnpm --filter @quran-ai/quran-data typecheck && pnpm --filter @quran-ai/web typecheck"
+run "typecheck: ts" "pnpm --filter @quran-ai/contracts typecheck && pnpm --filter @quran-ai/quran-data typecheck && pnpm --filter @quran-ai/server typecheck && pnpm --filter @quran-ai/web typecheck"
 
 if [[ "$FAST" != "yes" ]]; then
   # --- 3. Test --------------------------------------------------------------
@@ -128,7 +148,7 @@ if [[ "$FAST" != "yes" ]]; then
   # declares. CI pins `node-version: "22"`, which floats to the newest, so the gate was red on a
   # supported runtime and green on the one that tested it. tests/contract/strip-types.test.mjs pins
   # the flag against the imports so this cannot come back.
-  run "test: node services"       "node --experimental-strip-types --test scripts/fixture-normalize.test.mjs scripts/diff-api-fixtures.test.mjs scripts/fixture-coverage.test.mjs services/ml-inference/alignment.test.mjs services/ml-inference/marks-parity.test.mjs services/ml-inference/tajweed.test.mjs services/ml-inference/server.test.mjs services/ml-inference/session-transcript.test.mjs services/ml-inference/rate-limit.test.mjs services/ml-inference/chunk-overwrite.test.mjs services/ml-inference/storage-driver.test.mjs services/ml-inference/privacy-erasure.test.mjs services/agents/agents.test.mjs scripts/release-manifest.test.mjs scripts/release-build-evidence.test.mjs scripts/release-evidence-summary.test.mjs scripts/smoke-evidence.test.mjs scripts/smoke-database.test.mjs scripts/release-images.test.mjs tests/api-parity/coverage.test.mjs tests/node-api/ticket-vectors.test.mjs tests/node-api/authz.test.mjs tests/node-api/shell.test.mjs tests/node-api/routes-table.test.mjs tests/node-api/metrics-render.test.mjs tests/node-api/rust-json.test.mjs tests/node-api/no-secret-logging.test.mjs tests/node-api/boot-guard.test.mjs tests/node-api/nul-byte-is-a-400.test.mjs tests/node-api/readiness-fault.test.mjs tests/contract/coverage.test.mjs tests/contract/cutover-readiness.test.mjs tests/contract/boundary-references.test.mjs tests/contract/flutter-contract.test.mjs tests/contract/enum-parity.test.mjs tests/contract/tajweed-gate-parity.test.mjs tests/contract/ml-findings-shape.test.mjs tests/contract/strip-types.test.mjs tests/contract/store-readiness.test.mjs scripts/check-apk.test.mjs tests/security/arabic-regex-escapes.test.mjs tests/i18n/registers.test.mjs tests/i18n/locale-parity.test.mjs tests/i18n/drafts.test.mjs tests/security/legacy-insecure-flag.test.mjs"
+  run "test: node services"       "node --experimental-strip-types --test scripts/fixture-normalize.test.mjs scripts/diff-api-fixtures.test.mjs scripts/fixture-coverage.test.mjs services/ml-inference/alignment.test.mjs services/ml-inference/marks-parity.test.mjs services/ml-inference/tajweed.test.mjs services/ml-inference/golden-regression.test.mjs services/ml-inference/model-attribution.test.mjs services/ml-inference/server.test.mjs services/ml-inference/session-transcript.test.mjs services/ml-inference/acoustic-shadow.test.mjs services/ml-inference/rate-limit.test.mjs services/ml-inference/chunk-overwrite.test.mjs services/ml-inference/storage-driver.test.mjs services/ml-inference/privacy-erasure.test.mjs services/agents/agents.test.mjs scripts/release-manifest.test.mjs scripts/release-build-evidence.test.mjs scripts/release-evidence-summary.test.mjs scripts/smoke-evidence.test.mjs scripts/smoke-database.test.mjs scripts/release-images.test.mjs tests/release/model-evidence.test.mjs tests/release/model-claim-authority.test.mjs tests/inference/asr-readiness.test.mjs tests/inference/asr-candidate-evidence.test.mjs tests/inference/muaalem-candidate-evidence.test.mjs tests/inference/real-audio-spans.test.mjs tests/api-parity/coverage.test.mjs tests/node-api/ticket-vectors.test.mjs tests/node-api/authz.test.mjs tests/node-api/shell.test.mjs tests/node-api/standalone-lifecycle.test.mjs tests/node-api/production-image.test.mjs tests/node-api/module-relocation.test.mjs tests/node-api/routes-table.test.mjs tests/node-api/metrics-render.test.mjs tests/node-api/rust-json.test.mjs tests/node-api/no-secret-logging.test.mjs tests/node-api/boot-guard.test.mjs tests/node-api/nul-byte-is-a-400.test.mjs tests/node-api/readiness-fault.test.mjs tests/contract/coverage.test.mjs tests/contract/openapi-completeness.test.mjs tests/contract/cutover-readiness.test.mjs tests/contract/boundary-references.test.mjs tests/contract/node-backend-decisions.test.mjs tests/contract/flutter-contract.test.mjs tests/contract/enum-parity.test.mjs tests/contract/tajweed-gate-parity.test.mjs tests/contract/learner-feedback-gate.test.mjs tests/contract/tajweed-analysis-basis.test.mjs tests/contract/acoustic-tajweed-boundary.test.mjs tests/contract/no-invented-confidence.test.mjs tests/contract/ml-findings-shape.test.mjs tests/contract/strip-types.test.mjs tests/contract/verify-invocations.test.mjs tests/contract/retired-components.test.mjs tests/contract/store-readiness.test.mjs tests/contract/compose-migrations.test.mjs tests/contract/audio-index-topology.test.mjs tests/migrations/migration-runner.test.mjs tests/migrations/schema-equivalence.test.mjs tests/migrations/restricted-role.test.mjs tests/migrations/eval-evidence-migration.test.mjs scripts/check-apk.test.mjs tests/security/arabic-regex-escapes.test.mjs tests/i18n/registers.test.mjs tests/i18n/locale-parity.test.mjs tests/i18n/drafts.test.mjs tests/security/legacy-insecure-flag.test.mjs"
   # apps/mobile is NOT a pnpm workspace member, so the TS `test: ts` line above never covered it and
   # its consent/auth/audio-format helpers went unguarded (a real audioFormat bug shipped there). The
   # helpers import ONLY node builtins, so this needs no install — just Node's type-stripping to read
@@ -189,7 +209,7 @@ if [[ "$FAST" != "yes" ]]; then
   # fastapi and shells out to ffmpeg (verified: system python3 has numpy but not fastapi), so it
   # needs the service venv. It stays ungated until CI installs the asr-inference requirements —
   # a named gap, not a silent one.
-  run "test: python (asr-inference)" "cd services/asr-inference && { command -v python3 >/dev/null || { echo 'python3 not found — required, not optional'; exit 1; }; } && python3 test_eval_metrics.py && python3 test_forced_align_normalization.py && python3 test_force_align_unavailable.py && python3 test_ghunnah_escapes.py"
+  run "test: python (asr-inference)" "cd services/asr-inference && { command -v python3 >/dev/null || { echo 'python3 not found — required, not optional'; exit 1; }; } && python3 test_eval_metrics.py && python3 test_eval_pipeline.py && python3 test_forced_align_normalization.py && python3 test_force_align_unavailable.py && python3 test_ghunnah_escapes.py && python3 -m pytest -q test_model_attribution.py test_acoustic_tajweed.py"
   # shared-ticket is only ever BUILT as a dependency of the two services, so `cargo test` on them
   # never ran its own 14 tests — including the cross-language ticket vectors, which pin the one
   # credential that crosses a service boundary. Same class of gap as MIG5's ungated Python.
@@ -245,6 +265,21 @@ if [[ "$FAST" != "yes" ]]; then
   fi
 
   if [[ "$can_auth" == "yes" ]]; then
+    run "test: migration system (live Postgres)" \
+      "node --test --test-concurrency=1 tests/migrations/migration-runner.test.mjs tests/migrations/schema-equivalence.test.mjs tests/migrations/restricted-role.test.mjs"
+    run "test: retained audio storage → index → teacher playback + repair (live Postgres)" \
+      "cargo build --manifest-path $GW && cargo build --manifest-path $API && node --test --test-concurrency=1 tests/e2e/teacher-audio-index.test.mjs"
+    # W1.7 — checksum-pinned real recitation PCM and a captured real ASR response traverse the
+    # actual storage/windowing/alignment/finalize chain into live Postgres. The capture is explicitly
+    # benchmark-ineligible; this proves span provenance and refusal/persistence semantics, not ASR
+    # quality. Rust is built explicitly because this test spawns the binary.
+    run "test: real-audio spans → Quran alignment → atomic persistence (live Postgres)" \
+      "cargo build --manifest-path $API && node --test --test-concurrency=1 tests/e2e/real-audio-finalize.test.mjs"
+    # W1.8 — the same actual ML chain is observed at the private API seam, then compared byte-for-
+    # byte with the tenant-bound alignment run and the staff-only readback. It also proves learner
+    # withholding and cross-tenant isolation for the producer document.
+    run "test: model provenance inference → DB → restricted readback (live Postgres)" \
+      "cargo build --manifest-path $API && node --test --test-concurrency=1 tests/e2e/model-provenance-roundtrip.test.mjs"
     run "test: platform-api integration (live Postgres)" "cargo test --manifest-path $API -- --include-ignored"
     # PAR5 — the cross-language API parity suite (specs/api-parity-suite/). Black-box: it starts the
     # real platform-api binary on an ephemeral port per configuration group and asserts over HTTP +
@@ -293,7 +328,7 @@ if [[ "$FAST" != "yes" ]]; then
     # would be servable in production while nothing compared it to anything.
     run "test: api parity THROUGH the Node port (every portable route)" \
       "PARITY_THROUGH_SHELL=1 NODE_API_PORTED=\"\$(node -e '
-         const s = require(\"fs\").readFileSync(\"services/node-api/server.mjs\", \"utf8\");
+         const s = require(\"fs\").readFileSync(\"server/src/main.mjs\", \"utf8\");
          const m = /export const PORTABLE = \\[([^\\]]*)\\]/s.exec(s);
          if (!m) { console.error(\"could not read PORTABLE out of server.mjs\"); process.exit(1); }
          const keys = [...m[1].matchAll(/\"([^\"]+)\"/g)].map((x) => x[1]);
@@ -312,7 +347,7 @@ if [[ "$FAST" != "yes" ]]; then
   fi
 
   # --- 4. Build -------------------------------------------------------------
-  run "build" "pnpm --filter @quran-ai/contracts build && pnpm --filter @quran-ai/quran-data build && pnpm --filter @quran-ai/web build"
+  run "build" "pnpm --filter @quran-ai/contracts build && pnpm --filter @quran-ai/quran-data build && pnpm --filter @quran-ai/server build && pnpm --filter @quran-ai/web build"
   run "guard: web production bundle secrets" "node scripts/check-web-bundle-secrets.mjs"
   run "guard: web security headers (ADR-0010)" "node scripts/check-security-headers.mjs"
   # P4.4 named a licence gate and there was none. `pnpm audit` covers vulnerabilities and the SBOM

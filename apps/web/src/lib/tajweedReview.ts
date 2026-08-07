@@ -18,7 +18,7 @@ export function learnerVisibleTajweedFindings(findings: TajweedFinding[]): Tajwe
  * defensive so a future caller cannot accidentally label an ineligible finding verified.
  */
 export function tajweedReviewBadge(
-  finding: Pick<TajweedFinding, "confidence" | "reviewStatus" | "sources">,
+  finding: Pick<TajweedFinding, "analysisBasis" | "confidence" | "reviewStatus" | "sources">,
 ): { verified: boolean; labelKey: string } {
   const verified = canShowLearnerFacingAiOutput(finding);
   return {

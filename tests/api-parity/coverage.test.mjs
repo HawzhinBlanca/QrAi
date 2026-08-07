@@ -145,5 +145,12 @@ test("the ported count matches the approved scope: 36", () => {
   // 7 -> 10 (2026-08-03, ADR-0030): the three transcript-provenance tests. Two need to read a
   // column the black-box harness cannot see; the third seeds its own learner through the pool to
   // stay out of the shared day bucket. Each says which in its `reason`.
-  assert.equal(coverage.totals["deferred-to-phase-7"], 10);
+  //
+  // 10 -> 11 (2026-08-07, W1.7): atomic finalize rollback is now proven in Rust, but the Node
+  // finalizer does not exist yet. Keeping it deferred makes that migration debt visible instead of
+  // pretending the black-box parity suite exercised a route it cannot call.
+  //
+  // 11 -> 12 (2026-08-07, W1.8): session/producer model disagreement has the same deliberate
+  // Rust-only boundary until the Node finalizer is implemented in W2.6.
+  assert.equal(coverage.totals["deferred-to-phase-7"], 12);
 });

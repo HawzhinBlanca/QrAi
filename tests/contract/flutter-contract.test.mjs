@@ -38,7 +38,7 @@ import { loadOpenapi } from "./lib/openapi.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const repoRoot = join(here, "..", "..");
-const spec = loadOpenapi(join(repoRoot, "specs/flutter-client/openapi.yaml"));
+const spec = loadOpenapi(join(repoRoot, "packages/contracts/openapi.yaml"));
 const src = readFileSync(join(repoRoot, "apps/flutter/lib/src/api/models.dart"), "utf8");
 
 /** Dart class → the `components.schemas` entry it parses. The names differ; that is not drift. */
@@ -52,29 +52,18 @@ const MODELS = {
   TeacherReview: "TeacherReview",
   RecitationSession: "RecitationSession",
   QuranRef: "QuranRef",
+  TajweedFinding: "PredictedTajweedFinding",
+  SourceReference: "SourceReference",
   // Write-only: sent when a session is created, never parsed back. Checked through `toJson` below.
   Consent: "Consent",
 };
 
 /**
- * Models with no schema, and the reason. Listing them is the point: a model that quietly had no
- * contract would be indistinguishable from one this test forgot.
+ * Explicit escape hatch for a future intentionally uncontracted local-only model. W0.2 closes the
+ * former Tajweed/source exceptions, so this is empty and the orphan guard below now requires every
+ * wire model to map to the shared contract.
  */
-const UNCONTRACTED = {
-  TajweedFinding:
-    "comes from POST /v1/ml/tajweed-findings:predict, one of the three `x-unvalidated` proxy " +
-    "operations. The shape belongs to the ML upstream and the contract says so rather than " +
-    "inventing one — see specs/contract-coverage-closure. This model now HAS a production caller " +
-    "(practice_screen renders it), so the absence of a response schema is load-bearing: what " +
-    "stands in for one is that reviewStatus, confidence and sources are REQUIRED reads, so an " +
-    "upstream shape change fails to parse loudly instead of rendering an ungated judgement. " +
-    "The learner-visibility gate is covered by apps/flutter/test/tajweed_gate_test.dart and " +
-    "pinned to the web client's by tests/contract/tajweed-gate-parity.test.mjs.",
-  SourceReference:
-    "the `sources` elements of the same `x-unvalidated` response, so it has no schema for the " +
-    "same reason. Its fields are required reads for the same reason too: a half-built source " +
-    "would render as provenance that is not there.",
-};
+const UNCONTRACTED = {};
 
 /** The body of one `fromJson`, from the factory to the field declarations that follow it. */
 function fromJsonBody(className) {

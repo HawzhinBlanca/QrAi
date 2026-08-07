@@ -18,7 +18,7 @@ import { compileResponseValidators, loadOpenapi, templateFor } from "../../contr
  */
 
 const spec = loadOpenapi(
-  join(dirname(fileURLToPath(import.meta.url)), "..", "..", "..", "specs/flutter-client/openapi.yaml"),
+  join(dirname(fileURLToPath(import.meta.url)), "..", "..", "..", "packages/contracts/openapi.yaml"),
 );
 const validators = compileResponseValidators(spec);
 

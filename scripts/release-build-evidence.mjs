@@ -5,7 +5,7 @@ import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "nod
 
 const candidateShaPattern = /^[a-f0-9]{40}$/;
 const imageDigestPattern = /^sha256:[a-f0-9]{64}$/;
-const deployableServices = ["platform-api", "realtime-gateway", "ml-inference", "asr-inference", "web"];
+const deployableServices = ["platform-api", "node-api", "realtime-gateway", "ml-inference", "asr-inference", "web"];
 const valuePattern = /^[A-Za-z0-9._:/@+=, -]{1,512}$/;
 
 function fail(message) {

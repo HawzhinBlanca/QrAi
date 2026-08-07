@@ -47,7 +47,7 @@ under a 2 MiB application limit.
 
 - **`MAX_CHUNK_BYTES` and its comment** — the comment is the source of §1.1's argument and gets an
   amendment, not a rewrite: its reasoning was right and its conclusion was half-achieved.
-- **`services/node-api/lib/ticket.mjs`** — used by the sweep to mint real tickets. Unchanged. That a
+- **`server/src/lib/ticket.mjs`** — used by the sweep to mint real tickets. Unchanged. That a
   Node signer produces tickets the Rust gateway accepts is Phase 7's result, reused here.
 - **`scripts/smoke-gateway.mjs`** — read for the URL/ticket pattern. Unchanged; it covers ticket
   *rejection* end to end and this suite covers what happens after a ticket is accepted.

@@ -2,7 +2,9 @@ import assert from "node:assert/strict";
 import test, { after, before } from "node:test";
 
 import {
+  DECLARED_TEST_ACOUSTIC_EVIDENCE,
   TENANT,
+  insertDeclaredTestAcousticFinding,
   queryJson,
   request,
   startApi,
@@ -24,6 +26,17 @@ const ERASED_KEYS = {
   deletedMetadataObjectKeys: ["hikmah-pilot-erbil/learner/chunk-1.meta.json"],
 };
 
+const declaredPredictionProvenance = () => ({
+  modelVersion: DECLARED_TEST_ACOUSTIC_EVIDENCE.modelVersion,
+  modelArtifactSha256: DECLARED_TEST_ACOUSTIC_EVIDENCE.modelArtifactSha256,
+  acousticDatasetVersion: DECLARED_TEST_ACOUSTIC_EVIDENCE.datasetVersion,
+  acousticDatasetManifestSha256: DECLARED_TEST_ACOUSTIC_EVIDENCE.datasetManifestSha256,
+  calibratorId: DECLARED_TEST_ACOUSTIC_EVIDENCE.calibratorId,
+  calibratorArtifactSha256: DECLARED_TEST_ACOUSTIC_EVIDENCE.calibratorArtifactSha256,
+  evaluationEvidenceId: DECLARED_TEST_ACOUSTIC_EVIDENCE.evidenceId,
+  evaluationEvidenceSha256: DECLARED_TEST_ACOUSTIC_EVIDENCE.evidenceSha256,
+});
+
 let api;
 let mock;
 
@@ -32,18 +45,21 @@ before(async () => {
     // integration.rs:1393 — the privacy-delete mock reports erased object keys.
     if (path === "/v1/privacy/delete") return { status: 200, body: ERASED_KEYS };
     // The tajweed path echoes AND carries findings, so the same mock serves both the consent
-    // assertions below and the redaction one. One unreviewed finding and one that clears the gate:
-    // a redaction test where nothing survives cannot tell "withheld correctly" from "broke the
-    // route", and one where everything survives cannot tell anything at all.
+    // assertions below and the redaction one. Fresh predictions are always ai-suggested; both must
+    // therefore be withheld from learners while remaining intact for staff.
     if (path === "/v1/tajweed-findings:predict") {
       return {
         status: 200,
         body: {
           ...body,
+          modelVersion: DECLARED_TEST_ACOUSTIC_EVIDENCE.modelVersion,
+          annotations: [],
           findings: [
             {
+              ...declaredPredictionProvenance(),
               wordId: "1:1:1",
               rule: "ghunnah",
+              analysisBasis: "acoustic",
               severity: "practice",
               confidence: 0.9,
               explanation: "Apply ghunnah on the noon sakina.",
@@ -51,21 +67,44 @@ before(async () => {
               reviewStatus: "ai-suggested",
             },
             {
+              ...declaredPredictionProvenance(),
               wordId: "1:1:2",
               rule: "madd-tabii",
+              analysisBasis: "acoustic",
               severity: "practice",
               confidence: 0.9,
               explanation: "Hold the natural madd for two counts.",
               sources: [{ id: "s2", title: "Board", citation: "policy" }],
-              reviewStatus: "teacher-reviewed",
+              reviewStatus: "ai-suggested",
             },
           ],
         },
       };
     }
-    // integration.rs:2275 — the echo mock returns exactly what the proxy FORWARDED, which is the
-    // only way to see whether stored consent overrode the client's claim.
-    return { status: 200, body };
+    // The response preserves the forwarded body for consent assertions and adds the producer-owned
+    // attribution required at the boundary.
+    return {
+      status: 200,
+      body: {
+        ...body,
+        modelVersion: "declared-quran-aligner-fixture",
+        modelAttribution: {
+          schemaVersion: 1,
+          primaryComponent: "quran-aligner",
+          components: [
+            {
+              component: "quran-aligner",
+              status: "active",
+              implementationId: "declared-quran-aligner-fixture",
+              artifactDigest: `sha256:${"a".repeat(64)}`,
+              datasetVersion: "declared-fixture",
+              analysisBasis: "quran-constrained",
+              calibratorId: null,
+            },
+          ],
+        },
+      },
+    };
   });
   api = await startApi({ env: { ML_INFERENCE_URL: mock.url } });
 });
@@ -93,7 +132,7 @@ const createSession = async (learnerId) => {
       learnerId,
       quranRef: { surahNumber: 1, ayahStart: 1, ayahEnd: 7, display: "Al-Fatihah 1:1-7" },
       sourceChecksum: "fnv1a32:privacy-scope",
-      modelVersion: "model-v0.3",
+
       language: "ckb",
       mode: "guided-recite",
       practicePlanId: "fatihah-mastery-v1",
@@ -135,14 +174,13 @@ const seedReviewedFinding = async (sessionId, label) => {
      VALUES ($1, $4, $2, '1:1:1', 'بسم', 0, 100, 0.9, 'matched', 'model-v0.3', $3)`,
     [ids.alignment, sessionId, ids.alignmentAudit, TENANT],
   );
-  await queryJson(
-    `INSERT INTO tajweed_findings
-       (id, tenant_id, alignment_id, rule, severity, confidence, explanation, review_status,
-        source_refs, model_version_id, audit_event_id)
-     VALUES ($1, $4, $2, 'Ghunnah', 'warning', 0.8, 'x', 'teacher-review-required', '[]'::jsonb,
-             'model-v0.3', $3)`,
-    [ids.finding, ids.alignment, ids.findingAudit, TENANT],
-  );
+  await insertDeclaredTestAcousticFinding({
+    id: ids.finding,
+    alignmentId: ids.alignment,
+    confidence: 0.8,
+    reviewStatus: "teacher-review-required",
+    auditEventId: ids.findingAudit,
+  });
   await queryJson(
     `INSERT INTO teacher_reviews (id, tenant_id, finding_id, teacher_id, decision, note, audit_event_id)
      VALUES ($1, $4, $2, 'teacher-1', 'accepted', 'parity suite seed', $3)`,
@@ -194,7 +232,7 @@ test("STORED session consent overrides whatever the client claims on the analysi
       learnerId: "learner-1",
       quranRef: { surahNumber: 1, ayahStart: 1, ayahEnd: 7, display: "Al-Fatihah 1:1-7" },
       sourceChecksum: "fnv1a32:consent-test",
-      modelVersion: "model-v0.3",
+
       language: "ckb",
       mode: "guided-recite",
       practicePlanId: "fatihah-mastery-v1",
@@ -359,22 +397,15 @@ test("ML tajweed predict: a learner receives no unreviewed judgement", async () 
   const findings = res.body.findings;
   assert.equal(findings.length, 2, "the count must survive redaction — the panel renders from it");
 
-  const unreviewed = findings.find((f) => f.reviewStatus === "ai-suggested");
-  assert.ok(unreviewed, "the unreviewed finding must still be present, just empty");
-  assert.equal(unreviewed.withheld, true);
-  for (const field of ["rule", "severity", "explanation", "wordId"]) {
-    assert.equal(unreviewed[field], "", `predict leaked \`${field}\` to the learner`);
+  for (const finding of findings) {
+    assert.equal(finding.reviewStatus, "ai-suggested");
+    assert.equal(finding.withheld, true);
+    for (const field of ["rule", "severity", "explanation", "wordId"]) {
+      assert.equal(finding[field], "", `predict leaked \`${field}\` to the learner`);
+    }
+    assert.equal(finding.confidence, 0);
+    assert.deepEqual(finding.sources, []);
   }
-  assert.equal(unreviewed.confidence, 0);
-  assert.deepEqual(unreviewed.sources, []);
-
-  // The reviewed, sourced, confident one is untouched: a redaction that ate everything would be
-  // safe and useless, and this is the assertion that says so.
-  const approved = findings.find((f) => f.reviewStatus === "teacher-reviewed");
-  assert.ok(approved, "the approved finding is gone; redaction is over-broad");
-  assert.equal(approved.rule, "madd-tabii");
-  assert.equal(approved.explanation, "Hold the natural madd for two counts.");
-  assert.equal(approved.confidence, 0.9);
 });
 
 test("ML tajweed predict: ops analysing a session get the findings whole", async () => {

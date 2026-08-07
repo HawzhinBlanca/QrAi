@@ -1,0 +1,428 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://quran.ai/contracts/model-evaluation-evidence-v1.schema.json",
+  "title": "Quran AI model evaluation evidence bundle v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "canonicalization", "evidence", "signature"],
+  "properties": {
+    "schemaVersion": { "const": "qrai-model-evaluation-bundle/v1" },
+    "canonicalization": { "const": "RFC8785" },
+    "evidence": { "$ref": "#/$defs/Evidence" },
+    "signature": { "$ref": "#/$defs/DetachedSignature" }
+  },
+  "$defs": {
+    "Sha256": {
+      "type": "string",
+      "pattern": "^sha256:[a-f0-9]{64}$"
+    },
+    "StableId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
+    },
+    "UtcTimestamp": {
+      "type": "string",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\\.[0-9]{1,9})?Z$"
+    },
+    "UnitInterval": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1
+    },
+    "PositiveInteger": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "Candidate": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "candidateId",
+        "modelVersion",
+        "modelArtifactSha256",
+        "implementationSha256",
+        "runtimeLockSha256",
+        "imageDigest",
+        "registrySha256",
+        "executionStatus",
+        "licenseReviewStatus"
+      ],
+      "properties": {
+        "candidateId": { "$ref": "#/$defs/StableId" },
+        "modelVersion": { "$ref": "#/$defs/StableId" },
+        "modelArtifactSha256": { "$ref": "#/$defs/Sha256" },
+        "implementationSha256": { "$ref": "#/$defs/Sha256" },
+        "runtimeLockSha256": { "$ref": "#/$defs/Sha256" },
+        "imageDigest": { "$ref": "#/$defs/Sha256" },
+        "registrySha256": { "$ref": "#/$defs/Sha256" },
+        "executionStatus": {
+          "enum": ["runnable", "packaging-required", "research-only", "test-only"]
+        },
+        "licenseReviewStatus": {
+          "enum": ["approved", "pending", "rejected", "test-only"]
+        }
+      }
+    },
+    "Dataset": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "datasetVersion",
+        "evidenceClass",
+        "manifestSha256",
+        "splitManifestSha256",
+        "splitId",
+        "sealed",
+        "reciterDisjoint",
+        "consentStatus",
+        "licenseReviewStatus"
+      ],
+      "properties": {
+        "datasetVersion": { "$ref": "#/$defs/StableId" },
+        "evidenceClass": { "enum": ["consented-held-out", "declared-fixture"] },
+        "manifestSha256": { "$ref": "#/$defs/Sha256" },
+        "splitManifestSha256": { "$ref": "#/$defs/Sha256" },
+        "splitId": { "const": "held-out" },
+        "sealed": { "type": "boolean" },
+        "reciterDisjoint": { "type": "boolean" },
+        "consentStatus": { "enum": ["approved", "pending", "rejected", "test-only"] },
+        "licenseReviewStatus": {
+          "enum": ["approved", "pending", "rejected", "test-only"]
+        }
+      }
+    },
+    "Evaluator": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "evaluatorVersion",
+        "sourceSha256",
+        "protocolVersion",
+        "protocolSha256",
+        "protocolApprovalStatus"
+      ],
+      "properties": {
+        "evaluatorVersion": { "$ref": "#/$defs/StableId" },
+        "sourceSha256": { "$ref": "#/$defs/Sha256" },
+        "protocolVersion": { "$ref": "#/$defs/StableId" },
+        "protocolSha256": { "$ref": "#/$defs/Sha256" },
+        "protocolApprovalStatus": {
+          "enum": ["approved", "pending", "rejected", "test-only"]
+        }
+      }
+    },
+    "RawResults": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["rowManifestSha256", "rowResultsSha256"],
+      "properties": {
+        "rowManifestSha256": { "$ref": "#/$defs/Sha256" },
+        "rowResultsSha256": { "$ref": "#/$defs/Sha256" }
+      }
+    },
+    "Counts": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "rowCount",
+        "positiveCount",
+        "negativeCount",
+        "reciterCount",
+        "sourceBackedFindingCount",
+        "unsourcedLearnerOutputCount"
+      ],
+      "properties": {
+        "rowCount": { "$ref": "#/$defs/PositiveInteger" },
+        "positiveCount": { "$ref": "#/$defs/PositiveInteger" },
+        "negativeCount": { "$ref": "#/$defs/PositiveInteger" },
+        "reciterCount": { "$ref": "#/$defs/PositiveInteger" },
+        "sourceBackedFindingCount": { "type": "integer", "minimum": 0 },
+        "unsourcedLearnerOutputCount": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "OperatingPoint": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["threshold", "precision", "recall", "f1", "falsePositiveRate"],
+      "properties": {
+        "threshold": { "$ref": "#/$defs/UnitInterval" },
+        "precision": { "$ref": "#/$defs/UnitInterval" },
+        "recall": { "$ref": "#/$defs/UnitInterval" },
+        "f1": { "$ref": "#/$defs/UnitInterval" },
+        "falsePositiveRate": { "$ref": "#/$defs/UnitInterval" }
+      }
+    },
+    "Metrics": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "averagePrecision",
+        "rocAuc",
+        "operatingPoint",
+        "expectedCalibrationError",
+        "teacherAgreementRate"
+      ],
+      "properties": {
+        "averagePrecision": { "$ref": "#/$defs/UnitInterval" },
+        "rocAuc": { "$ref": "#/$defs/UnitInterval" },
+        "operatingPoint": { "$ref": "#/$defs/OperatingPoint" },
+        "expectedCalibrationError": { "$ref": "#/$defs/UnitInterval" },
+        "teacherAgreementRate": { "type": "number", "minimum": -1, "maximum": 1 }
+      }
+    },
+    "Interval": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["metric", "pointEstimate", "lower", "upper", "validReplicateCount"],
+      "properties": {
+        "metric": {
+          "enum": [
+            "averagePrecision",
+            "rocAuc",
+            "precision",
+            "recall",
+            "f1",
+            "falsePositiveRate",
+            "expectedCalibrationError",
+            "teacherAgreementRate"
+          ]
+        },
+        "pointEstimate": { "type": "number", "minimum": -1, "maximum": 1 },
+        "lower": { "type": "number", "minimum": -1, "maximum": 1 },
+        "upper": { "type": "number", "minimum": -1, "maximum": 1 },
+        "validReplicateCount": { "$ref": "#/$defs/PositiveInteger" }
+      }
+    },
+    "Uncertainty": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["method", "confidenceLevel", "replicateCount", "seed", "intervals"],
+      "properties": {
+        "method": { "const": "reciter-cluster-bootstrap" },
+        "confidenceLevel": { "type": "number", "exclusiveMinimum": 0, "exclusiveMaximum": 1 },
+        "replicateCount": { "$ref": "#/$defs/PositiveInteger" },
+        "seed": { "type": "integer", "minimum": 0 },
+        "intervals": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/Interval" }
+        }
+      }
+    },
+    "SliceDimensions": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["languageBackground", "ageBand", "deviceClass", "noiseCondition"],
+      "properties": {
+        "languageBackground": { "$ref": "#/$defs/StableId" },
+        "ageBand": { "$ref": "#/$defs/StableId" },
+        "deviceClass": { "$ref": "#/$defs/StableId" },
+        "noiseCondition": { "$ref": "#/$defs/StableId" }
+      }
+    },
+    "Slice": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "sliceId",
+        "dimensions",
+        "rowCount",
+        "positiveCount",
+        "negativeCount",
+        "reciterCount",
+        "metrics"
+      ],
+      "properties": {
+        "sliceId": { "$ref": "#/$defs/StableId" },
+        "dimensions": { "$ref": "#/$defs/SliceDimensions" },
+        "rowCount": { "$ref": "#/$defs/PositiveInteger" },
+        "positiveCount": { "$ref": "#/$defs/PositiveInteger" },
+        "negativeCount": { "$ref": "#/$defs/PositiveInteger" },
+        "reciterCount": { "$ref": "#/$defs/PositiveInteger" },
+        "metrics": { "$ref": "#/$defs/Metrics" }
+      }
+    },
+    "Calibration": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "calibratorId",
+        "calibratorVersion",
+        "method",
+        "artifactSha256",
+        "sourceSha256",
+        "fitDatasetManifestSha256",
+        "fitSplitManifestSha256"
+      ],
+      "properties": {
+        "calibratorId": { "$ref": "#/$defs/StableId" },
+        "calibratorVersion": { "$ref": "#/$defs/StableId" },
+        "method": { "enum": ["isotonic", "platt", "temperature-scaling"] },
+        "artifactSha256": { "$ref": "#/$defs/Sha256" },
+        "sourceSha256": { "$ref": "#/$defs/Sha256" },
+        "fitDatasetManifestSha256": { "$ref": "#/$defs/Sha256" },
+        "fitSplitManifestSha256": { "$ref": "#/$defs/Sha256" }
+      }
+    },
+    "Approval": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["role", "approvalId", "decision", "artifactSha256", "approvedAt"],
+      "properties": {
+        "role": {
+          "enum": ["product-owner", "quran-scholar", "privacy-legal", "data-steward"]
+        },
+        "approvalId": { "$ref": "#/$defs/StableId" },
+        "decision": { "const": "approved" },
+        "artifactSha256": { "$ref": "#/$defs/Sha256" },
+        "approvedAt": { "$ref": "#/$defs/UtcTimestamp" }
+      }
+    },
+    "Evidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schemaVersion",
+        "evidenceId",
+        "evaluationTask",
+        "evidenceKind",
+        "eligibility",
+        "candidate",
+        "dataset",
+        "evaluator",
+        "rawResults",
+        "counts",
+        "metrics",
+        "uncertainty",
+        "slices",
+        "calibration",
+        "approvals",
+        "generatedAt"
+      ],
+      "properties": {
+        "schemaVersion": { "const": "qrai-model-evaluation-evidence/v1" },
+        "evidenceId": { "$ref": "#/$defs/StableId" },
+        "evaluationTask": { "enum": ["quran-word-alignment", "acoustic-tajweed"] },
+        "evidenceKind": { "const": "row-level-computed-evaluation" },
+        "eligibility": {
+          "enum": ["fixture-regression", "research-only", "release-candidate"]
+        },
+        "candidate": { "$ref": "#/$defs/Candidate" },
+        "dataset": { "$ref": "#/$defs/Dataset" },
+        "evaluator": { "$ref": "#/$defs/Evaluator" },
+        "rawResults": { "$ref": "#/$defs/RawResults" },
+        "counts": { "$ref": "#/$defs/Counts" },
+        "metrics": { "$ref": "#/$defs/Metrics" },
+        "uncertainty": { "$ref": "#/$defs/Uncertainty" },
+        "slices": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/Slice" }
+        },
+        "calibration": {
+          "oneOf": [{ "type": "null" }, { "$ref": "#/$defs/Calibration" }]
+        },
+        "approvals": {
+          "type": "array",
+          "maxItems": 4,
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/Approval" }
+        },
+        "generatedAt": { "$ref": "#/$defs/UtcTimestamp" }
+      },
+      "allOf": [
+        {
+          "if": {
+            "type": "object",
+            "properties": { "eligibility": { "const": "release-candidate" } },
+            "required": ["eligibility"]
+          },
+          "then": {
+            "type": "object",
+            "properties": {
+              "candidate": {
+                "allOf": [
+                  { "$ref": "#/$defs/Candidate" },
+                  {
+                    "type": "object",
+                    "properties": {
+                      "executionStatus": { "const": "runnable" },
+                      "licenseReviewStatus": { "const": "approved" }
+                    }
+                  }
+                ]
+              },
+              "dataset": {
+                "allOf": [
+                  { "$ref": "#/$defs/Dataset" },
+                  {
+                    "type": "object",
+                    "properties": {
+                      "evidenceClass": { "const": "consented-held-out" },
+                      "sealed": { "const": true },
+                      "reciterDisjoint": { "const": true },
+                      "consentStatus": { "const": "approved" },
+                      "licenseReviewStatus": { "const": "approved" }
+                    }
+                  }
+                ]
+              },
+              "evaluator": {
+                "allOf": [
+                  { "$ref": "#/$defs/Evaluator" },
+                  {
+                    "type": "object",
+                    "properties": {
+                      "protocolApprovalStatus": { "const": "approved" }
+                    }
+                  }
+                ]
+              },
+              "calibration": { "$ref": "#/$defs/Calibration" },
+              "approvals": {
+                "type": "array",
+                "minItems": 4,
+                "maxItems": 4,
+                "uniqueItems": true,
+                "items": { "$ref": "#/$defs/Approval" },
+                "allOf": [
+                  { "contains": { "type": "object", "required": ["role"], "properties": { "role": { "const": "product-owner" } } } },
+                  { "contains": { "type": "object", "required": ["role"], "properties": { "role": { "const": "quran-scholar" } } } },
+                  { "contains": { "type": "object", "required": ["role"], "properties": { "role": { "const": "privacy-legal" } } } },
+                  { "contains": { "type": "object", "required": ["role"], "properties": { "role": { "const": "data-steward" } } } }
+                ]
+              }
+            }
+          }
+        }
+      ]
+    },
+    "DetachedSignature": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schemaVersion",
+        "algorithm",
+        "keyId",
+        "payloadSha256",
+        "signatureBase64Url",
+        "signedAt"
+      ],
+      "properties": {
+        "schemaVersion": { "const": "qrai-model-evaluation-signature/v1" },
+        "algorithm": { "const": "Ed25519" },
+        "keyId": { "$ref": "#/$defs/StableId" },
+        "payloadSha256": { "$ref": "#/$defs/Sha256" },
+        "signatureBase64Url": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9_-]{86}$"
+        },
+        "signedAt": { "$ref": "#/$defs/UtcTimestamp" }
+      }
+    }
+  }
+}

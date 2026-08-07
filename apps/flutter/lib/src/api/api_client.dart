@@ -182,12 +182,9 @@ class ApiClient {
   /// may analyse their own session and nobody else's.
   ///
   /// ── What this returns, honestly ────────────────────────────────────────────────────────────────
-  /// `services/ml-inference` stamps **every** finding `reviewStatus: "ai-suggested"` on both its
-  /// branches, and `ai-suggested` does not clear [TajweedFinding.isLearnerVisible]. So today this
-  /// yields findings that are all withheld, and the panel says so rather than showing them. That is
-  /// the intended behaviour, not a defect to route around: the platform rule is that no AI judgement
-  /// about someone's recitation reaches them before a human approves it. The web client renders the
-  /// identical "awaiting review" state from the identical response.
+  /// Deterministic Quran rule guidance arrives separately as `annotations` and is intentionally not
+  /// parsed into [TajweedFinding]. Only span-linked acoustic learner-performance claims may appear
+  /// in `findings`; until the acoustic evaluator ships, this list is honestly empty.
   ///
   /// `tenantId` and `consent` are deliberately NOT sent: `proxy_ml` overwrites both from the stored
   /// session record, so anything a client claimed here would be discarded.
@@ -211,7 +208,6 @@ class ApiClient {
     required String learnerId,
     required QuranRef quranRef,
     required String sourceChecksum,
-    required String modelVersion,
     required String language,
     required String mode,
     required Consent consent,
@@ -221,7 +217,6 @@ class ApiClient {
           'learnerId': learnerId,
           'quranRef': quranRef.toJson(),
           'sourceChecksum': sourceChecksum,
-          'modelVersion': modelVersion,
           'language': language,
           'mode': mode,
           'consent': consent.toJson(),

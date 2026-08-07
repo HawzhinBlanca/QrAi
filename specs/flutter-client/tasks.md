@@ -17,7 +17,7 @@ collides with nothing.
 
 ## OC1 — One hand-authored OpenAPI 3.1 contract for every route
 
-`specs/flutter-client/openapi.yaml` + `tests/contract/coverage.test.mjs` (6 tests).
+`packages/contracts/openapi.yaml` + `tests/contract/coverage.test.mjs` (6 tests).
 
 Hand-authored, **not generated from the Rust**: a contract derived from the implementation cannot
 disagree with it, and a contract that cannot disagree is not a contract.

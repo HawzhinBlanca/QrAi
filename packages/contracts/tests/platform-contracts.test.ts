@@ -233,7 +233,8 @@ describe("Quran AI platform contracts", () => {
     expect(ticket.allowedSampleRates).toContain(16000);
   });
 
-  it("locks the full ML release threshold before learner-facing ship", () => {
+  it("refuses aggregate-looking release claims without a verified evidence authority", () => {
+    // Declared contract fixture only; no value in this object is model or calibration evidence.
     const passingEval: ModelEvalRun = {
       modelVersion: "model-v1",
       datasetVersion: "fatihah-juz-amma-reviewed-v1",
@@ -243,9 +244,34 @@ describe("Quran AI platform contracts", () => {
       teacherAgreementRate: 0.92,
       unsourcedLearnerOutputs: 0,
       passed: true,
+      evaluationTask: "acoustic-tajweed",
+      evidenceId: "declared-test-evidence",
+      evidenceKind: "row-level-computed-evaluation",
+      evidenceEligibility: "release-candidate",
+      releaseEligible: true,
+      evidencePayload: { declaredFixture: true },
+      evidencePayloadSha256: `sha256:${"0".repeat(64)}`,
+      candidateId: "declared-test-candidate",
+      modelArtifactSha256: `sha256:${"1".repeat(64)}`,
+      datasetManifestSha256: `sha256:${"2".repeat(64)}`,
+      splitManifestSha256: `sha256:${"3".repeat(64)}`,
+      splitId: "held-out",
+      evaluatorVersion: "declared-test-evaluator",
+      evaluatorSourceSha256: `sha256:${"4".repeat(64)}`,
+      evaluatorProtocolSha256: `sha256:${"5".repeat(64)}`,
+      rawRowManifestSha256: `sha256:${"6".repeat(64)}`,
+      rawResultsSha256: `sha256:${"7".repeat(64)}`,
+      calibratorId: "declared-test-calibrator",
+      calibratorArtifactSha256: `sha256:${"8".repeat(64)}`,
+      signerKeyId: "declared-test-key",
+      signatureAlgorithm: "Ed25519",
+      signatureBase64Url: "A".repeat(86),
+      signedAt: "2026-08-07T00:00:00Z",
+      evaluationCounts: { declaredFixture: true },
+      sliceMetrics: [{ declaredFixture: true }],
     };
 
-    expect(modelEvalPassesReleaseGate(passingEval)).toBe(true);
+    expect(modelEvalPassesReleaseGate(passingEval)).toBe(false);
     expect(modelEvalPassesReleaseGate({ ...passingEval, wordAlignmentF1: 0.89 })).toBe(false);
     expect(modelEvalPassesReleaseGate({ ...passingEval, falsePositiveRate: 0.081 })).toBe(false);
     expect(modelEvalPassesReleaseGate({ ...passingEval, teacherAgreementRate: 0.89 })).toBe(false);

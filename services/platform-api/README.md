@@ -11,4 +11,4 @@ Public routes are locked in `packages/contracts`:
 - `POST /v1/scholar-approvals`
 - `GET /v1/eval-runs/:modelVersion`
 
-The initial database target is `infra/sql/0001_core_schema.sql`.
+The initial database target is `infra/migrations/0001_core_schema.sql`.

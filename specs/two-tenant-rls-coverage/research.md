@@ -8,7 +8,7 @@
 
 ## Relevant Code & Architecture
 1. **Database Schema & RLS Policies**:
-   - `infra/sql/0003_tenant_rls.sql` enables RLS and configures policies on:
+   - `infra/migrations/0003_tenant_rls.sql` enables RLS and configures policies on:
      - `users`
      - `consent_records`
      - `recitation_sessions`
@@ -23,12 +23,12 @@
      - `privacy_jobs`
      - `audit_events`
      - `eval_runs`
-   - `infra/sql/0009_learner_progress_rls.sql` enables RLS on:
+   - `infra/migrations/0009_learner_progress_rls.sql` enables RLS on:
      - `learner_progress`
    - Global tables:
      - `institutions`, `canonical_ayahs`, `canonical_words`, `model_versions` are global.
 2. **Restricted DB Role**:
-   - `infra/sql/rls-app-role.sql` configures the restricted `quran_ai_app` login role without superuser or bypassrls privileges.
+   - `infra/provision/app-role.sql` configures the restricted `quran_ai_app` login role without superuser or bypassrls privileges.
 3. **Transaction Tenant Context**:
    - `begin_tenant_tx` in `services/platform-api/src/lib.rs` initializes transactions and executes `SET LOCAL app.tenant_id = <tenant_id>`.
 4. **Endpoint Authentication**:

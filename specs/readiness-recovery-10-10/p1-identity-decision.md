@@ -163,7 +163,7 @@ resolver that has explicit bearer, pilot-cookie, and development-header modes.
 and outer middleware ordering.  It must register the bootstrap/logout/session
 routes and apply exact production origin/credential policy without weakening
 preflight behavior.  `AppState`, migrations, integration fixtures, and
-`infra/sql/0003_tenant_rls.sql` are affected by the new tenant-owned session
+`infra/migrations/0003_tenant_rls.sql` are affected by the new tenant-owned session
 and invitation tables and policies.
 
 ## EARS acceptance criteria and proof mapping

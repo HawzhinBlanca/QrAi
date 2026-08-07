@@ -156,7 +156,7 @@ async function createSessionFor(learnerId) {
       learnerId,
       quranRef: { surahNumber: 1, ayahStart: 1, ayahEnd: 1, display: "Al-Fatihah 1:1" },
       sourceChecksum: "fnv1a32:privjourney",
-      modelVersion: "model-v0.3",
+
       language: "ckb",
       mode: "guided-recite",
       practicePlanId: "fatihah-mastery-v1",

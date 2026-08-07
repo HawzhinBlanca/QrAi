@@ -1,0 +1,13 @@
+{
+  "schemaVersion": "qrai-legacy-schema-baselines/v1",
+  "baselines": {
+    "0021": {
+      "migrationCount": 20,
+      "fingerprint": "4ed7f64b326d5f6a5108cb147ef03aff5118171ad95c44b0aaf517dc81b1f109"
+    },
+    "0027": {
+      "migrationCount": 26,
+      "fingerprint": "01d6594f7b8f380bfffaff1977e9735942fcacc237b336fbc081c391c78ec8f7"
+    }
+  }
+}

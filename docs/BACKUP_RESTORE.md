@@ -99,13 +99,15 @@ createdb -h <host> -U <user> quran_ai_restored
 
 # 2. Restore. BACKUP_DECRYPTION_KEY is the OFFLINE private key — fetching it is part of the drill.
 RESTORE_TARGET_URL="postgresql://<user>:<pass>@<host>:5432/quran_ai_restored" \
+RESTORE_APP_DATABASE_PASSWORD="<strong-runtime-password>" \
 BACKUP_DECRYPTION_KEY=/path/to/qrai-backup-private.key \
   bash scripts/restore-db.sh /path/to/quran_ai-<timestamp>.dump.cms
 ```
 
-The script restores with `--no-owner`, so the dump lands in whatever role you connect as (the
-restricted `quran_ai_app` role in production; see `infra/sql/rls-app-role.sql`) rather than requiring
-the original owner to exist. To restore in place over a live database, stop platform-api first,
+`RESTORE_TARGET_URL` must be an administrative/owner connection: after `pg_restore --no-owner`, the
+script runs the same checksum-locked forward migration and restricted-role provisioners used by
+Compose, CI, staging, and release. `RESTORE_APP_DATABASE_PASSWORD` rotates that runtime credential;
+it is never accepted as the migration connection. To restore in place over a live database, stop platform-api first,
 drop/recreate `quran_ai`, then restore — never restore over a database serving traffic.
 
 > **Restore is the one step that puts plaintext on disk.** `pg_restore` seeks within a custom-format

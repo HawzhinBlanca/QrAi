@@ -20,7 +20,7 @@
  *
  * Exits non-zero unless the session survived the drops and delivered every chunk.
  */
-import { issueRealtimeTicket } from "../services/node-api/lib/ticket.mjs";
+import { issueRealtimeTicket } from "../server/src/lib/ticket.mjs";
 
 const GATEWAY = process.env.GATEWAY_URL ?? "ws://127.0.0.1:8081";
 const SECRET = process.env.REALTIME_GATEWAY_TICKET_SECRET ?? "chaos-secret";

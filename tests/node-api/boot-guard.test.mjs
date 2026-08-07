@@ -8,7 +8,7 @@ import {
   ALLOW_INSECURE_SECRETS,
   LEGACY_VAR,
   insecureSecretProblems,
-} from "../../services/node-api/lib/insecure.mjs";
+} from "../../server/src/lib/insecure.mjs";
 
 /**
  * The node-api port of `main.rs` `ensure_secure_config` — refuse to boot on missing or known-weak
@@ -22,7 +22,7 @@ import {
  */
 
 const here = dirname(fileURLToPath(import.meta.url));
-const server = join(here, "..", "..", "services", "node-api", "server.mjs");
+const server = join(here, "..", "..", "server", "src", "main.mjs");
 
 /** A configuration with nothing wrong with it. Each case below breaks exactly one thing. */
 const STRONG = {

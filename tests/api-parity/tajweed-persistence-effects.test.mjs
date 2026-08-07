@@ -1,28 +1,16 @@
 /**
- * A tajweed prediction must leave something a teacher can review — in BOTH implementations.
+ * Deterministic Tajweed instruction must never become learner-performance state.
  *
  *   node --test tests/api-parity/tajweed-persistence-effects.test.mjs
  *
  * ── Why this is not an `assertAB` probe ─────────────────────────────────────────────────────────
- * `assertAB` compares status, headers and response bytes. On this route the two implementations
- * agreed on all three and disagreed on everything that matters:
- *
- *     rust        status=200  findings in response=5  tajweed_findings=1  audit=1
- *     node shell  status=200  findings in response=5  tajweed_findings=0  audit=0
- *
- * The Node port returned the findings and stored none of them. No teacher could ever review one, and
- * there was no record that the ML call had happened at all — the exact state `persist_tajweed_findings`
- * was written to end ("Tajweed findings existed only for the length of this response until now"),
- * reintroduced by the port and invisible to the differ because the bytes matched.
- *
- * Response parity is not effect parity. A byte comparison cannot see a missing INSERT, so the
- * assertion here is against the DATABASE, per implementation, with no comparison between them: an
- * absolute expectation is the only kind that survives both sides being wrong the same way.
+ * `assertAB` cannot see an unsafe INSERT. This suite therefore proves the database effect directly:
+ * the real rule engine returns instructional `annotations`, the performance `findings` array is
+ * empty, and neither runtime creates a `tajweed_findings` row or a false persistence audit.
  *
  * ── Why the real ml-inference ───────────────────────────────────────────────────────────────────
- * The findings have to be real findings. A mock returning `{findings: []}` would make both
- * implementations trivially agree — `persist_tajweed_findings` returns early on an empty array — and
- * this test would pass against a service that stores nothing.
+ * A mock returning empty arrays would prove nothing. The real service must return at least one
+ * deterministic annotation for Al-Fatihah 1:1, while still returning zero acoustic findings.
  */
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
@@ -129,7 +117,7 @@ async function seededSession(base) {
       learnerId: learner,
       quranRef: { surahNumber: 1, ayahStart: 1, ayahEnd: 1, display: "Al-Fatihah 1:1" },
       sourceChecksum: "fnv1a32:effects",
-      modelVersion: "model-v0.3",
+
       language: "ckb",
       mode: "guided-recite",
       practicePlanId: "fatihah-mastery-v1",
@@ -184,7 +172,7 @@ const implementations = () => [
   ["rust", rustUrl],
 ];
 
-test("a prediction stores findings a teacher can review, in both implementations", async () => {
+test("real text rules remain instructional and create no performance rows, in both implementations", async () => {
   for (const [impl, base] of implementations()) {
     const { learner, sessionId } = await seededSession(base);
     const trace = `effects-${uniqueSuffix()}`;
@@ -197,10 +185,20 @@ test("a prediction stores findings a teacher can review, in both implementations
       body: { sessionId, quranRef: { surahNumber: 1, ayahStart: 1, ayahEnd: 1, display: "1:1" } },
     });
     assert.equal(predicted.status, 200, `${impl}: predict failed: ${predicted.text}`);
-    assert.ok(
-      Array.isArray(predicted.body?.findings) && predicted.body.findings.length > 0,
-      `${impl}: the ML service returned no findings, so this test would pass vacuously`,
-    );
+    assert.ok(Array.isArray(predicted.body?.annotations), `${impl}: annotations is not an array`);
+    assert.ok(predicted.body.annotations.length > 0, `${impl}: real rule engine returned no instruction`);
+    assert.deepEqual(predicted.body.findings, [], `${impl}: text rules leaked into performance findings`);
+    for (const annotation of predicted.body.annotations) {
+      assert.equal(annotation.analysisBasis, "text-rule", `${impl}: annotation basis`);
+      assert.equal(annotation.instructional, true, `${impl}: annotation is not explicitly instructional`);
+      for (const forbidden of ["confidence", "severity", "reviewStatus"]) {
+        assert.equal(
+          Object.hasOwn(annotation, forbidden),
+          false,
+          `${impl}: instructional annotation invented performance field ${forbidden}`,
+        );
+      }
+    }
 
     const stored = await queryJson(
       `SELECT tf.id, tf.review_status, tf.analysis_basis, tf.model_version_id, tf.audit_event_id
@@ -209,39 +207,14 @@ test("a prediction stores findings a teacher can review, in both implementations
         WHERE wa.session_id = $1`,
       [sessionId],
     );
-    assert.ok(
-      stored.length > 0,
-      `${impl}: the prediction returned ${predicted.body.findings.length} findings and stored NONE. ` +
-        `They existed for the length of the response — no teacher can review one, and nothing ` +
-        `records that the ML call happened.`,
-    );
-
-    // Every stored finding is a MODEL's opinion about the canonical text, and must say so. A row
-    // that arrives already `teacher-reviewed`, or claiming an acoustic basis, is a claim about a
-    // human judgement nobody made.
-    for (const row of stored) {
-      assert.equal(row.review_status, "ai-suggested", `${impl}: finding ${row.id} review_status`);
-      assert.equal(row.analysis_basis, "canonical-text", `${impl}: finding ${row.id} analysis_basis`);
-      assert.ok(row.model_version_id, `${impl}: finding ${row.id} names no model version`);
-      assert.ok(row.audit_event_id, `${impl}: finding ${row.id} is anchored to no audit event`);
-    }
+    assert.deepEqual(stored, [], `${impl}: instructional text rules were persisted as performance`);
 
     const audit = await queryJson(
-      `SELECT id, action, actor_id, subject_id, metadata->>'trace_id' AS trace_id
-         FROM audit_events WHERE id = $1`,
-      [stored[0].audit_event_id],
+      `SELECT id FROM audit_events
+        WHERE action = 'ml.tajweed.persisted' AND subject_id = $1`,
+      [sessionId],
     );
-    assert.equal(audit.length, 1, `${impl}: the finding's audit_event_id resolves to no row`);
-    assert.equal(audit[0].action, "ml.tajweed.persisted", `${impl}: audit action`);
-    assert.equal(audit[0].subject_id, sessionId, `${impl}: audit names a different session`);
-    assert.equal(
-      audit[0].trace_id,
-      trace,
-      `${impl}: the audit row does not carry the caller's trace, so the finding cannot be joined ` +
-        `to the ML call that produced it`,
-    );
-    // `actor_id` REFERENCES users(id): the authenticated caller, never a synthetic service name.
-    assert.equal(audit[0].actor_id, learner, `${impl}: audit actor`);
+    assert.deepEqual(audit, [], `${impl}: audit falsely claims performance findings were persisted`);
   }
 });
 
@@ -261,7 +234,7 @@ test("a session with nothing to anchor to records no findings AND no audit claim
         learnerId: learner,
         quranRef: { surahNumber: 1, ayahStart: 1, ayahEnd: 1, display: "Al-Fatihah 1:1" },
         sourceChecksum: "fnv1a32:noalign",
-        modelVersion: "model-v0.3",
+
         language: "ckb",
         mode: "guided-recite",
         practicePlanId: "fatihah-mastery-v1",
@@ -301,10 +274,7 @@ test("a session with nothing to anchor to records no findings AND no audit claim
   }
 });
 
-test("re-running analysis on an already-analysed session does not duplicate findings", async () => {
-  // The "already analysed" short-circuit is the first thing `persist_tajweed_findings` checks, and a
-  // port that dropped it would double a teacher's review queue on every retry — including the
-  // automatic ones a flaky network produces.
+test("re-running deterministic analysis is stable and never creates performance rows", async () => {
   for (const [impl, base] of implementations()) {
     const { learner, sessionId } = await seededSession(base);
     const body = {
@@ -329,11 +299,17 @@ test("re-running analysis on an already-analysed session does not duplicate find
       [sessionId],
     );
 
-    assert.ok(after1.length > 0, `${impl}: nothing stored on the first run`);
-    assert.equal(
-      after2.length,
-      after1.length,
-      `${impl}: re-running analysis duplicated the findings (${after1.length} -> ${after2.length})`,
-    );
+    assert.ok(first.body.annotations.length > 0, `${impl}: first run returned no instruction`);
+    const semantics = (response) =>
+      response.body.annotations.map(({ wordId, rule, explanation, sources, sourceChecksum }) => ({
+        wordId,
+        rule,
+        explanation,
+        sources,
+        sourceChecksum,
+      }));
+    assert.deepEqual(semantics(second), semantics(first), `${impl}: deterministic instruction drifted`);
+    assert.deepEqual(after1, [], `${impl}: first run persisted instruction as performance`);
+    assert.deepEqual(after2, [], `${impl}: retry persisted instruction as performance`);
   }
 });

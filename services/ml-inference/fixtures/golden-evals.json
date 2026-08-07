@@ -1,4 +1,9 @@
 {
+  "evidenceKind": "deterministic-regression-fixture",
+  "evidenceEligibility": "fixture-only-not-model-evaluation-or-calibration",
+  "modelEvaluationEligible": false,
+  "calibrationEligible": false,
+  "releaseEligible": false,
   "datasetVersion": "fatihah-juz-amma-smoke-v1",
   "modelVersion": "ml-local-v0.1",
   "thresholds": {

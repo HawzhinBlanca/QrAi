@@ -1,0 +1,104 @@
+{
+  "schemaVersion": 1,
+  "id": "muaalem-v3.2-shadow-structural-v1",
+  "purpose": "Reproducible structural input pair for the private Muaalem acoustic shadow adapter",
+  "evidenceEligibility": "integration-fixture-only-not-model-evaluation",
+  "releaseEligible": false,
+  "claim": "structural-shadow-difference-only-no-accuracy-claim",
+  "candidate": {
+    "id": "muaalem-v3.2-shadow",
+    "artifactSha256": "sha256:6b6a2e85303d17ff0f3af5e1fc79ac83daecee409c756ddf27f0ced59393bb41"
+  },
+  "source": {
+    "file": "tests/fixtures/audio/AlFatihatulKitab.ogg",
+    "manifest": "tests/fixtures/audio/AlFatihatulKitab.manifest.json",
+    "sha256": "59a4eef339d3e42aeaf9b77a6423297a0f830e4872783fc0718a64862b02df32",
+    "license": "CC0-1.0"
+  },
+  "correct": {
+    "id": "correct-recitation",
+    "clipStartSeconds": 8.5,
+    "durationSeconds": 6.5,
+    "sampleRate": 16000,
+    "channels": 1,
+    "codec": "pcm_s16le",
+    "sha256": "fed0dc7bf5910d0e328f7aedc140061299fa159f525f73ddb0d28de5d960660c"
+  },
+  "altered": {
+    "id": "seeded-muted-first-word",
+    "derivedFrom": "correct-recitation",
+    "operation": "mute",
+    "muteStartSeconds": 0.5,
+    "muteEndSeconds": 1.24,
+    "sha256": "149637ec098cdee192fc30e971657f768661e532d2e57d739dfe0df483bbb7cb"
+  },
+  "reference": {
+    "canonicalBundle": "packages/quran-data/src/data/full-quran/surah-001.json",
+    "surah": 1,
+    "ayah": 1,
+    "wordIds": ["1:1:1", "1:1:2", "1:1:3", "1:1:4"],
+    "spansMs": [[500, 1240], [1240, 2100], [2100, 4480], [4480, 6260]],
+    "textSha256": "sha256:ac1e6f8f64c2e83d0b5087625a5e1eb0067b99d4a8962d3ad30528709dcf3dd6"
+  },
+  "exactImageProof": {
+    "imageDigest": "sha256:0e43ecfbb2f4e01a18283838e75fcc217dc496d85a13df52584375f0e2f6b2b0",
+    "runtime": "linux/arm64 cpu float32 offline",
+    "observations": [
+      {
+        "vectorId": "correct-recitation",
+        "status": "observed",
+        "analysisBasis": "acoustic",
+        "calibrationStatus": "uncalibrated",
+        "phonemeCount": 30,
+        "phonemeScoreCount": 30,
+        "phonemeScoreMin": 0.7319726347923279,
+        "phonemeScoreMax": 0.9999927282333374,
+        "predictedPhonemesSha256": "5020dd2aadcea264201d6a937c41b8413d00b49b3bb5f312fc336fd4571cc555",
+        "sifatGroupCount": 15,
+        "sifatUnitCount": 150,
+        "allSifatScoresWithheld": true,
+        "containsLearnerFinding": false,
+        "containsConfidence": false,
+        "containsRawSifatProbability": false
+      },
+      {
+        "vectorId": "seeded-muted-first-word",
+        "status": "observed",
+        "analysisBasis": "acoustic",
+        "calibrationStatus": "uncalibrated",
+        "phonemeCount": 26,
+        "phonemeScoreCount": 26,
+        "phonemeScoreMin": 0.5804268717765808,
+        "phonemeScoreMax": 0.9999555349349976,
+        "predictedPhonemesSha256": "7bdac2a203507becbe633a33f59cf7b3cbbb4f941130e31ce75027fbf7ffbb6b",
+        "sifatGroupCount": 13,
+        "sifatUnitCount": 130,
+        "allSifatScoresWithheld": true,
+        "containsLearnerFinding": false,
+        "containsConfidence": false,
+        "containsRawSifatProbability": false
+      }
+    ],
+    "performanceObservation": {
+      "claim": "single-host-engineering-observation-only-not-release-benchmark",
+      "benchmarkEligible": false,
+      "releaseCriteriaSatisfied": false,
+      "imageDigest": "sha256:0e43ecfbb2f4e01a18283838e75fcc217dc496d85a13df52584375f0e2f6b2b0",
+      "inputSha256": "fed0dc7bf5910d0e328f7aedc140061299fa159f525f73ddb0d28de5d960660c",
+      "runtime": "Docker Desktop Linux/ARM64, CPU float32, one persistent candidate process",
+      "cold": {
+        "serverLatencyMs": 4699,
+        "wallLatencyMs": 4722
+      },
+      "warm": {
+        "serverLatencyMs": 2285,
+        "wallLatencyMs": 2292
+      },
+      "memory": {
+        "sampleCount": 6,
+        "peakContainerMemoryMiB": 929,
+        "finalContainerMemoryMiB": 927
+      }
+    }
+  }
+}

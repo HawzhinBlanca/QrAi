@@ -1,0 +1,5 @@
+{
+  "schemaVersion": "qrai-model-evaluation-trusted-signers/v1",
+  "policyId": "qrai-model-evaluation-production",
+  "keys": []
+}

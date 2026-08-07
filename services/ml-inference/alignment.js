@@ -99,6 +99,18 @@ export function alignWords(canonicalWords, recognizedWords) {
   const recitedWords = canonicalWords.filter((w) => !isNonRecitedMark(w.text));
   canonicalWords = recitedWords;
 
+  // During the W1.6/W1.7 transition callers may still pass bare strings. Measured tokens are the
+  // same text plus the producer-owned location of that text in session audio. Keep one token array
+  // throughout the DP so a source span follows only the recognized token it came from; it is never
+  // inferred from a neighbouring canonical word. Validation of untrusted request tokens belongs at
+  // the service boundary (`predictAlignment`), while this deterministic engine preserves values.
+  const recognizedTokens = recognizedWords.map((word) =>
+    typeof word === "string"
+      ? { text: word, startMs: null, endMs: null }
+      : { text: word.text, startMs: word.startMs, endMs: word.endMs },
+  );
+  const recognizedText = recognizedTokens.map((token) => token.text);
+
   const matchThreshold = 0.85;
   const reviewThreshold = 0.65;
   // Gap penalty. Aligning a pair scores its similarity; skipping BOTH a canonical and a recognized word
@@ -107,11 +119,11 @@ export function alignWords(canonicalWords, recognizedWords) {
   const GAP = reviewThreshold / 2;
 
   const m = canonicalWords.length;
-  const n = recognizedWords.length;
+  const n = recognizedTokens.length;
 
   // Pairwise similarity, computed once.
   const sim = Array.from({ length: m }, (_, i) =>
-    Array.from({ length: n }, (_, j) => similarity(canonicalWords[i].text, recognizedWords[j])),
+    Array.from({ length: n }, (_, j) => similarity(canonicalWords[i].text, recognizedText[j])),
   );
 
   // dp[i][j] = best alignment score of canonical[0..i) vs recognized[0..j); back[i][j] = the move.
@@ -173,7 +185,9 @@ export function alignWords(canonicalWords, recognizedWords) {
       results.push({
         wordId: canonical.id,
         canonicalText: canonical.text,
-        heardText: recognizedWords[rj],
+        heardText: recognizedTokens[rj].text,
+        startMs: recognizedTokens[rj].startMs,
+        endMs: recognizedTokens[rj].endMs,
         status: s >= matchThreshold ? (s >= 0.95 ? "matched" : "needs-review") : "misread",
         confidence: s,
         similarity: s,
@@ -186,6 +200,8 @@ export function alignWords(canonicalWords, recognizedWords) {
         wordId: canonical.id,
         canonicalText: canonical.text,
         heardText: "",
+        startMs: null,
+        endMs: null,
         status: "missed",
         confidence: 0.3,
         similarity: 0,
@@ -198,7 +214,9 @@ export function alignWords(canonicalWords, recognizedWords) {
       results.push({
         wordId: `extra-${rj}`,
         canonicalText: "",
-        heardText: recognizedWords[rj],
+        heardText: recognizedTokens[rj].text,
+        startMs: recognizedTokens[rj].startMs,
+        endMs: recognizedTokens[rj].endMs,
         status: "extra",
         confidence: 0.5,
         similarity: 0,

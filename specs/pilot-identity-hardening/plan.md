@@ -18,7 +18,7 @@ its evidence entry.
 ## Part A — fix set (ordered; each item = one implement task)
 
 ### A1. Make migration 0021 safe and self-contained
-File: `infra/sql/0021_pilot_identity.sql`
+File: `infra/migrations/0021_pilot_identity.sql`
 - Delete the `drop table/function ... cascade` header (lines 4–7) — migrations are
   one-shot per environment (F4).
 - Add `set search_path = public, pg_temp` to BOTH function definitions (F2).
@@ -32,7 +32,7 @@ Failing-first proof: new smoke-sql static asserts (A4) go red against the curren
 file, green after this change.
 
 ### A2. Grants live where the role exists
-File: `infra/sql/rls-app-role.sql` (idempotent; runs after role creation in compose
+File: `infra/provision/app-role.sql` (idempotent; runs after role creation in compose
 via `99_init_app_role.sh` and in CI after the migration loop)
 - Add the two `grant execute on function app.*_pilot_*` lines next to the existing
   `grant execute on function app.current_tenant_id()` block (line 40).

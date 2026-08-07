@@ -26,8 +26,8 @@ function authHeaders() {
   return { "x-tenant-id": TENANT_ID, "x-user-id": "ops-1", "x-user-role": "ops" };
 }
 
-// Inbound gate on this service's own HTTP surface (mirrors ML_API_KEY / ASR_API_KEY /
-// TAJWEED_NEURAL_API_KEY on the other internal services). Every POST /run* here spends real
+// Inbound gate on this service's own HTTP surface (mirrors the API keys used by the other
+// internal inference services). Every POST /run* here spends real
 // ops-level credentials against platform-api (writes agent_run rows, fans out over every
 // active learner) — unlike the other services this one is not currently containerized or
 // fronted by any proxy, but that is exactly the state ml-inference/asr-inference were in

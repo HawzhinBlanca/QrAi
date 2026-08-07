@@ -5,6 +5,9 @@
   "type": "module",
   "scripts": {
     "dev": "pnpm --filter @quran-ai/web dev",
+    "db:migrate": "node server/scripts/migrate.mjs",
+    "db:provision": "node server/scripts/provision-role.mjs",
+    "db:repair-audio-index": "node server/scripts/repair-audio-index.mjs",
     "gateway:dev": "ALLOW_INSECURE_DEFAULTS=1 cargo run --manifest-path services/realtime-gateway/Cargo.toml",
     "api:dev": "ALLOW_INSECURE_DEFAULTS=1 ALLOW_HEADER_AUTH=1 cargo run --manifest-path services/platform-api/Cargo.toml",
     "smoke:gateway": "node scripts/smoke-gateway.mjs",
@@ -16,10 +19,10 @@
     "smoke:sql": "node scripts/smoke-sql.mjs",
     "smoke:e2e": "node scripts/smoke-e2e.mjs",
     "smoke:all": "node scripts/smoke-all.mjs",
-    "build": "pnpm --filter @quran-ai/contracts build && pnpm --filter @quran-ai/quran-data build && pnpm --filter @quran-ai/web build",
+    "build": "pnpm --filter @quran-ai/contracts build && pnpm --filter @quran-ai/quran-data build && pnpm --filter @quran-ai/server build && pnpm --filter @quran-ai/web build",
     "preview": "pnpm --filter @quran-ai/web preview",
     "test": "pnpm --filter @quran-ai/contracts test && pnpm --filter @quran-ai/quran-data test && pnpm --filter @quran-ai/web test && cargo test --manifest-path services/realtime-gateway/Cargo.toml && DATABASE_URL=\"${DATABASE_URL:-postgresql://hawzhin@localhost:5432/quran_ai}\" cargo test --manifest-path services/platform-api/Cargo.toml -- --include-ignored",
-    "typecheck": "pnpm --filter @quran-ai/contracts typecheck && pnpm --filter @quran-ai/quran-data typecheck && pnpm --filter @quran-ai/web typecheck",
+    "typecheck": "pnpm --filter @quran-ai/contracts typecheck && pnpm --filter @quran-ai/quran-data typecheck && pnpm --filter @quran-ai/server typecheck && pnpm --filter @quran-ai/web typecheck",
     "proof": "bash scripts/proof.sh"
   },
   "engines": {

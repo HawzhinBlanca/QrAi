@@ -1,5 +1,10 @@
 # Quran AI — Pilot Report
 
+> **Historical and superseded.** The 2026-06-28 F0/duration table was an infrastructure smoke, not
+> validated Tajweed error detection. Its hand-authored confidence values and former heuristic route
+> are retired. Current release truth is ADR-0047/0048: deterministic rules are instruction only,
+> Muaalem v3.2 is private uncalibrated shadow evaluation, and learner acoustic findings remain empty.
+
 ## Pilot: Hikmah Erbil Pilot (hikmah-pilot-erbil)
 
 **Date:** 2026-06-28
@@ -19,7 +24,7 @@
 | Audio pipeline E2E | PASS (16000 bytes) | PASS | ✅ |
 | ASR (Whisper) | PASS (Arabic transcription) | PASS | ✅ |
 | Force alignment | PASS (word timestamps) | PASS | ✅ |
-| Tajweed on audio | PASS (5 findings) | PASS | ✅ |
+| Historical audio-feature smoke | PASS (5 heuristic rows) | Plumbing only | ⚠️ not accuracy evidence |
 
 ## ASR Performance (Whisper base model)
 
@@ -28,7 +33,7 @@
 | Al-Fatihah 1:1 | 4.3s | 1.6s | 4/4 | 100% |
 | Al-Fatihah 1:1 (force-align) | 4.3s | 0.9s | 4/4 | 100% |
 
-## Tajweed Analysis (Audio Features)
+## Historical Tajweed Feature Smoke (Not Error Detection)
 
 | Word | Rule | F0 (Hz) | Duration (s) | Confidence |
 |------|------|---------|-------------|------------|
@@ -61,4 +66,7 @@
 
 ## Recommendation
 
-The platform is architecturally complete and verified for the Al-Fatihah use case. Real acoustic ASR works. Audio-based tajweed analysis works. The next step is a real pilot with 5-10 learners to collect labeled training data and validate the tajweed error detection accuracy against human teacher review.
+The historical infrastructure slice completed its Al-Fatihah smoke, but it did **not** prove
+audio-based Tajweed error detection or production readiness. A real pilot may begin only after
+consent/privacy approval, scholar-approved recitation configuration, calibrated acoustic evidence,
+and a preregistered held-out evaluation against qualified teacher adjudication.

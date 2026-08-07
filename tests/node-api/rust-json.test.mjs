@@ -5,8 +5,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import * as sortMod from "../../services/node-api/lib/json.mjs";
-import { f64, formatF32, formatF64, stringifyRust } from "../../services/node-api/lib/json.mjs";
+import * as sortMod from "../../server/src/lib/json.mjs";
+import { f64, formatF32, formatF64, stringifyRust } from "../../server/src/lib/json.mjs";
 
 test("a whole-number f64 keeps its .0 — the divergence that started this", () => {
   assert.equal(stringifyRust({ accuracy: f64(100) }), '{"accuracy":100.0}');

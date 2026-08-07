@@ -1,0 +1,59 @@
+{
+  "$comment": "One language-neutral corpus for every acoustic learner-feedback gate. Runtimes clone base, apply patch, remove named keys, and compare with expected. A release-trusted status is server-derived after exact evidence verification; it is never accepted from an inference caller.",
+  "base": {
+    "analysisBasis": "acoustic",
+    "reviewStatus": "teacher-reviewed",
+    "confidence": 0.91,
+    "sources": [
+      {
+        "id": "scholar-board",
+        "title": "Scholar Board",
+        "citation": "Approved tajweed note"
+      }
+    ],
+    "withheld": false,
+    "startMs": 120,
+    "endMs": 460,
+    "audioStatus": "available",
+    "evidenceId": "audio-evidence-1",
+    "modelVersion": "acoustic-model-v1",
+    "modelArtifactSha256": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+    "acousticDatasetVersion": "kurdish-l1-held-out-v1",
+    "acousticDatasetManifestSha256": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+    "calibratorId": "tajweed-calibrator-v1",
+    "calibratorArtifactSha256": "sha256:3333333333333333333333333333333333333333333333333333333333333333",
+    "calibrationStatus": "calibrated",
+    "evaluationEvidenceId": "evaluation-evidence-v1",
+    "evaluationEvidenceSha256": "sha256:4444444444444444444444444444444444444444444444444444444444444444",
+    "evaluationEvidenceStatus": "release-trusted",
+    "auditEventId": "audit-learner-feedback-1"
+  },
+  "cases": [
+    { "name": "complete teacher-reviewed acoustic evidence is visible", "expected": true },
+    { "name": "complete scholar-approved acoustic evidence is visible", "patch": { "reviewStatus": "scholar-approved", "confidence": 0.82 }, "expected": true },
+    { "name": "ai suggestion is withheld", "patch": { "reviewStatus": "ai-suggested" }, "expected": false },
+    { "name": "unknown review state fails closed", "patch": { "reviewStatus": "under-review" }, "expected": false },
+    { "name": "explicit withheld marker wins", "patch": { "withheld": true }, "expected": false },
+    { "name": "non acoustic analysis is not learner performance", "patch": { "analysisBasis": "text-rule" }, "expected": false },
+    { "name": "confidence below boundary is withheld", "patch": { "confidence": 0.8199 }, "expected": false },
+    { "name": "confidence above unit interval is malformed", "patch": { "confidence": 1.01 }, "expected": false },
+    { "name": "empty sources are withheld", "patch": { "sources": [] }, "expected": false },
+    { "name": "malformed source is withheld", "patch": { "sources": [{ "id": "s", "title": "", "citation": "c" }] }, "expected": false },
+    { "name": "zero length span is unusable", "patch": { "endMs": 120 }, "expected": false },
+    { "name": "fractional span is malformed", "patch": { "startMs": 120.5 }, "expected": false },
+    { "name": "discarded audio is stale evidence", "patch": { "audioStatus": "discarded" }, "expected": false },
+    { "name": "missing audio evidence id is withheld", "remove": ["evidenceId"], "expected": false },
+    { "name": "missing model identity is withheld", "remove": ["modelVersion"], "expected": false },
+    { "name": "malformed model artifact digest is withheld", "patch": { "modelArtifactSha256": "sha256:1234" }, "expected": false },
+    { "name": "missing dataset identity is withheld", "remove": ["acousticDatasetVersion"], "expected": false },
+    { "name": "malformed dataset manifest is withheld", "patch": { "acousticDatasetManifestSha256": "2222" }, "expected": false },
+    { "name": "missing calibrator identity is withheld", "remove": ["calibratorId"], "expected": false },
+    { "name": "malformed calibrator artifact is withheld", "patch": { "calibratorArtifactSha256": "sha256:xyz" }, "expected": false },
+    { "name": "uncalibrated score is withheld", "patch": { "calibrationStatus": "uncalibrated" }, "expected": false },
+    { "name": "missing evaluation identity is withheld", "remove": ["evaluationEvidenceId"], "expected": false },
+    { "name": "malformed evaluation digest is withheld", "patch": { "evaluationEvidenceSha256": "sha256:0" }, "expected": false },
+    { "name": "fixture-bound evaluation is withheld", "patch": { "evaluationEvidenceStatus": "fixture" }, "expected": false },
+    { "name": "stale evaluation is withheld", "patch": { "evaluationEvidenceStatus": "stale" }, "expected": false },
+    { "name": "missing audit identity is withheld", "remove": ["auditEventId"], "expected": false }
+  ]
+}

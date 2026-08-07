@@ -97,7 +97,16 @@ echo 0
 STUB
 chmod +x "$stub_bin/pg_restore" "$stub_bin/psql"
 
+cat > "$tmp/noop-migrate.mjs" <<'STUB'
+process.stdout.write('{"applied":0,"adopted":0,"total":26}\n');
+STUB
+cat > "$tmp/noop-provision.mjs" <<'STUB'
+process.stdout.write('{"roleName":"quran_ai_app","restricted":true}\n');
+STUB
+
 restore_out="$(PATH="$stub_bin:$PATH" RESTORE_TARGET_URL="postgresql://stub/quran_ai_restored" \
+  RESTORE_APP_DATABASE_PASSWORD="restore-test-password-long" \
+  MIGRATION_RUNNER="$tmp/noop-migrate.mjs" ROLE_PROVISIONER="$tmp/noop-provision.mjs" \
   bash "$script" "$dump" 2>&1)"
 restore_rc=$?
 check "a successful restore exits 0 (the cleanup trap must not change the status)" 0 "$restore_rc"
@@ -117,6 +126,8 @@ echo "pg_restore: error: simulated failure" >&2
 exit 1
 STUB
 ( PATH="$stub_bin:$PATH" RESTORE_TARGET_URL="postgresql://stub/quran_ai_restored" \
+  RESTORE_APP_DATABASE_PASSWORD="restore-test-password-long" \
+  MIGRATION_RUNNER="$tmp/noop-migrate.mjs" ROLE_PROVISIONER="$tmp/noop-provision.mjs" \
   bash "$script" "$dump" >/dev/null 2>&1 )
 check "a FAILED pg_restore still exits non-zero (no masking by the trap)" 1 "$?"
 

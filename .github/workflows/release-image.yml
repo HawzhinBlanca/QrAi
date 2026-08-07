@@ -30,6 +30,7 @@ jobs:
       ML_API_KEY: "ci-dummy-ml-key"
       ASR_API_KEY: "ci-dummy-asr-key"
       POSTGRES_PASSWORD: "ci-dummy-pg"
+      APP_DATABASE_PASSWORD: "ci-dummy-app-pg"
       RELEASE_IMAGE_KEEP: ${{ github.event.inputs.keep || '3' }}
     steps:
       - uses: actions/checkout@v4

@@ -327,6 +327,113 @@ export async function queryJson(sql, params = [], opts = {}) {
   return withDb(async (client) => (await client.query(sql, params)).rows, opts);
 }
 
+/**
+ * Explicit DB-mechanics fixture for migration 0033. Its signer is test-only and production trust is
+ * empty, so this release-labelled row can exercise exact provenance without becoming release proof.
+ */
+export const DECLARED_TEST_ACOUSTIC_EVIDENCE = Object.freeze({
+  modelVersion: "model-v0.3",
+  evidenceId: "declared-test-acoustic-evidence-v1",
+  evidenceSha256: "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+  modelArtifactSha256:
+    "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+  datasetVersion: "declared-test-acoustic-dataset-v1",
+  datasetManifestSha256:
+    "sha256:3333333333333333333333333333333333333333333333333333333333333333",
+  calibratorId: "declared-test-calibrator-v1",
+  calibratorArtifactSha256:
+    "sha256:9999999999999999999999999999999999999999999999999999999999999999",
+});
+
+export async function ensureDeclaredTestAcousticEvidence() {
+  const p = DECLARED_TEST_ACOUSTIC_EVIDENCE;
+  await queryJson(
+    `INSERT INTO eval_runs
+       (id, tenant_id, model_version_id, dataset_version, metrics, word_alignment_f1, tajweed_f1,
+        false_positive_rate, teacher_agreement_rate, unsourced_learner_outputs, passed,
+        evaluation_task, evidence_id, evidence_kind, evidence_eligibility, release_eligible,
+        evidence_payload, evidence_payload_sha256, candidate_id, model_artifact_sha256,
+        dataset_manifest_sha256, split_manifest_sha256, split_id, evaluator_version,
+        evaluator_source_sha256, evaluator_protocol_sha256, raw_row_manifest_sha256,
+        raw_results_sha256, calibrator_id, calibrator_artifact_sha256, signer_key_id,
+        signature_algorithm, signature_base64url, signed_at, evaluation_counts, slice_metrics,
+        created_at)
+     VALUES
+       ('declared-test-acoustic-eval-v1', $1, $2, $3, '{}'::jsonb, 0, 0, 1, 0, 0, true,
+        'acoustic-tajweed', $4, 'row-level-computed-evaluation', 'release-candidate', true,
+        '{"declaredFixture":true}'::jsonb, $5, 'declared-test-candidate-v1', $6, $7,
+        'sha256:4444444444444444444444444444444444444444444444444444444444444444',
+        'held-out', 'declared-test-evaluator-v1',
+        'sha256:5555555555555555555555555555555555555555555555555555555555555555',
+        'sha256:6666666666666666666666666666666666666666666666666666666666666666',
+        'sha256:7777777777777777777777777777777777777777777777777777777777777777',
+        'sha256:8888888888888888888888888888888888888888888888888888888888888888',
+        $8, $9, 'test-only-ephemeral', 'Ed25519',
+        'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA',
+        '2026-08-07T00:00:00Z',
+        '{"negativeCount":1,"positiveCount":1,"reciterCount":2,"rowCount":2}'::jsonb,
+        '[{"declaredFixture":true,"sliceId":"fixture-slice"}]'::jsonb,
+        '1900-01-01T00:00:00Z')
+     ON CONFLICT (id) DO UPDATE SET created_at = excluded.created_at`,
+    [
+      TENANT,
+      p.modelVersion,
+      p.datasetVersion,
+      p.evidenceId,
+      p.evidenceSha256,
+      p.modelArtifactSha256,
+      p.datasetManifestSha256,
+      p.calibratorId,
+      p.calibratorArtifactSha256,
+    ],
+  );
+}
+
+export async function insertDeclaredTestAcousticFinding({
+  id,
+  alignmentId,
+  rule = "Ghunnah",
+  severity = "warning",
+  confidence = 0.9,
+  explanation = "declared acoustic fixture",
+  reviewStatus = "ai-suggested",
+  sources = [],
+  auditEventId,
+}) {
+  await ensureDeclaredTestAcousticEvidence();
+  const p = DECLARED_TEST_ACOUSTIC_EVIDENCE;
+  await queryJson(
+    `INSERT INTO tajweed_findings
+       (id, tenant_id, alignment_id, rule, severity, confidence, explanation, review_status,
+        source_refs, model_version_id, audit_event_id, analysis_basis,
+        evaluation_evidence_id, evaluation_evidence_sha256, model_artifact_sha256,
+        acoustic_dataset_version, acoustic_dataset_manifest_sha256, calibrator_id,
+        calibrator_artifact_sha256)
+     VALUES ($1, $2, $3, $4, $5, $6::float8::numeric, $7, $8, $9::jsonb, $10, $11,
+             'acoustic', $12, $13, $14, $15, $16, $17, $18)`,
+    [
+      id,
+      TENANT,
+      alignmentId,
+      rule,
+      severity,
+      confidence,
+      explanation,
+      reviewStatus,
+      JSON.stringify(sources),
+      p.modelVersion,
+      auditEventId,
+      p.evidenceId,
+      p.evidenceSha256,
+      p.modelArtifactSha256,
+      p.datasetVersion,
+      p.datasetManifestSha256,
+      p.calibratorId,
+      p.calibratorArtifactSha256,
+    ],
+  );
+}
+
 /** Build a connection string for a different role against the same database. */
 export function urlForRole(user, password, base = DATABASE_URL) {
   const url = new URL(requireDatabaseUrl() && base);
@@ -434,7 +541,7 @@ export const SHELL_URLS = new Set();
 
 export async function startShell({ upstream, env = {}, timeoutMs = 20_000 }) {
   const port = await reservePort();
-  const child = spawn(process.execPath, ["services/node-api/server.mjs"], {
+  const child = spawn(process.execPath, ["server/src/main.mjs"], {
     env: {
       PATH: process.env.PATH,
       HOME: process.env.HOME,

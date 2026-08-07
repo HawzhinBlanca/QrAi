@@ -5,6 +5,7 @@ export type {
   AudioRetentionMode,
   BenchmarkMetric,
   MemorizationPlan,
+  ModelEvalRun,
   QuranReference,
   RecitationSession,
   ReviewStatus,

@@ -85,7 +85,7 @@ const sessionBody = () => ({
   learnerId: LEARNER,
   quranRef: { surahNumber: 1, ayahStart: 1, ayahEnd: 1, display: "Al-Fatihah 1:1" },
   sourceChecksum: "fnv1a32:effects",
-  modelVersion: "model-v0.3",
+
   language: "ckb",
   mode: "guided-recite",
   practicePlanId: "fatihah-mastery-v1",
@@ -113,6 +113,22 @@ before(async () => {
     body: {
       sessionId: req.body?.sessionId ?? null,
       transcriptSource: "client-reported",
+      modelVersion: "declared-quran-aligner-fixture",
+      modelAttribution: {
+        schemaVersion: 1,
+        primaryComponent: "quran-aligner",
+        components: [
+          {
+            component: "quran-aligner",
+            status: "active",
+            implementationId: "declared-quran-aligner-fixture",
+            artifactDigest: `sha256:${"a".repeat(64)}`,
+            datasetVersion: "declared-fixture",
+            analysisBasis: "quran-constrained",
+            calibratorId: null,
+          },
+        ],
+      },
       alignments: [
         {
           wordId: words[0],

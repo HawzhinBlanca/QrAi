@@ -22,7 +22,15 @@
 import assert from "node:assert/strict";
 import test, { after, before } from "node:test";
 
-import { TENANT, queryJson, request, startApi, startMockUpstream, startShell } from "./lib/harness.mjs";
+import {
+  TENANT,
+  insertDeclaredTestAcousticFinding,
+  queryJson,
+  request,
+  startApi,
+  startMockUpstream,
+  startShell,
+} from "./lib/harness.mjs";
 
 /**
  * The routes this file is ABOUT, served by the shell rather than proxied to Rust.
@@ -88,14 +96,14 @@ async function seedFinding({ retention, withChunk }) {
      VALUES ($1, $2, $3, $4, 'x', 640, 1230, 0.9, 'matched', $5, $6, 'client-reported')`,
     [ids.alignment, TENANT, ids.session, word.id, model.id, ids.audit],
   );
-  await queryJson(
-    `INSERT INTO tajweed_findings
-       (id, tenant_id, alignment_id, rule, severity, confidence, explanation, review_status,
-        source_refs, model_version_id, audit_event_id, analysis_basis)
-     VALUES ($1, $2, $3, 'ghunnah', 'practice', 0, 'e', 'ai-suggested', '[]'::jsonb, $4, $5,
-             'canonical-text')`,
-    [ids.finding, TENANT, ids.alignment, model.id, ids.audit],
-  );
+  await insertDeclaredTestAcousticFinding({
+    id: ids.finding,
+    alignmentId: ids.alignment,
+    rule: "ghunnah",
+    severity: "practice",
+    confidence: 0.9,
+    auditEventId: ids.audit,
+  });
   if (withChunk) {
     await queryJson(
       `INSERT INTO audio_chunks

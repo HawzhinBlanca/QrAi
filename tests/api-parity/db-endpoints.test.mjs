@@ -2,7 +2,16 @@ import assert from "node:assert/strict";
 import test, { after, before } from "node:test";
 
 import { assertMatchesContract } from "./lib/contract.mjs";
-import { RLS_PROBE_ROLE, TENANT, queryJson, request, startApi, withDb } from "./lib/harness.mjs";
+import {
+  RLS_PROBE_ROLE,
+  TENANT,
+  insertDeclaredTestAcousticFinding,
+  queryJson,
+  request,
+  startApi,
+  uniqueSuffix,
+  withDb,
+} from "./lib/harness.mjs";
 
 /**
  * C1 — the five database-backed pairs that had NEITHER a fixture nor a parity test.
@@ -15,11 +24,17 @@ import { RLS_PROBE_ROLE, TENANT, queryJson, request, startApi, withDb } from "./
  */
 
 let api;
+let reviewFixtures;
 before(async () => {
   api = await startApi();
+  reviewFixtures = await seedAcousticReviewFixtures();
 });
 after(async () => {
-  await api?.stop();
+  try {
+    await cleanupAcousticReviewFixtures(reviewFixtures);
+  } finally {
+    await api?.stop();
+  }
 });
 
 // ── GET /v1/quran/surahs/{surah_number} ────────────────────────────────────────────────────────
@@ -66,10 +81,35 @@ test("GET /v1/eval-runs/{v} returns the seeded run to admin, and is shaped as Ev
   assert.equal(res.status, 200);
   assertMatchesContract("GET", `/v1/eval-runs/${seeded.model_version_id}`, res);
   assert.deepEqual(Object.keys(res.body).sort(), [
+    "calibratorArtifactSha256",
+    "calibratorId",
+    "candidateId",
+    "datasetManifestSha256",
     "datasetVersion",
+    "evaluationCounts",
+    "evaluationTask",
+    "evaluatorProtocolSha256",
+    "evaluatorSourceSha256",
+    "evaluatorVersion",
+    "evidenceEligibility",
+    "evidenceId",
+    "evidenceKind",
+    "evidencePayload",
+    "evidencePayloadSha256",
     "falsePositiveRate",
+    "modelArtifactSha256",
     "modelVersion",
     "passed",
+    "rawResultsSha256",
+    "rawRowManifestSha256",
+    "releaseEligible",
+    "signatureAlgorithm",
+    "signatureBase64Url",
+    "signedAt",
+    "signerKeyId",
+    "sliceMetrics",
+    "splitId",
+    "splitManifestSha256",
     "tajweedF1",
     "teacherAgreementRate",
     "unsourcedLearnerOutputs",
@@ -77,6 +117,35 @@ test("GET /v1/eval-runs/{v} returns the seeded run to admin, and is shaped as Ev
   ]);
   assert.equal(res.body.modelVersion, seeded.model_version_id);
   assert.equal(typeof res.body.passed, "boolean");
+  assert.equal(res.body.evidenceKind, "legacy-aggregate");
+  assert.equal(res.body.evidenceEligibility, "fixture-regression");
+  assert.equal(res.body.releaseEligible, false);
+  for (const key of [
+    "evaluationTask",
+    "evidenceId",
+    "evidencePayload",
+    "evidencePayloadSha256",
+    "candidateId",
+    "modelArtifactSha256",
+    "datasetManifestSha256",
+    "splitManifestSha256",
+    "splitId",
+    "evaluatorVersion",
+    "evaluatorSourceSha256",
+    "evaluatorProtocolSha256",
+    "rawRowManifestSha256",
+    "rawResultsSha256",
+    "calibratorId",
+    "calibratorArtifactSha256",
+    "signerKeyId",
+    "signatureAlgorithm",
+    "signatureBase64Url",
+    "signedAt",
+    "evaluationCounts",
+    "sliceMetrics",
+  ]) {
+    assert.equal(res.body[key], null, `${key} must remain explicit and null for historical rows`);
+  }
   // A release gate that reads a metric as a string would compare it as one. Pin the types.
   for (const key of ["wordAlignmentF1", "tajweedF1", "falsePositiveRate", "teacherAgreementRate"]) {
     assert.equal(typeof res.body[key], "number", `${key} must be a number, not a string`);
@@ -250,7 +319,7 @@ test("GET session tajweed-findings: a withheld finding carries no judgement", as
       learnerId: "learner-1",
       quranRef: { surahNumber: 1, ayahStart: 1, ayahEnd: 7, display: "Al-Fatihah 1:1-7" },
       sourceChecksum: "fnv1a32:p32parity",
-      modelVersion: "model-v0.3",
+
       language: "ckb",
       mode: "guided-recite",
       practicePlanId: "fatihah-mastery-v1",
@@ -314,9 +383,88 @@ const reviewBody = (overrides) => ({
   ...overrides,
 });
 
+/**
+ * The historical internal seed was assigned the old `canonical-text` default by migration 0025
+ * and is therefore deliberately `text-rule` after migration 0030. Review tests must not turn that
+ * instruction back into evidence about a learner. These two explicitly declared acoustic fixtures
+ * exercise the performance workflow without depending on residue from another test file.
+ */
+async function seedAcousticReviewFixtures() {
+  const suffix = uniqueSuffix();
+  const ids = {
+    sourcedAudit: `audit-db-endpoints-sourced-${suffix}`,
+    unsourcedAudit: `audit-db-endpoints-unsourced-${suffix}`,
+    sourcedFinding: `finding-db-endpoints-sourced-${suffix}`,
+    unsourcedFinding: `finding-db-endpoints-unsourced-${suffix}`,
+  };
+  const [alignment] = await queryJson(
+    `SELECT id, model_version_id
+       FROM word_alignments
+      WHERE tenant_id = $1
+      ORDER BY id
+      LIMIT 1`,
+    [TENANT],
+  );
+  assert.ok(alignment, "the migrated seed must provide an alignment for the declared fixtures");
+
+  await queryJson(
+    `INSERT INTO audit_events
+       (id, tenant_id, actor_id, action, subject_type, subject_id, metadata)
+     VALUES
+       ($1, $2, 'teacher-1', 'test.seed', 'declared_acoustic_fixture', $3,
+        '{"declaredFixture":true}'::jsonb),
+       ($4, $2, 'teacher-1', 'test.seed', 'declared_acoustic_fixture', $5,
+        '{"declaredFixture":true}'::jsonb)`,
+    [
+      ids.sourcedAudit,
+      TENANT,
+      ids.sourcedFinding,
+      ids.unsourcedAudit,
+      ids.unsourcedFinding,
+    ],
+  );
+  await insertDeclaredTestAcousticFinding({
+    id: ids.sourcedFinding,
+    alignmentId: alignment.id,
+    rule: "declared-fixture-rule",
+    severity: "practice",
+    confidence: 0.9,
+    explanation: "Declared acoustic fixture for the teacher-review contract",
+    sources: [{ id: "fixture-source", title: "Declared test source", citation: "fixture" }],
+    auditEventId: ids.sourcedAudit,
+  });
+  await insertDeclaredTestAcousticFinding({
+    id: ids.unsourcedFinding,
+    alignmentId: alignment.id,
+    rule: "declared-unsourced-fixture-rule",
+    severity: "practice",
+    confidence: 0.9,
+    explanation: "Declared unsourced acoustic fixture for the refusal contract",
+    auditEventId: ids.unsourcedAudit,
+  });
+  return ids;
+}
+
+async function cleanupAcousticReviewFixtures(ids) {
+  if (!ids) return;
+  const findingIds = [ids.sourcedFinding, ids.unsourcedFinding];
+  const reviewAudits = await queryJson(
+    `DELETE FROM teacher_reviews
+      WHERE finding_id = ANY($1::text[])
+      RETURNING audit_event_id`,
+    [findingIds],
+  );
+  await queryJson("DELETE FROM tajweed_findings WHERE id = ANY($1::text[])", [findingIds]);
+  for (const row of reviewAudits) {
+    await queryJson("DELETE FROM audit_events WHERE id = $1", [row.audit_event_id]);
+  }
+  await queryJson("DELETE FROM audit_events WHERE id = ANY($1::text[])", [
+    [ids.sourcedAudit, ids.unsourcedAudit],
+  ]);
+}
+
 test("POST /v1/teacher-reviews records a review against a real finding", async () => {
-  const [finding] = await queryJson("SELECT id FROM tajweed_findings ORDER BY id LIMIT 1");
-  assert.ok(finding, "0006_seed_internal.sql must have seeded a tajweed finding");
+  const finding = { id: reviewFixtures.sourcedFinding };
 
   const res = await request(api.baseUrl, "/v1/teacher-reviews", {
     method: "POST",
@@ -356,8 +504,7 @@ test("POST /v1/teacher-reviews records a review against a real finding", async (
  * order-independent and do not inherit whatever the tests above left behind.
  */
 test("POST /v1/teacher-reviews promotes the finding, and `edited` promotes nothing", async () => {
-  const [finding] = await queryJson("SELECT id FROM tajweed_findings ORDER BY id LIMIT 1");
-  assert.ok(finding, "0006_seed_internal.sql must have seeded a tajweed finding");
+  const finding = { id: reviewFixtures.sourcedFinding };
 
   const statusOf = async () =>
     (await queryJson("SELECT review_status FROM tajweed_findings WHERE id = $1", [finding.id]))[0]
@@ -397,7 +544,7 @@ test("POST /v1/teacher-reviews promotes the finding, and `edited` promotes nothi
 test("POST /v1/teacher-reviews cannot forge authorship by supplying another teacherId", async () => {
   // review.rs binds the author to the ACTOR, never to the caller-supplied field — the authorship
   // forgery fixed in 1675d62. Sending admin-1 while acting as teacher-1 must not be honoured.
-  const [finding] = await queryJson("SELECT id FROM tajweed_findings ORDER BY id LIMIT 1");
+  const finding = { id: reviewFixtures.sourcedFinding };
   const res = await request(api.baseUrl, "/v1/teacher-reviews", {
     method: "POST",
     role: "teacher",
@@ -416,15 +563,7 @@ test("POST /v1/teacher-reviews cannot forge authorship by supplying another teac
  * client that branches on it would otherwise behave differently depending on which one answered.
  */
 test("POST /v1/teacher-reviews refuses to ACCEPT a finding with no sources", async () => {
-  const [finding] = await queryJson(
-    "SELECT id FROM tajweed_findings WHERE jsonb_array_length(source_refs) = 0 ORDER BY id LIMIT 1",
-  );
-  if (!finding) {
-    // The seed's findings are sourced. Rather than skip silently, say so — a green tick here with
-    // nothing asserted is how coverage rots.
-    console.log("      (no unsourced finding in the seed; refusal covered by the Rust integration test)");
-    return;
-  }
+  const finding = { id: reviewFixtures.unsourcedFinding };
 
   const res = await request(api.baseUrl, "/v1/teacher-reviews", {
     method: "POST",
@@ -534,7 +673,7 @@ const sessionBody = (overrides) => ({
   learnerId: "learner-1",
   quranRef: { surahNumber: 1, ayahStart: 1, ayahEnd: 1, display: "1:1" },
   sourceChecksum: "parity-checksum",
-  modelVersion: "model-v0.3",
+
   language: "ar",
   consent: {
     recordingConsent: true,
@@ -601,19 +740,14 @@ test("POST /v1/recitation-sessions answers 403 BEFORE 404 for another learner", 
   }
 });
 
-test("POST /v1/recitation-sessions is 400 NAMING an unknown modelVersion", async () => {
-  // 400 rather than 404, because modelVersion is a value from a fixed server-side vocabulary —
-  // like the agent-run status enum, which already 400s naming the value. It also disambiguates:
-  // this endpoint can fail on learnerId OR modelVersion, and the shared "record not found" string
-  // cannot say which, leaving a caller guessing between two very different fixes.
-  const unknown = ghostId();
+test("POST /v1/recitation-sessions refuses caller-selected model identity", async () => {
   const res = await request(api.baseUrl, "/v1/recitation-sessions", {
     method: "POST",
     role: "learner",
-    body: sessionBody({ modelVersion: unknown }),
+    body: sessionBody({ modelVersion: "model-v0.3" }),
   });
   assert.equal(res.status, 400, `expected 400, got ${res.status} ${res.text}`);
-  assert.match(res.body.error, new RegExp(unknown), "the error must name the value that was rejected");
+  assert.match(res.body.error, /server-selected.*must not be supplied/);
 });
 
 test("the endpoints that were ALREADY correct stay correct", async () => {
@@ -631,14 +765,9 @@ test("the endpoints that were ALREADY correct stay correct", async () => {
   }
 });
 
-test("alignments store the model version AS GIVEN, and refuse an unknown one", async () => {
-  // THE assertion for FK3, and it reads the row back rather than trusting the 200.
-  //
-  // The bug being fixed produced a perfectly good response: an unknown model was silently stored as
-  // "model-v0.3" and the caller was told it worked. A test that only checked the status code would
-  // have passed against the bug, and would pass again if the fallback ever came back.
+test("alignments inherit the session model and refuse every caller identity", async () => {
   const [session] = await queryJson(
-    `SELECT id FROM recitation_sessions
+    `SELECT id, model_version_id FROM recitation_sessions
      WHERE learner_id = 'learner-1' AND tenant_id = $1
      ORDER BY started_at DESC LIMIT 1`,
     ["hikmah-pilot-erbil"],
@@ -655,12 +784,10 @@ test("alignments store the model version AS GIVEN, and refuse an unknown one", a
     canonicalText: "b",
   };
 
-  // A valid NON-DEFAULT model. If the fallback returns, this stores "model-v0.3" and the mismatch
-  // is visible in the database even though the response looks identical.
   const stored = await request(api.baseUrl, path, {
     method: "POST",
     role: "learner",
-    body: { alignments: [alignment], modelVersion: "tajweed-v0.1" },
+    body: { alignments: [alignment] },
   });
   assert.equal(stored.status, 200);
   const rows = await queryJson(
@@ -669,28 +796,18 @@ test("alignments store the model version AS GIVEN, and refuse an unknown one", a
   );
   assert.deepEqual(
     rows.map((r) => r.model_version_id),
-    ["tajweed-v0.1"],
-    "the alignment must record the model the caller named — silently relabelling it is provenance falsification",
+    [session.model_version_id],
+    "the alignment must inherit the server selection already stored on the session",
   );
 
-  // An unknown model is now refused rather than relabelled.
-  const unknown = ghostId();
+  // Even the correct current value is caller authority when it arrives in a request.
   const rejected = await request(api.baseUrl, path, {
     method: "POST",
     role: "learner",
-    body: { alignments: [alignment], modelVersion: unknown },
+    body: { alignments: [alignment], modelVersion: session.model_version_id },
   });
   assert.equal(rejected.status, 400, `expected 400, got ${rejected.status} ${rejected.text}`);
-  assert.match(rejected.body.error, new RegExp(unknown));
-
-  // An ABSENT model still defaults — that is a default, not a substitution, because the caller
-  // asserted nothing. Breaking this would break every client that omits the field.
-  const defaulted = await request(api.baseUrl, path, {
-    method: "POST",
-    role: "learner",
-    body: { alignments: [alignment] },
-  });
-  assert.equal(defaulted.status, 200, "an absent modelVersion must still default, not 400");
+  assert.match(rejected.body.error, /server-selected.*must not be supplied/);
 });
 
 test("POST /v1/scholar-approvals binds reviewerId to the ACTOR, so it cannot dangle", async () => {

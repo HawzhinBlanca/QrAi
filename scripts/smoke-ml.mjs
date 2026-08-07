@@ -1,9 +1,14 @@
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawn } from "node:child_process";
 import { createServer } from "node:net";
-import { randomUUID } from "node:crypto";
+import { createHash, generateKeyPairSync, randomUUID, sign } from "node:crypto";
+
+import {
+  canonicalizeRfc8785,
+  verifyModelEvidenceBundle,
+} from "./model-evidence-verifier.mjs";
 
 const fixture = JSON.parse(await readFile("services/ml-inference/fixtures/golden-evals.json", "utf8"));
 const providedUrl = process.env.ML_INFERENCE_SMOKE_URL;
@@ -51,48 +56,32 @@ try {
     assert(tajweed.traceId === smokeTraceId, `${fixtureCase.id} tajweed dropped smoke trace id`);
     assert(tajweed.fixtureCaseId === fixtureCase.id, `${fixtureCase.id} tajweed did not use golden fixture`);
     assert(
-      tajweed.findings?.length === fixtureCase.tajweedFindings.length,
-      `${fixtureCase.id} tajweed response did not include fixture findings`,
+      tajweed.annotations?.length === fixtureCase.tajweedFindings.length,
+      `${fixtureCase.id} tajweed response did not include fixture instructional annotations`,
     );
     assert(
-      tajweed.findings.every((finding) => finding.sources?.length > 0),
-      `${fixtureCase.id} tajweed finding was not source-backed`,
+      tajweed.annotations.every((annotation) => annotation.sources?.length > 0),
+      `${fixtureCase.id} tajweed instructional annotation was not source-backed`,
     );
     assert(
-      tajweed.findings.every((finding) => finding.auditEventId),
-      `${fixtureCase.id} tajweed finding did not include audit id`,
+      tajweed.annotations.every((annotation) => annotation.auditEventId),
+      `${fixtureCase.id} tajweed instructional annotation did not include audit id`,
     );
+    assert(tajweed.findings?.length === 0, `${fixtureCase.id} exposed uncalibrated learner findings`);
 
     caseSummaries.push({
       id: fixtureCase.id,
       words: alignment.alignments.length,
-      findings: tajweed.findings.length,
-      confidence: {
-        alignment: alignment.confidence,
-        tajweed: tajweed.confidence,
-      },
+      instructionalAnnotations: tajweed.annotations.length,
+      learnerFindings: tajweed.findings.length,
+      alignmentConfidence: alignment.confidence,
     });
   }
 
-  const evalRun = await postJson("/v1/eval-runs", {
-    tenantId: "tenant-smoke",
-    traceId: smokeTraceId,
-    modelVersion: fixture.modelVersion,
-    datasetVersion: fixture.datasetVersion,
-  });
-  assert(evalRun.passed === true, "eval run did not pass threshold gate");
-  assert(evalRun.wordAlignmentF1 === fixture.metrics.wordAlignmentF1, "eval run did not load fixture alignment metric");
-  assert(evalRun.tajweedF1 === fixture.metrics.tajweedF1, "eval run did not load fixture tajweed metric");
-  assert(evalRun.unsourcedLearnerOutputs === 0, "eval run allows unsourced learner outputs");
-  // Source-integrity is recomputed live by the service from the committed golden findings; assert the
-  // endpoint's count matches an INDEPENDENT recompute over the same cases (no static, drift-prone field).
-  const expectedSourceBacked = fixture.cases
-    .flatMap((c) => c.tajweedFindings ?? [])
-    .filter((f) => Array.isArray(f.sources) && f.sources.length > 0).length;
-  assert(
-    evalRun.sourceBackedFindings === expectedSourceBacked,
-    "eval run did not recompute the source-backed finding count",
-  );
+  const evaluation = await runDeclaredEvaluationSmoke();
+  assert(evaluation.evidence.eligibility === "fixture-regression", "smoke evidence gained non-fixture eligibility");
+  assert(evaluation.verification.cryptographicallyValid === true, "ephemeral fixture signature did not verify");
+  assert(evaluation.verification.releaseTrusted === false, "ephemeral fixture signature gained release trust");
 
   const denied = await postJson("/v1/alignments:predict", buildPredictionRequest(fixture.cases[0], { externalAsrRequested: true }));
   assert(denied.traceId === smokeTraceId, "denied alignment dropped smoke trace id");
@@ -113,15 +102,196 @@ try {
     traceId: smokeTraceId,
     health,
     cases: caseSummaries,
-    evalRun,
+    evaluation: {
+      declaredFixture: true,
+      evidenceId: evaluation.evidence.evidenceId,
+      evidenceKind: evaluation.evidence.evidenceKind,
+      eligibility: evaluation.evidence.eligibility,
+      counts: evaluation.evidence.counts,
+      cryptographicallyValid: evaluation.verification.cryptographicallyValid,
+      releaseTrusted: evaluation.verification.releaseTrusted,
+      trustClass: evaluation.verification.trustClass,
+    },
     auditEventCount: audit.length,
   };
 
   await writeFile(join(artifactDir, "summary.json"), JSON.stringify(summary, null, 2));
-  await writeFile(join(artifactDir, "eval-run.json"), JSON.stringify(evalRun, null, 2));
+  await writeFile(join(artifactDir, "evaluation-evidence.fixture.json"), JSON.stringify(evaluation.evidence, null, 2));
+  await writeFile(join(artifactDir, "evaluation-bundle.fixture.json"), JSON.stringify(evaluation.bundle, null, 2));
   console.log(JSON.stringify(summary));
 } finally {
   await service?.stop();
+}
+
+async function runDeclaredEvaluationSmoke() {
+  const root = await mkdtemp(join(tmpdir(), "qrai-evaluation-smoke-"));
+  const files = Object.fromEntries(
+    [
+      "request",
+      "protocol",
+      "registry",
+      "modelArtifact",
+      "implementation",
+      "runtimeLock",
+      "datasetManifest",
+      "splitManifest",
+      "rows",
+      "output",
+    ].map((name) => [name, join(root, name.endsWith("Artifact") ? `${name}.bin` : `${name}.json`)]),
+  );
+
+  const writeJson = (path, value) => writeFile(path, JSON.stringify(value));
+  const digestBytes = (value) => `sha256:${createHash("sha256").update(value).digest("hex")}`;
+  const digestFile = async (path) => digestBytes(await readFile(path));
+
+  try {
+    await writeFile(files.modelArtifact, "declared-smoke-model-fixture");
+    await writeFile(files.implementation, "declared-smoke-implementation-fixture");
+    await writeFile(files.runtimeLock, "declared-smoke-runtime-lock-fixture");
+    await writeJson(files.registry, { schemaVersion: "qrai-test-registry/v1" });
+
+    const dataset = {
+      schemaVersion: "qrai-evaluation-dataset/v1",
+      datasetVersion: "declared-smoke-fixture-v1",
+      evidenceClass: "declared-fixture",
+      sealed: true,
+      consentStatus: "test-only",
+      licenseReviewStatus: "test-only",
+    };
+    const split = {
+      schemaVersion: "qrai-evaluation-split/v1",
+      heldOutReciterIds: ["fixture-reciter-1", "fixture-reciter-2"],
+      calibrationReciterIds: [],
+    };
+    const protocol = {
+      schemaVersion: "qrai-evaluation-protocol/v1",
+      protocolVersion: "declared-smoke-protocol-v1",
+      approvalStatus: "test-only",
+      operatingThreshold: 0.5,
+      calibrationBins: 2,
+      bootstrap: { confidenceLevel: 0.95, replicateCount: 50, seed: 7 },
+      requiredSlices: [
+        {
+          sliceId: "fixture-slice",
+          dimensions: {
+            languageBackground: "test-only",
+            ageBand: "test-only",
+            deviceClass: "test-only",
+            noiseCondition: "test-only",
+          },
+        },
+      ],
+    };
+    const rows = [
+      { rowId: "row-1", reciterId: "fixture-reciter-1", splitId: "held-out", label: 1, score: 0.9, sliceIds: ["fixture-slice"], sourceBacked: true, ratings: [1, 1] },
+      { rowId: "row-2", reciterId: "fixture-reciter-1", splitId: "held-out", label: 0, score: 0.8, sliceIds: ["fixture-slice"], sourceBacked: true, ratings: [0, 0] },
+      { rowId: "row-3", reciterId: "fixture-reciter-2", splitId: "held-out", label: 1, score: 0.7, sliceIds: ["fixture-slice"], sourceBacked: true, ratings: [1, 1] },
+      { rowId: "row-4", reciterId: "fixture-reciter-2", splitId: "held-out", label: 0, score: 0.1, sliceIds: ["fixture-slice"], sourceBacked: true, ratings: [0, 0] },
+    ];
+    await writeJson(files.datasetManifest, dataset);
+    await writeJson(files.splitManifest, split);
+    await writeJson(files.protocol, protocol);
+    await writeJson(files.rows, rows);
+
+    await writeJson(files.request, {
+      schemaVersion: "qrai-evaluation-request/v1",
+      evaluationTask: "acoustic-tajweed",
+      eligibility: "fixture-regression",
+      generatedAt: "2026-08-07T00:00:00Z",
+      candidate: {
+        candidateId: "declared-smoke-candidate",
+        modelVersion: "declared-smoke-model-v1",
+        modelArtifactSha256: await digestFile(files.modelArtifact),
+        implementationSha256: await digestFile(files.implementation),
+        runtimeLockSha256: await digestFile(files.runtimeLock),
+        imageDigest: digestBytes("declared-smoke-image-fixture"),
+        registrySha256: await digestFile(files.registry),
+        executionStatus: "test-only",
+        licenseReviewStatus: "test-only",
+      },
+      dataset: {
+        datasetVersion: dataset.datasetVersion,
+        evidenceClass: dataset.evidenceClass,
+        manifestSha256: await digestFile(files.datasetManifest),
+        splitManifestSha256: await digestFile(files.splitManifest),
+        splitId: "held-out",
+        sealed: true,
+        reciterDisjoint: true,
+        consentStatus: "test-only",
+        licenseReviewStatus: "test-only",
+      },
+      protocol: {
+        protocolVersion: protocol.protocolVersion,
+        protocolSha256: await digestFile(files.protocol),
+      },
+      rawResults: { rowResultsSha256: await digestFile(files.rows) },
+      calibration: null,
+      approvals: [],
+    });
+
+    await runProcess("python3", [
+      "services/asr-inference/evaluate_candidate.py",
+      "--request", files.request,
+      "--protocol", files.protocol,
+      "--registry", files.registry,
+      "--model-artifact", files.modelArtifact,
+      "--implementation", files.implementation,
+      "--runtime-lock", files.runtimeLock,
+      "--dataset-manifest", files.datasetManifest,
+      "--split-manifest", files.splitManifest,
+      "--rows", files.rows,
+      "--output", files.output,
+    ]);
+    const evidence = JSON.parse(await readFile(files.output, "utf8"));
+    const { privateKey, publicKey } = generateKeyPairSync("ed25519");
+    const payload = Buffer.from(canonicalizeRfc8785(evidence), "utf8");
+    const keyId = "ephemeral-smoke-test-key";
+    const bundle = {
+      schemaVersion: "qrai-model-evaluation-bundle/v1",
+      canonicalization: "RFC8785",
+      evidence,
+      signature: {
+        schemaVersion: "qrai-model-evaluation-signature/v1",
+        algorithm: "Ed25519",
+        keyId,
+        payloadSha256: digestBytes(payload),
+        signatureBase64Url: sign(null, payload, privateKey).toString("base64url"),
+        signedAt: "2026-08-07T00:00:00Z",
+      },
+    };
+    const trustPolicy = {
+      schemaVersion: "qrai-model-evaluation-trusted-signers/v1",
+      policyId: "ephemeral-smoke-test-policy",
+      keys: [
+        {
+          keyId,
+          algorithm: "Ed25519",
+          trustClass: "test-only",
+          status: "active",
+          publicKeyJwk: publicKey.export({ format: "jwk" }),
+        },
+      ],
+    };
+    const verification = verifyModelEvidenceBundle(bundle, trustPolicy);
+    return { bundle, evidence, verification };
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+}
+
+function runProcess(command, args) {
+  return new Promise((resolve, reject) => {
+    const child = spawn(command, args, { cwd: process.cwd(), stdio: ["ignore", "pipe", "pipe"] });
+    let stdout = "";
+    let stderr = "";
+    child.stdout.on("data", (chunk) => { stdout += chunk; });
+    child.stderr.on("data", (chunk) => { stderr += chunk; });
+    child.once("error", reject);
+    child.once("close", (code) => {
+      if (code === 0) resolve(stdout);
+      else reject(new Error(`${command} failed (${code}): ${stderr || stdout}`));
+    });
+  });
 }
 
 function buildPredictionRequest(fixtureCase, overrides = {}) {

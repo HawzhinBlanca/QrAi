@@ -6,25 +6,275 @@
 1. **guard** — fails if any secret/protected file (`.env`, `secrets/`, `*.pem`) is tracked.
 2. **lint** — `cargo fmt --check` + `cargo clippy -D warnings` for both Rust services.
    (TS has no separate linter; type safety is the TS lint, run next.)
-3. **typecheck** — `tsc` for `@quran-ai/contracts`, `@quran-ai/quran-data`, `@quran-ai/web`.
+3. **typecheck** — `tsc` for `@quran-ai/contracts`, `@quran-ai/quran-data`, `@quran-ai/server`, and
+   `@quran-ai/web`.
 4. **test** — vitest for the three TS packages; `node --test` for the Node services
-   (`ml-inference/alignment.test.mjs`, `ml-inference/tajweed.test.mjs`,
+   (`ml-inference/alignment.test.mjs`, `ml-inference/model-attribution.test.mjs`,
+   `ml-inference/tajweed.test.mjs`,
    `ml-inference/server.test.mjs`, `agents/agents.test.mjs`, run by explicit path
    because a dir glob would import the listening `server.mjs`); `cargo test` for both
-   Rust services. `ml-inference/golden-regression.test.mjs` (live-computed alignment/
-   tajweed metrics against the real canonical Quran data) is NOT in this list yet — it's
-   wired into `scripts/proof.sh` but adding it to `verify.sh` needs an edit to that
-   CI-protected file; tracked as an open follow-up.
-5. **build** — `pnpm build` (contracts + quran-data + web).
+   Rust services. `ml-inference/golden-regression.test.mjs` is included explicitly: it computes
+   alignment/tajweed behavior against the real canonical Quran data rather than trusting its
+   committed metric summary. Its fixture is mechanically marked ineligible for model evaluation,
+   calibration, and release claims; this is a regression proof, not acoustic-quality evidence.
+5. **build** — `pnpm build` (contracts + quran-data + server + web).
 
 `bash scripts/verify.sh --fast` runs only lint + typecheck (used by the PostToolUse hook).
+
+The Node consolidation decisions have a permanent pre-implementation guard:
+
+```bash
+node --test tests/contract/node-backend-decisions.test.mjs
+```
+
+This is decision proof only. It requires ADR-0050, the matching living-architecture boundary, and
+canonical invocation. It does not prove that the standalone package, S3 adapter, deadlines, rate
+limits, enrollment, or process lifecycle have been implemented; each has a later behavioral gate.
+
+The first deployable Node boundary has two focused gates:
+
+```bash
+pnpm --filter @quran-ai/server build
+node --test \
+  tests/node-api/standalone-lifecycle.test.mjs \
+  tests/node-api/production-image.test.mjs
+```
+
+`standalone-lifecycle` proves the ESM workspace/dependency boundary, side-effect-free composition,
+local health construction, and close. `production-image` pins the OCI base digest, production-only
+deploy, non-root runtime, internal Compose topology, native healthcheck, release digest lists,
+SBOM/licence inclusion, and Docker workflow. The separate Docker workflow builds the real image,
+checks its filesystem/dependencies as the runtime user, and requires its own `/health` transition
+to healthy. `/ready` is the Compose health target and requires Postgres; Web and realtime must
+still target Rust until the later cutover tasks pass.
+
+Canonical Quran integrity is part of the ordinary TypeScript gate. For a focused review, run
+`pnpm --dir packages/quran-data test` and
+`node packages/quran-data/scripts/quran-content-hash.mjs`. The latter independently prints the
+immutable legacy checksum plus provenance-v2's length-delimited ayah and word-token hashes; it
+reads canonical files but never rewrites them. The production SQL generator performs the same v2
+preflight before its first SQL output.
+
+ASR readiness is also part of the ordinary gate through
+`tests/inference/asr-readiness.test.mjs`. It exercises the stdlib-only production controller in
+isolated Python subprocesses: unloaded, transient load failure/recovery, missing and wrong digest,
+terminal no-reload behavior, probe failure/recovery, timeout, and exact synthetic fixture bytes.
+For a focused run:
+
+```bash
+node --test tests/inference/asr-readiness.test.mjs
+```
+
+The production-container proof is separate from model evaluation. Build the ASR Dockerfile, start
+it with the pinned `ASR_MODEL=base` and matching `ASR_MODEL_DIGEST`, and require `/health` 200 while
+loading plus `/ready` 200 only after the cached probe. Repeat with a wrong digest and require
+`/health` 200 plus `/ready` 503. Never treat the zero-signal probe transcript as model evidence.
+
+ASR candidate identity and benchmark-input refusal are covered separately:
+
+```bash
+node --test tests/inference/asr-candidate-evidence.test.mjs
+cd services/asr-inference
+python3 -m pytest -q test_model_attribution.py
+python3 candidate_evidence.py --registry model-candidates.json
+```
+
+These checks require a full Hugging Face commit, bind runtime configuration to the checked-in
+candidate, verify downloaded artifact bytes, require complete approved slice evidence, and prove a
+declared fixture cannot become selection evidence. They do **not** run a real benchmark. The registry
+deliberately reports `blocked-no-eligible-benchmark`; no approved Kurdish held-out corpus exists yet.
+
+Real word-span plumbing has a separate, deliberately non-evaluative proof:
+
+```bash
+node --test tests/inference/real-audio-spans.test.mjs
+ASR_REAL_AUDIO_URL=http://127.0.0.1:8091 \
+  ASR_API_KEY="$ASR_API_KEY" \
+  node --test tests/inference/real-audio-spans.test.mjs
+```
+
+The ordinary gate checks the CC0 audio checksum and the captured response from the exact pinned
+Whisper baseline. The second command is the live-worker leg and must run for W1.6 evidence; it sends
+the same 92.72-second fixture to the configured ASR and requires positive monotonic word spans. Both
+are plumbing checks only. The fixture is explicitly benchmark-ineligible, its transcript is not
+reviewed Quran text, and neither command claims accuracy or clears the W1.5 selection gate.
+
+`services/ml-inference/session-transcript.test.mjs` separately proves that stored PCM sessions over
+the 120-second worker limit are split into bounded context windows, span offsets remain absolute,
+legitimate repetitions survive overlap ownership, text-only ASR is force-aligned against the
+recognized transcript, and incomplete/mixed/malformed evidence is refused rather than scored.
+
+With live Postgres, the canonical gate also runs
+`tests/e2e/real-audio-finalize.test.mjs`. It decodes the byte-pinned CC0 fixture to checksum-pinned
+16 kHz mono PCM, replays the independently captured real-ASR spans through the actual ML process,
+and drives the Rust finalizer into Postgres. It requires two bounded windows, exact source spans,
+atomic refusal of malformed output, no row for omitted canonical words or extra ASR tokens, and
+`transcript_source = 'server-derived'` for every persisted match/misread. The capture remains
+benchmark-ineligible and this test makes no accuracy claim.
+
+The adjacent `tests/e2e/model-provenance-roundtrip.test.mjs` uses the same shared actual-ML harness
+through a transparent byte-preserving recorder. It compares the private transcript attribution with
+the Quran-aligner input, then requires the inference component JSON, compatibility model, dataset,
+latency, and evidence id to equal the tenant-bound `alignment_runs` row and every staff readback row.
+It also proves the learner receives 403 and another tenant receives an empty result. Migration tests
+separately prove the same-tenant/same-session composite FK and the new-row-only server-run check.
+
+Tajweed instruction/performance separation is part of the ordinary Node gate and the live-Postgres
+parity gate. Focused proof is:
+
+```bash
+node --experimental-strip-types --test \
+  tests/contract/tajweed-analysis-basis.test.mjs \
+  tests/contract/no-invented-confidence.test.mjs \
+  tests/contract/ml-findings-shape.test.mjs
+
+DATABASE_URL=postgresql://hawzhin@127.0.0.1:5433/quran_ai \
+  node --test --test-concurrency=1 \
+  tests/api-parity/review-parity.test.mjs \
+  tests/api-parity/upstream-malformed.test.mjs \
+  tests/api-parity/tajweed-persistence-effects.test.mjs
+```
+
+These checks require real deterministic output to contain instruction, reject invented confidence
+in production and golden-fixture branches, refuse cross-contaminated upstream shapes, prove both
+HTTP implementations exclude text rules from performance review, and verify no performance row or
+false persistence audit is created. They do not claim acoustic Tajweed accuracy; that remains W1.10
+and W1.11 evaluation work.
+
+The W1.10 acoustic boundary has a separate focused gate:
+
+```bash
+python3 -m pytest -q \
+  services/asr-inference/test_acoustic_tajweed.py \
+  services/asr-inference/test_model_attribution.py
+node --experimental-strip-types --test \
+  services/ml-inference/acoustic-shadow.test.mjs \
+  services/ml-inference/session-transcript.test.mjs \
+  tests/inference/muaalem-candidate-evidence.test.mjs \
+  tests/contract/acoustic-tajweed-boundary.test.mjs \
+  tests/contract/retired-components.test.mjs
+docker build --check --target default -f services/asr-inference/Dockerfile .
+docker build --check --target acoustic-candidate -f services/asr-inference/Dockerfile .
+```
+
+Evaluation readback and smoke are evidence-aware rather than aggregate-authoritative. Focused proof:
+
+```bash
+node --experimental-strip-types --test \
+  services/ml-inference/server.test.mjs \
+  tests/contract/verify-invocations.test.mjs \
+  tests/contract/openapi-completeness.test.mjs
+DATABASE_URL=postgresql://quran_ai_app:REDACTED@127.0.0.1:5433/quran_ai \
+  node --test --test-concurrency=1 tests/api-parity/reports-parity.test.mjs
+node scripts/smoke-ml.mjs
+```
+
+The EvalRun response always includes explicit evidence kind, eligibility, release eligibility,
+digests, signer data, counts, and slices; historical aggregate rows expose null provenance and
+`fixture-regression`. Rust and Node are byte-compared with a complete non-release fixture. Browser
+smoke returns a zeroed declared fixture and blocks every benchmark status. ML smoke runs the real
+offline row evaluator, signs only with an ephemeral test key in memory, and verifies that the result
+is cryptographically valid but never release-trusted. The online ML service has no eval-run POST.
+
+The ordinary gate uses a declared scorer double and proves byte-preserving QPS input, exact
+candidate/profile identity, bounded windows, child restart/timeout, stored-audio/consent refusal,
+server-owned spans, zero public findings, and no invented confidence. It also reproduces the CC0
+correct/muted WAV pair byte-for-byte and checks its benchmark-ineligible evidence record. It does
+not download 2.4 GB weights or claim model accuracy. The retired-component assertion additionally
+keeps the superseded standalone service and its active topology claims out of the lean tree. The
+protected proof must explicitly build
+`--target acoustic-candidate`, verify the embedded files, run both declared vectors without a
+source-code mount, and record latency/memory. The pinned upstream decoder can place class ids in
+the sifat probability field, so the adapter withholds all sifat numeric scores. These vectors
+remain structural engineering proof—not error detection, a Kurdish-L1 accuracy benchmark, or
+release approval.
+
+The same Python acoustic test loads the production calibrator registry, proves it has no active
+authority, and exercises a temporary approved record against exact scorer-artifact,
+dataset-manifest, evaluation-evidence, artifact-size, and artifact-byte digests. Every mismatched
+binding resolves unavailable. The Node acoustic-shadow test pins the empty production registry and
+the runtime test still requires `findings: []`; these checks enable no calibrator and make no
+calibration claim.
+
+The offline evaluation authority is exercised without a model download or private corpus:
+
+```bash
+cd services/asr-inference
+python3 test_eval_pipeline.py
+```
+
+The suite uses only declared test rows. It proves that `evaluate_candidate.py` recomputes known
+metrics from exact row-level labels/scores, hashes every supplied artifact, emits deterministic
+unsigned evidence, resamples reciters for uncertainty, and refuses summary-only input, non-finite
+scores, class/reciter gaps, split leakage, mutable aliases, fixtures claiming release eligibility,
+and incomplete release controls. It does not provide an approved calibrator or accuracy evidence.
+
+Detached evidence verification is covered by the canonical Node contract suite. For a focused run:
+
+```bash
+node --test tests/release/model-evidence.test.mjs
+```
+
+It pins RFC 8785 number/string/property serialization, rejects non-JSON and malformed Unicode input,
+re-hashes the exact evidence bytes, verifies Ed25519 signatures, and fails closed on tampering,
+unknown/revoked/duplicate keys, duplicate public-key aliases, private JWK material, and test-key
+release attempts. Test signatures use ephemeral process-local keys. The committed production trust
+policy contains public JWKs only and intentionally starts with no keys, so local fixtures cannot
+become release authority.
+
+Release-claim selection and the shared numeric/provenance gate have focused proofs:
+
+```bash
+node --experimental-strip-types --test \
+  tests/release/model-evidence.test.mjs \
+  tests/release/model-claim-authority.test.mjs
+node --experimental-strip-types scripts/check-model-eval-claims.mjs --self-test
+```
+
+The gate requires a verified release-class signature, exact payload/projection identities, a bound
+calibrator, minimum row/reciter/slice counts, reciter-cluster bootstrap uncertainty, source-backed
+acoustic findings, and task-specific metrics. The selector reads all rows rather than the newest;
+fixture/research history is ignored, exact duplicate authorities collapse, and invalid or distinct
+release-labelled identities fail closed. With the committed empty production trust policy, no model
+may claim `eval-passed` or `released`.
+
+The synchronized acoustic learner gate has one mutation corpus executed by TypeScript, Node, Rust,
+and Flutter:
+
+```bash
+node --experimental-strip-types --test \
+  tests/contract/learner-feedback-gate.test.mjs \
+  tests/contract/tajweed-gate-parity.test.mjs
+cargo test --manifest-path services/platform-api/Cargo.toml learner_gate --lib
+cd apps/flutter && flutter test test/tajweed_gate_test.dart
+```
+
+The positive vectors require review, finite calibrated confidence, complete citations, a usable
+retained-audio span/evidence id, exact model/dataset/calibrator/evaluation digests, release-trusted
+evaluation status, and an audit id. Every field has a negative mutation. The committed production
+trust and calibrator registries are empty, so declared DB fixtures are intentionally returned as
+`fixture` + `uncalibrated` and remain withheld even after teacher acceptance.
+
+Evaluation-evidence persistence has a disposable-database proof:
+
+```bash
+MIGRATION_TEST_ADMIN_URL=postgresql://admin@127.0.0.1:5432/postgres \
+  node --test --test-concurrency=1 tests/migrations/eval-evidence-migration.test.mjs
+```
+
+The URL must name a disposable `CREATEDB`-capable test authority. The suite proves historical
+aggregate rows are explicitly fixture-only, signed-evidence columns are complete-or-empty and
+immutable, malformed digests/boolean-only promotion fail, finding attribution is a complete exact
+same-tenant foreign key, unsupported historical model claims are demoted, and the existing forced
+RLS policy hides another tenant's evidence. Its
+inserted rows are declared database fixtures; they are not cryptographically valid model evidence.
 
 > **verify.sh vs `pnpm test` / `pnpm proof`.** The two legacy commands run the platform-api
 > integration tests with `--include-ignored` *unconditionally*, so they **fail** without a
 > live Postgres. `verify.sh` is the gate that **skips** those tests when no DB is reachable
 > (it never fakes them) — this matters for a local run with no Postgres started, not for CI:
-> `.github/workflows/ci.yml` runs a real `postgres:16-alpine` service container and applies the
-> full migration list before `verify.sh` runs, so the DB-gated tests DO execute (and are asserted)
+> `.github/workflows/ci.yml` runs a real `postgres:16-alpine` service container and invokes the
+> checksum-locked migration runner before `verify.sh` runs, so the DB-gated tests DO execute (and are asserted)
 > in CI, same as a local run with Postgres up.
 > `scripts/proof.sh` (`pnpm proof`, also what `scripts/smoke-all.mjs`'s first step runs) covers
 > more test suites than it used to: it now also runs `apps/mobile`'s and
@@ -40,7 +290,8 @@ the ignored ones **only** when a live Postgres answers at `$DATABASE_URL` — ot
 prints a SKIP line. They are never faked. To include them:
 
 ```bash
-docker compose up -d postgres          # postgres:16-alpine on :5432, schema auto-loaded
+docker compose up -d postgres          # postgres:16-alpine on :5432
+docker compose run --rm migrations     # migrate, ledger, then provision quran_ai_app
 bash scripts/verify.sh                 # now runs `cargo test ... -- --include-ignored`
 # or point at any DB:
 DATABASE_URL=postgresql://user@host:5432/db bash scripts/verify.sh
@@ -102,7 +353,7 @@ job and an independently retained successful/adversarial run remain P0.7
 requirements; the local harness does not claim they have happened.
 
 ## Verifying RLS enforcement (production posture)
-The tenant-isolation policies (`infra/sql/0003_tenant_rls.sql`,
+The tenant-isolation policies (`infra/migrations/0003_tenant_rls.sql`,
 `0009_learner_progress_rls.sql`) only bite when the connecting role is **not** a superuser
 and lacks **BYPASSRLS**. The dev role (`hawzhin`) is a superuser and bypasses RLS, so in dev
 isolation is enforced by the app-level `WHERE tenant_id = $1` clauses plus the per-request
@@ -110,8 +361,10 @@ isolation is enforced by the app-level `WHERE tenant_id = $1` clauses plus the p
 run the API as the restricted role:
 
 ```bash
-# 1. Create the restricted role (idempotent). NOT superuser, NOT bypassrls.
-psql "$SUPERUSER_URL" -v app_password="$STRONG_PASSWORD" -f infra/sql/rls-app-role.sql
+# 1. Apply migrations and provision the restricted role with an administrative connection.
+MIGRATION_DATABASE_URL="$SUPERUSER_URL" node server/scripts/migrate.mjs
+MIGRATION_DATABASE_URL="$SUPERUSER_URL" APP_DATABASE_PASSWORD="$STRONG_PASSWORD" \
+  node server/scripts/provision-role.mjs
 
 # 2. Run platform-api as that role and smoke it.
 DATABASE_URL="postgresql://quran_ai_app:$STRONG_PASSWORD@localhost:5432/quran_ai" \
@@ -143,11 +396,26 @@ cd apps/flutter && dart analyze --fatal-infos
 `verify.sh` runs both — and **SKIPS them loudly when `flutter` is not on PATH**, which is the state
 of a runner that has not installed the SDK. That skip is why the client's contract test lives in
 `tests/contract/flutter-contract.test.mjs` (Node) rather than in Dart: it compares `models.dart` and
-`api_client.dart` against `specs/flutter-client/openapi.yaml` in **both** directions — the keys the
+`api_client.dart` against `packages/contracts/openapi.yaml` in **both** directions — the keys the
 client reads against the response schema, and the bodies it posts against the `requestBody` — and it
 runs whether or not the SDK is present. It also pins the platform microphone declarations, because
 `flutter create` does not add them and a regeneration that dropped them would build, launch, pass
 every widget test, and record nothing.
+
+The shared boundary has two additional hermetic proofs:
+
+- `tests/contract/openapi-completeness.test.mjs` derives the current 42-operation set from the Rust
+  router, compares it with both OpenAPI and `packages/contracts/route-manifest.json`, computes the
+  retained/retired/added target, rejects permissive inference envelopes, and validates responses
+  from the real Node ML producers.
+- `packages/contracts/tests/model-attribution.test.ts` and the Node/Python runtime suites pin the
+  five-component vocabulary, exact SHA-256 syntax, primary/legacy binding, unavailable-component
+  honesty, and the negative unknown/mismatched-digest cases. Database-backed
+  `ml-asr-proxy-parity.test.mjs` then proves both public proxy implementations reject invalid
+  producer attribution and all client-selected model identities.
+- `tests/contract/retired-routes.test.mjs` pins the four ADR-0038 retirements and inventories every
+  transitional production caller. A route cannot disappear from the current contract merely
+  because it is absent from the final target, and removal stays blocked until caller count is zero.
 
 Hardware is faked at the seam, never stubbed into green:
 
@@ -173,6 +441,13 @@ unaffected. Full recipe and output:
 > native clients never do, so without it the gateway fails closed and **every recitation is a 403**.
 > It relaxes only that branch — a request that does carry an Origin is still checked against the
 > allowlist. The gateway must also be pinned to the serving tenant with `GATEWAY_TENANT_ID`.
+
+`tests/e2e/teacher-audio-index.test.mjs` is the database-backed topology proof. It runs a real
+gateway, ml-inference filesystem store, platform-api and WebSocket; verifies the resulting index and
+audited teacher playback bytes; forces an index outage; checks the stored-unindexed metric; runs the
+repair command first in dry-run and then apply mode; proves idempotence; and refuses a sidecar whose
+learner disagrees with the authoritative tenant-scoped session. `verify.sh` runs it whenever the
+live-Postgres leg is available and cannot silently skip it inside that leg.
 
 ## Conventions
 - Every spec.md acceptance criterion (EARS) maps to ≥1 automated test that runs in `verify.sh`.

@@ -16,7 +16,7 @@ import assert from "node:assert/strict";
 import test, { after, before } from "node:test";
 
 import { assertAB } from "./lib/ab.mjs";
-import { formatF32, formatF64 } from "../../services/node-api/lib/json.mjs";
+import { formatF32, formatF64 } from "../../server/src/lib/json.mjs";
 import { TENANT, queryJson, request, startApi, startShell } from "./lib/harness.mjs";
 
 /**
@@ -250,14 +250,31 @@ test("alignment canonicalText is byte-identical to canonical_words in Postgres",
   if (res.body.length === 0) return; // covered by the A/B above; nothing to compare here
 
   assert.deepEqual(Object.keys(res.body[0]), [
+    "auditEventId",
     "canonicalText",
     "confidence",
+    "datasetVersion",
     "endMs",
+    "evidenceIds",
     "heardText",
+    "modelAttribution",
+    "modelVersion",
     "startMs",
     "status",
+    "transcriptSource",
     "wordId",
   ]);
+
+  for (const alignment of res.body) {
+    assert.ok(["server-derived", "client-reported"].includes(alignment.transcriptSource));
+    assert.equal(typeof alignment.modelVersion, "string");
+    assert.ok(alignment.modelVersion.length > 0);
+    assert.ok(Array.isArray(alignment.evidenceIds));
+    if (alignment.modelAttribution === null) {
+      assert.equal(alignment.datasetVersion, null);
+      assert.deepEqual(alignment.evidenceIds, []);
+    }
+  }
 
   // The served text is joined from canonical_words. Compare against the row itself, so a transform
   // by EITHER implementation is caught by an oracle that went through neither.

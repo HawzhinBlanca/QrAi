@@ -17,7 +17,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { health, ready } from "../../services/node-api/routes/infra.mjs";
+import { health, ready } from "../../server/src/routes/infra.mjs";
 
 /** Minimal Fastify-shaped reply that records what the handler decided. */
 function fakeReply() {

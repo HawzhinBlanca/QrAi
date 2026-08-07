@@ -54,7 +54,7 @@ let asr;
 const seen = [];
 
 before(async () => {
-  ml = await startMockUpstream(() => ({ status: 200, body: { findings: [] } }));
+  ml = await startMockUpstream(() => ({ status: 200, body: { annotations: [], findings: [] } }));
   asr = await startMockUpstream(() => ({ status: 200, body: { text: "x", words: [] } }));
   api = await startApi({ env: { ML_INFERENCE_URL: ml.url, ASR_INFERENCE_URL: asr.url } });
 });
@@ -78,7 +78,7 @@ const nulCases = () => {
   return [
     ["session-create/sourceChecksum", { path: "/v1/recitation-sessions", role: "learner", body: {
       learnerId: "learner-1", quranRef: { surahNumber: 1, ayahStart: 1, ayahEnd: 1, display: "1:1" },
-      sourceChecksum: withNul("c"), modelVersion: "model-v0.3", language: "ar", consent } }],
+      sourceChecksum: withNul("c"),  language: "ar", consent } }],
     ["session-create/modelVersion", { path: "/v1/recitation-sessions", role: "learner", body: {
       learnerId: "learner-1", quranRef: { surahNumber: 1, ayahStart: 1, ayahEnd: 1, display: "1:1" },
       sourceChecksum: "c", modelVersion: withNul("model-v0.3"), language: "ar", consent } }],

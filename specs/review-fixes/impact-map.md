@@ -15,9 +15,9 @@
 
 ## Backend/DB
 
-- `infra/sql/0005_learner_progress.sql`
+- `infra/migrations/0005_learner_progress.sql`
   - Adds tenant-owned table used by `handlers/progress.rs`.
-- `infra/sql/0008_session_language.sql`
+- `infra/migrations/0008_session_language.sql`
   - Must match `handlers/recitation.rs` insert/read surface.
 - New learner-progress RLS migration
   - Must match `scripts/smoke-sql.mjs` static/live proof.

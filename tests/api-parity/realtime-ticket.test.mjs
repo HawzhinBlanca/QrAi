@@ -38,7 +38,7 @@ const createSession = async (learnerId, consent = {}) => {
       learnerId,
       quranRef: { surahNumber: 1, ayahStart: 1, ayahEnd: 7, display: "Al-Fatihah 1:1-7" },
       sourceChecksum: "fnv1a32:ticket-cov",
-      modelVersion: "model-v0.3",
+
       language: "ckb",
       mode: "guided-recite",
       practicePlanId: "fatihah-mastery-v1",

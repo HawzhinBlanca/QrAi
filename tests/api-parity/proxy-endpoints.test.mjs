@@ -23,13 +23,40 @@ import { queryJson, request, startApi, startMockUpstream } from "./lib/harness.m
 
 const AUDIO = { audioBase64: "AAAA", audioFormat: "wav", language: "ar" };
 
+const attributedAsrResponse = (component) => {
+  const implementationId = `declared-${component}-fixture`;
+  return {
+    text: "fixture transcript",
+    words: [],
+    modelVersion: implementationId,
+    modelAttribution: {
+      schemaVersion: 1,
+      primaryComponent: component,
+      components: [
+        {
+          component,
+          status: "active",
+          implementationId,
+          artifactDigest: `sha256:${"a".repeat(64)}`,
+          datasetVersion: "declared-fixture",
+          analysisBasis: "acoustic",
+          calibratorId: null,
+        },
+      ],
+    },
+  };
+};
+
 let api;
 let ml;
 let asr;
 
 before(async () => {
-  ml = await startMockUpstream(() => ({ status: 200, body: { findings: [] } }));
-  asr = await startMockUpstream(() => ({ status: 200, body: { text: "بسم الله", words: [] } }));
+  ml = await startMockUpstream(() => ({ status: 200, body: { annotations: [], findings: [] } }));
+  asr = await startMockUpstream(({ path }) => ({
+    status: 200,
+    body: attributedAsrResponse(path.includes("force-align") ? "forced-aligner" : "asr"),
+  }));
   api = await startApi({ env: { ML_INFERENCE_URL: ml.url, ASR_INFERENCE_URL: asr.url } });
 });
 after(async () => {
@@ -100,7 +127,7 @@ test("tajweed:predict maps an upstream failure to a GENERIC 502", async () => {
     role: "learner",
     body: { words: [] },
   });
-  ml.respond = () => ({ status: 200, body: { findings: [] } });
+  ml.respond = () => ({ status: 200, body: { annotations: [], findings: [] } });
 
   assert.equal(res.status, 502);
   assert.equal(res.body.error, "ML service error");
@@ -154,7 +181,10 @@ for (const [route, upstreamPath] of [
   test(`${route} maps an upstream failure to a GENERIC 502`, async () => {
     asr.respond = () => ({ status: 503, body: { detail: "asr-inference at http://10.0.0.9:8091 is down" } });
     const res = await request(api.baseUrl, route, { method: "POST", role: "learner", body: AUDIO });
-    asr.respond = () => ({ status: 200, body: { text: "بسم الله", words: [] } });
+    asr.respond = ({ path }) => ({
+      status: 200,
+      body: attributedAsrResponse(path.includes("force-align") ? "forced-aligner" : "asr"),
+    });
 
     assert.equal(res.status, 502, "any upstream non-success collapses to 502, not 503");
     assert.equal(res.body.error, "ASR service error");
@@ -166,7 +196,10 @@ for (const [route, upstreamPath] of [
     // version of this, and it must not surface as a server error on our side.
     asr.respond = () => ({ status: 200, body: "<html>502 Bad Gateway</html>", contentType: "text/html" });
     const res = await request(api.baseUrl, route, { method: "POST", role: "learner", body: AUDIO });
-    asr.respond = () => ({ status: 200, body: { text: "بسم الله", words: [] } });
+    asr.respond = ({ path }) => ({
+      status: 200,
+      body: attributedAsrResponse(path.includes("force-align") ? "forced-aligner" : "asr"),
+    });
 
     assert.equal(res.status, 502);
     assert.equal(res.body.error, "ASR service returned an invalid response");

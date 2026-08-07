@@ -43,7 +43,7 @@ import { ROLE_USER_IDS, TENANT, request, startApi, startShell } from "./lib/harn
  * verify.sh reads it: a hand-copied list here would be a second list to drift.
  */
 const PORTED = (() => {
-  const src = readFileSync(new URL("../../services/node-api/server.mjs", import.meta.url), "utf8");
+  const src = readFileSync(new URL("../../server/src/main.mjs", import.meta.url), "utf8");
   const m = /export const PORTABLE = \[([^\]]*)\]/s.exec(src);
   if (!m) throw new Error("could not read PORTABLE out of server.mjs");
   return [...m[1].matchAll(/"([^"]+)"/g)].map((x) => x[1]).join(",");
@@ -372,9 +372,9 @@ test("the bodies used above really are rejected once the caller is authorized", 
  */
 test("every role gate in the shell has a row in this matrix", () => {
   const gated = [];
-  for (const file of readdirSync("services/node-api/routes")) {
+  for (const file of readdirSync("server/src/routes")) {
     if (!file.endsWith(".mjs") || file === "index.mjs") continue;
-    const src = readFileSync(`services/node-api/routes/${file}`, "utf8");
+    const src = readFileSync(`server/src/routes/${file}`, "utf8");
     // `requireAnyRole(actor,` and `requireAnyRole(caller,` — the import line names neither.
     for (const m of src.matchAll(/requireAnyRole\((?:actor|caller),/g)) gated.push(`${file}:${m.index}`);
   }
@@ -390,7 +390,7 @@ test("every role gate in the shell has a row in this matrix", () => {
   assert.equal(
     gated.length,
     covered.size,
-    `services/node-api/routes has ${gated.length} requireAnyRole call sites but this matrix covers ` +
+    `server/src/routes has ${gated.length} requireAnyRole call sites but this matrix covers ` +
       `${covered.size} routes. A role gate with no row here is an authorization rule no absolute ` +
       `assertion checks — add it to GET_MATRIX or POST_MATRIX. Call sites: ${gated.join(", ")}`,
   );

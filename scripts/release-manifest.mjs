@@ -11,7 +11,7 @@ const requiredArtifactFiles = [
   join("specs", "readiness-recovery-10-10", "impact-map.md"),
   join("specs", "readiness-recovery-10-10", "tasks.md")
 ];
-const deployableServices = ["platform-api", "realtime-gateway", "ml-inference", "asr-inference", "web"];
+const deployableServices = ["platform-api", "node-api", "realtime-gateway", "ml-inference", "asr-inference", "web"];
 const sha256Digest = /^sha256:[a-f0-9]{64}$/;
 const sha256Hash = /^[a-f0-9]{64}$/;
 const candidateSha = /^[a-f0-9]{40}$/;

@@ -75,13 +75,13 @@ fabrication), and every external source has a `docs/DATA_LICENSES.md` entry + AD
    timings come ONLY from licensed sources or measured signal. If a task cannot proceed without
    inventing content, stop and report BLOCKED with the exact missing input.
 7. **The ci.yml wall.** The wall is enforced by ci.yml itself: it hard-codes the migration apply
-   list AND asserts the `infra/sql/*.sql` file count matches it, so any PR adding a migration fails
+   list AND asserts the `infra/migrations/*.sql` file count matches it, so any PR adding a migration fails
    CI until ci.yml is edited. Editing ci.yml is owner-gated **by convention** (the Codystem-harness
    sentinel process — QrAi's own hooks do not block it, so agents must self-enforce). Until T0
    lands, **no task may add a SQL migration**. Reference data (timings, translations) ships as
    static, checksummed assets in `packages/quran-data` instead — a deliberate route-around, not a
    shortcut. (Plain SQL *seeds* run manually against dev/staging DBs are fine; only files in
-   `infra/sql/` trip the wall.)
+   `infra/migrations/` trip the wall.)
 8. **Honest state or no state.** Every new UI surface follows the codebase rule: loading state,
    error state, and empty state — no invented numbers, no success claims before backend confirmation.
 
@@ -443,7 +443,7 @@ schema-application path for dev, CI, and prod; compose initdb mounts become boot
 removed.
 **Why.** Audit: "a production DB cannot be safely evolved" — no runner, compose already drifted
 (0019/0020 unmounted), numbering gaps (0014/0018).
-**Approach.** Renumber/normalize `infra/sql` into `services/platform-api/migrations/` in sqlx
+**Approach.** Renumber/normalize `infra/migrations` into `services/platform-api/migrations/` in sqlx
 format (document the mapping); runner executes on service start (gated by env for prod safety);
 fix compose; document the drift story in an ADR; CI applies via the runner (needs T0's ci.yml edit).
 **Required proofs.**
@@ -602,7 +602,7 @@ properties (breaks RTL).
    the learner-side gate state change (before/after API responses pasted).
 2. RLS proof: teacher of tenant A cannot fetch tenant B data (curl 403/404/empty transcript).
    NOTE (verified): the dev DB has exactly ONE tenant and no institution-creation endpoint — seed
-   tenant B + a teacher via direct SQL mirroring `infra/sql/0006_seed_internal.sql` (a manual seed,
+   tenant B + a teacher via direct SQL mirroring `infra/migrations/0006_seed_internal.sql` (a manual seed,
    not a migration file — does not trip the ci.yml wall), or reuse the cross-tenant fixtures
    already in `tests/integration.rs`.
 3. i18n/RTL parity: the surface passes the same checks as the learner flow (screenshots in ckb+RTL

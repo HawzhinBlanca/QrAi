@@ -11,6 +11,7 @@ import {
 } from "lucide-react";
 import type {
   ReviewStatus,
+  ModelEvalRun,
   SourceReference,
   SupportedLanguageCode,
 } from "../types/platform";
@@ -323,15 +324,45 @@ export async function fetchMemorizationPlan(
   }
 }
 
-export interface EvalRun {
-  modelVersion: string;
-  passed: boolean;
-  wordAlignmentF1: number;
-  tajweedF1: number;
-  falsePositiveRate: number;
-  teacherAgreementRate: number;
-  unsourcedLearnerOutputs: number;
-}
+export type EvalRun = ModelEvalRun;
+
+// Declared browser-only fixture. Zeroed aggregates make the smoke layout deterministic while the
+// evidence classification makes it mechanically incapable of becoming a model or release claim.
+const SMOKE_EVAL_RUN: EvalRun = {
+  modelVersion: "declared-browser-smoke-model",
+  datasetVersion: "declared-browser-smoke-fixture-v1",
+  wordAlignmentF1: 0,
+  tajweedF1: 0,
+  falsePositiveRate: 1,
+  teacherAgreementRate: 0,
+  unsourcedLearnerOutputs: 0,
+  passed: false,
+  evaluationTask: null,
+  evidenceId: null,
+  evidenceKind: "legacy-aggregate",
+  evidenceEligibility: "fixture-regression",
+  releaseEligible: false,
+  evidencePayload: null,
+  evidencePayloadSha256: null,
+  candidateId: null,
+  modelArtifactSha256: null,
+  datasetManifestSha256: null,
+  splitManifestSha256: null,
+  splitId: null,
+  evaluatorVersion: null,
+  evaluatorSourceSha256: null,
+  evaluatorProtocolSha256: null,
+  rawRowManifestSha256: null,
+  rawResultsSha256: null,
+  calibratorId: null,
+  calibratorArtifactSha256: null,
+  signerKeyId: null,
+  signatureAlgorithm: null,
+  signatureBase64Url: null,
+  signedAt: null,
+  evaluationCounts: null,
+  sliceMetrics: null,
+};
 
 export async function fetchEvalRun(
   tenantId: string,
@@ -339,15 +370,7 @@ export async function fetchEvalRun(
   authToken?: string,
 ): Promise<EvalRun | null> {
   if (typeof window !== "undefined" && new URLSearchParams(window.location.search).has("smoke")) {
-    return {
-      modelVersion: modelVersion,
-      passed: true,
-      wordAlignmentF1: 0.95,
-      tajweedF1: 0.88,
-      falsePositiveRate: 0.04,
-      teacherAgreementRate: 0.92,
-      unsourcedLearnerOutputs: 0
-    };
+    return { ...SMOKE_EVAL_RUN, modelVersion };
   }
   try {
     const response = await fetchWithTimeout(`${API_BASE}/v1/eval-runs/${modelVersion}`, {
@@ -372,12 +395,18 @@ export interface BenchmarkMetric {
 export async function fetchBenchmarkMetrics(tenantId: string, authToken?: string): Promise<BenchmarkMetric[]> {
   const evalRun = await fetchEvalRun(tenantId, "model-v0.3", authToken);
   if (!evalRun) return [];
+  const evidenceAuthoritative =
+    evalRun.releaseEligible &&
+    evalRun.evidenceEligibility === "release-candidate" &&
+    evalRun.evidenceKind === "row-level-computed-evaluation";
+  const status = (passes: boolean): BenchmarkMetric["status"] =>
+    evidenceAuthoritative ? (passes ? "passing" : "watch") : "blocked";
   return [
-    { labelKey: "benchmark.wordAlignmentF1", value: evalRun.wordAlignmentF1.toFixed(2), target: "≥0.90", status: evalRun.wordAlignmentF1 >= 0.9 ? "passing" : "watch" },
-    { labelKey: "benchmark.tajweedF1", value: evalRun.tajweedF1.toFixed(2), target: "≥0.82", status: evalRun.tajweedF1 >= 0.82 ? "passing" : "watch" },
-    { labelKey: "benchmark.falsePositiveRate", value: `${(evalRun.falsePositiveRate * 100).toFixed(1)}%`, target: "≤8%", status: evalRun.falsePositiveRate <= 0.08 ? "passing" : "watch" },
-    { labelKey: "benchmark.teacherAgreement", value: `${(evalRun.teacherAgreementRate * 100).toFixed(0)}%`, target: "≥90%", status: evalRun.teacherAgreementRate >= 0.9 ? "passing" : "watch" },
-    { labelKey: "benchmark.unsourcedOutputs", value: String(evalRun.unsourcedLearnerOutputs), target: "0", status: evalRun.unsourcedLearnerOutputs === 0 ? "passing" : "blocked" },
+    { labelKey: "benchmark.wordAlignmentF1", value: evalRun.wordAlignmentF1.toFixed(2), target: "≥0.90", status: status(evalRun.wordAlignmentF1 >= 0.9) },
+    { labelKey: "benchmark.tajweedF1", value: evalRun.tajweedF1.toFixed(2), target: "≥0.82", status: status(evalRun.tajweedF1 >= 0.82) },
+    { labelKey: "benchmark.falsePositiveRate", value: `${(evalRun.falsePositiveRate * 100).toFixed(1)}%`, target: "≤8%", status: status(evalRun.falsePositiveRate <= 0.08) },
+    { labelKey: "benchmark.teacherAgreement", value: `${(evalRun.teacherAgreementRate * 100).toFixed(0)}%`, target: "≥90%", status: status(evalRun.teacherAgreementRate >= 0.9) },
+    { labelKey: "benchmark.unsourcedOutputs", value: String(evalRun.unsourcedLearnerOutputs), target: "0", status: status(evalRun.unsourcedLearnerOutputs === 0) },
   ];
 }
 
@@ -444,6 +473,7 @@ export interface TajweedFindingSummary {
   id: string;
   wordId: string;
   rule: string;
+  analysisBasis: "acoustic";
   severity: "practice" | "warning" | "critical";
   confidence: number;
   explanation: string;

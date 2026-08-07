@@ -1,11 +1,42 @@
 import { describe, expect, it, vi, afterEach } from "vitest";
 import {
+  fetchBenchmarkMetrics,
+  fetchEvalRun,
   fetchMemorizationPlan,
   getSelectableInterfaceLanguages,
   localeCapabilities,
   type LocaleCapability,
 } from "./platform";
 import en from "../locales/en.json";
+
+describe("evaluation evidence fixtures", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("never turns browser smoke mode into a passing or release-eligible model claim", async () => {
+    vi.stubGlobal("window", { location: { search: "?smoke" } });
+    const fetchSpy = vi.fn();
+    vi.stubGlobal("fetch", fetchSpy);
+
+    const run = await fetchEvalRun("hikmah-pilot-erbil", "model-v0.3");
+    expect(fetchSpy).not.toHaveBeenCalled();
+    expect(run).toMatchObject({
+      modelVersion: "model-v0.3",
+      datasetVersion: "declared-browser-smoke-fixture-v1",
+      evidenceKind: "legacy-aggregate",
+      evidenceEligibility: "fixture-regression",
+      releaseEligible: false,
+      passed: false,
+    });
+    expect(run?.evidencePayload).toBeNull();
+    expect(run?.signatureBase64Url).toBeNull();
+
+    const metrics = await fetchBenchmarkMetrics("hikmah-pilot-erbil");
+    expect(metrics).toHaveLength(5);
+    expect(metrics.every((metric) => metric.status === "blocked")).toBe(true);
+  });
+});
 
 // The backend returns nextReviewAt as a raw ISO 8601 timestamp (e.g.
 // "2036-07-03T23:57:49.052403+00:00"). Regression guard: this used to be shown to the learner

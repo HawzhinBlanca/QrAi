@@ -6,7 +6,7 @@ import { isAbsolute, resolve } from "node:path";
 const candidatePattern = /^[a-f0-9]{40}$/;
 const imageDigestPattern = /^sha256:[a-f0-9]{64}$/;
 const releaseTracePattern = /^release-trace-[a-z0-9][a-z0-9-]{15,127}$/;
-const deployableServices = ["platform-api", "realtime-gateway", "ml-inference", "asr-inference", "web"];
+const deployableServices = ["platform-api", "node-api", "realtime-gateway", "ml-inference", "asr-inference", "web"];
 
 function fail(message) {
   throw new Error(message);

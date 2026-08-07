@@ -475,7 +475,7 @@ mod ticket_vectors {
                 .collect();
         assert_eq!(
             covered, expected,
-            "the vector set must exercise every value infra/sql/0001_core_schema.sql permits"
+            "the vector set must exercise every value infra/migrations/0001_core_schema.sql permits"
         );
     }
 

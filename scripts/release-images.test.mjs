@@ -72,6 +72,7 @@ test("every compose-built service is covered", () => {
   // says so. The list is asserted against the compose file itself.
   assert.deepEqual(SERVICES, [
     "platform-api",
+    "node-api",
     "realtime-gateway",
     "ml-inference",
     "asr-inference",

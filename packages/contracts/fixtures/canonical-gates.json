@@ -1,41 +1,13 @@
 {
   "$comment": [
-    "Language-neutral golden vectors for the safety-critical functions in @quran-ai/contracts.",
-    "",
-    "WHY THIS FILE EXISTS: these functions are gates, not conveniences. canShowLearnerFacingAiOutput",
-    "is the only thing stopping unreviewed AI output reaching a learner; canUseExternalAsr is the only",
-    "thing stopping audio leaving without guardian consent. Any second implementation (a Node service,",
-    "a Dart client, a Python check) must agree EXACTLY, and prose in a design doc cannot enforce that.",
-    "This corpus can — but only for the runtimes that actually LOAD it.",
-    "",
-    "WHO LOADS THIS FILE (keep this list honest; it is the whole value of the corpus):",
-    "  canShowLearnerFacingAiOutput",
-    "    yes  packages/contracts/tests/canonical-gates-fixtures.test.ts   (the reference)",
-    "    yes  services/platform-api  handlers/review.rs learner_gate_corpus_tests  (authoritative)",
-    "    yes  services/agents        agents.test.mjs",
-    "    yes  services/node-api  tests/node-api/authz.test.mjs  (clearsLearnerGate, ml-proxy)",
-    "    NO   services/node-api/routes/agent-write.mjs  the gate is inline in the handler",
-    "    NO   apps/flutter/lib/src/api/models.dart   isLearnerVisible; Dart cannot be run from Node,",
-    "         and tests/contract/tajweed-gate-parity.test.mjs compares it by EXTRACTING its constants",
-    "         from source rather than by executing it against these cases",
-    "  isNonRecitedMark",
-    "    yes  services/ml-inference/marks-parity.test.mjs",
-    "",
-    "This header previously read 'every runtime loads this same file and asserts the same",
-    "expectations'. That was false: for a long time only the TypeScript suite read it, which is the",
-    "language that already owns the reference implementation, so the corpus proved TypeScript agreed",
-    "with itself. A claim like that in a file like this is worse than no claim, because it is exactly",
-    "what stops somebody checking.",
-    "",
-    "The TypeScript suite (tests/platform-contracts.test.ts) consumes this file rather than",
-    "duplicating the cases as literals, so the corpus is the source of truth and cannot silently",
-    "drift from the language that happens to own the reference implementation today.",
-    "",
-    "ADDING CASES: add them here, not in a test file. A case added only to one language's suite is",
-    "exactly the divergence this corpus is meant to prevent."
+    "Language-neutral golden vectors for the safety-critical generic gates in @quran-ai/contracts.",
+    "The basis-optional canShowLearnerFacingAiOutput cases here cover AgentRun compatibility.",
+    "Acoustic Tajweed findings use fixtures/learner-feedback-gate.json, which Rust, Node, Dart,",
+    "and the TypeScript contract execute directly. Do not add acoustic cases to this generic corpus.",
+    "The remaining groups pin retention, external ASR, release evaluation, hashing, and recited marks."
   ],
   "canShowLearnerFacingAiOutput": {
-    "$comment": "Allowlist gate. Only teacher-reviewed / scholar-approved pass, AND confidence >= 0.82, AND at least one source. Every other input must return false.",
+    "$comment": "Generic AgentRun allowlist: teacher-reviewed/scholar-approved, finite confidence in [0.82,1], and at least one source. Explicit text-rule output is refused. Acoustic findings use learner-feedback-gate.json.",
     "cases": [
       {
         "name": "approved: teacher-reviewed, high confidence, sourced",
@@ -212,6 +184,22 @@
           ]
         },
         "expected": false
+      },
+      {
+        "name": "blocked: instructional text rule is not learner-performance feedback",
+        "input": {
+          "analysisBasis": "text-rule",
+          "confidence": 1,
+          "reviewStatus": "teacher-reviewed",
+          "sources": [
+            {
+              "id": "scholar-board",
+              "title": "Scholar Board",
+              "citation": "Approved tajweed instruction"
+            }
+          ]
+        },
+        "expected": false
       }
     ]
   },
@@ -300,10 +288,10 @@
     ]
   },
   "modelEvalPassesReleaseGate": {
-    "$comment": "Release gate. Every threshold is pinned on its failing side individually, so a port cannot drop one check and still pass this corpus. NOTE: datasetVersion below names a dataset that does not exist -- see specs/kurdish-asr-evaluation/spec.md. It is retained verbatim as a STRUCTURAL fixture (the gate's arithmetic), not as evidence any model was evaluated.",
+    "$comment": "Legacy aggregate vectors. None carries a cryptographically verified row-level evidence authority, so every case MUST fail closed even when its arithmetic looks passing. Release-authority success and tamper cases live in tests/release/model-evidence.test.mjs.",
     "cases": [
       {
-        "name": "all thresholds met",
+        "name": "aggregate thresholds alone are not release authority",
         "input": {
           "modelVersion": "model-v1",
           "datasetVersion": "fatihah-juz-amma-reviewed-v1",
@@ -314,7 +302,7 @@
           "unsourcedLearnerOutputs": 0,
           "passed": true
         },
-        "expected": true
+        "expected": false
       },
       {
         "name": "wordAlignmentF1 below 0.90",

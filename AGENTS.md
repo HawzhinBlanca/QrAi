@@ -51,7 +51,7 @@ SKIPS those DB tests when no DB is reachable — it never fakes them. CI runs th
 - **No fabricated model or eval output.** Inference/eval results come from a real service or a
   declared fixture — never hand-authored numbers presented as model output.
 - **Tenant isolation is enforced (Postgres RLS).** Don't add a tenant-owned table or query
-  path that bypasses the RLS policies in `infra/sql/0003_tenant_rls.sql`.
+  path that bypasses the RLS policies in `infra/migrations/0003_tenant_rls.sql`.
 - **Audio/privacy.** Honor audio-retention + privacy export/delete logic in `contracts`;
   never log raw audio or secrets.
 - **LOGIN IS OFF for general users until production (owner-gated).** The web app renders

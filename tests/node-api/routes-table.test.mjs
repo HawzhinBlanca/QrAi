@@ -14,10 +14,10 @@ import { readFileSync } from "node:fs";
 import test from "node:test";
 
 import { checkTrafficShare } from "../../scripts/cutover-readiness.mjs";
-import { PORTABLE } from "../../services/node-api/server.mjs";
-import { ROUTES, fastifyPath } from "../../services/node-api/routes/index.mjs";
+import { PORTABLE } from "../../server/src/main.mjs";
+import { ROUTES, fastifyPath } from "../../server/src/routes/index.mjs";
 
-const SERVER_SRC = readFileSync("services/node-api/server.mjs", "utf8");
+const SERVER_SRC = readFileSync("server/src/main.mjs", "utf8");
 
 test("PORTABLE and ROUTES describe the same set of routes", () => {
   assert.deepEqual(

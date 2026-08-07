@@ -11,6 +11,9 @@
 /// says on its own terms.
 library;
 
+import 'dart:convert';
+import 'dart:io';
+
 import 'package:flutter_test/flutter_test.dart';
 import 'package:qrai/src/api/models.dart';
 
@@ -22,6 +25,7 @@ Map<String, dynamic> finding({
     <String, dynamic>{
       'wordId': '1:1:1',
       'rule': 'ghunnah',
+      'analysisBasis': 'acoustic',
       'severity': 'practice',
       'explanation': 'Apply ghunnah on the noon sakina.',
       'reviewStatus': reviewStatus,
@@ -34,9 +38,57 @@ Map<String, dynamic> finding({
               'citation': 'Ch. 4',
             },
           ],
+      'withheld': false,
+      'startMs': 120,
+      'endMs': 460,
+      'audioStatus': 'available',
+      'evidenceId': 'audio-evidence-1',
+      'modelVersion': 'acoustic-model-v1',
+      'modelArtifactSha256':
+          'sha256:1111111111111111111111111111111111111111111111111111111111111111',
+      'acousticDatasetVersion': 'kurdish-l1-held-out-v1',
+      'acousticDatasetManifestSha256':
+          'sha256:2222222222222222222222222222222222222222222222222222222222222222',
+      'calibratorId': 'tajweed-calibrator-v1',
+      'calibratorArtifactSha256':
+          'sha256:3333333333333333333333333333333333333333333333333333333333333333',
+      'calibrationStatus': 'calibrated',
+      'evaluationEvidenceId': 'evaluation-evidence-v1',
+      'evaluationEvidenceSha256':
+          'sha256:4444444444444444444444444444444444444444444444444444444444444444',
+      'evaluationEvidenceStatus': 'release-trusted',
+      'auditEventId': 'audit-learner-feedback-1',
     };
 
 void main() {
+  test('the shared expanded learner-feedback corpus is enforced', () {
+    final Map<String, dynamic> corpus = jsonDecode(
+      File('../../packages/contracts/fixtures/learner-feedback-gate.json').readAsStringSync(),
+    ) as Map<String, dynamic>;
+    final Map<String, dynamic> base =
+        Map<String, dynamic>.from(corpus['base'] as Map<String, dynamic>);
+    final List<dynamic> cases = corpus['cases'] as List<dynamic>;
+    expect(cases.length, greaterThanOrEqualTo(24));
+    for (final Object? raw in cases) {
+      final Map<String, dynamic> vector = Map<String, dynamic>.from(raw! as Map);
+      final Map<String, dynamic> input =
+          jsonDecode(jsonEncode(base)) as Map<String, dynamic>;
+      final Object? patch = vector['patch'];
+      if (patch is Map) input.addAll(Map<String, dynamic>.from(patch));
+      final Object? remove = vector['remove'];
+      if (remove is List) {
+        for (final Object? field in remove) input.remove(field);
+      }
+      bool actual;
+      try {
+        actual = TajweedFinding.fromJson(input).isLearnerVisible;
+      } on FormatException {
+        actual = false;
+      }
+      expect(actual, vector['expected'], reason: vector['name'] as String);
+    }
+  });
+
   test('only a human-approved status is learner-visible', () {
     for (final String status in <String>['teacher-reviewed', 'scholar-approved']) {
       expect(TajweedFinding.fromJson(finding(reviewStatus: status)).isLearnerVisible, isTrue,
@@ -109,6 +161,16 @@ void main() {
 
   test('a payload with no reviewStatus fails to PARSE', () {
     final Map<String, dynamic> json = finding()..remove('reviewStatus');
+    expect(() => TajweedFinding.fromJson(json), throwsA(isA<FormatException>()));
+  });
+
+  test('instructional text rules cannot parse as learner-performance findings', () {
+    final Map<String, dynamic> json = finding()..['analysisBasis'] = 'text-rule';
+    expect(() => TajweedFinding.fromJson(json), throwsA(isA<FormatException>()));
+  });
+
+  test('a payload with no analysisBasis fails to PARSE', () {
+    final Map<String, dynamic> json = finding()..remove('analysisBasis');
     expect(() => TajweedFinding.fromJson(json), throwsA(isA<FormatException>()));
   });
 

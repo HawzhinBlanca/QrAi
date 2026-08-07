@@ -11,8 +11,8 @@ Under option **B** the file list is the same shape; only the number of ported ro
 |---|---|---|
 | `services/node-api/` | the Fastify strangler shell | N2 |
 | `services/node-api/lib/db.mjs` | `sql.begin`-scoped tenant transactions (§2.2) | N3 |
-| `services/node-api/lib/authz.mjs` | `requireSelfOrAny`, fail-closed on degenerate input (§2.3) | N3 |
-| `services/node-api/lib/ticket.mjs` | HMAC minting; the only Node code that may produce `rt_v1.…` | N5 |
+| `server/src/lib/authz.mjs` | `requireSelfOrAny`, fail-closed on degenerate input (§2.3) | N3 |
+| `server/src/lib/ticket.mjs` | HMAC minting; the only Node code that may produce `rt_v1.…` | N5 |
 | `specs/node-backend-port/fixtures/ticket-vectors.json` | cross-language golden vectors | N1 |
 | `specs/node-backend-port/evidence/` | N5's live-gateway run, N6's report | N5, N6 |
 
@@ -87,7 +87,7 @@ no Rust tests beyond N1's vector module.
 - `services/platform-api/src/**` and `services/realtime-gateway/src/**` — no production Rust changes.
   N5's whole point is the **unchanged** gateway accepting a Node-minted ticket.
 - `apps/web`, `apps/mobile` — no client change; the shell is transparent.
-- `infra/sql/**` — no schema change. A port that needed one would be redesigning, not porting.
+- `infra/migrations/**` — no schema change. A port that needed one would be redesigning, not porting.
 
 ## 5. Blast radius
 

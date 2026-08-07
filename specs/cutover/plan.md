@@ -66,7 +66,7 @@ is a real gap independent of whether the migration ever proceeds.
 |---|---|
 | routes Node serves by default / can serve | parse `services/node-api/server.mjs` |
 | boundary oracle coverage | fixtures ∪ parity ∪ the OpenAPI contract |
-| response schemas validated vs `x-unvalidated` | `specs/flutter-client/openapi.yaml` |
+| response schemas validated vs `x-unvalidated` | `packages/contracts/openapi.yaml` |
 | rollback artifact exists | grep `.github/workflows/` for an image build/push |
 | ADR-0022 accepted | `docs/DECISIONS.md` status line |
 | readiness rows P1.7 / P4.1 / P5.5 / P5.6 | `specs/readiness-recovery-10-10/tasks.md` |

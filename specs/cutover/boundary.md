@@ -8,7 +8,7 @@
 into citing things that were deleted. A review package whose claims cannot be checked is worse than
 none, because it reads as assurance.
 
-**Nothing described here is deployed.** `services/node-api/server.mjs` serves **0 of 38** routes in
+**Nothing described here is deployed.** `server/src/main.mjs` serves **0 of 38** routes in
 any default configuration. Run `node scripts/cutover-readiness.mjs` for the current state.
 
 ---
@@ -36,7 +36,7 @@ edited in Phases 7–9.
 ## 2. What it deliberately does NOT do
 
 **The pilot cookie path is delegated, not ported.** Any request carrying `__Host-qrai-pilot` is
-proxied to Rust untouched — `services/node-api/lib/authz.mjs`.
+proxied to Rust untouched — `server/src/lib/authz.mjs`.
 
 That is 306 lines of session lookup, idle-roll, CSRF digest and Origin allowlisting
 (`services/platform-api/src/handlers/pilot.rs`) that the Node service does not reimplement.
@@ -57,7 +57,7 @@ released a client while still inside a transaction would return it to the pool *
 
 Phase 6 proved RLS fails **closed** on a *missing* context. It proved nothing about a *wrong* one.
 
-- Implementation: `services/node-api/lib/db.mjs` — `sql.begin()` binds the connection structurally;
+- Implementation: `server/src/lib/db.mjs` — `sql.begin()` binds the connection structurally;
   the caller never holds a handle to leak.
 - Proven by: `tests/node-api/db-tenant.test.mjs` — including a test that **demonstrates the
   fail-open** directly, and three that prove nothing leaks after a JS throw, after a server-side
@@ -67,7 +67,7 @@ Phase 6 proved RLS fails **closed** on a *missing* context. It proved nothing ab
 
 `undefined === undefined` is `true`. This is the only ownership check on 8 endpoints.
 
-- Implementation: `services/node-api/lib/authz.mjs` — refuses degenerate input **before** comparing.
+- Implementation: `server/src/lib/authz.mjs` — refuses degenerate input **before** comparing.
 - Proven by: `tests/node-api/authz.test.mjs` — 17 tests, most asserting refusal, including
   `undefined`, `null`, empty and whitespace-only pairs, a missing owner column, a malformed
   allowlist, a token missing a claim, and an `alg: none` token.
@@ -78,7 +78,7 @@ tower-http emits the literal `*`, which browsers refuse to combine with credenti
 what stops a cross-origin page sending the pilot cookie today. `@fastify/cors`'s `origin: true`
 **reflects** the request Origin, which *is* valid with credentials.
 
-- Implementation: `services/node-api/server.mjs` — literal `"*"`, never `true`; `credentials: true`
+- Implementation: `server/src/app.mjs` — literal `"*"`, never `true`; `credentials: true`
   refused at **boot**.
 - Proven by: `tests/node-api/shell.test.mjs` — asserts `access-control-allow-credentials` is absent
   from **every** response, and that configuring it throws.

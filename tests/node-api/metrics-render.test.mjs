@@ -11,7 +11,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { LATENCY_BUCKETS_MS, createMetrics, escape, metricsAccessAllowed } from "../../services/node-api/lib/metrics.mjs";
+import { LATENCY_BUCKETS_MS, createMetrics, escape, metricsAccessAllowed } from "../../server/src/lib/metrics.mjs";
 
 test("records and renders prometheus exposition — metrics.rs records_and_renders", () => {
   const m = createMetrics();

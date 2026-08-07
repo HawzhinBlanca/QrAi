@@ -3,7 +3,7 @@ import test from "node:test";
 
 import { SignJWT } from "jose";
 
-import { ApiError, requireSelfOrAny, resolveActor } from "../../services/node-api/lib/authz.mjs";
+import { ApiError, requireSelfOrAny, resolveActor } from "../../server/src/lib/authz.mjs";
 
 /**
  * N3 §2.3 — the ownership gate.
@@ -205,15 +205,18 @@ test("a Bearer token wins over dev headers when both are present", async () => {
 // applied to both — the hole this whole session opened with.
 import { readFileSync } from "node:fs";
 
-import { clearsLearnerGate } from "../../services/node-api/routes/ml-proxy.mjs";
+import { clearsLearnerGate } from "../../server/src/routes/ml-proxy.mjs";
 
 const GATE_CORPUS = JSON.parse(
-  readFileSync(new URL("../../packages/contracts/fixtures/canonical-gates.json", import.meta.url), "utf8"),
-)["canShowLearnerFacingAiOutput"];
+  readFileSync(
+    new URL("../../packages/contracts/fixtures/learner-feedback-gate.json", import.meta.url),
+    "utf8",
+  ),
+);
 
 test("the ml-proxy learner gate agrees with the shared corpus on every case", () => {
   const cases = GATE_CORPUS?.cases;
-  assert.ok(Array.isArray(cases), "canonical-gates.json has no canShowLearnerFacingAiOutput.cases");
+  assert.ok(Array.isArray(cases), "learner-feedback-gate.json has no cases");
 
   // Fail CLOSED on a shrinking corpus: an empty `cases` makes the loop below vacuous and this test
   // green while asserting nothing — the same shape as the licence gate that once reported
@@ -229,10 +232,13 @@ test("the ml-proxy learner gate agrees with the shared corpus on every case", ()
   );
 
   for (const c of cases) {
+    const input = structuredClone(GATE_CORPUS.base);
+    Object.assign(input, c.patch ?? {});
+    for (const field of c.remove ?? []) delete input[field];
     assert.equal(
-      clearsLearnerGate(c.input),
+      clearsLearnerGate(input),
       c.expected,
-      `ml-proxy disagrees with the shared corpus.\n  case: ${c.name}\n  input: ${JSON.stringify(c.input)}`,
+      `ml-proxy disagrees with the shared corpus.\n  case: ${c.name}\n  input: ${JSON.stringify(input)}`,
     );
   }
 });

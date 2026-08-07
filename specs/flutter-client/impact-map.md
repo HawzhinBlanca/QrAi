@@ -9,7 +9,7 @@ whole client. Both are blocked on toolchain this machine does not have (`researc
 
 | path | what | task |
 |---|---|---|
-| `specs/flutter-client/openapi.yaml` | the hand-authored 3.1 contract for all 34 pairs | F1 |
+| `packages/contracts/openapi.yaml` | the hand-authored 3.1 contract for all 34 pairs | F1 |
 | `tests/contract/openapi-coverage.test.mjs` | asserts every route in `lib.rs` appears exactly once | F1 |
 | `tests/contract/validate-responses.mjs` | replays fixtures + parity responses through `ajv` | F2 |
 | `specs/flutter-client/evidence/` | F2's divergence record | F2 |
@@ -61,7 +61,7 @@ the gate until it is contracted. Documented at the top of the test with the one-
 
 - `apps/web`, `apps/mobile` — no client changes.
 - `services/**` — no production code. F2 only *reads* live responses.
-- `infra/sql/**` — no schema change.
+- `infra/migrations/**` — no schema change.
 
 ## 5. Blast radius
 

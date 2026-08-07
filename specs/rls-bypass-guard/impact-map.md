@@ -2,10 +2,10 @@
 
 ## Files
 
-- `infra/sql/0003_tenant_rls.sql`
+- `infra/migrations/0003_tenant_rls.sql`
   - Base helper definition for fresh databases.
 
-- `infra/sql/0012_superuser_only_rls_bypass.sql`
+- `infra/migrations/0012_superuser_only_rls_bypass.sql`
   - Follow-up migration for existing databases.
 
 - `scripts/smoke-sql.mjs`
@@ -15,7 +15,7 @@
 - `docker-compose.yml`
   - Fresh Postgres initialization runs the follow-up migration.
 
-- `infra/sql/rls-app-role.sql`, `docs/TESTING.md`
+- `infra/provision/app-role.sql`, `docs/TESTING.md`
   - Documentation for the production restricted role.
 
 ## Proof

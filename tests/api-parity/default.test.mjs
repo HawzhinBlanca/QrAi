@@ -5,6 +5,7 @@ import {
   OTHER_TENANT,
   RLS_PROBE_ROLE,
   TENANT,
+  insertDeclaredTestAcousticFinding,
   queryJson,
   request,
   startApi,
@@ -65,7 +66,7 @@ const createSession = async (learnerId) => {
       learnerId,
       quranRef: FATIHAH_REF,
       sourceChecksum: "fnv1a32:privacy-scope",
-      modelVersion: "model-v0.3",
+
       language: "ckb",
       mode: "guided-recite",
       practicePlanId: "fatihah-mastery-v1",
@@ -113,14 +114,13 @@ const seedReviewedFinding = async (sessionId, label) => {
      VALUES ($1, $4, $2, '1:1:1', 'بسم', 0, 100, 0.9, 'matched', 'model-v0.3', $3)`,
     [ids.alignment, sessionId, ids.alignmentAudit, TENANT],
   );
-  await queryJson(
-    `INSERT INTO tajweed_findings
-       (id, tenant_id, alignment_id, rule, severity, confidence, explanation, review_status,
-        source_refs, model_version_id, audit_event_id)
-     VALUES ($1, $4, $2, 'Ghunnah', 'warning', 0.8, 'x', 'teacher-review-required', '[]'::jsonb,
-             'model-v0.3', $3)`,
-    [ids.finding, ids.alignment, ids.findingAudit, TENANT],
-  );
+  await insertDeclaredTestAcousticFinding({
+    id: ids.finding,
+    alignmentId: ids.alignment,
+    confidence: 0.8,
+    reviewStatus: "teacher-review-required",
+    auditEventId: ids.findingAudit,
+  });
   await queryJson(
     `INSERT INTO teacher_reviews (id, tenant_id, finding_id, teacher_id, decision, note, audit_event_id)
      VALUES ($1, $4, $2, 'teacher-1', 'accepted', 'parity suite seed', $3)`,
@@ -258,7 +258,7 @@ test("a foreign tenant cannot WRITE a session for this tenant's learner", async 
       learnerId,
       quranRef: FATIHAH_REF,
       sourceChecksum: "fnv1a32:adversarial-write",
-      modelVersion: "model-v0.3",
+
       language: "ckb",
       mode: "guided-recite",
       practicePlanId: "fatihah-mastery-v1",
@@ -537,7 +537,7 @@ test("external processing requires BOTH ASR consent and guardian approval, not e
         learnerId,
         quranRef: FATIHAH_REF,
         sourceChecksum: "fnv1a32:consent-gate",
-        modelVersion: "model-v0.3",
+
         language: "ckb",
         mode: "guided-recite",
         practicePlanId: "fatihah-mastery-v1",

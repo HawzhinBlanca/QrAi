@@ -6,7 +6,7 @@
 - `scripts/smoke-ml.mjs` and `scripts/smoke-privacy.mjs` assert that this status is returned.
 - `packages/contracts/src/index.ts` does not include `teacher-review-required` in `ReviewStatus`.
 - `services/platform-api/src/types.rs` does not include the status in the Rust enum.
-- `infra/sql/0010_review_status_check.sql` constrains persisted recitation session statuses to the older set.
+- `infra/migrations/0010_review_status_check.sql` constrains persisted recitation session statuses to the older set.
 
 ## Risk
 

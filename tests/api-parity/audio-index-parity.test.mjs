@@ -28,7 +28,14 @@
 import assert from "node:assert/strict";
 import test, { after, before } from "node:test";
 
-import { TENANT, queryJson, request, startApi, startShell } from "./lib/harness.mjs";
+import {
+  TENANT,
+  insertDeclaredTestAcousticFinding,
+  queryJson,
+  request,
+  startApi,
+  startShell,
+} from "./lib/harness.mjs";
 
 let api;
 let shell;
@@ -250,14 +257,14 @@ test("indexing a chunk makes its finding's audio reachable — the whole point",
      VALUES ($1, $2, $3, $4, 'x', 700, 1100, 0.9, 'matched', $5, $6, 'client-reported')`,
     [alignmentId, TENANT, s.session, word.id, model.id, s.audit],
   );
-  await queryJson(
-    `INSERT INTO tajweed_findings
-       (id, tenant_id, alignment_id, rule, severity, confidence, explanation, review_status,
-        source_refs, model_version_id, audit_event_id, analysis_basis)
-     VALUES ($1, $2, $3, 'ghunnah', 'practice', 0, 'e', 'ai-suggested', '[]'::jsonb, $4, $5,
-             'canonical-text')`,
-    [findingId, TENANT, alignmentId, model.id, s.audit],
-  );
+  await insertDeclaredTestAcousticFinding({
+    id: findingId,
+    alignmentId,
+    rule: "ghunnah",
+    severity: "practice",
+    confidence: 0.9,
+    auditEventId: s.audit,
+  });
 
   // Asserted through the PER-FINDING audio route, not the queue list. The list is
   // `ORDER BY confidence DESC LIMIT 200`, and a canonical-text finding now carries confidence 0

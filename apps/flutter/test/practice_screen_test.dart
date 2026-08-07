@@ -44,6 +44,7 @@ Map<String, Object?> stubFinding({
     <String, Object?>{
       'wordId': '1:1:1',
       'rule': rule,
+      'analysisBasis': 'acoustic',
       'severity': 'practice',
       'explanation': 'Apply ghunnah on the noon sakina.',
       'reviewStatus': reviewStatus,
@@ -86,8 +87,8 @@ http.Response stubResponseFor(
   if (req.url.path == '/v1/ml/tajweed-findings:predict') {
     return http.Response(
       jsonEncode(<String, Object?>{
+        'annotations': <Object?>[],
         'findings': findings ?? <Map<String, Object?>>[stubFinding()],
-        'confidence': 0.9,
       }),
       200,
       headers: <String, String>{'content-type': 'application/json'},

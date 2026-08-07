@@ -5,7 +5,7 @@ import { dirname, join } from "node:path";
 import test, { after, before } from "node:test";
 import { fileURLToPath } from "node:url";
 
-import { buildServer } from "../../services/node-api/server.mjs";
+import { createApplication } from "../../server/src/app.mjs";
 
 /**
  * N-7 — THE node-api SHALL NOT log audio bytes, bearer tokens, cookie values, password hashes, or
@@ -27,7 +27,7 @@ import { buildServer } from "../../services/node-api/server.mjs";
  */
 
 const here = dirname(fileURLToPath(import.meta.url));
-const nodeApi = join(here, "..", "..", "services", "node-api");
+const nodeApi = join(here, "..", "..", "server", "src");
 
 // Distinctive enough that a substring match cannot be a coincidence, and shaped like the real thing.
 const BEARER = "eyJhbGciOiJIUzI1NiJ9.CANARYtokenPAYLOAD8f21.CANARYsigNATURE";
@@ -88,7 +88,7 @@ async function withCapturedLogs(config, body) {
     original[level] = console[level];
     console[level] = (...args) => lines.push(args.map(String).join(" "));
   }
-  const app = buildServer({
+  const app = createApplication({
     upstream: upstreamUrl,
     logger: { level: "trace", stream: { write: (s) => lines.push(s) } },
     ...config,

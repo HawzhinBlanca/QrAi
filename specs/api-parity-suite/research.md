@@ -155,7 +155,7 @@ that skips silently reports green having verified nothing, and this repo was doi
 ## 7. CI does provision a real Postgres
 
 `.github/workflows/ci.yml:10-12,26,88,91` — `postgres:16-alpine` as a service, all
-`infra/sql/*.sql` migrations applied, plus `rls-app-role.sql` with `app_password="ci-dummy-password"`.
+`infra/migrations/*.sql` migrations applied, plus `rls-app-role.sql` with `app_password="ci-dummy-password"`.
 
 So Phase 6's stated gate — "suite runs against real Postgres" — **is achievable in CI**, not just
 locally. What CI does *not* currently do is start the platform-api binary; `cargo test` builds it but

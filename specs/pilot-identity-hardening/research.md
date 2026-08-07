@@ -6,7 +6,7 @@ for the fix set planned in `plan.md`. Parent program: `specs/readiness-recovery-
 
 ## Current state (verified by reading, not guessed)
 
-**Migration** — `infra/sql/0021_pilot_identity.sql`
+**Migration** — `infra/migrations/0021_pilot_identity.sql`
 - `pilot_invitations` / `pilot_sessions`: text PKs, `token_hash text unique` (tokens
   stored hashed only — correct), `csrf_token text not null` stored plaintext (correct:
   not a bearer credential), FKs to `institutions(id)` / `users(id)` with no cascade

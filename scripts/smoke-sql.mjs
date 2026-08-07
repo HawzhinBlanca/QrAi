@@ -1,7 +1,10 @@
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { spawn } from "node:child_process";
+
+/** @typedef {{ status: "failed", error: string } | { status: "passed", tenantTablesChecked: number, mode: string, stdout: string[] }} LiveRunResult */
+/** @typedef {LiveRunResult | { status: "pending" | "skipped", reason?: string }} LiveStatus */
+/** @typedef {{ code: number | null, stdout: string, stderr: string }} CommandResult */
 
 const tenantTables = [
   "users",
@@ -24,21 +27,21 @@ const tenantTables = [
 ];
 
 const coreSchemaPaths = [
-  join("infra", "sql", "0001_core_schema.sql"),
-  join("infra", "sql", "0005_learner_progress.sql"),
-  join("infra", "sql", "0018_agent_run_learner_id.sql"),
-  join("infra", "sql", "0021_pilot_identity.sql"),
+  join("infra", "migrations", "0001_core_schema.sql"),
+  join("infra", "migrations", "0005_learner_progress.sql"),
+  join("infra", "migrations", "0018_agent_run_learner_id.sql"),
+  join("infra", "migrations", "0021_pilot_identity.sql"),
 ];
-const sessionMigrationPath = join("infra", "sql", "0008_session_language.sql");
+const sessionMigrationPath = join("infra", "migrations", "0008_session_language.sql");
 const reviewStatusMigrationPaths = [
-  join("infra", "sql", "0010_review_status_check.sql"),
-  join("infra", "sql", "0011_teacher_review_required_status.sql"),
+  join("infra", "migrations", "0010_review_status_check.sql"),
+  join("infra", "migrations", "0011_teacher_review_required_status.sql"),
 ];
 const rlsPaths = [
-  join("infra", "sql", "0003_tenant_rls.sql"),
-  join("infra", "sql", "0009_learner_progress_rls.sql"),
-  join("infra", "sql", "0012_superuser_only_rls_bypass.sql"),
-  join("infra", "sql", "0021_pilot_identity.sql"),
+  join("infra", "migrations", "0003_tenant_rls.sql"),
+  join("infra", "migrations", "0009_learner_progress_rls.sql"),
+  join("infra", "migrations", "0012_superuser_only_rls_bypass.sql"),
+  join("infra", "migrations", "0021_pilot_identity.sql"),
 ];
 const coreSchemaRaw = (await Promise.all(coreSchemaPaths.map((path) => readFile(path, "utf8")))).join("\n");
 const sessionMigrationRaw = await readFile(sessionMigrationPath, "utf8");
@@ -47,11 +50,11 @@ const rlsSchemaRaw = (await Promise.all(rlsPaths.map((path) => readFile(path, "u
 const coreSchema = normalizeSql(coreSchemaRaw);
 const reviewStatusSchema = normalizeSql(reviewStatusMigrationRaw);
 const rlsSchema = normalizeSql(rlsSchemaRaw);
-const pilotIdentitySchema = normalizeSql(await readFile(join("infra", "sql", "0021_pilot_identity.sql"), "utf8"));
+const pilotIdentitySchema = normalizeSql(await readFile(join("infra", "migrations", "0021_pilot_identity.sql"), "utf8"));
 const postgresUrl = process.env.POSTGRES_RLS_SMOKE_URL ?? process.env.DATABASE_URL;
 const requireLive = process.env.SQL_SMOKE_REQUIRE_LIVE === "true";
 
-const failures = [];
+const failures = /** @type {string[]} */ ([]);
 
 for (const table of tenantTables) {
   assertRegex(
@@ -116,12 +119,16 @@ assertIncludes(
   "review status constraint must allow teacher-review-required",
 );
 
-let live = { status: postgresUrl ? "pending" : "skipped", reason: postgresUrl ? undefined : "POSTGRES_RLS_SMOKE_URL or DATABASE_URL not set" };
+let live = /** @type {LiveStatus} */ ({
+  status: "skipped",
+  reason: "POSTGRES_RLS_SMOKE_URL or DATABASE_URL not set",
+});
 
 if (postgresUrl) {
-  live = await runLivePostgresSmoke(postgresUrl);
-  if (live.status !== "passed") {
-    failures.push(`live Postgres RLS smoke failed: ${live.error}`);
+  const liveResult = await runLivePostgresSmoke(postgresUrl);
+  live = liveResult;
+  if (liveResult.status === "failed") {
+    failures.push(`live Postgres RLS smoke failed: ${liveResult.error}`);
   }
 } else if (requireLive) {
   failures.push("live Postgres RLS smoke is required but POSTGRES_RLS_SMOKE_URL/DATABASE_URL is not set");
@@ -140,26 +147,32 @@ if (failures.length > 0) {
   );
 }
 
+/** @param {string} sql */
 function normalizeSql(sql) {
   return sql.replace(/\s+/g, " ").trim().toLowerCase();
 }
 
+/** @param {string} haystack @param {string} needle @param {string} message */
 function assertIncludes(haystack, needle, message) {
   if (!haystack.includes(needle.toLowerCase())) {
     failures.push(message);
   }
 }
 
+/** @param {string} haystack @param {RegExp} regex @param {string} message */
 function assertRegex(haystack, regex, message) {
   if (!regex.test(haystack)) {
     failures.push(message);
   }
 }
 
+/** @param {string} databaseUrl @returns {Promise<LiveRunResult>} */
 async function runLivePostgresSmoke(databaseUrl) {
   try {
     const sqlContent = buildLiveSmokeSql();
-    const result = await run("psql", ["--set", "ON_ERROR_STOP=1", "--dbname", databaseUrl], sqlContent);
+    const result = /** @type {CommandResult} */ (
+      await run("psql", ["--set", "ON_ERROR_STOP=1", "--dbname", databaseUrl], sqlContent)
+    );
     if (result.code !== 0) {
       return {
         status: "failed",
@@ -223,18 +236,9 @@ end $$;`,
     )
     .join("\n");
 
-  // Wrap schema creation with IF NOT EXISTS to handle pre-existing tables and indexes
-  const coreSchemaSafe = coreSchemaRaw
-    .replace(/^create table (?!if not exists )/gim, "create table if not exists ")
-    .replace(/^create index (?!if not exists )/gim, "create index if not exists ");
-  const sessionMigrationSafe = sessionMigrationRaw;
-  const reviewStatusMigrationSafe = reviewStatusMigrationRaw;
-  // Drop existing policies before recreating to avoid duplicate policy errors
-  const dropPolicies = tenantTables
-    .map((t) => `drop policy if exists tenant_isolation_${t} on ${t};`)
-    .join("\n");
-  // Make the non-superuser RLS test role self-contained: ensure it exists and is granted
-  // every tenant table (learner_progress was added after the role was first bootstrapped).
+  // The live smoke never replays schema SQL. A migrated database is a precondition, and
+  // missing/drifted objects must fail rather than being repaired inside a rolled-back test.
+  // The temporary non-login role exists only to prove RLS as a non-superuser.
   const grantRlsRole = `do $$ begin
   if not exists (select 1 from pg_roles where rolname = 'quran_ai_rls_test') then
     create role quran_ai_rls_test nologin;
@@ -242,17 +246,11 @@ end $$;`,
 end $$;
 grant usage on schema public to quran_ai_rls_test;
 ${tenantTables.map((t) => `grant select, insert, update, delete on ${t} to quran_ai_rls_test;`).join("\n")}`;
-  const rlsSchemaSafe = rlsSchemaRaw;
 
   return `
 begin;
 set local app.bypass_rls = 'on';
 
-	${coreSchemaSafe}
-	${sessionMigrationSafe}
-	${reviewStatusMigrationSafe}
-	${dropPolicies}
-	${rlsSchemaSafe}
 
 	-- Clean up ALL existing data from all tables (transaction will roll back)
 	-- This is necessary because API smoke tests create records that block FK deletes
@@ -408,34 +406,43 @@ rollback;
 `;
 }
 
+/**
+ * @param {string} command
+ * @param {string[]} args
+ * @param {string | undefined} stdinContent
+ * @returns {Promise<CommandResult>}
+ */
 function run(command, args, stdinContent) {
   let finalCommand = command;
   let finalArgs = args;
   if (command === "psql" && process.env.PSQL) {
     const parts = process.env.PSQL.split(" ");
     finalCommand = parts[0];
-    const rewrittenArgs = args.map(arg => arg.replace("localhost:5433", "localhost:5432"));
+    const rewrittenArgs = args.map((arg) => arg.replace("localhost:5433", "localhost:5432"));
     finalArgs = [...parts.slice(1), ...rewrittenArgs];
   }
-  return new Promise((resolve, reject) => {
+  return /** @type {Promise<CommandResult>} */ (new Promise((resolve, reject) => {
     const child = spawn(finalCommand, finalArgs, {
       cwd: process.cwd(),
       env: process.env,
-      stdio: [stdinContent ? "pipe" : "ignore", "pipe", "pipe"]
+      stdio: [stdinContent ? "pipe" : "ignore", "pipe", "pipe"],
     });
-    const stdout = [];
-    const stderr = [];
-    child.stdout.on("data", (chunk) => stdout.push(String(chunk)));
-    child.stderr.on("data", (chunk) => stderr.push(String(chunk)));
+    const stdout = /** @type {string[]} */ ([]);
+    const stderr = /** @type {string[]} */ ([]);
+    child.stdout?.on("data", (chunk) => stdout.push(String(chunk)));
+    child.stderr?.on("data", (chunk) => stderr.push(String(chunk)));
     child.on("error", reject);
     child.on("close", (code) => resolve({ code, stdout: stdout.join(""), stderr: stderr.join("") }));
-    if (stdinContent) {
-      child.stdin.write(stdinContent);
-      child.stdin.end();
+    if (stdinContent && child.stdin) {
+      child.stdin.on("error", (error) => {
+        if (!("code" in error) || error.code !== "EPIPE") reject(error);
+      });
+      child.stdin.end(stdinContent);
     }
-  });
+  }));
 }
 
+/** @param {string} value */
 function redactDatabaseUrl(value) {
   return value.replace(/(postgres(?:ql)?:\/\/[^:\s]+:)[^@\s]+@/gi, "$1[REDACTED]@");
 }

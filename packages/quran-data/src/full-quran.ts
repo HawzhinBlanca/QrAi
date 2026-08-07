@@ -13,8 +13,13 @@ import { CANONICAL_AYAH_COUNTS } from "./canonical-ayah-counts";
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const DATA_DIR = join(__dirname, "data", "full-quran");
 const MANIFEST_PATH = join(DATA_DIR, "manifest.json");
+const PROVENANCE_V1_PATH = join(DATA_DIR, "provenance-v1.json");
+const PROVENANCE_V2_PATH = join(DATA_DIR, "provenance-v2.json");
 
 const manifestData = JSON.parse(readFileSync(MANIFEST_PATH, "utf8")) as FullQuranManifest;
+const provenanceV2Data = JSON.parse(
+  readFileSync(PROVENANCE_V2_PATH, "utf8"),
+) as FullQuranProvenanceV2;
 
 export interface FullQuranAyah {
   surahNumber: number;
@@ -54,9 +59,64 @@ export interface FullQuranManifest {
   }>;
 }
 
+
+export interface FullQuranProvenanceV2 {
+  schemaVersion: 2;
+  provenanceId: string;
+  supersedes: {
+    provenanceId: string;
+    file: string;
+    sha256: string;
+  };
+  canonicalSourceId: string;
+  edition: {
+    identifier: string;
+    scriptType: string;
+  };
+  importVersion: string;
+  integrity: {
+    algorithm: string;
+    encoding: string;
+    lengthPrefix: string;
+    recordFraming: string;
+    recordOrder: string;
+    domains: {
+      ayahs: string;
+      wordTokens: string;
+    };
+    ayahs: {
+      fields: string[];
+      count: number;
+      sha256: string;
+    };
+    wordTokens: {
+      fields: string[];
+      count: number;
+      sha256: string;
+    };
+    tokenization: {
+      reconstruction: string;
+      exceptions: Array<{ ref: string; preservedPrefix: string }>;
+    };
+  };
+  seed: {
+    generator: string;
+    integrityPreflightRequired: boolean;
+  };
+}
+
+export interface QuranIntegrityHashes {
+  ayahCount: number;
+  wordTokenCount: number;
+  ayahSha256: string;
+  wordTokenSha256: string;
+}
+
 export const FULL_QURAN_MANIFEST = manifestData as FullQuranManifest;
+export const FULL_QURAN_PROVENANCE_V2 = provenanceV2Data as FullQuranProvenanceV2;
 export const FULL_QURAN_IMPORT_VERSION = manifestData.importVersion;
 export const FULL_QURAN_SOURCE = "alquran.cloud" as const;
+export const FULL_QURAN_SOURCE_ID = "alquran-cloud" as const;
 export const FULL_QURAN_EDITION = "quran-uthmani" as const;
 
 // Cache for lazily-loaded surahs
@@ -204,6 +264,81 @@ export function computeFullQuranContentHash(): string {
   return hash.digest("hex");
 }
 
+
+const LENGTH_PREFIX_BYTES = 8;
+const AYAH_HASH_DOMAIN = "qrai.full-quran.ayahs.v1";
+const WORD_TOKEN_HASH_DOMAIN = "qrai.full-quran.word-tokens.v1";
+
+function lengthDelimitedUtf8(value: string): Buffer {
+  const bytes = Buffer.from(value, "utf8");
+  const prefix = Buffer.alloc(LENGTH_PREFIX_BYTES);
+  prefix.writeBigUInt64BE(BigInt(bytes.byteLength));
+  return Buffer.concat([prefix, bytes]);
+}
+
+function updateLengthDelimitedRecord(
+  hash: ReturnType<typeof createHash>,
+  fields: readonly string[],
+): void {
+  const payload = Buffer.concat(fields.map((field) => lengthDelimitedUtf8(field)));
+  const prefix = Buffer.alloc(LENGTH_PREFIX_BYTES);
+  prefix.writeBigUInt64BE(BigInt(payload.byteLength));
+  hash.update(prefix);
+  hash.update(payload);
+}
+
+/**
+ * Hash an explicit ordered collection of surahs without changing any string bytes.
+ * Decimal coordinates are ASCII UTF-8 fields; Arabic text/token fields are UTF-8 exactly as supplied.
+ */
+export function computeQuranIntegrityHashes(
+  surahs: Iterable<FullQuranSurah>,
+): QuranIntegrityHashes {
+  const ayahHash = createHash("sha256");
+  const wordTokenHash = createHash("sha256");
+  ayahHash.update(lengthDelimitedUtf8(AYAH_HASH_DOMAIN));
+  wordTokenHash.update(lengthDelimitedUtf8(WORD_TOKEN_HASH_DOMAIN));
+
+  let ayahCount = 0;
+  let wordTokenCount = 0;
+
+  for (const surah of surahs) {
+    for (const ayah of surah.ayahs) {
+      updateLengthDelimitedRecord(ayahHash, [
+        String(ayah.surahNumber),
+        String(ayah.ayahNumber),
+        ayah.text,
+      ]);
+      ayahCount += 1;
+
+      ayah.words.forEach((word, wordOffset) => {
+        updateLengthDelimitedRecord(wordTokenHash, [
+          String(ayah.surahNumber),
+          String(ayah.ayahNumber),
+          String(wordOffset + 1),
+          word,
+        ]);
+        wordTokenCount += 1;
+      });
+    }
+  }
+
+  return {
+    ayahCount,
+    wordTokenCount,
+    ayahSha256: ayahHash.digest("hex"),
+    wordTokenSha256: wordTokenHash.digest("hex"),
+  };
+}
+
+export function computeFullQuranIntegrityHashes(): QuranIntegrityHashes {
+  const surahs: FullQuranSurah[] = [];
+  for (let surahNumber = 1; surahNumber <= 114; surahNumber++) {
+    surahs.push(getSurah(surahNumber));
+  }
+  return computeQuranIntegrityHashes(surahs);
+}
+
 /**
  * Structural integrity of ONE surah against its canonical ayah count. PURE (takes the surah as input),
  * so it is exhaustively testable on synthetic/corrupted input. Returns human-readable errors ([] = ok).
@@ -293,14 +428,98 @@ export function validateFullQuranIntegrity(): { isValid: boolean; errors: string
     errors.push(...checkSurahIntegrity(surah, surahNumber, CANONICAL_AYAH_COUNTS[surahNumber]));
   }
 
-  // Independent content checksum (runs regardless of the structural results above; the two error
-  // lists combine). Catches text drift/tampering that PRESERVES structure — e.g. a swap of two
-  // equal-length ayahs' content — which the per-surah structural checks cannot see.
-  const actualHash = computeFullQuranContentHash();
-  if (actualHash !== FULL_QURAN_CONTENT_SHA256) {
+  // Preserve the original delimiter-based drift tripwire for compatibility with its reviewed v1
+  // provenance. The v2 hashes below add unambiguous framing and independently cover word tokens.
+  const actualLegacyHash = computeFullQuranContentHash();
+  if (actualLegacyHash !== FULL_QURAN_CONTENT_SHA256) {
     errors.push(
-      `Full Quran content checksum mismatch: expected ${FULL_QURAN_CONTENT_SHA256}, got ${actualHash}.`,
+      `Full Quran content checksum mismatch: expected ${FULL_QURAN_CONTENT_SHA256}, got ${actualLegacyHash}.`,
     );
+  }
+
+  const provenance = FULL_QURAN_PROVENANCE_V2;
+  const expectedAyahFields = ["surahNumber", "ayahNumber", "text"];
+  const expectedWordTokenFields = ["surahNumber", "ayahNumber", "wordIndex", "text"];
+  const metadataMatches =
+    provenance.schemaVersion === 2 &&
+    provenance.provenanceId === "full-quran-2026-06-26-provenance-v2" &&
+    provenance.canonicalSourceId === FULL_QURAN_SOURCE_ID &&
+    provenance.edition.identifier === FULL_QURAN_EDITION &&
+    provenance.edition.scriptType === "uthmani" &&
+    provenance.importVersion === FULL_QURAN_IMPORT_VERSION &&
+    provenance.integrity.algorithm === "sha256" &&
+    provenance.integrity.encoding === "utf8" &&
+    provenance.integrity.lengthPrefix === "uint64be" &&
+    provenance.integrity.recordFraming ===
+      "length-prefixed-record-of-length-prefixed-fields" &&
+    provenance.integrity.recordOrder ===
+      "surah-ascending,ayah-ascending,word-index-ascending" &&
+    provenance.integrity.domains.ayahs === AYAH_HASH_DOMAIN &&
+    provenance.integrity.domains.wordTokens === WORD_TOKEN_HASH_DOMAIN &&
+    JSON.stringify(provenance.integrity.ayahs.fields) === JSON.stringify(expectedAyahFields) &&
+    JSON.stringify(provenance.integrity.wordTokens.fields) ===
+      JSON.stringify(expectedWordTokenFields) &&
+    provenance.seed.generator ===
+      "packages/quran-data/scripts/write-full-quran-sql-seed.mjs" &&
+    provenance.seed.integrityPreflightRequired === true;
+  if (!metadataMatches) {
+    errors.push("Full Quran provenance v2 framing/source/version metadata mismatch.");
+  }
+
+  const actualV1ManifestHash = createHash("sha256")
+    .update(readFileSync(PROVENANCE_V1_PATH))
+    .digest("hex");
+  if (
+    provenance.supersedes.provenanceId !== "full-quran-2026-06-26-provenance-v1" ||
+    provenance.supersedes.file !== "provenance-v1.json" ||
+    provenance.supersedes.sha256 !== actualV1ManifestHash
+  ) {
+    errors.push("Full Quran provenance v1 supersession checksum mismatch.");
+  }
+
+  const hashes = computeFullQuranIntegrityHashes();
+  if (
+    hashes.ayahCount !== provenance.integrity.ayahs.count ||
+    hashes.ayahSha256 !== provenance.integrity.ayahs.sha256
+  ) {
+    errors.push(
+      `Full Quran framed ayah checksum mismatch: expected ${provenance.integrity.ayahs.sha256}/${provenance.integrity.ayahs.count}, got ${hashes.ayahSha256}/${hashes.ayahCount}.`,
+    );
+  }
+  if (
+    hashes.wordTokenCount !== provenance.integrity.wordTokens.count ||
+    hashes.wordTokenSha256 !== provenance.integrity.wordTokens.sha256
+  ) {
+    errors.push(
+      `Full Quran framed word-token checksum mismatch: expected ${provenance.integrity.wordTokens.sha256}/${provenance.integrity.wordTokens.count}, got ${hashes.wordTokenSha256}/${hashes.wordTokenCount}.`,
+    );
+  }
+
+  const reconstructionExceptions: Array<{ ref: string; preservedPrefix: string }> = [];
+  for (let surahNumber = 1; surahNumber <= 114; surahNumber++) {
+    const surah = getSurah(surahNumber);
+    for (const ayah of surah.ayahs) {
+      const reconstructed = ayah.words.join(" ");
+      if (reconstructed === ayah.text) continue;
+      if (ayah.text === `\uFEFF${reconstructed}`) {
+        reconstructionExceptions.push({
+          ref: `${ayah.surahNumber}:${ayah.ayahNumber}`,
+          preservedPrefix: "U+FEFF",
+        });
+      } else {
+        errors.push(
+          `Surah ${ayah.surahNumber} ayah ${ayah.ayahNumber}: tokens do not reconstruct the stored ayah bytes.`,
+        );
+      }
+    }
+  }
+  if (
+    provenance.integrity.tokenization.reconstruction !==
+      "join tokens with one U+0020 in stored order" ||
+    JSON.stringify(reconstructionExceptions) !==
+      JSON.stringify(provenance.integrity.tokenization.exceptions)
+  ) {
+    errors.push("Full Quran token reconstruction contract mismatch.");
   }
 
   return { isValid: errors.length === 0, errors };

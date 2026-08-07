@@ -36,7 +36,7 @@ which sends none, exercising the default that stays.
 `req.model_version` is `Option<String>`; **absent keeps defaulting**. Only a present-and-unknown value
 changes behaviour.
 
-### 1.4 `specs/flutter-client/openapi.yaml`
+### 1.4 `packages/contracts/openapi.yaml`
 
 Adds `404` to `POST /v1/agent-runs`, and `400`/`404` to `POST /v1/recitation-sessions`.
 `POST /.../alignments` gains `400`. Additive — the `200` schemas are untouched, so nothing that
@@ -58,7 +58,7 @@ regressing into 500s — they are correct by accident of who wrote them, not by 
 
 - **`services/platform-api/src/handlers/review.rs`** and **`privacy.rs`** — the two existing
   instances of this check. The new code copies their shape deliberately.
-- **`infra/sql/*`** — read via `pg_constraint` to enumerate the surface. **No migration.**
+- **`infra/migrations/*`** — read via `pg_constraint` to enumerate the surface. **No migration.**
 - **`services/agents/*.mjs`** — reads the `POST /v1/agent-runs` contract; posts runs whose
   `learnerId` comes from real `/v1/learner/progress` and `/v1/tajweed-findings` data, so it cannot
   produce a dangling one.

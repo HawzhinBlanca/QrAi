@@ -10,7 +10,7 @@ import { fileURLToPath } from "node:url";
 const manifestScript = fileURLToPath(new URL("./release-manifest.mjs", import.meta.url));
 const challengeScript = fileURLToPath(new URL("./release-challenge.mjs", import.meta.url));
 const requiredArtifacts = ["plan.md", "spec.md", "research.md", "impact-map.md", "tasks.md"];
-const services = ["platform-api", "realtime-gateway", "ml-inference", "asr-inference", "web"];
+const services = ["platform-api", "node-api", "realtime-gateway", "ml-inference", "asr-inference", "web"];
 
 function git(repo, args) {
   return execFileSync("git", args, { cwd: repo, encoding: "utf8" }).trim();

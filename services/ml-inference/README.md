@@ -8,7 +8,6 @@ Endpoints:
 - `GET /health`
 - `POST /v1/alignments:predict`
 - `POST /v1/tajweed-findings:predict`
-- `POST /v1/eval-runs`
 - `GET /v1/audit-events?tenantId=...`
 - `POST /v1/privacy/export`
 - `POST /v1/privacy/delete`

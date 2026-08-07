@@ -59,6 +59,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .unwrap_or_else(|_| "127.0.0.1:8081".to_owned())
         .parse()?;
     let listener = tokio::net::TcpListener::bind(addr).await?;
+    let config = GatewayServerConfig::default();
+    if config.platform_api_url.is_none() {
+        tracing::error!(
+            "PLATFORM_API_URL is absent: retained audio will be stored but undiscoverable until `pnpm db:repair-audio-index -- --apply` is run"
+        );
+    }
 
     println!("quran-ai realtime gateway listening on http://{addr}");
     // `into_make_service_with_connect_info` is required for tower_governor's default (non-proxy)
@@ -68,8 +74,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // broke every request. Matches platform-api's main.rs, which already wires this correctly.
     axum::serve(
         listener,
-        gateway_router(GatewayServerConfig::default())
-            .into_make_service_with_connect_info::<SocketAddr>(),
+        gateway_router(config).into_make_service_with_connect_info::<SocketAddr>(),
     )
     .with_graceful_shutdown(shutdown_signal())
     .await?;

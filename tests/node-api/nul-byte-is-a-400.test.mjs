@@ -23,7 +23,7 @@ import { fileURLToPath } from "node:url";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const root = join(here, "..", "..");
-const server = readFileSync(join(root, "services/node-api/server.mjs"), "utf8");
+const server = readFileSync(join(root, "server/src/app.mjs"), "utf8");
 
 test("both NUL SQLSTATEs are translated, not just the text-column one", () => {
   // 22021 is `text`; 22P05 is `jsonb`. The Rust original shipped with only 22021 and POST

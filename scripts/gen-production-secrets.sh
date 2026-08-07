@@ -30,12 +30,14 @@ TICKET_SECRET="$(gen)"
 ML_API_KEY="$(gen)"
 ASR_API_KEY="$(gen)"
 PG_PASSWORD="$(gen)"
+APP_DB_PASSWORD="$(gen)"
 
 umask 077
 cat > "$OUT" <<EOF
 # Generated $(date -u +%Y-%m-%dT%H:%M:%SZ) by scripts/gen-production-secrets.sh — DO NOT COMMIT.
 # Strong, non-default values that satisfy the platform-api/gateway boot-time secret checks.
 POSTGRES_PASSWORD=$PG_PASSWORD
+APP_DATABASE_PASSWORD=$APP_DB_PASSWORD
 JWT_SECRET=$JWT_SECRET
 REALTIME_GATEWAY_TICKET_SECRET=$TICKET_SECRET
 ML_API_KEY=$ML_API_KEY

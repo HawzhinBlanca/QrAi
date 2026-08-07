@@ -89,7 +89,7 @@ async function cleanAndSeedDatabase() {
     });
   });
 
-  const internalSeedSql = await readFile("infra/sql/0006_seed_internal.sql", "utf8");
+  const internalSeedSql = await readFile("infra/migrations/0006_seed_internal.sql", "utf8");
   await runDbCommand(databaseConnectionArgs(smokeAdminUrl), internalSeedSql);
 }
 
