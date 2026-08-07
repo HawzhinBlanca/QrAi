@@ -32,7 +32,7 @@
   seed validates this record before emitting SQL.
 - `services/platform-api`: Rust/Axum + SQLx/Postgres tenant-scoped API — auth (register/login,
   bcrypt, JWT), recitation sessions, learner progress (real SM-2 spaced repetition), privacy
-  export/delete (with ML-service audio erasure), teacher reviews, scholar approvals, agent-run
+  export/delete (storage-first audio erasure), teacher reviews, scholar approvals, agent-run
   recording, eval-run lookup, audit events, and realtime ticket issuance. Tenant isolation is
   enforced by Postgres RLS on every tenant-owned table. Migration 0018 adds a structured optional
   `agent_runs.learner_id`; the agent-run API can persist it and privacy export/deletion use it for
@@ -44,35 +44,11 @@
   See `docs/DATA_INVENTORY.md` §1.
 - `services/realtime-gateway`: Rust/Tokio/Axum realtime gateway — ticket-authenticated (HMAC,
   single-use, tenant-bound) WebSocket audio ingress, origin-checked (CSWSH-resistant), bounded
-  per-session channel with backpressure, forwards chunks to ml-inference, then records the stored
-  object through platform-api before teacher playback can discover it. Metrics distinguish forward
-  loss, attempted index failure, disabled indexing, and the aggregate stored-unindexed count.
-- `services/ml-inference`: Node — real Quran-constrained word alignment (Needleman-Wunsch global
-  alignment over a comparison-only Arabic projection, `alignment.js`) and a rule-based tajweed engine
-  (`tajweed.js`: madd, ghunnah, qalqalah, idgham, iqlab, ikhfa, tafkhim). Consent-gated proxying to
-  asr-inference for external ASR. Alignment responses hash the exact aligner source and preserve
-  validated upstream ASR attribution; public proxies reject missing or contradictory provenance.
-  Stored PCM transcription preserves producer word spans as absolute millisecond tokens. Sessions
-  longer than one worker request use 90-second cores plus bounded context; midpoint ownership avoids
-  text-based deduplication deleting legitimate repeated Quran words. A timestamp-less transcript is
-  force-aligned only against its recognized words. Missing chunks, mixed audio formats, unavailable
-  force alignment, or malformed spans return an explicit non-finalized result. Quran-constrained
-  alignment carries a measured source span only from the recognized token it matched; omissions
-  receive null spans. Public proxies reject caller-authored measured tokens. Transitional
-  finalization persists only canonical matches/misreads and rolls the whole replacement back if any
-  claimed output span or canonical word is invalid. Transcript attribution is composed across
-  windows and forwarded only inside the private finalizer chain; the Quran result must preserve
-  every upstream component exactly before its tenant-bound run can be stored.
-  Tajweed rule detection is explicitly instructional: deterministic canonical rules and declared
-  fixture rules return in `annotations[]` with `analysisBasis=text-rule` and no confidence,
-  severity, or review state. `findings[]` is reserved for real acoustic learner-performance
-  evidence and is empty until a calibrated, evaluated, approved producer exists. For retained audio
-  with server-derived measured spans, it may invoke the private Muaalem shadow observer; only
-  status/count/attribution enters audit metadata, never raw probabilities or learner findings.
-  Evaluation is not an online inference responsibility: the former ML `POST /v1/eval-runs` metric
-  copier is removed. The offline row-authoritative evaluator plus detached-signature verifier is the
-  sole evidence-production path; smoke can exercise it only with declared fixture eligibility and an
-  ephemeral test-only key.
+  per-session channel with backpressure, forwards chunks to the private `job-worker` compatibility
+  ingress, then records the stored object through platform-api before teacher playback can discover
+  it. Metrics distinguish forward loss, attempted index failure, disabled indexing, and the
+  aggregate stored-unindexed count. The gateway remains the realtime compatibility oracle until W3
+  canary and rollback gates permit a Node realtime cutover.
 - `services/asr-inference`: Python/FastAPI — real acoustic ASR via `openai-whisper`
   (`ASR_MODEL` configurable; the current deployment runs generic Whisper `base`, not the
   Quran-tuned `tarteel-ai/whisper-base-ar-quran` default in code — see the `ASR_MODEL` comment in
@@ -101,15 +77,36 @@
 - `services/shared-ticket`: Rust — HMAC realtime-ticket issuance/validation shared by
   `platform-api` (issuer) and `realtime-gateway` (validator), so the signing logic lives in one
   place.
-- `server` / Compose `node-api`: the production Node package and internal shadow image. The image
+- `server` / Compose `node-api` + `job-worker`: the single production Node package and image. The image
   is built from the frozen server workspace production graph on digest-pinned Node 22.13.1, runs as
-  the non-root `node` user, publishes no host port, and uses a native bounded `/ready` healthcheck.
-  Only `/health` and `/ready` are local in this wave; every other operation still has the retained
-  Rust `platform-api` compatibility upstream. Web and realtime continue to address Rust, so this is
-  deployment/observation proof rather than a traffic cutover. The runtime image contains only the
-  five declared production libraries, legacy Node route modules, and the exact alignment,
-  attribution, and immutable provenance files those modules import—no TypeScript, tests, Web,
-  contracts package, Rust service, or broad Quran source tree.
+  the non-root `node` user, publishes no host port, and uses native bounded healthchecks. `node-api`
+  owns request admission and synchronous compatibility responses; `job-worker` owns durable job
+  execution, retained-audio writes/retention, and the server-local inference runtime. Its key-gated,
+  rate-limited private listener on port 8098 exists only for the measured Rust/gateway compatibility
+  consumers and exposes a closed route allowlist.
+
+  The inference runtime performs Quran-constrained word alignment over a comparison-only Arabic
+  projection, deterministic instructional Tajweed analysis, consent-gated ASR proxying, bounded
+  multi-window transcript assembly, exact producer attribution, and optional acoustic shadow
+  observation. Instructional rules return only as `analysisBasis=text-rule`; learner-performance
+  `findings[]` remain withheld without calibrated, evaluated, approved acoustic evidence. Online
+  inference cannot create evaluation evidence; only the offline row-authoritative evaluator and
+  detached-signature verifier can do so.
+
+  With no upstream the package starts standalone from one 44-operation declared registry: 41
+  operations are enabled by default (all 38 retained baseline operations, learner history, and two
+  removal-blocked agent transition operations), while the three implemented device-identity
+  operations remain unregistered unless `DEVICE_IDENTITY_ENABLED=1`. Unknown paths are local 404s
+  and unavailable pilot-cookie DB resolution fails closed; no handler can fall through to Rust.
+  Base Compose deliberately supplies the retained Rust upstream, selects `explicit-compatibility`
+  mode with only `/health` and `/ready`, and keeps Web plus realtime indexing pointed at Rust. The
+  explicit `docker-compose.canary.yml` overlay instead derives exactly 39 Node-owned routes from the
+  contract manifest and switches Web plus gateway indexing to Node while Rust stays healthy for
+  transition routes and reversal. There is no random split or dual-write path. The
+  runtime image contains only declared production libraries, package-owned Node/inference modules,
+  and their exact attribution/provenance inputs—no TypeScript, tests, Web, contracts package, Rust
+  service, legacy Node tree, or broad Quran source tree. The former standalone ML source tree,
+  service, and image have been removed.
 - `infra/migrations`: immutable, manifest-checksummed Postgres schema history, including tenant RLS,
   learner-progress isolation, superuser-only bypass protection, uniqueness guarantees, and the
   structured agent-run learner key used by privacy export/delete. `server/scripts/migrate.mjs` is
@@ -135,10 +132,10 @@
   dataset, calibrator, evaluation and audit identities. One shared cross-runtime corpus requires
   every field plus human review and calibrated confidence. Historical, stale, fixture-bound,
   unverified, discarded-audio and uncalibrated rows remain reviewable but learner-withheld.
-- `server/scripts/repair-audio-index.mjs`: dry-run-by-default reconciliation for retained filesystem
-  audio. Storage metadata only nominates a candidate; a tenant-scoped session row must independently
-  confirm tenant and learner ownership before an idempotent index insert. The Compose operations
-  profile mounts audio read-only and connects as `quran_ai_app`.
+- `server/scripts/repair-audio-index.mjs`: dry-run-by-default reconciliation for S3-compatible and
+  legacy/filesystem audio. Storage metadata only nominates a candidate; a tenant-scoped session row
+  must independently confirm tenant and learner ownership before an idempotent index insert.
+  Incomplete object/metadata pairs and index-without-object states are reported rather than guessed.
 - `scripts/verify.sh`: canonical local/CI gate — Rust fmt/clippy, TS typecheck, TS/Rust/Node
   tests, live Postgres integration tests when reachable, production build, and web bundle secret
   scan.
@@ -163,13 +160,137 @@ is a test/development adapter only. One monotonic request deadline propagates th
 storage, ASR, compatibility, and worker calls with `AbortSignal`, while bounded process admission
 and durable Postgres credential/replay state avoid a new Redis or NATS dependency. Production
 identity remains controlled device enrollment with server-derived tenant/role, rotating revocable
-credentials, and provisioned staff. These are accepted target constraints, not claims that the
-current strangler already implements them.
+credentials, and provisioned staff. Deadline propagation, HTTP admission, the private object
+storage data plane, durable domain work, device identity, and inference/worker consolidation are
+implemented below. The explicit HTTP canary topology is also implemented, but production traffic,
+infrastructure provisioning, native secure storage, and attestation remain target constraints rather
+than current-state claims.
+
+The implemented W2.16 device-identity boundary is additive migration 0035 plus three Node routes,
+one identity-domain module, and one audited operator command. Invitations and access/refresh
+credentials are independent 256-bit opaque values whose raw bytes never enter Postgres; only
+SHA-256 hashes are stored under forced tenant RLS. Invitation exchange derives tenant, user, and
+current role from stored state. Access lasts 15 minutes; activity may extend the seven-day idle
+window without exceeding the original 30-day absolute family lifetime. Refresh rotates both
+credentials into the next generation, while reuse of a rotated refresh credential revokes the
+entire family before a generic 401. Logout revokes the same family. Provisioning is restricted to
+a stored in-tenant admin through `server/scripts/provision-device-enrollment.mjs`; the command can
+optionally create only learner/teacher/scholar users and emits the raw 24-hour invitation once.
+Privacy export contains count-only markers and privacy deletion removes both device tables inside
+the fenced tenant transaction. `DEVICE_IDENTITY_ENABLED=1` is required to register the routes and
+Compose passes it with a default of zero, so owner approval—not a deployed migration—controls
+activation. W4.10 still owns Keychain/Keystore, auth-state rebuild, and native key binding.
+
+The implemented W2.10 HTTP boundary is dependency-free and ordered: literal/exact non-credentialed
+CORS, maintenance, default-on per-process admission, parsing/body ceilings, route authorization,
+fixed error redaction, and bounded-label response metrics. Admission uses a 200-request burst, one
+token per 50 ms, and a 10,000-client idle/LRU state cap. Socket peer identity is authoritative by
+default; forwarded identity is considered only after an explicit bounded trusted-hop opt-in. This
+does not by itself satisfy drain, job, durable-enrollment, or realtime-admission tasks.
+
+The implemented W2.11 database boundary keeps one package-owned `postgres` pool. Fastify refuses to
+become ready when that pool's effective role has superuser, RLS-bypass, database/role-creation, or
+replication capability; the pool closes with the application lifecycle. Tenant-owned queries enter
+through `withTenant`, or through `withDiscoveredTenant` only when a locked-down security-definer
+function must discover tenant identity first. Both install the same transaction-local tenant GUC
+and bounded statement timeout. Raw runtime SQL is statically limited to immutable canonical-Quran
+reads, readiness `SELECT 1`, and the two pre-tenant pilot security-definer lookups. Database drivers
+have one runtime owner; migration/provision/repair scripts remain the three explicit operator
+owners.
+
+The implemented W2.12 dependency boundary creates one request-scoped monotonic deadline before
+local API work. A dependency-free helper composes elapsed-time and caller-disconnect signals and is
+used by compatibility forwarding, ML/ASR calls, privacy erase, review audio, finalization, ML→ASR
+windows, and the agents worker. Postgres startup parameters bound every connection server-side;
+tenant transactions reduce `statement_timeout` to the remaining request budget, and timeout aborts
+roll the transaction back before a retryable response is sent. Review playback is durably audited
+as attempted before storage, and marked served only after the complete object validates.
+
+The implemented W2.13 process boundary installs signal handling before the API listens. One strict
+grace clock starts Fastify close, refuses late requests, preserves active HTTP responses, closes
+new/idle sockets, and reserves its final fifth for Postgres.js teardown. At that boundary the
+controller closes remaining HTTP and raw/upgraded sockets; a repeated signal escalates the same
+controller and a hard deadline exits non-zero. Fastify is explicitly configured not to force active
+connections at close because pinned 5.11's native branch otherwise calls `closeAllConnections` for
+its documented idle setting. Node 22 owns idle reaping, while the controller owns forced closure.
+The image sends SIGTERM and Compose's default ten-second stop window exceeds the app's eight-second
+budget. The current API exposes no WebSocket route; W3 must add protocol close frames to the future
+realtime entrypoint, while this raw-socket fallback prevents an upgrade from hanging deployment.
+
+The implemented W2.14 storage boundary uses one async interface injected into the Node API and
+worker-owned inference runtime. Production requires an explicit private S3-compatible bucket;
+create-only conditional puts, full SHA-256 validation, server-side encryption settings, paginated
+listing/deletion, per-key delete
+error inspection, readiness, and cancellation are enforced. Keys are derived only as
+`audio/v1/<tenant>/<learner>/<session>/<chunk>.pcm` from verified server identity. Filesystem is an
+explicit test/development adapter and can read legacy objects during migration. Node review and
+privacy routes access the injected store directly; measured Rust/gateway consumers use only the
+worker's private compatibility seam. Storage/index completion is honestly non-atomic: identical
+retries are idempotent, changed immutable metadata conflicts, and the dry-run-first reconciler
+reports or repairs the supported orphan states under tenant/session ownership checks.
+
+The implemented W2.15 job boundary uses one additive, checksum-locked `background_jobs` table as
+both queue and transactional outbox. Its four closed kinds are session finalization, session
+Tajweed evaluation, privacy export, and privacy delete. Forced tenant RLS, deterministic
+`SKIP LOCKED` claims, bounded attempts/backoff, lease generations, and fenced completion prevent a
+stale process from committing a database effect. Remote inference and object erase may repeat;
+domain writes and completion share one transaction. A privacy intent captures the bounded manifest
+before erase, so recovery can idempotently repeat storage deletion and commit the original receipt.
+Payload/result validation excludes audio, transcripts, credentials, dependency addresses, and
+unbounded caller documents.
+
+The same `server` image runs a private `job-worker` command: it discovers the global institution
+registry, rotates the tenant poll start, and performs every queue read/effect under the restricted
+role's ordinary tenant transaction. The API enqueues and waits within its request deadline; it does
+not execute durable work inline. The worker is the only execution owner, including first attempts,
+retries, and crash recovery. Worker metrics expose only closed state/kind/outcome labels, and
+shutdown drains the runtime plus storage/database resources. Dead
+letters remain immutable. An internal restricted-role command permits only in-tenant admin/ops to
+create one audited successor, preserving replay lineage instead of resetting a fence. No online
+evaluation writer or signing authority exists in this boundary.
+
+The implemented W2.17 cutover moved alignment, Tajweed, transcript, acoustic-shadow, retained-audio,
+and privacy inference handlers into `server/src/inference`. `node-api` and `job-worker` are two
+commands of the exact same OCI image; Compose, release inventories, smoke tests, and Docker CI pin
+that single image identity. The worker injects the exact same object-store instance into inference
+and durable workflow execution, so write/read/retention/privacy behavior cannot drift between
+process-local adapters. A private key gate, closed route allowlist, rate admission, body limits, and
+monotonic deadlines contain the temporary Rust/gateway compatibility listener. ASR intentionally
+remains a separate Python model process. Public HTTP and realtime compatibility cutovers remain
+independent canary decisions; source deletion did not silently move traffic.
+
+The implemented W2.18 HTTP canary topology keeps base Compose Rust-safe and makes traffic movement
+an explicit overlay choice. `docker-compose.canary.yml` starts Node in `retained-canary` mode,
+derives its exact 39-route allowlist from `packages/contracts/route-manifest.json`, and points Web
+and gateway indexing at Node together. Rust remains healthy and is the only executor for the four
+retirement-transition operations during this window. Mutable retained requests are handled once by
+Node; they are never duplicated to Rust for comparison. Removing the canary overlay restores the
+base Rust targets. Immutable candidate/previous images are selected separately through
+`docker-compose.release.yml`. The actual-image proof runner consumes that preserved selection,
+inspects all seven running container image IDs plus the live Web/gateway/Node environment, uses
+short-lived JWT actors, and labels responses only in canary mode so every retained request can prove
+Node ownership. It exercises hostile/effect/privacy/tenant/audio behavior, deliberately removes the
+Rust oracle, requires all 39 retained operations to remain local and all four transition operations
+to fail at the compatibility boundary, then restores Rust in a failure-safe path. Its write-once,
+24-hour evidence is proof input, never promotion authority. Prometheus now separates Node, worker,
+Rust, and gateway signals without identity labels; the k6 runner has closed classroom, burst, and
+soak profiles bound to candidate image and topology identities. The one-shot stop controller
+consumes the closed metrics/trust observation, never auto-promotes, and on any stop signal first
+returns Web plus gateway indexing to Rust, then restores exactly the six previous application
+digests without rerunning an old database image. It requires all six containers healthy and proves
+one request produced one stored effect before privacy-cleaning the synthetic learner. Controller
+evidence distinguishes ordinary observation, deliberate drill, and incident runs. The release-mode
+closure validator binds a protected signed monitoring observation and exact signed remote-CI checks
+to the same candidate/image/topology/load/controller chain, then requires distinct active Ed25519
+release-owner, security, and SRE approvals. Its only successful state is
+`ready-for-manual-promotion`; it has no traffic mutation capability. Actual candidate/load
+execution, rollback timing, remote CI, and human approval remain external T5 evidence until supplied.
 
 Public password register/login and both generic agent-run operations are retirement targets
 (ADR-0038). They remain served only during the strangler period and cannot be removed while a
-production caller remains. Login stays owner-gated off; the future native identity path is
-single-use invitation exchange plus rotating/revocable device sessions.
+production caller remains. Login stays owner-gated off. The implemented native server identity
+path remains dormant by default until explicit production approval and the W4.10 secure native
+client are both proven.
 
 The winning architecture is a real vertical slice first:
 
@@ -192,8 +313,10 @@ The winning architecture is a real vertical slice first:
 ## Non-Negotiable Rules
 
 - Arabic Quran text is canonical, checksummed, and never machine-modified.
-- AI output must include source references, confidence, component implementation/artifact/dataset
-  attribution, review status, evidence ID, tenant ID, and audit event ID.
+- Learner-performance AI output must include source references, calibrated confidence, component
+  implementation/artifact/dataset attribution, review status, evidence ID, tenant ID, and audit
+  event ID. Deterministic `text-rule` instruction must be explicitly instructional and must not
+  invent confidence or review state.
 - Audio retention defaults to `discard`; storage requires explicit learner consent.
 - Agents are supervised tools. They may plan, explain, route, localize, and summarize, but they cannot issue unsourced religious answers.
 - Institution data is tenant-scoped by default.
@@ -204,9 +327,9 @@ The winning architecture is a real vertical slice first:
   boundary: production secrets/origins, backups, complete observability, and branch-protected CI.
 - Edition-level upstream attribution for Al Quran Cloud `quran-uthmani`; the provider names
   multiple upstream sources but does not publish an exact artifact mapping.
-- Managed object storage for retained audio and privacy deletion beyond the current local
-  filesystem boundary.
-- Cross-service NATS/JetStream emission for audit/event fanout.
+- Provisioned production object-storage infrastructure, credentials/rotation, lifecycle policy,
+  monitoring, and a rehearsed S3 backup/restore/erasure drill. The application data plane is
+  implemented; no managed bucket has been deployed or claimed by this repository.
 - OpenAI Realtime/Agents SDK integration (the agents service and ASR are custom-built, not
   built on OpenAI's SDKs — ASR uses locally-run `openai-whisper` model weights only).
 - Production institution auth provider/RBAC (OIDC/OAuth or equivalent), beyond the current

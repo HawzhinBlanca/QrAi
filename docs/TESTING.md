@@ -8,15 +8,13 @@
    (TS has no separate linter; type safety is the TS lint, run next.)
 3. **typecheck** — `tsc` for `@quran-ai/contracts`, `@quran-ai/quran-data`, `@quran-ai/server`, and
    `@quran-ai/web`.
-4. **test** — vitest for the three TS packages; `node --test` for the Node services
-   (`ml-inference/alignment.test.mjs`, `ml-inference/model-attribution.test.mjs`,
-   `ml-inference/tajweed.test.mjs`,
-   `ml-inference/server.test.mjs`, `agents/agents.test.mjs`, run by explicit path
-   because a dir glob would import the listening `server.mjs`); `cargo test` for both
-   Rust services. `ml-inference/golden-regression.test.mjs` is included explicitly: it computes
-   alignment/tajweed behavior against the real canonical Quran data rather than trusting its
-   committed metric summary. Its fixture is mechanically marked ineligible for model evaluation,
-   calibration, and release claims; this is a regression proof, not acoustic-quality evidence.
+4. **test** — vitest for the three TS packages; explicit `node --test` paths for server inference,
+   API, job, contract, release, mobile-helper, and agents suites; Python ASR tests; and `cargo test`
+   for both Rust services plus `shared-ticket`. The Flutter client is analyzed and tested when its
+   SDK is installed and is skipped loudly otherwise. `tests/inference/golden-regression.test.mjs`
+   computes alignment/Tajweed behavior against the real canonical Quran data rather than trusting
+   a committed metric summary. Its fixture is mechanically ineligible for model evaluation,
+   calibration, and release claims; this is regression proof, not acoustic-quality evidence.
 5. **build** — `pnpm build` (contracts + quran-data + server + web).
 
 `bash scripts/verify.sh --fast` runs only lint + typecheck (used by the PostToolUse hook).
@@ -31,22 +29,213 @@ This is decision proof only. It requires ADR-0050, the matching living-architect
 canonical invocation. It does not prove that the standalone package, S3 adapter, deadlines, rate
 limits, enrollment, or process lifecycle have been implemented; each has a later behavioral gate.
 
-The first deployable Node boundary has two focused gates:
+The Node package and standalone boundary have four focused gates:
 
 ```bash
 pnpm --filter @quran-ai/server build
 node --test \
   tests/node-api/standalone-lifecycle.test.mjs \
+  tests/node-api/route-registry.test.mjs \
+  tests/node-api/standalone.test.mjs \
   tests/node-api/production-image.test.mjs
 ```
 
 `standalone-lifecycle` proves the ESM workspace/dependency boundary, side-effect-free composition,
-local health construction, and close. `production-image` pins the OCI base digest, production-only
-deploy, non-root runtime, internal Compose topology, native healthcheck, release digest lists,
-SBOM/licence inclusion, and Docker workflow. The separate Docker workflow builds the real image,
-checks its filesystem/dependencies as the runtime user, and requires its own `/health` transition
-to healthy. `/ready` is the Compose health target and requires Postgres; Web and realtime must
-still target Rust until the later cutover tasks pass.
+local health construction, and close. `route-registry` proves one derived key projection matches the
+manifest-approved executable transition set, with no duplicate allowlist. `standalone` proves every
+executable route registers without an upstream, unknown routes remain local, and no-database pilot
+identity fails closed instead of delegating. `production-image` pins the OCI base digest,
+production-only deploy, non-root runtime, internal Compose compatibility topology, native
+healthcheck, release digest lists, SBOM/licence inclusion, and Docker workflow. The separate Docker
+workflow builds the real image, checks its filesystem/dependencies as the runtime user, and requires
+its own `/health` transition to healthy. `/ready` requires Postgres; Web and realtime must still
+target Rust until the later traffic-cutover tasks pass.
+
+W2.14 private-audio lifecycle proof is split by what it can honestly establish:
+
+- `tests/e2e/audio-lifecycle.test.mjs` is hermetic and canonical. It proves versioned server-derived
+  keys, hostile-segment refusal, filesystem create-only/hash-idempotent behavior, interrupted-write
+  inventory, S3 conditional puts/checksums/private metadata/AbortSignal, full pagination, HTTP-200
+  partial-delete errors, verified idempotent erasure, and fail-closed production configuration.
+- The worker inference suite proves the same injected store drives writes, reads, transcript
+  assembly, privacy, and retention for filesystem and S3-shaped adapters while legacy filesystem
+  objects remain readable.
+- Live-Postgres parity tests prove changed index retries conflict, Node playback never uses the ML
+  compatibility hop, export includes stored audio, delete removes it before the database cascade,
+  tenant isolation holds, and a storage fault leaves the database untouched.
+- `tests/e2e/teacher-audio-index.test.mjs` proves real gateway storage/index/playback and the
+  dry-run/apply reconciler, including an ownership mismatch. Missing Postgres makes only these live
+  tests skip through the canonical DB gate; the hermetic storage protocol tests never skip.
+
+The ordered Node HTTP boundary has two additional hermetic gates:
+
+```bash
+node --test \
+  tests/node-api/middleware-order.test.mjs \
+  tests/security/node-boundary.test.mjs
+```
+
+They prove CORS/preflight → maintenance → rate admission → auth/handler ordering, fixed 429/503
+responses, early-response metrics, exact maintenance probe exemptions, deterministic 200/50 ms
+token-bucket refill, bounded idle/LRU key state, forwarded-IP spoof resistance, explicit trusted
+hop behavior, 2 MiB/16 MiB body ceilings, and generic unexpected-error/credential redaction. The
+full boot guard separately proves invalid or inert trusted-proxy hop configuration refuses to
+listen. The exhaustive parity harness sets the same exact `DISABLE_RATE_LIMIT=1` as Rust so parity
+remains behavior comparison rather than an accidental load test.
+
+The Node database boundary has one hermetic and two live gates:
+
+```bash
+node --test tests/node-api/db-architecture.test.mjs
+MIGRATION_TEST_ADMIN_URL="$ADMIN_URL" DATABASE_URL="$RESTRICTED_URL" \
+  node --test --test-concurrency=1 \
+    tests/node-api/db-role-guard.test.mjs \
+    tests/node-api/db-tenant.test.mjs
+```
+
+The architecture test permits database drivers only in `server/src/lib/db.mjs` and the three
+operator scripts, rejects route-owned tenant GUC setup/raw transactions, and pins every unscoped
+query to canonical Quran, readiness, or the locked-down pilot security-definer functions. The live
+role test creates real restricted and `BYPASSRLS` logins and proves the Fastify pre-listen decision;
+the tenant test proves GUC/timeout scope, failure cleanup, and interleaved pool isolation. A skipped
+live suite is not database proof; canonical local evidence uses both an administrative migration URL
+and the restricted stack URL.
+
+Shared dependency deadlines have one adversarial suite:
+
+```bash
+node --test tests/faults/dependency-timeouts.test.mjs
+DATABASE_URL="$RESTRICTED_URL" \
+  node --test tests/faults/dependency-timeouts.test.mjs
+```
+
+The hermetic cases hang a response *after headers* and require the socket to close for
+compatibility Rust, ML→ASR, and the agents worker; a status-only timeout test would miss an
+unbounded response body. With live Postgres, the same suite proves server-side `57014`, HTTP 503 +
+`Retry-After`, rollback of an insert preceding `pg_sleep`, privacy state preservation, and a review
+audio audit that remains `attempted` rather than `served`. The live cases skip loudly when no
+database is reachable; a skipped run is not database cancellation proof. The suite appears exactly
+once in the canonical Node test invocation, asserted by `verify-invocations.test.mjs`.
+
+Bounded API process drain has one real child-process suite:
+
+```bash
+node --test tests/node-api/graceful-shutdown.test.mjs
+MIGRATION_TEST_ADMIN_URL="$ADMIN_URL" DATABASE_URL="$RESTRICTED_URL" \
+  node --test tests/node-api/graceful-shutdown.test.mjs
+```
+
+The hermetic run proves strict configuration refusal, first-signal admission stop, preservation of
+a completing response, scheduled force-close of a hung dependency, repeated-signal escalation, and
+a held upgraded socket that cannot defeat the hard grace. The live case gives the child a unique
+Postgres `application_name`, forces a real readiness query, requires the pool to appear in
+`pg_stat_activity`, and requires it to disappear after the ordered `resources closed`/`shutdown
+complete` path. A skipped live case is not pool-drain proof. Production-image and invocation guards
+also pin SIGTERM, the eight/ten-second app/container default inequality, and exactly one canonical
+execution.
+
+W2.15 durable work has four explicit proof layers:
+
+```bash
+MIGRATION_TEST_ADMIN_URL="$ADMIN_URL" DATABASE_URL="$RESTRICTED_URL" \
+  node --test tests/migrations/job-outbox-migration.test.mjs tests/jobs/durable-jobs.test.mjs
+MIGRATION_TEST_ADMIN_URL="$ADMIN_URL" DATABASE_URL="$RESTRICTED_URL" \
+  node --test --test-concurrency=1 tests/e2e/durable-workflows.test.mjs
+MIGRATION_TEST_ADMIN_URL="$ADMIN_URL" DATABASE_URL="$RESTRICTED_URL" \
+  node --test tests/node-api/worker-lifecycle.test.mjs
+node --test tests/security/job-boundary.test.mjs
+```
+
+The migration/store suite proves forced RLS, restricted grants, idempotent enqueue races,
+`SKIP LOCKED` claims, lease expiry and stale fencing, bounded retry/dead transition, exact-effect
+completion, and immutable admin/ops replay. The workflow suite proves concurrent finalization and
+Tajweed deduplication plus the privacy crash after object erase and before database commit. The
+worker suite runs the real child against an isolated migrated database and proves strict config,
+fair tenant polling, private metrics, readiness, SIGTERM drain, and pool exit. The security suite
+recursively attacks payload/result bounds, fixed error/metric output, the recovery command, and the
+offline evaluation/signing authority. Canonical invocation guards require every layer exactly once.
+A skipped live suite is not durable-job proof.
+
+W2.16 controlled device enrollment has one accepted live journey plus its migration, contract,
+authorization, privacy, and secret-redaction callers in the ordinary canonical suite:
+
+```bash
+MIGRATION_TEST_ADMIN_URL="$ADMIN_URL" DATABASE_URL="$RESTRICTED_URL" \
+  node --test --test-concurrency=1 tests/e2e/device-enrollment.test.mjs
+```
+
+The accepted journey uses a real restricted Postgres role and proves admin-only audited
+provisioning, invitation reuse, expiry, forgery, refresh replay and whole-family revocation,
+concurrent rotation, access expiry, explicit logout, current stored role, cross-tenant refusal,
+hash-only persistence, fixed CLI failure output, count-only privacy export, and credential-row
+deletion. `tests/migrations/device-identity-migration.test.mjs` separately pins forced RLS,
+lineage/expiry constraints, hardened hash-discovery functions, grants, and schema convergence.
+`tests/node-api/no-secret-logging.test.mjs` sends invitation/access/refresh canaries through real
+requests, and `tests/node-api/production-image.test.mjs` requires Compose to pass
+`DEVICE_IDENTITY_ENABLED` with a default of zero. A skipped database journey is not enrollment
+proof; route activation and native Keychain/Keystore evidence remain separate owner/W4.10 gates.
+
+W2.17 server-owned inference and one-image consolidation has a focused hermetic boundary:
+
+```bash
+node --experimental-strip-types --test \
+  tests/contract/inference-module-boundary.test.mjs \
+  tests/contract/inference-compatibility-surface.test.mjs \
+  tests/contract/retired-components.test.mjs \
+  tests/inference/compatibility-ingress.test.mjs \
+  tests/jobs/local-inference-worker.test.mjs \
+  tests/jobs/api-job-wait.test.mjs \
+  tests/jobs/inference-cancellation.test.mjs \
+  tests/node-api/production-image.test.mjs
+```
+
+These tests prove one server-owned inference module tree, API wait-only behavior, worker-only durable
+execution, cancellation/fencing, a closed private compatibility surface, one Node image identity,
+and removal of the former ML service/source/image. Live Postgres and real-process gateway callers
+remain in the canonical gate; `node scripts/smoke-ml.mjs` and `node scripts/smoke-privacy.mjs`
+exercise the running compatibility/data-lifecycle boundary. A green local gate is not remote CI,
+staging replay, model-quality evidence, or a public traffic-cutover approval.
+
+W2.18 explicit HTTP canary topology has a focused manifest/topology and effect boundary:
+
+```bash
+node --test \
+  tests/contract/http-canary-topology.test.mjs \
+  tests/e2e/http-canary-effects.test.mjs \
+  tests/release/http-canary-image.test.mjs \
+  scripts/load-test.test.mjs \
+  tests/observability/http-canary-monitoring.test.mjs \
+  tests/release/http-canary-controller.test.mjs \
+  tests/release/canary-rollback-evidence.test.mjs
+docker compose -f docker-compose.yml -f docker-compose.canary.yml config --quiet
+```
+
+The contract suite derives exactly 39 canary-owned routes from the route manifest, rejects count or
+owner-gate drift, exercises the Web upstream allowlist, and pins paired base-Rust/canary-Node targets
+for Web plus gateway indexing. The effect suite boots the real Node compatibility app: retained
+health and mutable privacy requests stay local, while transition/Rust-only requests proxy exactly
+once. A retained mutable request never reaches Rust. A proof-only owner header is enabled only by
+`retained-canary` mode and absent from normal API
+responses. The image contract requires exact candidate/previous digests, seven inspected container
+identities, the rendered and running topology, the 39/4 route inventories, hostile/effect/privacy/
+tenant/audio stages, a deliberate Rust-unavailable proof, guaranteed restoration, clean source,
+write-once output, and 24-hour expiry. `scripts/http-canary-image.mjs` executes that proof against an
+already-running immutable candidate stack and refuses a source-process or fixture substitute. The
+load contract requires passed classroom, burst, and 30-minute soak artifacts with identical
+candidate source, Node image, and topology identities. Monitoring tests pin four private scrapes,
+low-cardinality alert thresholds, and dashboard queries. Controller tests prove healthy input has
+no mutation or promotion authority, every stop signal reverses traffic then restores six previous
+application images, old database images are excluded, failure evidence is prefix-closed, and the
+rollback effect/cleanup probe requires one stored effect, zero duplicates, and verified privacy
+cleanup. `canary-rollback-evidence.test.mjs` also proves the release validator accepts only a fresh,
+candidate-bound chain containing a signed 15-minute monitoring observation, the exact signed remote
+check inventory, a healthy observation controller artifact, a completed `deliberate-drill`
+rollback, and independent role-bound Ed25519 release-owner/security/SRE approvals. It rejects
+tampering, missing checks, incident-only rollback, key-material reuse, stale evidence, and role
+substitution. `verify.sh --release` validates those external documents before release work and
+writes the closure artifact only after the full gate succeeds. The unit suite validates machinery
+only; the real candidate/load/rollback timings, remote checks, and human decisions must still exist
+externally and are never synthesized by tests.
 
 Canonical Quran integrity is part of the ordinary TypeScript gate. For a focused review, run
 `pnpm --dir packages/quran-data test` and
@@ -99,7 +288,7 @@ the same 92.72-second fixture to the configured ASR and requires positive monoto
 are plumbing checks only. The fixture is explicitly benchmark-ineligible, its transcript is not
 reviewed Quran text, and neither command claims accuracy or clears the W1.5 selection gate.
 
-`services/ml-inference/session-transcript.test.mjs` separately proves that stored PCM sessions over
+`tests/inference/session-transcript.test.mjs` separately proves that stored PCM sessions over
 the 120-second worker limit are split into bounded context windows, span offsets remain absolute,
 legitimate repetitions survive overlap ownership, text-only ASR is force-aligned against the
 recognized transcript, and incomplete/mixed/malformed evidence is refused rather than scored.
@@ -148,8 +337,8 @@ python3 -m pytest -q \
   services/asr-inference/test_acoustic_tajweed.py \
   services/asr-inference/test_model_attribution.py
 node --experimental-strip-types --test \
-  services/ml-inference/acoustic-shadow.test.mjs \
-  services/ml-inference/session-transcript.test.mjs \
+  tests/inference/acoustic-shadow.test.mjs \
+  tests/inference/session-transcript.test.mjs \
   tests/inference/muaalem-candidate-evidence.test.mjs \
   tests/contract/acoustic-tajweed-boundary.test.mjs \
   tests/contract/retired-components.test.mjs
@@ -161,7 +350,7 @@ Evaluation readback and smoke are evidence-aware rather than aggregate-authorita
 
 ```bash
 node --experimental-strip-types --test \
-  services/ml-inference/server.test.mjs \
+  tests/inference/server.test.mjs \
   tests/contract/verify-invocations.test.mjs \
   tests/contract/openapi-completeness.test.mjs
 DATABASE_URL=postgresql://quran_ai_app:REDACTED@127.0.0.1:5433/quran_ai \
@@ -174,7 +363,8 @@ digests, signer data, counts, and slices; historical aggregate rows expose null 
 `fixture-regression`. Rust and Node are byte-compared with a complete non-release fixture. Browser
 smoke returns a zeroed declared fixture and blocks every benchmark status. ML smoke runs the real
 offline row evaluator, signs only with an ephemeral test key in memory, and verifies that the result
-is cryptographically valid but never release-trusted. The online ML service has no eval-run POST.
+is cryptographically valid but never release-trusted. The online worker inference runtime has no
+eval-run POST.
 
 The ordinary gate uses a declared scorer double and proves byte-preserving QPS input, exact
 candidate/profile identity, bounded windows, child restart/timeout, stored-audio/consent refusal,
@@ -276,12 +466,11 @@ inserted rows are declared database fixtures; they are not cryptographically val
 > `.github/workflows/ci.yml` runs a real `postgres:16-alpine` service container and invokes the
 > checksum-locked migration runner before `verify.sh` runs, so the DB-gated tests DO execute (and are asserted)
 > in CI, same as a local run with Postgres up.
-> `scripts/proof.sh` (`pnpm proof`, also what `scripts/smoke-all.mjs`'s first step runs) covers
-> more test suites than it used to: it now also runs `apps/mobile`'s and
-> `services/ml-inference`/`services/agents`' `node:test` suites directly by path (none of the
-> three are pnpm workspace members, so none are reachable via `pnpm --filter`).
-> `ml-inference`/`agents` were already covered this way in `verify.sh` (see step 4 above);
-> `apps/mobile` is not yet — its regression coverage currently only runs via `pnpm proof`.
+> `scripts/proof.sh` (`pnpm proof`, also what `scripts/smoke-all.mjs`'s first step runs) additionally
+> runs the non-workspace Expo helper/typecheck and explicit inference/agents suites. `verify.sh`
+> covers those same runtime boundaries plus the larger contract/job/parity corpus and conditionally
+> runs Flutter analysis/tests when the SDK is installed. Neither command turns a missing Flutter
+> SDK into device proof; native device validation remains a separate gate.
 
 ## Database-gated tests (platform-api)
 `services/platform-api/tests/integration.rs` has tests marked
@@ -311,7 +500,7 @@ DATABASE_URL=postgresql://user@host:5432/db bash scripts/verify.sh
 > (`SELECT id, review_status FROM agent_runs WHERE review_status NOT IN (...)`), not a code bug.
 
 ## Smoke tests (services)
-`pnpm smoke:all` exercises the running stack (SQL/browser/API/ML/privacy) and retains
+`pnpm smoke:all` exercises the running stack (SQL/browser/API/worker-inference/privacy) and retains
 artifacts under `out/smoke/`. These need services up (`docker compose up`) and are
 **not** part of the ordinary `verify.sh` gate — they validate a deployed stack,
 not just a code change. `bash scripts/verify.sh --release` is the stricter
@@ -443,10 +632,11 @@ unaffected. Full recipe and output:
 > allowlist. The gateway must also be pinned to the serving tenant with `GATEWAY_TENANT_ID`.
 
 `tests/e2e/teacher-audio-index.test.mjs` is the database-backed topology proof. It runs a real
-gateway, ml-inference filesystem store, platform-api and WebSocket; verifies the resulting index and
-audited teacher playback bytes; forces an index outage; checks the stored-unindexed metric; runs the
-repair command first in dry-run and then apply mode; proves idempotence; and refuses a sidecar whose
-learner disagrees with the authoritative tenant-scoped session. `verify.sh` runs it whenever the
+gateway, the shared filesystem development adapter, platform-api and WebSocket; verifies the
+resulting index and audited teacher playback bytes; forces an index outage; checks the
+stored-unindexed metric; runs the storage-neutral repair command first in dry-run and then apply
+mode; proves idempotence; and refuses stored metadata whose learner disagrees with the authoritative
+tenant-scoped session. `verify.sh` runs it whenever the
 live-Postgres leg is available and cannot silently skip it inside that leg.
 
 ## Conventions

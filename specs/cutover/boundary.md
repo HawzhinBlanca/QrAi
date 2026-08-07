@@ -8,43 +8,44 @@
 into citing things that were deleted. A review package whose claims cannot be checked is worse than
 none, because it reads as assurance.
 
-**Nothing described here is deployed.** `server/src/main.mjs` serves **0 of 38** routes in
-any default configuration. Run `node scripts/cutover-readiness.mjs` for the current state.
+**Nothing described here is deployed as the public API.** Source-default standalone mode registers
+**41 executable routes**, including all 38 retained baseline operations. The current Compose shadow
+is explicitly compatibility-configured and serves **2 routes locally** (`/health`, `/ready`); Web
+and realtime still address Rust. Run `node scripts/cutover-readiness.mjs` for the current state.
 
 ---
 
 ## 1. What is actually new
 
-A second process — `services/node-api` — that would sit **in front of** the Rust `platform-api`.
+A package-owned process — `server/src/main.mjs` — with two explicit modes:
 
 ```
-client ──► node-api (Fastify) ──┬── a ported route  ──► Postgres
-                                └── everything else ──► platform-api (unchanged)
+standalone:    client ──► all executable Node routes ──► Postgres/workers
+compatibility: client ──┬── selected Node routes ─────► Postgres/workers
+                        └── unmatched routes ─────────► platform-api oracle/canary
 ```
 
 | addition | consequence for the boundary |
 |---|---|
 | a second process terminating client requests | one more place auth can be decided, and one more place it can be decided *wrongly* |
-| a proxy hop for every unported route | headers, cookies and bodies are copied by our code rather than passed by a kernel |
+| an explicit compatibility proxy | headers, cookies and bodies are copied by our code in parity/canary mode; standalone has no catch-all proxy |
 | a second Postgres client (`postgres`, porsager) | a second implementation of the tenant-isolation discipline (§3.1) |
-| 6 new runtime dependencies | fastify, @fastify/cors, postgres, zod, jose, ws — all inside `pnpm audit` |
-| `tests/node-api/*` + `services/node-api/*` | new code paths, none of them yet load-bearing |
+| 5 package runtime dependencies | fastify, @fastify/cors, postgres, pg, jose — all inside `pnpm audit` |
+| `tests/node-api/*` + `server/src/*` | package-owned code paths with standalone and compatibility proof; not yet the public traffic target |
 
 `services/platform-api` and `services/realtime-gateway` are **unchanged**. No production Rust was
 edited in Phases 7–9.
 
 ## 2. What it deliberately does NOT do
 
-**The pilot cookie path is delegated, not ported.** Any request carrying `__Host-qrai-pilot` is
-proxied to Rust untouched — `server/src/lib/authz.mjs`.
+**Pilot-cookie identity is local when Postgres is available.** Node performs the hash-only lookup,
+expiry checks, mutating-request Origin/CSRF checks, tenant-scoped idle roll, and learner-only role
+derivation in `server/src/lib/authz.mjs`. If the DB pool is unavailable, standalone fails closed
+with a generic 401. Delegation is compatibility-only and possible only when a Rust upstream was
+explicitly supplied.
 
-That is 306 lines of session lookup, idle-roll, CSRF digest and Origin allowlisting
-(`services/platform-api/src/handlers/pilot.rs`) that the Node service does not reimplement.
-Half-porting it is the regression this whole migration was structured to avoid, so it fails **safe**:
-the request goes to the implementation Phase 6 already proved.
-
-- Proven by: `tests/node-api/authz.test.mjs` — *"a pilot cookie DELEGATES rather than being
-  half-authenticated here"*.
+- Proven by: `tests/node-api/authz.test.mjs` and `tests/node-api/standalone.test.mjs` — including
+  DB-less compatibility delegation and the standalone no-fetch refusal.
 
 ## 3. The four security-critical primitives, and the evidence for each
 

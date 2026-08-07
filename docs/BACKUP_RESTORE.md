@@ -4,9 +4,10 @@ How to back up and restore QrAi's data. Two independent things need backing up:
 
 1. **The Postgres database** — accounts, consent records, recitation sessions, learner progress,
    teacher/scholar reviews, agent runs, audit events. Covered by `scripts/backup-db.sh`.
-2. **The learner audio blobs** — raw recordings in the `audio_storage` Docker volume (retained
-   per consent: 1h discard / 7d teacher-review / indefinite training-opt-in). Not in the DB;
-   backed up separately (see below).
+2. **The learner audio blobs** — private S3-compatible object storage in production, or the
+   `audio_storage` filesystem adapter in local Compose (retained per consent: 1h discard / 7d
+   teacher-review / indefinite training-opt-in). They are not in the DB and require a separate,
+   consent-aware recovery design (see below).
 
 > A backup that lives on the same host as the database is **not** disaster recovery. Every
 > procedure here ends by copying the artifact **off-host**.
@@ -117,8 +118,13 @@ drop/recreate `quran_ai`, then restore — never restore over a database serving
 
 ## Audio-blob backup
 
-The `audio_storage` volume holds minors' recordings under consent-based retention — the most
-sensitive data this project stores.
+Learner recordings are the most sensitive data this project stores. The repository provides an
+encrypted archive/restore path for the **local filesystem adapter only**. It does not turn that
+volume script into a production S3 backup and does not prove any hosted bucket's recovery controls.
+
+### Local filesystem adapter
+
+The `audio_storage` volume is used by local Compose and development/test environments.
 
 **Use `scripts/backup-audio.sh`.** It encrypts, and it verifies that the archive holds as many files
 as the source tree did, so a backup that silently drops recordings fails instead of reporting
@@ -149,8 +155,36 @@ BACKUP_DECRYPTION_KEY=/path/to/qrai-backup-private.key \
 Keep audio backups only as long as the underlying consent allows, and prune backups that predate an
 erasure as part of the erasure workflow (coordinate with `/v1/privacy/delete`).
 
+### Production S3-compatible storage
+
+Before go-live, the operator must select and document a private bucket and a separate recovery
+mechanism appropriate to that provider. At minimum the production design must:
+
+- block public access and expose credentials only to the server-side services that need them;
+- encrypt at rest and in transit, document the region and key ownership, and retain an auditable
+  provider/DPA decision for children's voice data;
+- keep recovery copies in a separate failure domain and verify object metadata plus SHA-256 after
+  restore, not merely object counts;
+- preserve the versioned `audio/v1/<tenant>/<learner>/<session>/<chunk>.pcm` identity and restore the
+  matching Postgres index only through the tenant-validated reconciliation command;
+- ensure provider versioning, replication, snapshots, or delete markers cannot silently retain or
+  resurrect data past consent TTLs or an erasure request; and
+- reapply every outstanding erasure before restored objects become reachable.
+
+The `job-worker` owns retained-audio writes, retention sweeps, and workflow erasure; `node-api`
+owns authorized playback/export/delete requests through the same adapter contract. During a
+restore, keep the worker stopped until object integrity/reconciliation and outstanding erasure
+reapplication have completed. Starting it against a partially restored namespace can race
+retention or retry work against incomplete evidence.
+
+Provider-specific commands are deliberately absent because no production provider/bucket has been
+approved or deployed. A runbook filled with invented credentials or vendor behavior would be false
+assurance. The selected provider's exact export, restore, integrity verification, erasure, and key
+recovery procedure must be added and rehearsed before this section can be marked proven.
+
 ## Restore drill
 
-Do a **real restore into a throwaway database at least once before go-live**, and periodically
-after — an untested backup is a hope, not a recovery plan. The procedure above is the drill; a
-green row-count check is the pass criterion.
+Do a **real restore into a throwaway database and isolated object-storage namespace at least once
+before go-live**, and periodically after—an untested backup is a hope, not a recovery plan. A green
+database row-count check proves only the database half. Audio recovery additionally requires object
+count, metadata, checksum, tenant/session reconciliation, and erasure-reapplication evidence.

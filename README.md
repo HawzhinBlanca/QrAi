@@ -6,15 +6,17 @@ Quran AI is being built into a Quran Recitation Intelligence OS: learner recitat
 
 This repo implements a meaningful, testable vertical slice of the 10/10 platform:
 
-- `apps/web` is the React/Vite learner practice app, with a pilot-invite session path and an internal review surface kept out of the default learner route.
+- `apps/flutter` is the lean target learner client; React/Vite `apps/web` and Expo `apps/mobile`
+  remain measured compatibility surfaces until their caller-removal gates pass.
 - `packages/contracts` owns shared API, data, canonical-checksum, retention, and learner-facing source/review gate contracts.
 - `packages/quran-data` owns immutable, checksum-validated Quran and translation import bundles plus SQL seed generation.
 - `services/platform-api` is a Rust/Axum + SQLx/Postgres tenant-scoped API for recitation, progress, reviews, approvals, privacy, audit events, pilot sessions, and realtime tickets. Its tenant-owned data paths use Postgres RLS.
 - `services/realtime-gateway` is a Rust/Tokio gateway with ticket-gated WebSocket ingress, bounded backpressure, metrics, and reconnect coverage.
-- `services/ml-inference` performs Quran-constrained alignment and deterministic Tajweed instruction.
-  A pinned Muaalem v3.2 adapter runs only as private, uncalibrated shadow evaluation on retained
-  audio and server-derived spans; it returns no learner findings until calibration, evaluation,
-  scholar, licence, and review gates pass.
+- `server` is the single Node production package and image. Compose runs it as `node-api` and
+  `job-worker`; the worker owns durable execution, retained-audio lifecycle, Quran-constrained
+  alignment, and deterministic Tajweed instruction. A pinned Muaalem v3.2 adapter runs only as
+  private, uncalibrated shadow evaluation on retained audio and server-derived spans; it returns no
+  learner findings until calibration, evaluation, scholar, licence, and review gates pass.
 - `infra/migrations` is the immutable, checksum-pinned schema history. The one-shot Node runner
   serializes application with a Postgres advisory lock, records each file in `schema_migrations`,
   and refuses source/database drift. Restricted runtime-role provisioning lives separately under
@@ -28,7 +30,9 @@ It is **not release-ready**: candidate-bound model evaluation, independent secur
 - Web: React 19, Vite 8, TypeScript 6, Tailwind CSS 4, Lucide, Motion, Recharts, Vitest.
 - Contracts: TypeScript, Vitest.
 - Realtime foundation: Rust 1.96, Tokio, bounded `mpsc` channels.
-- Planned platform services: Rust/Tokio/Axum, Python/PyTorch/FastAPI, Postgres + pgvector, NATS JetStream, object storage, Redis, OpenTelemetry/Sentry.
+- Backend: one modular Node 22 package/image for API and worker roles, retained Rust compatibility
+  oracles, Python/FastAPI ASR, Postgres RLS, and private S3-compatible object storage. The lean
+  boundary deliberately adds neither Redis nor NATS.
 
 ## Run Locally
 

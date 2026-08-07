@@ -5,15 +5,16 @@
 > as authoritative. It is **not** a ruling — it states exactly what the engine detects and where it
 > simplifies, and asks specific questions. Nothing here substitutes for the scholar's judgment.
 >
-> **Context that bounds the risk.** Every AI/engine-generated tajweed note is already gated: it is
-> shown to a learner only as **"AI suggestion · not yet reviewed"** until a human reviewer approves it
-> (`canShowLearnerFacingAiOutput` in `packages/contracts`, mirrored in `services/agents/lib/gate.mjs`).
-> Findings carry `severity: "practice"` — they are practice prompts, not fatwa. The questions below ask
-> whether that framing is sufficient for each simplification, or whether a rule must be corrected,
-> relabelled, or withheld.
+> **Context that bounds the risk.** Deterministic canonical-text rules are instructional annotations,
+> not measurements of a learner's recitation. They return `analysisBasis: "text-rule"`,
+> `instructional: true`, and sources, with no confidence, severity, or review state. Acoustic
+> learner-performance `findings[]` stay empty unless a calibrated, evaluated, approved producer
+> exists; any learner-facing performance result must also pass `canShowLearnerFacingAiOutput`.
+> The questions below ask whether each instructional simplification is acceptable or whether the
+> rule must be corrected, relabelled, or withheld.
 
-Source of truth for the rules: [`services/ml-inference/tajweed.js`](../services/ml-inference/tajweed.js).
-Each rule emits `{ rule, arabicName, category, severity: "practice", explanation, confidence, sources }`.
+Source of truth for the rules: [`server/src/inference/tajweed.mjs`](../server/src/inference/tajweed.mjs).
+Each rule emits `{ wordId, rule, arabicName, category, analysisBasis: "text-rule", instructional: true, explanation, sources }`.
 
 ---
 
@@ -31,9 +32,9 @@ Each rule emits `{ rule, arabicName, category, severity: "practice", explanation
 ### Open gap (currently withheld, not wrongly shown)
 - **nūn / mīm mushaddad ghunnah** (e.g. `إِنَّ`, `ثُمَّ`): the engine currently reports only *shaddah*, **not**
   the obligatory ghunnah on a mushaddad nūn/mīm. It is deliberately **not implemented** and is flagged
-  in the test suite as awaiting this review (`services/ml-inference/tajweed.test.mjs`, marked `todo`).
-  **Question A1-1:** should mushaddad ghunnah be added as a `severity: "practice"` finding for نّ/مّ, and
-  is the two-count ghunnah framing correct?
+  in the test suite as awaiting this review (`tests/inference/tajweed.test.mjs`, marked `todo`).
+  **Question A1-1:** should mushaddad ghunnah be added as a sourced instructional annotation for
+  nūn/mīm with shaddah, and is the two-count ghunnah framing correct?
 
 ## 2. Inter-word rules (nūn sākinah / tanwīn → next word's first letter)
 
@@ -53,17 +54,17 @@ sākin (the mushaf writes particles مِن/عَن/أَن etc. with a bare nūn),
 
 1. **A1 — detection correctness.** For each rule above, is the *site* it fires on doctrinally correct
    for Ḥafṣ ʿan ʿĀṣim? (Where it fires, not how long to hold.)
-2. **A1 — acceptable simplifications.** Are these acceptable for a **practice-assist** tool whose output
-   is human-review-gated and labelled provisional: (a) madd types not distinguished; (b) tafkhīm on
-   presence, with rāʾ and the lām of Allah **not** handled; (c) idghām not split into with/without
-   ghunnah; (d) mushaddad ghunnah currently withheld?
+2. **A1 — acceptable simplifications.** Are these acceptable as sourced **instructional text
+   annotations**, explicitly separated from learner-pronunciation evidence: (a) madd types not
+   distinguished; (b) tafkhīm on presence, with rāʾ and the lām of Allah **not** handled; (c) idghām
+   not split into with/without ghunnah; (d) mushaddad ghunnah currently withheld?
 3. **A1-1 — mushaddad ghunnah.** Add it (نّ/مّ, two counts) or keep withheld?
 4. **A1-2 — ghayn (غ) in tafkhīm.** The engine detects tafkhīm on six of the seven ḥurūf
    al-istiʿlāʾ — غ is currently missing. Should غ be added to the detection set (making it the
    classical seven: خ ص ض غ ط ق ظ), or is its omission acceptable for a practice-assist tool?
-5. **A3 — labelling.** Is **"AI suggestion · not yet reviewed"** + human-review-before-authoritative +
-   `severity: "practice"` a sufficient and honest frame for a learner? If not, what wording/gating is
-   required?
+5. **A3 — labelling.** Is **"sourced instructional rule — not a measurement of your recitation"** a
+   sufficient and honest frame for a learner? If not, what wording or additional review gate is
+   required? Acoustic performance feedback remains a separate, confidence/review-gated category.
 6. **Withhold list.** Are there any rules above that must **not** be shown to a learner at all (even
    provisionally) until corrected?
 

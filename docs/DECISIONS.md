@@ -31,9 +31,9 @@ alternative passes the same evidence gates.
 - Every runtime import is declared in `server/package.json` under `dependencies` and is present in
   the frozen workspace lock. The root package remains orchestration/test tooling only. Fastify,
   Postgres, JOSE, validation, and contract parsers move with their callers. The production object
-  adapter will use `@aws-sdk/client-s3`; native `AbortController`, Web Crypto, and platform APIs are
+  adapter uses `@aws-sdk/client-s3`; native `AbortController`, Web Crypto, and platform APIs are
   preferred where they already provide the required behavior. A later dependency still requires
-  its own reviewed diff and this ADR does not install one early.
+  its own reviewed diff.
 - Production retained audio uses private S3-compatible object storage. The filesystem adapter is
   test/development only. Object keys are constructed from server-derived tenant, learner, session,
   and chunk identities; bucket credentials and raw object locations never cross the API boundary.
@@ -61,6 +61,147 @@ W2.2 may now create the package without inventing architecture in code. Later W2
 standalone lifecycle, middleware order, restricted-role boot, deadlines/cancellation, storage
 lifecycle, and enrollment before traffic moves. This ADR neither activates new routes nor claims
 that filesystem audio, the Rust fallback, or debug identity is production-ready.
+
+**Implementation note (2026-08-07, W2.9):** the package now defaults to standalone when no upstream
+is configured, registers every key from one executable route registry, and has no proxy catch-all.
+The Rust fallback survives only in explicitly configured compatibility mode for parity/canary
+reversal. Compose remains that compatibility shadow, so this source-mode change is not a traffic
+cutover or a production-readiness claim.
+
+**Implementation note (2026-08-07, W2.10):** the Node HTTP boundary now applies literal/exact CORS,
+maintenance, bounded per-process token-bucket admission, request parsing/body ceilings,
+authorization/handlers, fixed error redaction, and response metrics in one tested order. Admission
+is default-on at a 200 burst and one token per 50 ms, with 10,000-key/idle-LRU bounds and no new
+broker or dependency. Forwarded client identity remains ignored unless proxy trust is explicitly
+enabled with a positive bounded hop count. This completes HTTP admission behavior, not W2.12
+dependency deadlines, W2.13 drain, W2.16 durable credential-attempt state, or W3 realtime limits.
+
+**Implementation note (2026-08-07, W2.11):** the Node database pool now inspects its effective
+Postgres role during Fastify `onReady`, before a listening socket can be established, and refuses
+`SUPERUSER`, `BYPASSRLS`, `CREATEDB`, `CREATEROLE`, or `REPLICATION`. The established
+`ALLOW_SUPERUSER_DB_ROLE`/deprecated local alias remains the only explicit development relaxation.
+All ordinary tenant work stays behind the transaction-local `withTenant` boundary. Pilot invitation
+bootstrap now uses `withDiscoveredTenant`: its locked-down security-definer lookup runs first, then
+the shared tenant GUC and statement timeout are installed before tenant-owned work can run. A static
+gate pins database-driver ownership and the exact tenant-neutral/security-definer raw SQL allowlist.
+
+**Implementation note (2026-08-07, W2.12):** every API request now receives one monotonic deadline
+before maintenance/admission/authorization or database work. The same signal reaches compatibility
+forwarding, ML/ASR proxying, finalization, privacy erase, review audio, ML→ASR windows, and agent
+platform calls; caller disconnect also aborts it. The shared helper uses only Node platform APIs.
+Postgres connections install server-side `statement_timeout` and
+`idle_in_transaction_session_timeout`; tenant transactions tighten the statement limit to the
+request remainder. This deliberately avoids a JavaScript promise race that could answer timeout
+while a transaction later commits. SQLSTATE `57014` is a fixed retryable 503, while dependency
+boundaries use fixed 502/503 responses without URL, token, transcript, audio, or driver detail.
+Review audio keeps its pre-fetch attempt audit but records `delivery: served` only after a complete
+valid response. `tests/faults/dependency-timeouts.test.mjs` proves hung partial-response socket
+cancellation for compatibility, ASR, storage/privacy/review, and workers plus live Postgres rollback.
+This completes W2.12 cancellation semantics, not W2.13 drain, W2.15 outbox retries, or W2.17 final
+storage/worker relocation.
+
+**Implementation note (2026-08-07, W2.13):** the Node API now installs one dependency-free
+SIGINT/SIGTERM controller before listen. The first signal invokes Fastify close, immediately closes
+admission, preserves active HTTP responses, and reserves the final fifth of a strict 1–300 second
+budget for `onClose` resources. Remaining HTTP/raw/upgraded sockets are force-closed at the reserve
+boundary; a second signal escalates the same shutdown, and a hard outer timer exits non-zero rather
+than hanging indefinitely. The Postgres.js pool consumes only the reserved close time and successful
+completion is logged after `sql.end`. Pinned Fastify 5.11's native close branch treats documented
+`forceCloseConnections: "idle"` as truthy and drops active requests, so the app explicitly uses
+`false`: Node 22 `server.close()` reaps idle sockets and the controller alone owns timed active
+closure. The production image declares SIGTERM and Compose gives the eight-second app budget a
+ten-second container stop window. This completes HTTP/process drain; W3 still owns protocol-level
+WebSocket close frames for the future Node realtime entrypoint.
+
+**Implementation note (2026-08-07, W2.14 dependency):** the production S3 data-plane adapter uses
+exact `@aws-sdk/client-s3` 3.1101.0 (Apache-2.0, Node >=20), the newest registry release older than
+the repository's dependency-age window when selected. The newer 3.1102–3.1105 releases were not
+taken hours after publication. The modular v3 client supplies maintained Signature V4,
+S3-compatible endpoint/path-style configuration, conditional commands, checksum fields, response
+stream handling, SDK retry classification, and AbortSignal propagation; reimplementing signing and
+XML error semantics with raw `fetch` would add security-critical code rather than make the system
+leaner. The adapter imports only `@aws-sdk/client-s3`, never a browser upload or presigning package.
+No bucket credential, raw object URL, or caller-authored key crosses the API boundary.
+
+**Implementation note (2026-08-07, W2.14 lifecycle):** one shared async store now serves the Node
+API and worker-owned inference runtime. Production refuses an implicit driver and refuses filesystem unless
+the conspicuous development-only acknowledgement is set. S3 writes are private conditional creates
+with full SHA-256 checksums and bound identity/retention/span metadata; reads consume and validate the
+complete body; lists paginate; deletes inspect per-key errors and verify the learner prefix is empty.
+Every command receives the request `AbortSignal`, readiness checks the bucket, and shutdown destroys
+the client. Filesystem uses create-only owner-private files and retains an explicit legacy reader for
+migration tests/development, never as a silent production fallback.
+
+Object keys are derived from verified tenant, learner, session, and chunk identity in both Node and
+the Rust compatibility oracle. Identical byte/metadata retries are no-ops; changed immutable data or
+index metadata returns a conflict. Review playback and privacy export/delete use the injected store
+directly; the temporary private HTTP seam is limited to measured Rust/gateway compatibility
+consumers and uses the worker's exact store instance. The storage/index boundary is not falsely
+described as atomic: inventory
+exposes incomplete pairs, and `repair-audio-index.mjs` is storage-neutral, dry-run first, idempotent,
+ownership-checked, and reports inverse index-without-object states. Production bucket provisioning,
+credential rotation, monitoring, and restore rehearsal remain deployment work, not application claims.
+
+**Implementation note (2026-08-07, W2.15):** one forced-RLS Postgres `background_jobs` table is the
+durable queue and transactional outbox for session finalization, session Tajweed evaluation, and
+privacy export/delete. No Redis, NATS, queue ORM, second backend package, public job route, or
+privileged queue role was added. API callers still receive the existing synchronous response body:
+the API enqueues and waits within its request deadline, while the same-package `job-worker` owns
+first execution, expired-lease recovery, and retries. Claims use `SKIP LOCKED`, bounded
+leases/attempts, monotonic generations, fixed
+error codes, and capped backoff. External inference and object deletion are at-least-once; only the
+fenced tenant transaction containing the domain effect and job completion is exactly-once.
+
+Privacy now commits a bounded identifier/object manifest before its idempotent erase, closing the
+crash window without putting audio, transcripts, credentials, or dependency addresses in the queue.
+The worker reads only the global institution registry, then claims and commits under ordinary tenant
+RLS. Its private health/readiness/metrics endpoint has finite state/kind/outcome labels, and SIGTERM
+stops claims, cancels work, then closes storage and Postgres within the configured grace. A dead row
+is never reset: an in-tenant admin/ops recovery command creates one audited, idempotent successor;
+if that successor dies, it is the next immutable replay source. Runtime session evaluation may only
+read existing release evidence. The offline evaluator and detached signature/release checks remain
+the sole evidence authorities; the job package cannot write `eval_runs` or access signing material.
+Local live-Postgres proof does not substitute for required remote CI and staging recovery drills.
+
+**Implementation note (2026-08-07, W2.17):** alignment, instructional Tajweed, transcript assembly,
+acoustic-shadow observation, retained-audio handling, and privacy inference now live under
+`server/src/inference`; the former standalone ML source tree, Compose service, and OCI image are
+removed. `node-api` and `job-worker` are different commands of the exact same production image.
+The API never executes durable work inline: it enqueues and waits, while the worker is the sole
+owner of first attempts, retries, and crash recovery. The worker injects one exact object-store
+instance into both workflow and inference paths, preventing adapter drift.
+
+The worker's port 8098 listener is a temporary private compatibility boundary for the measured
+Rust platform/gateway consumers. It is constrained by a service key, closed route allowlist,
+bounded admission/body sizes, and monotonic deadlines; it is not a second application or public
+API. Compose, release inventories, smoke tests, and Docker CI require one Node image identity. The
+Python ASR model process remains isolated. This cutover consolidates Node inference ownership; it
+does not silently move public HTTP or realtime traffic, which retain their independent canary and
+rollback gates. Required remote CI, staging replay, and production infrastructure proof remain
+outside the local implementation claim.
+
+**Implementation note (2026-08-07, W2.18):** base Compose remains Rust-safe. The explicit
+`docker-compose.canary.yml` overlay starts Node in a closed `retained-canary` mode whose exactly 39
+retained routes are derived from the checked route manifest, then moves Web requests and realtime
+indexing to Node together. Rust remains live for the four retirement-transition operations and for
+immediate reversal. The upstream selector accepts only the internal Rust or Node service address;
+missing, URL-shaped, or arbitrary hosts fail Web startup.
+
+This is one isolated environment/cohort switch, with no random traffic split or dual write. A
+mutable retained request executes locally once; transition routes proxy once to Rust. Applying the
+canary overlay is therefore an explicit deployment decision, and removing it returns Web and the
+gateway to the base Rust targets. Candidate and previous application bits are independently bound
+to immutable GHCR digests by ADR-0022. The topology and effect guards do not claim that a candidate
+was deployed, observed, approved, or rolled back within an SLO; those remain W2.18 operational
+evidence gates.
+
+**Implementation note (2026-08-08, W2.18 T3):** retained-canary mode alone emits a bounded
+`x-qrai-route-owner` marker so an image probe can distinguish local Node handling from the Rust
+compatibility path without changing ordinary responses. The candidate proof consumes only the
+release overlay's immutable digests, verifies actual container image IDs and running selector
+values, uses short-lived JWT actors, and writes expiring evidence once. It deliberately stops and
+restores Rust to prove the 39 retained routes have no silent fallback. This mechanism does not make
+a promotion decision and does not replace load, monitoring, rollback, remote CI, or human gates.
 
 ---
 
@@ -595,12 +736,33 @@ The target adds these separately specified operations:
 
 Staff and scholar identities are provisioned by authorized administrators, never self-selected.
 Raw invitation and refresh credentials are returned only at their intended exchange, stored only as
-hashes server-side, and never logged. Native secrets belong in Keychain/Keystore. These operations
-remain `planned-owner-gated` until the owner declares production; this ADR does not re-enable login.
+hashes server-side, and never logged. Native secrets belong in Keychain/Keystore. The server may
+implement and contract these operations as `implemented-owner-gated`, but it must not register
+them unless the owner-controlled `DEVICE_IDENTITY_ENABLED=1` switch is explicit; this ADR does not
+re-enable Web login.
 
 The manifest classifies every baseline operation as retained or retired and lists additions
 separately. Counts are computed from those sets: 42 baseline, four retirements, 38 retained baseline
 operations, and four additions. There is no independent target-count field that can drift.
+
+### W2.16 implementation note (2026-08-07)
+
+The Node boundary now implements the three device-identity operations behind the default-off
+`DEVICE_IDENTITY_ENABLED=1` owner gate. Additive migration 0035 stores only SHA-256 invitation,
+access, and refresh hashes under forced tenant RLS. Invitations are 256-bit opaque values with a
+fixed 24-hour lifetime. An exchange creates server-derived identity with a 15-minute access
+credential, seven-day idle lifetime, and 30-day absolute family lifetime. Refresh rotates both
+credentials and retains a generation chain; refresh replay revokes the entire credential family
+before returning a generic 401. Logout also revokes the family.
+
+`server/scripts/provision-device-enrollment.mjs` is the sole operator provisioning boundary. It
+requires a stored in-tenant admin, creates only learner/teacher/scholar users when explicitly given
+all approved fields, records an audit event, generates the invitation internally, and returns its
+raw value once. It cannot create admin/ops users or accept a session role, tenant, invitation, or
+credential chosen by an HTTP caller. Privacy export exposes only nonzero device-row counts; delete
+removes the learner's device sessions and invitations inside the existing fenced tenant transaction.
+This implementation does not activate the routes, re-enable Web login, or complete native secure
+storage/attestation work; W4.10 and independent security approval remain release gates.
 
 ### Consequences
 
@@ -1339,9 +1501,9 @@ So the "blocked on the ci.yml migration list" reason for choosing Option B has e
 correct and in place; this is no longer a forced choice, just an unpromoted one.
 
 ## ADR-0022 — Deployable artifacts must be immutable and digest-pinned, so rollback has a target
-**Date:** 2026-07-30 · **Status:** Accepted (2026-08-01, option A) · **Deciders:** repo owner + whoever owns ops
+**Date:** 2026-07-30 · **Status:** Accepted (amended 2026-08-07, option B) · **Deciders:** repo owner + whoever owns ops
 
-**Context.** `docker-compose.yml` builds every application service from source (`build:`); only
+**Original context.** `docker-compose.yml` built every application service from source (`build:`); only
 `postgres` uses `image:`. No workflow builds or pushes a container image — `grep -i
 "docker build|docker push|ghcr|registry|docker/build-push"` across `.github/workflows/` returns
 nothing. So there is no artifact anywhere that represents "the version that was running".
@@ -1385,36 +1547,47 @@ immediately; (B) is what makes it disaster recovery. Do not let (A) become the r
   deliberate and should be stated in the runbook, not discovered during an outage.
 - Storage grows with retained tags; a retention count is needed, mirroring `backup-db.sh`'s.
 
-**ACCEPTED 2026-08-01 — option (A), local tag retention.**
+**SUPERSEDED 2026-08-07 — the initial option (A) decision is replaced by option (B), GHCR.**
 
-The owner chose (A). This ADR recommended **(B) with (A) as the interim** and warned "do not let (A)
-become the resting state", so the divergence is recorded here rather than left implicit.
+The W2.18 audit proved that local retention never produced a usable rollback artifact in the actual
+workflow: a GitHub-hosted runner is a fresh VM for the job and is decommissioned when the job ends,
+so its local Docker tags disappear. The uploaded file also mixed build logs with JSON, and no
+Compose path consumed the claimed digests. Those were correctness failures, not future scaling
+concerns.
 
-What (A) delivers — `scripts/release-images.mjs` + `.github/workflows/release-image.yml`:
-- a STABLE tag per service per commit (`qrai/<service>:<short-sha>`), so a specific commit's image
-  can be named later;
-- the image DIGEST, published as a build artifact, satisfying `release-manifest.mjs`'s
-  `assertImageDigests()` with real values rather than relaxing the verifier to match reality;
-- RETENTION of the last N, so the previous image still exists when the current one turns out to be
-  wrong. The retention rule is a pure function with its own test, run BEFORE any pruning: a bug
-  there deletes the image you were about to roll back to.
+The accepted design is now a **durable registry**:
+- CI publishes every deployable artifact to GHCR under the full candidate Git SHA and records the
+  registry-reported `sha256` digest in strict machine-readable JSON;
+- `node-api` and `job-worker` share one `node-backend` artifact identity because they execute the
+  same production image, while the migration runner remains a separate least-privileged artifact;
+- `docker-compose.release.yml` disables source-build fallback and requires exact
+  `repository@sha256:digest` references for every released application service;
+- `scripts/release-deployment.mjs` preserves one explicit candidate/previous selection, renders
+  either slot into the release overlay, and fails image verification when any running container is
+  stopped, substituted, or backed by content other than the selected registry digest;
+- rollback selects a previously retained digest. `scripts/http-canary-controller.mjs` reverses Web
+  and realtime indexing together, then restores and verifies the six previous application images;
+  it deliberately excludes the one-shot database image because schema rollback is not an
+  application incident action. Registry retention/deletion is an explicit remote policy and is
+  never simulated by pruning ephemeral runner-local tags.
 
-**What (A) explicitly does NOT deliver, and this is the part to keep visible:**
-- **It is not disaster recovery.** The tags live only on the host that built them; a replacement
-  host has nothing to roll back to. `P5.6` (DR drill) is therefore NOT satisfied by this and must
-  not be marked as though it were.
-- It gives no provenance chain outside that host, so nobody else can verify what ran.
+`docker-build.yml` remains a Dockerfile verification workflow, not release publication. A release
+or rollback rehearsal must use the release overlay and observed image digests; rebuilding an old
+commit does not satisfy the rollback gate.
 
-`docker-build.yml` is unchanged and is NOT this: it builds every image to verify the Dockerfiles and
-the non-root hardening, producing no stable identifier, no digest and no retention.
+**Implementation note (2026-08-08, W2.18 T5 gate):** controller artifacts now distinguish a
+healthy observation, a deliberate rollback drill, and an incident, and offline verification
+requires the rollback to expose six restored images, one stored effect, zero duplicates, and passed
+privacy cleanup. Release mode validates a fresh signed monitoring observation, the exact successful
+remote check inventory, and independent role-bound release-owner/security/SRE Ed25519 approvals
+over the exact candidate/load/controller artifacts. The validator writes a closure only after the
+full release gate and never promotes traffic or creates a human approval.
 
-**Revisit (B) when** the pilot runs on a host the team does not personally control, or when anyone
-outside the build host needs to verify a deployed digest. Neither is true today; both are
-foreseeable.
-
-**Status note.** Proposed, not accepted: this is an architectural change to how the system is
-deployed and the owner has not chosen between (A) and (B). **P5.5 cannot close until it is decided
-and rehearsed** — a rollback rehearsal performed before this lands would be rehearsing a rebuild.
+**Consequences of the amended decision.** Host loss no longer destroys candidate or prior image
+identity, and release evidence matches the deploy path. Rollback does depend on GHCR availability;
+the runbook must preserve a previously pulled digest on the deployment host and must never describe
+a source rebuild as rollback. P5.5/P5.6 remain open until a real candidate and prior digest are
+deployed and the timed rollback drill is evidenced.
 
 ---
 
@@ -2176,22 +2349,20 @@ inherited exactly one route's worth of the bug.
 
 ### Decision
 
-The gate runs the full parity suite through the Node port over **every** route in `PORTABLE` — 243
-assertions, up from 14 — and the route list is **read out of `server.mjs` at gate time** rather than
-written into `verify.sh`. A hardcoded list is a second place to remember, and the forgotten one is
-always the gate: a route added to `PORTABLE` would be servable in production with nothing comparing
-it to anything.
-
-The parser fails loudly if it reads fewer than 30 routes, because a regex that silently matches
-nothing would report a green run over an empty set.
+The gate runs the full parity suite through every locally executable Node route. W2.9 removed the
+second `PORTABLE` list and its format-sensitive source parser; the gate imports the frozen
+`ROUTE_KEYS` projection derived from `server/src/routes/index.mjs::ROUTES`. It fails loudly if that
+registry contains fewer than 30 routes. One executable registry now controls registration, startup
+compatibility validation, absolute authorization coverage, and full through-Node parity.
 
 ### Consequences
 
 - The gate is slower: the parity suite now runs twice, once per backend. That is the cost of the
   claim, and the claim is the one thing that makes a cutover decidable.
-- **This does not enable anything.** `NODE_API_PORTED` stays empty at runtime and `traffic-share`
-  stays UNMET. Parity is one of four gates the brief names (parity, rollback, security, operations);
-  it is now measured rather than assumed.
+- This parity decision did not itself move traffic. W2.9 later made the source process standalone by
+  default; Compose remains an explicit compatibility shadow and public Web/realtime traffic still
+  targets Rust. Parity is one of four gates (parity, rollback, security, operations), not a release
+  signature.
 
 ---
 
@@ -2353,8 +2524,9 @@ audio had been destroyed on purpose and the queue looked identical to one where 
 unplayed. ADR-0036 and the `audioStatus` field made that legible. This is about the case where the
 recording *does* exist.
 
-Audio is written by realtime-gateway into ml-inference's object storage. Nothing could read it back:
-ml-inference had a store route and no read route at all.
+At the time of this decision, audio was written by realtime-gateway through ml-inference's storage
+route and nothing could read it back. W2.14 subsequently moved the object boundary into the shared
+Node storage module used directly by platform-api and by the transitional ML writer.
 
 ### Decision
 
@@ -2373,10 +2545,10 @@ approximate for a child's recorded voice.
 transfer that fails halfway is still recorded as an attempt. Auditing begins after authorization
 succeeds: an unauthenticated caller must not be able to write rows into the audit log.
 
-**ml-inference takes the object key's PARTS, never the key.** `<tenant>/<learner>/<chunk>.bin` as a
-single string would mean filtering a path-shaped value for traversal on the one route that reads
-files off the host. Three segments through `safeStorageSegment` make traversal structurally
-impossible rather than filtered.
+**The storage boundary takes object-identity PARTS, never a caller-selected key.** The current key is
+derived as `audio/v1/<tenant>/<learner>/<session>/<chunk>.pcm`. Passing one path-shaped string would
+turn traversal filtering into an authorization boundary; strict tenant, learner, session, and chunk
+segments make the identity structural instead.
 
 **Retention is checked twice, independently.** platform-api reads the learner's consent record from
 Postgres. ml-inference reads the retention written *alongside the bytes* when they were stored, and
@@ -2395,10 +2567,12 @@ they disagree, something is wrong and the safe answer is to refuse.
   through `POST /v1/audio-chunks` using the session's scoped signed ticket. Compose supplies the
   internal `PLATFORM_API_URL`; disabled and failed indexing increment an actionable
   stored-unindexed metric rather than disappearing.
-- A retained object survives an index outage. `server/scripts/repair-audio-index.mjs` reconciles it
-  dry-run first and idempotently, but does not treat a path or sidecar as authority: the
-  tenant-scoped session row must independently confirm both tenant and learner. The operations
-  container reads the audio volume and uses the restricted application role.
+- A retained object survives an index outage. `server/scripts/repair-audio-index.mjs` reconciles
+  S3-compatible, current-filesystem, and legacy objects dry-run first and idempotently, but does not
+  treat a key or metadata as authority: the tenant-scoped session row must independently confirm
+  tenant and learner. It also reports incomplete object/metadata pairs and database indexes whose
+  object is missing. The operations container uses the configured store and restricted application
+  role.
 - `tests/e2e/teacher-audio-index.test.mjs` proves real WebSocket storage → database index → audited
   teacher playback, then forces an index outage and proves metric, repair, idempotence, and an
   ownership-mismatch refusal.

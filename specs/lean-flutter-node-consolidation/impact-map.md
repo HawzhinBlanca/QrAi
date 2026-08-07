@@ -297,6 +297,102 @@ or traffic behavior changes.
 
 Deployment consumers that move during HTTP cutover include `docker-compose.yml`, `.github/workflows/{ci,docker-build}.yml`, root package scripts, `scripts/verify.sh`, release/smoke scripts, reverse proxy configuration, architecture/testing/operations docs, and rollback manifests.
 
+### W2.16 implemented device identity
+
+The final server boundary now consists of
+`provisionDeviceEnrollment` → `device_enrollment_invitations` →
+`exchangeDeviceInvitation` → `resolveDeviceAccess`/`rotateDeviceSession`/
+`revokeDeviceSessionFamily`. Direct consumers are the three gated route handlers, the reserved
+device Bearer branch in `resolveActor`, the operator package command, privacy manifest/delete, and
+the future W4.10 Flutter controller. Migration 0035, restricted grants, OpenAPI/route registry,
+Compose default-off wiring, audit actions, and secret-log guards are all callers of that same
+boundary. No JWT/pilot/password caller changed, and the global W2.16 task remains open until required
+remote CI plus native W4.10/release gates are satisfied.
+
+### W2.10 ordered Node boundary middleware
+
+| Source symbol/boundary | Direct callers/consumers found | W2.10 change | Regression obligation |
+|---|---|---|---|
+| `server/src/app.mjs::createApplication` | `main.mjs`; all direct app tests; every through-Node parity process; production image | Install CORS → maintenance → bounded rate admission before parser/auth/handlers, retain generic errors and response metrics | ordering, preflight, maintenance, rate, CORS-on-429/503, full parity |
+| new `server/src/lib/admission.mjs::createTokenBucketLimiter` | composition root only | Package-owned 200/50 ms token bucket with monotonic clock, 10k-key ceiling, idle/LRU eviction, no per-key timers | burst, refill, ceiling, eviction, retry vector tests |
+| Fastify `request.ip` / `trustProxy` | admission key only; logs keep Fastify's existing peer/request fields | Ignore forwarded identity by default; opt into an explicit trusted hop count only | rotating-XFF cannot bypass by default; enabled proxy separates real clients; invalid boot config refused |
+| `server/src/main.mjs` environment composition | Docker CMD; parity harness; boot guard; Compose | Read maintenance once, preserve exact `DISABLE_RATE_LIMIT=1`, validate trusted-proxy enablement/hops before listen | child-process boot and default-on/explicit-off controls |
+| `server/src/lib/authz.mjs::resolveActor` and every protected route | learner/staff/privacy/review/progress/session/ML/report operations | No handler rewrite; prove global admission precedes bearer/cookie/header resolution | exhausted client receives 429 before auth; existing auth matrix stays green |
+| global/per-route body ceilings | every JSON route; two ASR routes | Retain 2 MiB default and 16 MiB ASR overrides, add executable proof | 2 MiB rejection and ASR pass-through-to-auth under 16 MiB |
+| error handler, Fastify tracing, `createMetrics`/`onResponse` | every local and compatibility response | Keep fixed unexpected-error redaction and secret-safe request logs; count early 429/503 outcomes with bounded labels | hostile exception/auth leakage, no-secret-log, Prometheus status counters |
+
+### W2.11 restricted database and tenant transaction boundary
+
+| Source symbol/boundary | Direct callers/consumers found | W2.11 change | Regression obligation |
+|---|---|---|---|
+| `server/src/lib/db.mjs::createDb` returned pool boundary | `createApplication`; every tenant route through `withTenant`; live tenant oracle | Add role-capability inspection plus `withDiscoveredTenant`; share transaction-local tenant GUC and statement timeout setup; retain one pool | real restricted/superuser/BYPASSRLS boot cases; existing leak/failure/interleaving tests; discovered-tenant tests |
+| `server/src/app.mjs::createApplication` | `main.mjs`; direct app tests; parity harness; production image | Run restricted-role assertion in Fastify `onReady` before listen and close the pool in `onClose`; allow relaxation only through the established explicit development control | boot refusal wiring, lifecycle close, full direct/through-Node parity |
+| `server/src/main.mjs` database posture config | Docker CMD; Compose; parity child processes | Preserve `ALLOW_SUPERUSER_DB_ROLE` plus deprecated local alias semantics; production default remains fail-closed | entrypoint/static guard and live role suite |
+| `routes/pilot.mjs::bootstrap` | unauthenticated invitation exchange; users, pilot sessions, audit events | Discover through the locked-down security-definer function, then enter the shared tenant-scoped remainder of the same transaction | invitation success/reuse/expiry parity; tenant GUC/timeout proof |
+| runtime driver imports and raw `ctx.db.sql` consumers | DB primitive; canonical Quran reads; readiness; pilot security-definer lookup | Permit drivers only in `lib/db.mjs` and operator scripts; pin exact tenant-neutral/security-definer raw SQL allowlist; forbid route-owned tenant `set_config` | hermetic `db-architecture.test.mjs` |
+
+Affected callers were mapped with Serena before editing `createDb` and `createApplication`. The
+Quran reads remain byte-preserving and tenant-neutral; no canonical text or seed bundle changes.
+
+### W2.12 shared dependency deadlines and cancellation
+
+| Source symbol/boundary | Direct callers/consumers found | W2.12 change | Regression obligation |
+|---|---|---|---|
+| new `server/src/lib/deadline.mjs` | API composition/proxy/upstream; ML inference; agents worker | One monotonic deadline, composed abort signal, and response-body-aware fetch helper; no policy or secrets in the shared layer | expiry/parent abort/body hang/cancel-observed tests |
+| `app.mjs::createApplication` and route context | `main.mjs`; all local and compatibility requests; direct app tests | Allocate one request budget before local work; pass request-scoped DB/deadline context; map Postgres cancellation to fixed retryable 503 | middleware order; direct/through-Node parity; fixed redaction/header proof |
+| `db.mjs::createDb::{withTenant,withDiscoveredTenant}` | every tenant route; pilot discovery; role/readiness/raw pool consumers | Global server-side statement timeout and request-tightened `SET LOCAL`; request facade without duplicating pools | `pg_sleep` cancellation, write rollback, GUC isolation, role/tenant suites |
+| `proxy.mjs::proxy` | compatibility branch in 29 handlers plus catch-all | Consume the request signal for headers and body; fixed 502 on timeout | hung Rust socket closes; no upstream detail; healthy proxy parity |
+| `upstream.mjs::postJson` and finalizer/ML proxy callers | ML/ASR proxy; finalizer transcript + alignment | Reuse the request budget rather than starting a late/per-call timer | second call receives only remainder; no finalization write after expiry |
+| `privacy.mjs::eraseMlAudio`; `review.mjs::getFindingAudio` | privacy delete jobs; teacher/admin/ops playback | Cancel storage calls; keep attempt audit but claim `served` only after complete valid response | hung delete preserves pending/failed state; hung audio never records served |
+| ML ASR functions and route dispatcher | alignment, session transcription, acoustic shadow; direct inference tests | Carry one budget through every ASR call/window and fixed refusal/error paths | hung transcribe/force-align/acoustic request cancellation; existing inference suites |
+| agent platform fetches, batch functions, and HTTP dispatcher | `/run` and three individual batch endpoints; agent unit tests | Carry one budget through sequential batches; generic 503 on dependency timeout | hung platform cancellation; no run recorded as complete; healthy agent tests |
+| `scripts/verify.sh` and invocation guard | local/CI canonical gate | Invoke the fault suite exactly once, live DB case only when reachable | hermetic run plus live rollback in canonical gate |
+
+Serena reference search was completed for every named existing symbol before implementation. This
+task changes neither canonical Quran data nor RLS policy and does not add an outbox or second worker
+architecture.
+
+### W2.13 bounded graceful HTTP shutdown
+
+| Source symbol/boundary | Direct callers/consumers found | W2.13 change | Regression obligation |
+|---|---|---|---|
+| new `server/src/lib/shutdown.mjs` | API entrypoint; child lifecycle proof; future realtime process | One strict grace clock with normal Fastify drain, 80% force phase, raw-socket fallback, repeated-signal escalation, and hard outer exit | completing/hung/upgraded child cases; invalid config vectors |
+| `main.mjs` socket/process lifecycle | Docker `CMD`; Compose; boot guard; parity `startShell`; release image | Install SIGINT/SIGTERM before listen and route startup failure through bounded close | real entrypoint tests; boot; direct/through-Node parity |
+| `createApplication` + `createDb.end` | all direct app tests; DB tenant/role/fault suites; Fastify `onClose` | Explicit graceful close settings; reserve part of the same budget for bounded Postgres pool teardown | live pool disappearance before shutdown-complete; existing DB and lifecycle suites |
+| Node image/Compose termination contract | Docker CI; production-image guard; staging operators | Explicit SIGTERM plus an orchestrator stop window greater than app grace | parsed Docker/Compose assertions and runbook instructions |
+
+The current Node API has no WebSocket route. W2.13 guarantees that an unowned upgraded socket cannot
+defeat the hard deadline; W3 remains responsible for protocol-level close frames and realtime drain.
+
+### W2.5 local audio-index port
+
+| Symbol or boundary | Direct callers/consumers found | W2.5 change | Regression obligation |
+|---|---|---|---|
+| Rust `handlers/recitation.rs::index_audio_chunk` | realtime gateway `handle_audio_socket`; parity oracle; `audio_chunks`; finding-audio lookup and repair | Port the exact internal route into `server/src/routes/recitation.mjs` using `ctx.ticketSecret` and `ctx.db.withTenant` | valid write/response; generic ticket refusal; span/defaults; 404; exact retry; direct Rust parity |
+| `server/src/lib/ticket.mjs::{verifyRealtimeTicket,issueRealtimeTicket}` | ticket vectors; gateway/E2E minters; recitation ticket issuer | Add a claims-returning session/expiry validator while preserving the existing boolean HMAC verifier and every wire byte | cross-language vectors; tamper/wrong-version/field-count/bool/u64/session/expiry tests; constant-time signature comparison |
+| signed tenant/session/learner/retention claims | Node audio-index handler; current `recitation_sessions` + `consent_records` rows | Use claims, never body ownership; require current session learner and retention to agree before insertion | body spoof, signed learner mismatch, signed retention mismatch, expired and deleted-session cases; no raw-ticket logging |
+| `server/src/routes/index.mjs::ROUTES` and `server/src/main.mjs::PORTABLE` | app registration; canonical through-Node derivation; cutover readiness; route-table and relocation guards | Add `POST /v1/audio-chunks` to both literal registries and move exact route counts 37 → 38 | startup with explicitly ported route; registry equality; focused source guard; all through-Node parity |
+| `tests/api-parity/audio-index-parity.test.mjs::{before,impls}` | standalone focused run and canonical direct/through-Node runs | Force `NODE_API_PORTED=POST /v1/audio-chunks` so the shell column is a local handler rather than a proxy mislabeled as Node | shell boot fails before implementation; local effects compared with Rust; playback reaches storage boundary |
+
+W2.5 does not move audio bytes, change the gateway protocol, or derive final object keys; those stay
+behind W2.14/W3. It ports the existing index contract and adds fail-closed current learner/retention
+agreement without exposing which ticket property failed.
+
+### W2.6 local session finalization
+
+| Symbol or boundary | Direct callers/consumers found | W2.6 change | Regression obligation |
+|---|---|---|---|
+| `server/src/routes/session-writes.mjs::persistSessionAlignments` and its embedded replace-on-write transaction | route registry; Flutter/web practice writes; `word_alignments`, findings, reviews, runs, audits, progress/readback | Extract one `persistAlignmentsInTransaction`; keep public writes `client-reported`; make finalization the only `server-derived` caller with provenance | existing alignment parity/cascade/audit tests; source/provenance mismatch; one run linked to all words; caller model refusal |
+| Rust `handlers/recitation.rs::finalize_session` | Flutter `ApiClient.finalizeSession`; `PracticeScreen`; ML session transcript/alignment; teacher/finding pipeline | Port the HTTP/orchestration shell to Node; read ownership/Quran/model/consent, release DB connection, call ML twice, then persist atomically | ownership/404; consent/no transcript; finalizable refusal; model mismatch; malformed producer/output; no partial DB state |
+| ASR → Quran-aligner producer attribution chain | Node ML proxy; ML attribution validator; `alignment_runs.model_attribution`; restricted alignment readback | Share one Node validation boundary and require the composed document to preserve every upstream component plus exactly one Quran aligner | malformed/unknown producer; unrelated valid envelope; exact provenance round-trip; no response-body logging |
+| server-derived alignment evidence | canonical word FK; usable int4 spans; `alignment_runs`; weekly measured accuracy | Persist only matched/misread, canonical, usable spans; require every claimed row to survive or roll the transaction back | invalid status/field/span/unknown word rollback preserving prior client practice; real-audio 15-row span proof |
+| transcript gap facts | `recitation_sessions.lost_chunk_count`; Flutter finalize response | Store interior missing-chunk count in the same successful transaction and return it without changing scoring/finalized status | gapped session stores/returns exact count; complete session remains zero |
+| finalizer upstream calls and process configuration | Node main/app context; ML service; fault tests; operations configuration | Strict positive `UPSTREAM_TIMEOUT_SECS` compatibility value; bounded fetch with AbortSignal and generic 502 | invalid startup values; hung transcript/alignment bounded failure; healthy route remains responsive; no durable completion after abort |
+| `server/src/routes/index.mjs::ROUTES` and `server/src/main.mjs::PORTABLE` | app registration; canonical through-Node derivation; route-table and relocation guards | Add local finalizer and move exact route counts 38 → 39 | forced-local red/green test; registry equality; direct/through-Node parity; production image route probe |
+
+W2.6 keeps the current synchronous wire contract. It does not add a second queue or broker; the
+approved Postgres outbox conversion remains W2.9 and must reuse the same persistence authority.
+
 ## 6. Realtime convergence
 
 | Rust gateway boundary | Known callers/consumers | Node replacement responsibility | Required proof |
@@ -356,6 +452,15 @@ Deletion gate: independent Node realtime parity, hostile-input/fault/load/100-se
 - Historical specs: remove only after `docs/migration-summary.md` records commit ids, retained decisions, and unresolved risks. Git is the archive; no `legacy/` tree.
 - Local `backups*`, `.audit`, `out`, caches, virtual environments, and untracked artifacts are excluded from automatic cleanup and require separate explicit approval.
 
+## 8.6 W2.14 private audio object lifecycle delta
+
+W2.14 replaces the filesystem-only audio primitives with one server-package object-store interface
+consumed by the Node API and transitional ML process. Its direct callers are chunk ingestion,
+session PCM assembly, teacher playback, privacy export/delete, retention sweeping, audio index
+creation, and index repair. The current Rust gateway/API remain migration callers only: they must
+stop authoring object keys and preserve parity while the final Node realtime path is not yet active.
+Full symbol/caller detail and proof obligations are in `W2.14-object-storage/impact-map.md`.
+
 ## 9. Test and documentation impact by wave
 
 | Wave | Minimum changed proof surfaces | Living docs/ADRs |
@@ -379,3 +484,35 @@ Deletion gate: independent Node realtime parity, hostile-input/fault/load/100-se
 - Source deletion happens only after replacement evidence, canary/soak, and rollback rehearsal. Local or untracked artifacts are never inferred as obsolete.
 
 This map is approval evidence, not a license for a broad rewrite. Each implementation task must narrow it to the named symbols and callers for that task.
+
+### W2.7 local learner session finding retrieval
+
+| Source symbol/boundary | Current callers | Node target/affected callers | Required proof |
+|---|---|---|---|
+| Rust `handlers/review.rs::list_session_tajweed_findings` (Serena Rust indexing unavailable; read-only fallback used) | Flutter `ApiClient.listSessionTajweedFindings`; `PracticeScreen._loadFindings`; teacher-review promotion; session/alignment/finding/eval/audio tables | Add `review.mjs::listSessionTajweedFindings` inside the existing review owner; no new module/service/schema | owner/staff/scholar/other-owner/unknown/cross-tenant; acoustic-only; stable confidence/id order |
+| Node `review.mjs::{audioStatus,evaluationEvidenceStatus,storedFindingGateInput}` and `lib/learner-feedback-gate.mjs::clearsLearnerFeedbackGate` | staff queue, audio playback, ML learner redaction, Flutter/Web client gates | Reuse these exact helpers for the session read; keep policy confidence an ordinary number and apply `RustF64` only at HTTP serialization | withheld learner wire redaction; staff intact; numeric-policy source guard; teacher review alone cannot override missing audio/calibration/evaluation authority |
+| `tests/api-parity/db-endpoints.test.mjs` session-finding block and `authz-matrix.test.mjs` | Rust oracle today; parity coverage entries for persisted/readable, redaction, seed isolation, and cross-tenant hiding | Force the route local in the existing through-Node harness; add scholar refusal, staff-intact, exact-byte comparisons, and a declared temporary session without a parallel suite | red unportable-route startup; direct Rust plus through-Node behavior; absolute learner/teacher/scholar/admin/ops matrix; contract-shape validation |
+| `server/src/routes/index.mjs::ROUTES` and `server/src/main.mjs::PORTABLE` | Fastify registration; boot allowlist; cutover parser; full through-Node derivation | Register the existing contract route and move local inventory 39 → 40 | registry equality; relocation/traffic-share guards; source-built image imports 40 routes and contains no legacy/Rust API tree |
+| OpenAPI `SessionTajweedFinding` and Flutter `TajweedFinding.fromJson` | required all-field response; redacted fields still present; shared learner gate | No contract/schema change; Node must emit exact required fields and Rust f64/key semantics | OpenAPI match, Flutter contract/gate tests, canonical NFC/Arabic guards unchanged |
+
+### W2.8 learner-owned recitation history
+
+| Source symbol/boundary | Current callers | W2.8 target/affected callers | Required proof |
+|---|---|---|---|
+| `server/src/routes/sessions.mjs::listSessions` | staff UI/parity; teacher/admin/ops only; fixed tenant-wide 50-row list | Add a separate `listLearnerSessionHistory`; do not alter the staff handler or allowlist | learner path role matrix; learner still 403 on staff list; staff 403 on learner path |
+| `recitation_sessions` joined through `word_alignments` to `tajweed_findings` | practice history, review promotion, per-session finding read | Own-learner keyset page with acoustic-only pending/reviewed/blocked counts; no judgement fields | deterministic `(started_at,id)` pages; counts sum; instructional rows excluded; RLS/tenant isolation |
+| cursor session id and `limit` query | new Flutter feedback-inbox pagination | Resolve cursor only inside actor tenant + owner scope; strict `[1,50]`; return 404 for foreign/unknown cursor | hostile limits; same-tenant other-owner and cross-tenant cursor 404; no duplicates under newer insert |
+| `createTeacherReview` and W2.7 `listSessionTajweedFindings` | teacher decision changes finding status; learner detail redaction applies full evidence gate | History exposes only state counts; detailed content continues through the existing learner gate | real pending → reviewed refresh without inference; withheld detail remains redacted |
+| route manifest and `packages/contracts/openapi.yaml` | 42-operation Rust baseline; four planned target additions | Mark only learner-history implemented and derive active transition contract as baseline + implemented additions | baseline remains 42; active contract becomes derived 43; final target remains derived 42 |
+| `server/src/routes/index.mjs::ROUTES`, `server/src/main.mjs::PORTABLE` | Fastify registration, startup/cutover parsing, canonical through-Node list | Add the approved target route and move local inventory 40 → 41 until W2.9 removes the duplicate allowlist | registry equality, source-built image imports 41, new E2E invoked exactly once |
+
+### W2.9 one executable route registry and standalone mode
+
+| Source symbol/boundary | Current callers | W2.9 target/affected callers | Required proof |
+|---|---|---|---|
+| `server/src/routes/index.mjs::{ROUTES,fastifyPath}` and `server/src/main.mjs::PORTABLE` | `createApplication`; startup validation; verify through-Node selection; cutover readiness; authz matrix; route/relocation/NUL guards | Keep `ROUTES` as the sole executable method/path/handler registry; derive `ROUTE_KEYS`; delete the 41-key `PORTABLE` copy and every source parser | key/method/path/handler consistency; duplicate refusal; manifest lifecycle projection; source-parser absence; canonical derivation |
+| `server/src/app.mjs::createApplication` | process entrypoint; shell proxy suite; no-secret logging; standalone lifecycle; every parity shell process | No upstream means standalone and all registry routes local; explicit upstream means compatibility subset plus catch-all proxy; a subset without upstream is refused | retained-route registration; local health/404; compatibility transparency/CORS/cookies; direct and through-Node parity |
+| `server/src/lib/authz.mjs::resolveActor` delegation result | 29 protected handler branches across agent/auth/ML/pilot/privacy/progress/recitation/reports/review/session modules | Keep DB-backed pilot identity local; return delegation only when an explicit compatibility upstream exists; otherwise generic 401 | Bearer/header/cookie precedence; standalone no-fetch cookie refusal; pilot parity with live DB |
+| `scripts/cutover-readiness.mjs::checkTrafficShare` | informational canonical report; hermetic verdict-flip tests; old route-table parser test | Compare executable local keys with manifest-derived required keys, not source text or counts | missing route flips UNMET; complete required subset flips MET; extras reported; no automated GO field |
+| `scripts/verify.sh` through-Node route derivation and `tests/api-parity/authz-matrix.test.mjs` | all-handler Rust parity pass and absolute role matrix | Import `ROUTES`/`ROUTE_KEYS` directly; retain explicit compatibility upstream for oracle comparison | no copied list/parser; full 41-handler transition pass; 42-route Rust oracle baseline unchanged |
+| production image and Compose shadow | `server/Dockerfile`; image smoke; Compose canary depends on Rust; web/gateway still target Rust | Image can boot standalone with no upstream; Compose deliberately remains explicit compatibility until W2.18 traffic cutover | non-root source image; no-upstream health/local-route/import probe; existing shadow topology unchanged |
