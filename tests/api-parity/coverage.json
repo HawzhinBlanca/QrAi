@@ -497,13 +497,13 @@
       "rustTest": "finalize_persists_a_server_derived_alignment_and_refuses_without_consent",
       "rustLine": 4541,
       "status": "ported",
-      "parityFile": "db-endpoints.test.mjs"
+      "parityFile": "session-finalize-parity.test.mjs"
     },
     {
       "rustTest": "finalize_without_a_transcript_stores_nothing",
       "rustLine": 4609,
       "status": "ported",
-      "parityFile": "db-endpoints.test.mjs"
+      "parityFile": "session-finalize-parity.test.mjs"
     },
     {
       "rustTest": "accepting_an_unsourced_finding_is_refused_but_rejecting_it_is_not",
@@ -532,36 +532,36 @@
     {
       "rustTest": "finalize_records_chunks_the_session_never_got",
       "rustLine": 5213,
-      "status": "deferred-to-phase-7",
-      "reason": "platform-api's finalize has no Node implementation yet (the N-series has not ported register, login or finalize), so there is no equivalent route to compare against. The behaviour is asserted by the Rust integration test."
+      "status": "ported",
+      "parityFile": "session-finalize-parity.test.mjs"
     },
     {
       "rustTest": "a_complete_session_records_no_lost_chunks",
       "rustLine": 5261,
-      "status": "deferred-to-phase-7",
-      "reason": "platform-api's finalize has no Node implementation yet (the N-series has not ported register, login or finalize), so there is no equivalent route to compare against. The behaviour is asserted by the Rust integration test."
+      "status": "ported",
+      "parityFile": "session-finalize-parity.test.mjs"
     },
     {
       "rustTest": "a_client_posted_alignment_is_recorded_as_client_reported",
-      "status": "deferred-to-phase-7",
-      "reason": "Node's persist route hardcodes the same 'client-reported' label, so the two agree by construction rather than by comparison; asserting the stored column needs direct database access the black-box parity harness deliberately does not have."
+      "status": "ported",
+      "parityFile": "session-writes-parity.test.mjs"
     },
     {
       "rustTest": "a_finalized_session_records_a_server_derived_alignment",
-      "status": "deferred-to-phase-7",
-      "reason": "finalize_session is not ported (Phase 7), so there is no Node route to compare against — the same reason the other two finalize entries are deferred."
+      "status": "ported",
+      "parityFile": "session-finalize-parity.test.mjs"
     },
     {
       "rustTest": "finalize_rolls_back_every_alignment_when_one_claimed_span_is_invalid",
       "rustLine": 5200,
-      "status": "deferred-to-phase-7",
-      "reason": "The Rust-only finalize path now proves atomic rollback when any server-derived alignment claim is invalid. Node has no finalize route to compare against until the planned finalizer port, so this remains explicit deferred work rather than false parity coverage."
+      "status": "ported",
+      "parityFile": "session-finalize-parity.test.mjs"
     },
     {
       "rustTest": "finalize_refuses_a_valid_producer_that_disagrees_with_the_session_model",
       "rustLine": 5250,
-      "status": "deferred-to-phase-7",
-      "reason": "W1.8 proves the Rust finalizer refuses a structurally valid producer whose compatibility model disagrees with the session and persists neither a run nor words. The Node finalizer remains W2.6, so there is no second implementation to compare yet."
+      "status": "ported",
+      "parityFile": "session-finalize-parity.test.mjs"
     },
     {
       "rustTest": "weekly_accuracy_excludes_self_reported_words_but_still_counts_them",

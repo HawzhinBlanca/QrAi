@@ -269,8 +269,8 @@ class SourceReference {
 
 /// Review states allowed to reach a learner.
 ///
-/// An ALLOWLIST, deliberately. `reviewStatus` arrives as a bare JSON string — `services/ml-inference`
-/// sets it with a string literal and no schema enforcement, unlike platform-api's Rust enum — so a
+/// An ALLOWLIST, deliberately. `reviewStatus` arrives as a bare JSON string from an inference
+/// producer rather than platform-api's Rust enum — so a
 /// denylist of the unapproved states would fail OPEN on a typo or on a status added upstream without
 /// updating this line, and unreviewed judgement about someone's recitation would reach them. An
 /// allowlist fails closed.
@@ -355,7 +355,7 @@ class TajweedFinding {
   ///
   /// `GET /v1/tajweed-findings` (the staff queue) selects `tf.id`; the learner's
   /// `POST /v1/ml/tajweed-findings:predict` computes findings on the fly and
-  /// `services/ml-inference/tajweed.js` builds them without one — which is why the panel keys on
+  /// the server inference producer builds them without one — which is why the panel keys on
   /// wordId+rule. Nullable rather than required for that reason: a required `id` made every
   /// learner-side response fail to parse.
   ///

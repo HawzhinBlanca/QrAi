@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test, { after, before } from "node:test";
 
+import { assertAB } from "./lib/ab.mjs";
 import { assertMatchesContract } from "./lib/contract.mjs";
 import {
   RLS_PROBE_ROLE,
@@ -25,8 +26,12 @@ import {
 
 let api;
 let reviewFixtures;
+const SESSION_FINDINGS_PORTED = "GET /v1/recitation-sessions/{id}/tajweed-findings";
 before(async () => {
-  api = await startApi();
+  // Rust ignores this variable on the direct oracle leg. When PARITY_THROUGH_SHELL=1, the Node
+  // shell must serve this route locally; a missing PORTABLE/ROUTES entry is therefore a hard boot
+  // failure instead of a false-green proxy pass.
+  api = await startApi({ env: { NODE_API_PORTED: SESSION_FINDINGS_PORTED } });
   reviewFixtures = await seedAcousticReviewFixtures();
 });
 after(async () => {
@@ -248,14 +253,15 @@ test("POST finalize: an unknown session is 404, before the ownership check", asy
  * read any other learner's mistakes.
  */
 test("GET session tajweed-findings: a learner reads their OWN session", async () => {
-  const [session] = await queryJson(
-    "SELECT id, learner_id FROM recitation_sessions WHERE learner_id = 'learner-1' ORDER BY id LIMIT 1",
-  );
-  assert.ok(session, "the seed must provide a learner-1 session");
+  const session = await reviewFixtureSession();
+  assert.equal(session.learner_id, "learner-1", "the declared fixture must belong to learner-1");
+  const path = `/v1/recitation-sessions/${session.id}/tajweed-findings`;
 
-  const res = await request(api.baseUrl, `/v1/recitation-sessions/${session.id}/tajweed-findings`, {
-    role: "learner",
-  });
+  if (api.upstreamUrl) {
+    await assertAB(api.baseUrl, api.upstreamUrl, { path, role: "learner" });
+  }
+
+  const res = await request(api.baseUrl, path, { role: "learner" });
   assert.equal(res.status, 200);
   assert.ok(Array.isArray(res.body), "an array, even when empty");
   // Withheld findings come back WITH their reviewStatus: the client needs them to distinguish
@@ -281,15 +287,14 @@ test("GET session tajweed-findings: a learner reads their OWN session", async ()
  * about how the person recited.
  */
 test("GET session tajweed-findings: a withheld finding carries no judgement", async () => {
-  const [session] = await queryJson(
-    "SELECT id FROM recitation_sessions WHERE learner_id = 'learner-1' ORDER BY id LIMIT 1",
-  );
+  const session = await reviewFixtureSession();
   const res = await request(api.baseUrl, `/v1/recitation-sessions/${session.id}/tajweed-findings`, {
     role: "learner",
   });
   assert.equal(res.status, 200);
 
   const withheld = res.body.filter((f) => f.withheld);
+  assert.ok(withheld.length > 0, "the declared acoustic fixture must exercise learner redaction");
   for (const f of withheld) {
     for (const field of ["rule", "severity", "explanation", "wordId"]) {
       assert.equal(f[field], "", `a withheld finding leaked \`${field}\` to the learner`);
@@ -342,6 +347,37 @@ test("GET session tajweed-findings: a withheld finding carries no judgement", as
   );
   assert.equal(empty.status, 200);
   assert.deepEqual(empty.body, [], "a brand-new session came back with findings it cannot have");
+});
+
+test("GET session tajweed-findings: staff receive the withheld row intact", async () => {
+  const session = await reviewFixtureSession();
+  const path = `/v1/recitation-sessions/${session.id}/tajweed-findings`;
+
+  if (api.upstreamUrl) {
+    await assertAB(api.baseUrl, api.upstreamUrl, { path, role: "teacher" });
+  }
+
+  const res = await request(api.baseUrl, path, { role: "teacher" });
+  assert.equal(res.status, 200);
+  assertMatchesContract("GET", path, res);
+
+  const finding = res.body.find((row) => row.id === reviewFixtures.sourcedFinding);
+  assert.ok(finding, "the declared fixture must be returned to in-tenant staff");
+  assert.equal(finding.withheld, true, "staff see whether the row remains learner-withheld");
+  assert.equal(finding.wordId.length > 0, true, "staff retain the anchored word judgement");
+  assert.equal(finding.rule, "declared-fixture-rule");
+  assert.equal(finding.severity, "practice");
+  assert.equal(finding.confidence, 0.9);
+  assert.equal(finding.explanation, "Declared acoustic fixture for the teacher-review contract");
+  assert.equal(finding.sources.length, 1);
+});
+
+test("GET session tajweed-findings: scholar is not a learner-performance staff role", async () => {
+  const session = await reviewFixtureSession();
+  const res = await request(api.baseUrl, `/v1/recitation-sessions/${session.id}/tajweed-findings`, {
+    role: "scholar",
+  });
+  assert.equal(res.status, 403);
 });
 
 test("GET session tajweed-findings: another learner is Forbidden", async () => {
@@ -398,10 +434,12 @@ async function seedAcousticReviewFixtures() {
     unsourcedFinding: `finding-db-endpoints-unsourced-${suffix}`,
   };
   const [alignment] = await queryJson(
-    `SELECT id, model_version_id
-       FROM word_alignments
-      WHERE tenant_id = $1
-      ORDER BY id
+    `SELECT wa.id, wa.model_version_id
+       FROM word_alignments wa
+       JOIN recitation_sessions rs ON rs.id = wa.session_id AND rs.tenant_id = wa.tenant_id
+      WHERE wa.tenant_id = $1
+        AND rs.learner_id = 'learner-1'
+      ORDER BY wa.id
       LIMIT 1`,
     [TENANT],
   );
@@ -461,6 +499,19 @@ async function cleanupAcousticReviewFixtures(ids) {
   await queryJson("DELETE FROM audit_events WHERE id = ANY($1::text[])", [
     [ids.sourcedAudit, ids.unsourcedAudit],
   ]);
+}
+
+async function reviewFixtureSession() {
+  const [session] = await queryJson(
+    `SELECT wa.session_id AS id, rs.learner_id
+       FROM tajweed_findings tf
+       JOIN word_alignments wa ON wa.id = tf.alignment_id
+       JOIN recitation_sessions rs ON rs.id = wa.session_id
+      WHERE tf.id = $1 AND tf.tenant_id = $2`,
+    [reviewFixtures.sourcedFinding, TENANT],
+  );
+  assert.ok(session, "the declared acoustic fixture must be attached to a real session");
+  return session;
 }
 
 test("POST /v1/teacher-reviews records a review against a real finding", async () => {

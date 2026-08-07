@@ -13,8 +13,9 @@
  * is that an operator can go and re-index it — which requires knowing it happened. A counter that
  * silently stops incrementing turns "recoverable" into "lost", and every test stays green.
  *
- * So this drives a real WebSocket session against a real ml-inference (the audio genuinely lands on
- * disk) with `PLATFORM_API_URL` pointed at a server that answers 500 to every index call, and then
+ * So this drives a real WebSocket session against the real worker inference ingress (the audio
+ * genuinely lands on disk) with `PLATFORM_API_URL` pointed at a server that answers 500 to every
+ * index call, and then
  * asserts BOTH halves of the promise:
  *
  *   fail the chunk       -> realtime_gateway_chunks_index_failed_total incremented
@@ -34,11 +35,11 @@ import test, { after, before } from "node:test";
 import { fileURLToPath } from "node:url";
 
 import { issueRealtimeTicket, newNonce } from "../../server/src/lib/ticket.mjs";
+import { startWorkerCompatibilityIngress } from "./lib/worker-ingress-harness.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const root = join(here, "..", "..");
 const GATEWAY_BIN = join(root, "services/realtime-gateway/target/debug/quran-ai-realtime-gateway");
-const ML_ENTRY = join(root, "services/ml-inference/server.mjs");
 
 const SECRET = "index-failure-e2e-secret-that-is-long-enough";
 const TENANT = "tenant-index-failure-e2e";
@@ -52,7 +53,7 @@ const METRICS_TOKEN = "index-failure-e2e-metrics-token";
 
 let gateway;
 let forwardGateway;
-let ml;
+let workerIngress;
 let mlStub;
 let platformStub;
 let gatewayPort;
@@ -88,28 +89,16 @@ async function waitForHealth(url, what) {
 
 before(async () => {
   storageDir = mkdtempSync(join(tmpdir(), "index-failure-e2e-"));
-  const mlPort = await freePort();
   const stubPort = await freePort();
   const mlStubPort = await freePort();
   gatewayPort = await freePort();
   forwardGatewayPort = await freePort();
 
-  ml = spawn(process.execPath, [ML_ENTRY], {
-    cwd: root,
-    env: {
-      ...process.env,
-      ML_INFERENCE_PORT: String(mlPort),
-      AUDIO_STORAGE_DIR: storageDir,
-      ML_API_KEY: ML_KEY,
-      ALLOW_INSECURE_DEFAULTS: "",
-      ALLOW_INSECURE_SECRETS: "1",
-    },
-    stdio: ["ignore", "ignore", "pipe"],
+  workerIngress = await startWorkerCompatibilityIngress({
+    storageDir,
+    mlApiKey: ML_KEY,
   });
-  ml.stderr.on("data", (d) => {
-    stderr += `[ml] ${d}`;
-  });
-  await waitForHealth(`http://127.0.0.1:${mlPort}/health`, "ml-inference");
+  await waitForHealth(`${workerIngress.url}/health`, "worker compatibility ingress");
 
   // A platform-api that is UP and refuses. Not a closed port: a refused connection and a 500 take
   // different branches in the gateway's retry loop, and the 500 is the one a real outage looks like
@@ -137,7 +126,7 @@ before(async () => {
       REALTIME_GATEWAY_BIND: `127.0.0.1:${gatewayPort}`,
       REALTIME_GATEWAY_TICKET_SECRET: SECRET,
       GATEWAY_TENANT_ID: TENANT,
-      ML_INFERENCE_URL: `http://127.0.0.1:${mlPort}`,
+      ML_INFERENCE_URL: workerIngress.url,
       ML_API_KEY: ML_KEY,
       PLATFORM_API_URL: `http://127.0.0.1:${stubPort}`,
       METRICS_TOKEN,
@@ -163,7 +152,7 @@ before(async () => {
       REALTIME_GATEWAY_BIND: `127.0.0.1:${forwardGatewayPort}`,
       REALTIME_GATEWAY_TICKET_SECRET: SECRET,
       GATEWAY_TENANT_ID: TENANT,
-      // The ML service ANSWERS 500. Delivery fails, so nothing is ever stored and indexing is never
+      // The worker ingress ANSWERS 500. Delivery fails, so nothing is ever stored and indexing is never
       // attempted — which is exactly the distinction the two counters exist to make.
       ML_INFERENCE_URL: `http://127.0.0.1:${mlStubPort}`,
       ML_API_KEY: ML_KEY,
@@ -186,7 +175,7 @@ before(async () => {
 after(async () => {
   gateway?.kill("SIGKILL");
   forwardGateway?.kill("SIGKILL");
-  ml?.kill("SIGKILL");
+  await workerIngress?.stop();
   await new Promise((r) => platformStub?.close(r) ?? r());
   await new Promise((r) => mlStub?.close(r) ?? r());
   if (storageDir) rmSync(storageDir, { recursive: true, force: true });
@@ -272,17 +261,17 @@ test("an index failure is REPORTED, and the audio it could not index is still th
   assert.ok(indexCalls > 0, "the gateway never attempted to index the chunk at all");
 
   // ── never lose the audio ────────────────────────────────────────────────────────────────────────
-  const dir = join(storageDir, TENANT, LEARNER);
+  const dir = join(storageDir, "audio", "v1", TENANT, LEARNER, sessionId);
   assert.ok(existsSync(dir), `no storage directory for the session at all: ${dir}`);
-  const files = readdirSync(dir).filter((f) => f.startsWith(sessionId));
+  const files = readdirSync(dir);
   assert.ok(
-    files.some((f) => f.endsWith(".meta.json")),
+    files.some((file) => file.endsWith(".pcm.meta.json")),
     `the chunk metadata is gone after an index failure — found ${JSON.stringify(files)}. The audio ` +
       `is kept precisely so it can be re-indexed later; deleting it turns a recoverable failure ` +
       `into a lost recitation.`,
   );
   assert.ok(
-    files.some((f) => !f.endsWith(".meta.json")),
+    files.some((file) => file.endsWith(".pcm")),
     `the audio payload is gone after an index failure — found ${JSON.stringify(files)}`,
   );
 });
@@ -326,7 +315,7 @@ test("a DELIVERY failure is counted as a forward failure, not an index failure",
 
   assert.ok(
     forwardFailures > 0,
-    `realtime_gateway_chunks_forward_failed_total is ${forwardFailures} after the ML service ` +
+    `realtime_gateway_chunks_forward_failed_total is ${forwardFailures} after the worker ingress ` +
       `answered 500 ${mlStubCalls} time(s). The analysis was lost and no counter says so.` +
       `${stderr ? `\n${stderr}` : ""}`,
   );

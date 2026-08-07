@@ -32,25 +32,20 @@ import assert from "node:assert/strict";
 import { readFileSync, readdirSync } from "node:fs";
 import test, { after, before } from "node:test";
 
-import { ROLE_USER_IDS, TENANT, request, startApi, startShell } from "./lib/harness.mjs";
+import { ROUTES } from "../../server/src/routes/index.mjs";
+import { ROLE_USER_IDS, TENANT, request, startApi, startShell, withDb } from "./lib/harness.mjs";
 
 /**
  * Every route this matrix covers, served by the shell rather than proxied.
  *
- * The header says `NODE_API_PORTED="$(…PORTABLE…)"` and nothing set it, so a direct run gave this
- * file a shell that proxied everything — its "shell" column WAS Rust, and the whole point of the
- * file is that the two columns are asserted separately. Read from `server.mjs` for the same reason
- * verify.sh reads it: a hand-copied list here would be a second list to drift.
+ * Derive from the executable registry. A hand-copied list here would let this file silently proxy
+ * an omitted route to Rust and call that response the Node column.
  */
-const PORTED = (() => {
-  const src = readFileSync(new URL("../../server/src/main.mjs", import.meta.url), "utf8");
-  const m = /export const PORTABLE = \[([^\]]*)\]/s.exec(src);
-  if (!m) throw new Error("could not read PORTABLE out of server.mjs");
-  return [...m[1].matchAll(/"([^"]+)"/g)].map((x) => x[1]).join(",");
-})();
+const PORTED = ROUTES.filter((route) => route.ownerGate === undefined).map((route) => route.key).join(",");
 
 let api;
 let shell;
+let matrixSessionId;
 /**
  * The url of the REAL Rust binary, which is not always `api.baseUrl`.
  *
@@ -69,14 +64,54 @@ let rustUrl;
 before(async () => {
   api = await startApi({});
   rustUrl = api.upstreamUrl ?? api.baseUrl;
+
+  // This route looks up the session BEFORE its ownership gate. Create a declared fixture through
+  // the Rust oracle so denied roles exercise that gate instead of receiving a fixture-dependent 404.
+  const created = await request(rustUrl, "/v1/recitation-sessions", {
+    method: "POST",
+    role: "learner",
+    body: {
+      learnerId: "learner-1",
+      quranRef: { surahNumber: 1, ayahStart: 1, ayahEnd: 1, display: "1:1" },
+      sourceChecksum: "authz-matrix-declared-fixture",
+      language: "ar",
+      consent: {
+        recordingConsent: true,
+        audioRetention: "discard",
+        anonymizedLearning: false,
+        externalAsrProcessing: false,
+        guardianApproved: false,
+        consentVersion: "pilot-v1",
+      },
+    },
+  });
+  assert.equal(created.status, 200, `could not create the authorization fixture: ${created.text}`);
+  matrixSessionId = created.body.id;
+
   // Point the shell at the binary rather than at `api.baseUrl`: under PARITY_THROUGH_SHELL that would
   // chain shell -> shell -> rust, and "the shell" would be measuring another copy of itself.
   shell = await startShell({ upstream: rustUrl, env: { NODE_API_PORTED: PORTED } });
 });
 
 after(async () => {
-  await shell?.stop();
-  await api?.stop();
+  try {
+    if (matrixSessionId) {
+      await withDb(async (client) => {
+        const { rows } = await client.query(
+          "SELECT consent_record_id, audit_event_id FROM recitation_sessions WHERE id = $1",
+          [matrixSessionId],
+        );
+        if (rows[0]) {
+          await client.query("DELETE FROM recitation_sessions WHERE id = $1", [matrixSessionId]);
+          await client.query("DELETE FROM consent_records WHERE id = $1", [rows[0].consent_record_id]);
+          await client.query("DELETE FROM audit_events WHERE id = $1", [rows[0].audit_event_id]);
+        }
+      });
+    }
+  } finally {
+    await shell?.stop();
+    await api?.stop();
+  }
 });
 
 /** The two implementations, each addressed directly. Read inside a test, after `before` has run. */
@@ -110,9 +145,25 @@ const GET_MATRIX = [
     path: "/v1/learner/progress/weekly",
     allow: ["learner", "teacher", "admin", "ops"],
   },
+  {
+    // ADR-0038 target addition. The Rust strangler baseline does not own this operation; asserting
+    // 403 against its unknown-route 404 would falsely describe the old service as an implementation.
+    key: "GET /v1/learner/recitation-sessions",
+    path: "/v1/learner/recitation-sessions",
+    allow: ["learner"],
+    nodeOnly: true,
+  },
   { key: "GET /v1/recitation-sessions", path: "/v1/recitation-sessions", allow: ["teacher", "admin", "ops"] },
   { key: "GET /v1/learners/active", path: "/v1/learners/active", allow: ["teacher", "admin", "ops"] },
-  // The two id-scoped reads use an id that does not exist ON PURPOSE. The role gate runs BEFORE the
+  {
+    // This handler intentionally resolves the session before checking ownership. Use the declared
+    // learner-1 fixture so the matrix reaches the role/ownership gate on both implementations. Scholar
+    // stays excluded: reading a tenant review queue does not grant access to one learner's feedback.
+    key: "GET /v1/recitation-sessions/{id}/tajweed-findings",
+    path: () => `/v1/recitation-sessions/${matrixSessionId}/tajweed-findings`,
+    allow: ["learner", "teacher", "admin", "ops"],
+  },
+  // The next two id-scoped reads use an id that does not exist ON PURPOSE. The role gate runs BEFORE the
   // row lookup, so a denied role is still 403 and an allowed one gets 404/200 — which means these
   // rows need no fixture and cannot rot when the seed corpus changes.
   {
@@ -138,10 +189,14 @@ const GET_MATRIX = [
 
 for (const row of GET_MATRIX) {
   test(`${row.key} — absolute role matrix, each implementation on its own`, async () => {
+    const path = typeof row.path === "function" ? row.path() : row.path;
+    const targets = row.nodeOnly
+      ? implementations().filter(([implementation]) => implementation === "shell")
+      : implementations();
     for (const role of ROLES) {
       const allowed = row.allow.includes(role);
-      for (const [impl, base] of implementations()) {
-        const res = await request(base, row.path, { role });
+      for (const [impl, base] of targets) {
+        const res = await request(base, path, { role });
         if (allowed) {
           assert.notEqual(
             res.status,
@@ -380,7 +435,11 @@ test("every role gate in the shell has a row in this matrix", () => {
   }
 
   const covered = new Set([
-    ...GET_MATRIX.map((r) => r.key),
+    // Session findings uses only `requireSelfOrAny`, not `requireAnyRole`; it has the same absolute
+    // matrix above but is deliberately excluded from this call-site count.
+    ...GET_MATRIX.filter(
+      (r) => r.key !== "GET /v1/recitation-sessions/{id}/tajweed-findings",
+    ).map((r) => r.key),
     ...POST_MATRIX.map((r) => r.key),
     // Only the role-gated rows count here: the rest of CALLER_CHECKED_FIRST covers routes whose
     // sole caller check is authentication, which is not a `requireAnyRole` call site.

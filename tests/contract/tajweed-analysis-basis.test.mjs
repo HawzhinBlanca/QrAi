@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { predictTajweed } from "../../services/ml-inference/server.mjs";
+import { predictTajweed } from "../../server/src/inference/runtime.mjs";
 
 const requestFor = (tenantId, sessionId) => ({
   tenantId,

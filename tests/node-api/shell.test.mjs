@@ -210,9 +210,10 @@ test("a preflight is answered by the shell and never reaches upstream", async ()
 
 // --- the strangler contract itself ---
 
-test("nothing is served locally unless it is explicitly ported", async () => {
+test("explicit compatibility mode is a pure proxy unless local routes are selected", async () => {
   const s = await start();
-  assert.deepEqual(s.app.portedRoutes, [], "the default must be a pure proxy");
+  assert.equal(s.app.apiMode, "compatibility");
+  assert.deepEqual(s.app.localRouteKeys, [], "compatibility defaults to a pure proxy");
   received.length = 0;
   await fetch(`${s.url}/v1/learner/progress?learnerId=learner-1`, {
     headers: { "x-tenant-id": "t1", "x-user-id": "learner-1", "x-user-role": "learner" },
@@ -221,6 +222,9 @@ test("nothing is served locally unless it is explicitly ported", async () => {
   assert.equal(received.length, 1, "an unported route must reach upstream");
 });
 
-test("createApplication refuses to start with no upstream", () => {
-  assert.throws(() => createApplication({}), /upstream is required/);
+test("a compatibility subset requires an explicit upstream", () => {
+  assert.throws(
+    () => createApplication({ compatibilityRouteKeys: new Set(["GET /health"]) }),
+    /requires an upstream/,
+  );
 });

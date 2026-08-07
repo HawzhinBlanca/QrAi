@@ -31,7 +31,7 @@ import {
 const here = dirname(fileURLToPath(import.meta.url));
 const root = join(here, "..", "..");
 const GATEWAY_BIN = join(root, "services/realtime-gateway/target/debug/quran-ai-realtime-gateway");
-const ML_ENTRY = join(root, "services/ml-inference/server.mjs");
+const ML_ENTRY = join(root, "tests/inference/lib/worker-compatibility-harness.mjs");
 const SECRET = "teacher-audio-index-e2e-secret-with-production-length";
 const ML_KEY = "teacher-audio-index-e2e-ml-key";
 const AUDIO_BYTES = new Uint8Array([81, 117, 114, 97, 110, 45, 97, 117, 100, 105, 111]);
@@ -226,11 +226,11 @@ function streamOneChunk(port, session, ticket) {
 }
 
 async function waitForStoredChunk(session) {
-  const dir = join(storageDir, TENANT, session.learnerId);
+  const dir = join(storageDir, "audio", "v1", TENANT, session.learnerId, session.session);
   for (let attempt = 0; attempt < 100; attempt += 1) {
     if (existsSync(dir)) {
       const metadata = readdirSync(dir).find(
-        (name) => name.startsWith(session.session) && name.endsWith(".meta.json"),
+        (name) => name.endsWith(".pcm.meta.json"),
       );
       if (metadata) return JSON.parse(readFileSync(join(dir, metadata), "utf8"));
     }
@@ -323,7 +323,7 @@ before(async () => {
   ml.stderr.on("data", (data) => {
     stderr += `[ml] ${data}`;
   });
-  await waitForHealth(`http://127.0.0.1:${mlPort}/health`, "ml-inference");
+  await waitForHealth(`http://127.0.0.1:${mlPort}/health`, "worker compatibility ingress");
 
   api = await startApi({
     env: {

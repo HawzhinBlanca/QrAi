@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import test from "node:test";
 
 import { canShowLearnerFacingAiOutput } from "../../packages/contracts/src/index.ts";
-import { predictTajweed } from "../../services/ml-inference/server.mjs";
+import { predictTajweed } from "../../server/src/inference/runtime.mjs";
 
 const forbiddenPerformanceFields = ["confidence", "severity", "reviewStatus"];
 
@@ -32,7 +32,7 @@ test("golden fixture decimals are not reported as learner confidence", () => {
   const storage = mkdtempSync(`${tmpdir()}/qrai-no-invented-confidence-`);
   try {
     const script = `
-      const { predictTajweed } = await import('./services/ml-inference/server.mjs');
+      const { predictTajweed } = await import('./server/src/inference/runtime.mjs');
       const result = await predictTajweed({
         tenantId: 'fixture-tenant', sessionId: 'fixture-session',
         quranRef: { surahNumber: 1, ayahStart: 1, ayahEnd: 7, display: 'Al-Fatihah' }

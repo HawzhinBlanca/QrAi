@@ -1,16 +1,22 @@
 /**
- * N14b — the three WRITE operations on recitation sessions.
+ * N14b/W2.6 — the four WRITE operations on recitation sessions.
  * Port of handlers/recitation.rs `create_session`, `persist_session_alignments`,
- * `request_teacher_review`.
+ * `finalize_session`, and `request_teacher_review`.
  *
  * These carry the policies the reads only display: consent capture, a foreign-key ordering that is
  * the difference between a fix and an enumeration oracle, a provenance rule, and a cascade that
  * destroys review history.
  */
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 
+import { waitForJobResult } from "../jobs/wait-for-job.mjs";
 import { ApiError, Forbidden, NotFound, RejectionError, requireSelfOrAny, resolveActor } from "../lib/authz.mjs";
+import { createDeadline } from "../lib/deadline.mjs";
 import { f32 } from "../lib/json.mjs";
+import {
+  requireExactAttributionExtension,
+  requireProducerAttribution,
+} from "../lib/model-attribution.mjs";
 import { proxy } from "../lib/proxy.mjs";
 
 /** types.rs:9 — mirrors packages/contracts SUPPORTED_LANGUAGE_CODES exactly. */
@@ -23,7 +29,12 @@ const AUDIO_RETENTIONS = ["discard", "training-opt-in", "teacher-review"];
 const newId = (prefix) => `${prefix}-${randomUUID()}`;
 
 /** `extract_trace_id` — the header the audit metadata carries. */
-const traceId = (req) => req.headers["x-trace-id"] ?? null;
+const traceId = (req) => {
+  const raw = req.headers["x-trace-id"];
+  if (typeof raw !== "string") return null;
+  const trimmed = raw.trim();
+  return trimmed === "" ? null : trimmed;
+};
 
 /**
  * Apply the request struct's serde defaults to a consent object.
@@ -199,7 +210,157 @@ export async function createSession(req, reply, ctx) {
   return reply.send(body);
 }
 
-/** POST /v1/recitation-sessions/{id}/alignments — recitation.rs:512 */
+/**
+ * The one destructive alignment writer. The public practice route and server finalizer both call
+ * this inside an already tenant-scoped transaction; neither may copy its cascade or insert path.
+ */
+export async function persistAlignmentsInTransaction({
+  tx,
+  actor,
+  sessionId,
+  alignments,
+  transcriptSource,
+  provenance = null,
+  requestTrace = null,
+}) {
+  const [session] = await tx`
+    SELECT model_version_id FROM recitation_sessions
+    WHERE id = ${sessionId} AND tenant_id = ${actor.tenantId}`;
+  if (!session) throw NotFound();
+
+  // Alignment rows inherit the server-selected identity stored on their session. A caller cannot
+  // replace it and there is no independent fallback to drift from the session record.
+  const modelVersion = session.model_version_id;
+  if (
+    !["client-reported", "server-derived"].includes(transcriptSource) ||
+    (transcriptSource === "server-derived") !== (provenance !== null)
+  ) {
+    console.error("alignment persistence source and run provenance disagree");
+    throw new ApiError("ML service returned invalid model provenance", 502);
+  }
+  if (provenance !== null && provenance.modelVersion !== modelVersion) {
+    console.error("alignment run model disagrees with session model");
+    throw new ApiError("ML service returned invalid model provenance", 502);
+  }
+
+  const auditId = newId("audit");
+
+  // Replace-on-write, in FK-SAFE ORDER. Reviews are detached, not deleted, so a learner action
+  // cannot erase a teacher's authored judgement; findings and words tied to the replaced recording
+  // are then removed.
+  const deletedTeacherReviews = (
+    await tx`
+      UPDATE teacher_reviews SET finding_id = NULL, superseded_at = now()
+      WHERE tenant_id = ${actor.tenantId} AND superseded_at IS NULL AND finding_id IN (
+        SELECT tf.id FROM tajweed_findings tf
+        JOIN word_alignments wa ON wa.id = tf.alignment_id
+        WHERE wa.session_id = ${sessionId} AND wa.tenant_id = ${actor.tenantId})`
+  ).count;
+
+  const deletedTajweedFindings = (
+    await tx`
+      DELETE FROM tajweed_findings WHERE tenant_id = ${actor.tenantId} AND alignment_id IN (
+        SELECT id FROM word_alignments
+        WHERE session_id = ${sessionId} AND tenant_id = ${actor.tenantId})`
+  ).count;
+
+  await tx`
+    DELETE FROM word_alignments
+    WHERE session_id = ${sessionId} AND tenant_id = ${actor.tenantId}`;
+
+  const deletedAlignmentRuns = (
+    await tx`
+      DELETE FROM alignment_runs
+      WHERE session_id = ${sessionId} AND tenant_id = ${actor.tenantId}`
+  ).count;
+
+  // Audit after the cascade and before dependent inserts. The historical metadata key stays named
+  // `deletedTeacherReviews` even though the rows are now detached; existing audit readers depend on
+  // it and the value still measures how much review history was affected.
+  await tx`
+    INSERT INTO audit_events (id, tenant_id, actor_id, action, subject_type, subject_id, metadata)
+    VALUES (${auditId}, ${actor.tenantId}, ${actor.userId}, 'recitation.alignment.persisted',
+            'recitation_session', ${sessionId},
+            ${tx.json({
+              trace_id: requestTrace,
+              count: alignments.length,
+              deletedAlignmentRuns,
+              deletedTeacherReviews,
+              deletedTajweedFindings,
+              modelVersion,
+              transcriptSource,
+            })})`;
+
+  let alignmentRunId = null;
+  if (provenance !== null) {
+    alignmentRunId = newId("alignment-run");
+    await tx`
+      INSERT INTO alignment_runs
+        (id, tenant_id, session_id, model_version_id, dataset_version, latency_ms,
+         evidence_ids, consent_snapshot, audit_event_id, transcript_source, model_attribution)
+      VALUES (${alignmentRunId}, ${actor.tenantId}, ${sessionId}, ${modelVersion},
+              ${provenance.datasetVersion}, ${provenance.latencyMs},
+              ${tx.json(provenance.evidenceIds)}, ${tx.json(provenance.consentSnapshot)},
+              ${auditId}, ${transcriptSource}, ${tx.json(provenance.modelAttribution)})`;
+  }
+
+  const valid = alignments.filter((a) => VALID_ALIGNMENT_STATUS.includes(a?.status));
+  const invalidStatus = alignments.filter((a) => !VALID_ALIGNMENT_STATUS.includes(a?.status));
+
+  // One canonical lookup, not one query per word. This global reference table is intentionally not
+  // tenant-scoped; its immutable rows are the FK authority.
+  const candidateIds = valid.map((a) => a.wordId);
+  const knownRows =
+    candidateIds.length > 0
+      ? await tx`SELECT id FROM canonical_words WHERE id = ANY(${candidateIds})`
+      : [];
+  const knownWords = new Set(knownRows.map((r) => r.id));
+
+  let persisted = 0;
+  let skippedUnknownWord = 0;
+  let skippedUnusableSpan = 0;
+  for (const a of valid) {
+    if (!knownWords.has(a.wordId)) {
+      skippedUnknownWord += 1;
+      continue;
+    }
+    const span = usableSpan(a.startMs, a.endMs);
+    if (span === null) {
+      skippedUnusableSpan += 1;
+      continue;
+    }
+    await tx`
+      INSERT INTO word_alignments
+        (id, tenant_id, session_id, word_id, heard_text, start_ms, end_ms, confidence, status,
+         model_version_id, audit_event_id, transcript_source, alignment_run_id)
+      VALUES (${newId("word-alignment")}, ${actor.tenantId}, ${sessionId}, ${a.wordId},
+              ${typeof a.heardText === "string" ? a.heardText : ""}, ${span.startMs},
+              ${span.endMs},
+              ${Math.min(Math.max(Number(a.confidence) || 0, 0), 1)}::float8::numeric,
+              ${a.status}, ${modelVersion}, ${auditId}, ${transcriptSource}, ${alignmentRunId})`;
+    persisted += 1;
+  }
+
+  if (invalidStatus.length > 0) {
+    console.warn(
+      `persist_session_alignments session=${sessionId}: ${invalidStatus.length} alignment(s) had ` +
+        `an unrecognised status and were skipped (ML data-quality issue): ` +
+        JSON.stringify(invalidStatus.map((a) => a?.status)),
+    );
+  }
+
+  return {
+    auditEventId: auditId,
+    persisted,
+    sessionId,
+    skippedInvalidStatus: invalidStatus.length,
+    skippedUnknownWord,
+    skippedUnusableSpan,
+    transcriptSource,
+  };
+}
+
+/** POST /v1/recitation-sessions/{id}/alignments — recitation.rs:995 */
 export async function persistSessionAlignments(req, reply, ctx) {
   const resolved = await resolveActor(req, ctx);
   if (resolved.delegate) return proxy(req, reply, ctx.upstream);
@@ -212,142 +373,285 @@ export async function persistSessionAlignments(req, reply, ctx) {
     throw new ApiError("model identity is server-selected and must not be supplied", 400);
   }
 
-  const auditId = newId("audit");
-
   const body = await ctx.db.withTenant(actor.tenantId, async (tx) => {
     const [session] = await tx`
-      SELECT learner_id, model_version_id FROM recitation_sessions
+      SELECT learner_id FROM recitation_sessions
+      WHERE id = ${sessionId} AND tenant_id = ${actor.tenantId}`;
+    if (!session) throw NotFound();
+    requireSelfOrAny(actor, session.learner_id, ["teacher", "admin", "ops"]);
+    return persistAlignmentsInTransaction({
+      tx,
+      actor,
+      sessionId,
+      alignments,
+      transcriptSource: "client-reported",
+      requestTrace: traceId(req),
+    });
+  });
+
+  return reply.send(body);
+}
+
+const refusal = (sessionId, reason) => ({
+  finalized: false,
+  persisted: 0,
+  reason,
+  sessionId,
+});
+
+const nonEmptyString = (value) => typeof value === "string" && value.length > 0;
+
+const snapshotHash = (value) => createHash("sha256").update(JSON.stringify(value)).digest("hex");
+
+async function authorizeFinalization(ctx, actor, sessionId) {
+  return ctx.db.withTenant(actor.tenantId, async (tx) => {
+    const [session] = await tx`
+      SELECT learner_id, model_version_id, consent_record_id
+      FROM recitation_sessions
       WHERE id = ${sessionId} AND tenant_id = ${actor.tenantId}`;
     if (!session) throw NotFound();
     requireSelfOrAny(actor, session.learner_id, ["teacher", "admin", "ops"]);
 
-    // Alignment rows inherit the server-selected identity stored on their session. A caller
-    // cannot replace it and there is no independent fallback to drift from the session record.
-    const modelVersion = session.model_version_id;
-
-    // Replace-on-write, in FK-SAFE ORDER. tajweed_findings.alignment_id and
-    // teacher_reviews.finding_id both RESTRICT, so a naked DELETE of word_alignments raises a
-    // foreign_key_violation (→ 500) for any session that already has findings or reviews.
-    // DETACHED, not deleted (0024_teacher_review_survives_realignment.sql). This route is reached by
-    // the session OWNER, so the DELETE this replaced let a learner re-recording their own session
-    // erase a review a teacher had already submitted. Nulling finding_id releases the RESTRICT so the
-    // finding can go, while the review row, its author, note, decision and snapshot survive — marked
-    // as being about something the learner has since replaced. Mirrors recitation.rs.
-    const deletedTeacherReviews = (
-      await tx`
-        UPDATE teacher_reviews SET finding_id = NULL, superseded_at = now()
-        WHERE tenant_id = ${actor.tenantId} AND superseded_at IS NULL AND finding_id IN (
-          SELECT tf.id FROM tajweed_findings tf
-          JOIN word_alignments wa ON wa.id = tf.alignment_id
-          WHERE wa.session_id = ${sessionId} AND wa.tenant_id = ${actor.tenantId})`
-    ).count;
-
-    const deletedTajweedFindings = (
-      await tx`
-        DELETE FROM tajweed_findings WHERE tenant_id = ${actor.tenantId} AND alignment_id IN (
-          SELECT id FROM word_alignments
-          WHERE session_id = ${sessionId} AND tenant_id = ${actor.tenantId})`
-    ).count;
-
-    await tx`
-      DELETE FROM word_alignments
-      WHERE session_id = ${sessionId} AND tenant_id = ${actor.tenantId}`;
-
-    // A client re-record replaces the words and therefore invalidates any server-derived run that
-    // described the prior recording. The explicit word->run link prevents misattribution already;
-    // deleting the orphan keeps retention/export state truthful and mirrors Rust.
-    const deletedAlignmentRuns = (
-      await tx`
-        DELETE FROM alignment_runs
-        WHERE session_id = ${sessionId} AND tenant_id = ${actor.tenantId}`
-    ).count;
-
-    // Audit AFTER the cascade, recording what this request ACTUALLY did. `deletedTeacherReviews`
-    // keeps its name now that the reviews are detached rather than destroyed: the number still
-    // answers what it was added to answer — how much review history this request affected — and
-    // renaming an audit-log field breaks every existing reader for a wording improvement.
-    // Ordered before the INSERTs, which reference it.
-    await tx`
-      INSERT INTO audit_events (id, tenant_id, actor_id, action, subject_type, subject_id, metadata)
-      VALUES (${auditId}, ${actor.tenantId}, ${actor.userId}, 'recitation.alignment.persisted',
-              'recitation_session', ${sessionId},
-              ${tx.json({
-                trace_id: traceId(req),
-                count: alignments.length,
-                deletedAlignmentRuns,
-                deletedTeacherReviews,
-                deletedTajweedFindings,
-                modelVersion,
-                transcriptSource: "client-reported",
-              })})`;
-
-    // Partition once. An UNRECOGNISED status is a data-quality signal from the ML service (a typo
-    // like "matche"), not something to drop silently — count it, log it, report it.
-    const valid = alignments.filter((a) => VALID_ALIGNMENT_STATUS.includes(a?.status));
-    const invalidStatus = alignments.filter((a) => !VALID_ALIGNMENT_STATUS.includes(a?.status));
-
-    // ONE query, not one per alignment. canonical_words is global reference data.
-    const candidateIds = valid.map((a) => a.wordId);
-    const knownRows =
-      candidateIds.length > 0
-        ? await tx`SELECT id FROM canonical_words WHERE id = ANY(${candidateIds})`
-        : [];
-    const knownWords = new Set(knownRows.map((r) => r.id));
-
-    let persisted = 0;
-    let skippedUnknownWord = 0;
-    let skippedUnusableSpan = 0;
-    for (const a of valid) {
-      // Only real canonical words satisfy the word_id FK. Synthetic ids ("extra-N") are EXPECTED to
-      // be absent — an "extra" word the learner said that is not in the canonical text.
-      if (!knownWords.has(a.wordId)) {
-        skippedUnknownWord += 1;
-        continue;
-      }
-      // Mirrors `usable_span` in recitation.rs. Skipped and COUNTED like an unknown word, so one bad
-      // timing does not discard the rest of the batch.
-      const span = usableSpan(a.startMs, a.endMs);
-      if (span === null) {
-        skippedUnusableSpan += 1;
-        continue;
-      }
-      await tx`
-        INSERT INTO word_alignments
-          (id, tenant_id, session_id, word_id, heard_text, start_ms, end_ms, confidence, status,
-           model_version_id, audit_event_id, transcript_source)
-        VALUES (${newId("word-alignment")}, ${actor.tenantId}, ${sessionId}, ${a.wordId},
-                ${typeof a.heardText === "string" ? a.heardText : ""},
-                ${span.startMs},
-                ${span.endMs},
-                ${Math.min(Math.max(Number(a.confidence) || 0, 0), 1)}::float8::numeric,
-                ${a.status}, ${modelVersion}, ${auditId}, 'client-reported')`;
-      persisted += 1;
-    }
-
-    if (invalidStatus.length > 0) {
-      // The offending strings, not just a count, so an ML data-quality problem is greppable without
-      // reproducing against the database.
-      console.warn(
-        `persist_session_alignments session=${sessionId}: ${invalidStatus.length} alignment(s) had ` +
-          `an unrecognised status and were skipped (ML data-quality issue): ` +
-          JSON.stringify(invalidStatus.map((a) => a?.status)),
-      );
-    }
-
-    // json! keys, alphabetical.
-    return {
-      auditEventId: auditId,
-      persisted,
-      sessionId,
-      skippedInvalidStatus: invalidStatus.length,
-      skippedUnknownWord,
-      skippedUnusableSpan,
-      // Hardcoded, matching the Rust original: this route's words come from whatever the caller
-      // sent, so it can only ever mint `client-reported`. `server-derived` belongs to
-      // finalize_session, which is not ported (Phase 7) and takes no words from a caller at all.
-      transcriptSource: "client-reported",
-    };
+    // Include the current evidence state. Concurrent identical calls deduplicate, while an explicit
+    // later re-finalization after alignments changed remains a new immutable input generation.
+    const chunks = await tx`
+      SELECT id, evidence_id, start_ms, end_ms, sample_rate, status, object_key
+      FROM audio_chunks
+      WHERE tenant_id = ${actor.tenantId} AND session_id = ${sessionId}
+      ORDER BY id`;
+    const alignments = await tx`
+      SELECT id, word_id, start_ms, end_ms, status, transcript_source, alignment_run_id
+      FROM word_alignments
+      WHERE tenant_id = ${actor.tenantId} AND session_id = ${sessionId}
+      ORDER BY id`;
+    return snapshotHash({
+      session: {
+        consentRecordId: session.consent_record_id,
+        modelVersionId: session.model_version_id,
+      },
+      chunks,
+      alignments,
+    });
   });
+}
+
+const completedWithoutEffect = (response) => ({
+  result: { response },
+  commit: async () => undefined,
+});
+
+/** Prepare repeatable external finalization work; the returned commit owns every DB effect. */
+export async function prepareSessionFinalization({
+  ctx,
+  tenantId,
+  actorId,
+  sessionId,
+  requestTrace = null,
+  signal,
+}) {
+  const actor = { tenantId, userId: actorId };
+  const deadline = createDeadline(ctx.upstreamTimeoutMs, { parentSignal: signal });
+
+  // Release the DB connection before the two inference round-trips. A slow ASR call must not hold a
+  // tenant transaction and exhaust the pool for unrelated learners.
+  const session = await ctx.db.withTenant(actor.tenantId, async (tx) => {
+    const [row] = await tx`
+      SELECT s.learner_id, s.quran_ref, s.model_version_id, s.consent_snapshot,
+             c.guardian_approved, c.external_asr_processing
+      FROM recitation_sessions s
+      JOIN consent_records c ON c.id = s.consent_record_id
+      WHERE s.id = ${sessionId} AND s.tenant_id = ${actor.tenantId}`;
+    if (!row) throw NotFound();
+    return row;
+  });
+
+  const consent = {
+    externalAsrProcessing: session.external_asr_processing,
+    guardianApproved: session.guardian_approved,
+  };
+  const transcript = await ctx.inference.transcribeSession({
+    consent,
+    learnerId: session.learner_id,
+    sessionId,
+    tenantId: actor.tenantId,
+  }, deadline);
+
+  if (transcript?.transcribed !== true) {
+    return completedWithoutEffect(
+      refusal(
+        sessionId,
+        typeof transcript?.reason === "string" ? transcript.reason : "unknown",
+      ),
+    );
+  }
+  if (transcript?.transcriptSource !== "server-derived") {
+    console.error("ML transcript omitted its server-derived source label");
+    throw new ApiError("ML service returned invalid model provenance", 502);
+  }
+  requireProducerAttribution(transcript, "asr", "ML");
+
+  const recognizedTokens = transcript?.recognizedTokens;
+  if (!Array.isArray(recognizedTokens) || recognizedTokens.length === 0) {
+    return completedWithoutEffect(refusal(sessionId, "invalid-recognized-spans"));
+  }
+
+  const alignment = await ctx.inference.predictAlignment({
+    consent,
+    quranRef: session.quran_ref,
+    recognizedTokens,
+    sessionId,
+    tenantId: actor.tenantId,
+    transcriptModelAttribution: transcript.modelAttribution,
+  }, deadline);
+
+  if (alignment?.finalizable !== true) {
+    return completedWithoutEffect(
+      refusal(
+        sessionId,
+        typeof alignment?.nonFinalizedReason === "string"
+          ? alignment.nonFinalizedReason
+          : "invalid-recognized-spans",
+      ),
+    );
+  }
+  requireProducerAttribution(alignment, "quran-aligner", "ML");
+  requireExactAttributionExtension(transcript, alignment, "quran-aligner", "ML");
+
+  if (alignment.modelVersion !== session.model_version_id) {
+    console.warn("finalization refused because the session and producer models disagree");
+    return completedWithoutEffect(refusal(sessionId, "model-version-mismatch"));
+  }
+  if (
+    !nonEmptyString(alignment.datasetVersion) ||
+    !nonEmptyString(alignment.evidenceId) ||
+    !Number.isInteger(alignment.latencyMs) ||
+    alignment.latencyMs <= 0 ||
+    alignment.latencyMs > 2_147_483_647
+  ) {
+    throw new ApiError("ML service returned invalid model provenance", 502);
+  }
+
+  let invalidOutput = !Array.isArray(alignment.alignments);
+  const alignments = [];
+  if (!invalidOutput) {
+    for (const row of alignment.alignments) {
+      const status = row?.status;
+      if (typeof status !== "string") {
+        invalidOutput = true;
+        break;
+      }
+      if (status === "matched" || status === "misread") {
+        if (typeof row.wordId !== "string" || typeof row.heardText !== "string") {
+          invalidOutput = true;
+          break;
+        }
+        alignments.push({
+          confidence: typeof row.confidence === "number" ? row.confidence : 0,
+          endMs: row.endMs ?? null,
+          heardText: row.heardText,
+          startMs: row.startMs ?? null,
+          status,
+          wordId: row.wordId,
+        });
+      } else if (!["missed", "extra", "needs-review"].includes(status)) {
+        invalidOutput = true;
+        break;
+      }
+    }
+  }
+  if (invalidOutput || alignments.length === 0) {
+    return completedWithoutEffect(
+      refusal(sessionId, invalidOutput ? "invalid-alignment-output" : "no-persistable-alignments"),
+    );
+  }
+
+  // Preflight every destructive-writer condition before the fenced transaction. Canonical word
+  // membership is immutable, so this cannot become stale between preparation and commit. Refusing
+  // here preserves prior practice rows without needing to commit then roll back a job completion.
+  const persistable = await ctx.db.withTenant(actor.tenantId, async (tx) => {
+    const candidateIds = alignments.map((row) => row.wordId);
+    const knownRows = await tx`SELECT id FROM canonical_words WHERE id = ANY(${candidateIds})`;
+    const known = new Set(knownRows.map((row) => row.id));
+    return alignments.every(
+      (row) => known.has(row.wordId) && usableSpan(row.startMs, row.endMs) !== null,
+    );
+  });
+  if (!persistable) {
+    return completedWithoutEffect(refusal(sessionId, "invalid-alignment-output"));
+  }
+
+  const provenance = {
+    consentSnapshot: session.consent_snapshot,
+    datasetVersion: alignment.datasetVersion,
+    evidenceIds: [alignment.evidenceId],
+    latencyMs: alignment.latencyMs,
+    modelAttribution: alignment.modelAttribution,
+    modelVersion: alignment.modelVersion,
+  };
+  const lostChunkCount = Array.isArray(transcript.missingChunkIds)
+    ? transcript.missingChunkIds.length
+    : 0;
+
+  return {
+    commit: async (tx) => {
+      const persisted = await persistAlignmentsInTransaction({
+        tx,
+        actor,
+        sessionId,
+        alignments,
+        transcriptSource: "server-derived",
+        provenance,
+        requestTrace,
+      });
+      if (
+        persisted.persisted === 0 ||
+        persisted.skippedInvalidStatus > 0 ||
+        persisted.skippedUnknownWord > 0 ||
+        persisted.skippedUnusableSpan > 0
+      ) {
+        throw Object.assign(new Error("preflight and finalization persistence disagree"), {
+          jobErrorCode: "finalization_conflict",
+        });
+      }
+
+      if (lostChunkCount > 0) {
+        console.warn(
+          "session finalized with chunks accepted upstream but never stored; transcript is incomplete",
+        );
+        await tx`
+          UPDATE recitation_sessions SET lost_chunk_count = ${lostChunkCount}
+          WHERE id = ${sessionId} AND tenant_id = ${actor.tenantId}`;
+      }
+
+      return { response: {
+        auditEventId: persisted.auditEventId,
+        chunkCount: Number.isInteger(transcript.chunkCount) ? transcript.chunkCount : 0,
+        finalized: true,
+        lostChunkCount,
+        persisted: persisted.persisted,
+        reason: "consent-granted",
+        sessionId,
+      } };
+    },
+  };
+}
+
+/** POST /v1/recitation-sessions/{id}/finalize — recitation.rs:1183 */
+export async function finalizeSession(req, reply, ctx) {
+  const resolved = await resolveActor(req, ctx);
+  if (resolved.delegate) return proxy(req, reply, ctx.upstream);
+  const { actor } = resolved;
+  const sessionId = req.params.id;
+  const inputVersion = await authorizeFinalization(ctx, actor, sessionId);
+  const job = await ctx.jobStore.enqueue({
+    tenantId: actor.tenantId,
+    kind: "session.finalize",
+    subjectId: sessionId,
+    actorId: actor.userId,
+    idempotencyKey: `session.finalize:${actor.userId}:${sessionId}:${inputVersion}`,
+    payload: { sessionId, inputVersion, requestTrace: traceId(req) },
+  });
+  const body = await waitForJobResult(ctx, job);
 
   return reply.send(body);
 }

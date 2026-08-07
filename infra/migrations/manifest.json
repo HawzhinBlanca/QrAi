@@ -32,6 +32,8 @@
     { "id": "0030", "filename": "0030_tajweed_instruction_performance_boundary.sql", "sha256": "a004438c2fb7abffa0a4f9ec4ed394b222033a6baacae90443e1a423fb5ea978" },
     { "id": "0031", "filename": "0031_evaluation_evidence_authority.sql", "sha256": "e03bbbc6a88b148d7e7cafe260788a9bc11c6a7445d84af89dae9e1aff9c7422" },
     { "id": "0032", "filename": "0032_demote_untrusted_model_claims.sql", "sha256": "0a596631f8f1fc42a581f1a52add08dc3b45c870f165e337a669e9ce4ea5ec9f" },
-    { "id": "0033", "filename": "0033_acoustic_finding_evidence_authority.sql", "sha256": "a6e20e4885185360cae09b91c26e5e0a00c70797b9e7a2a2364d28ea3efefe71" }
+    { "id": "0033", "filename": "0033_acoustic_finding_evidence_authority.sql", "sha256": "a6e20e4885185360cae09b91c26e5e0a00c70797b9e7a2a2364d28ea3efefe71" },
+    { "id": "0034", "filename": "0034_background_jobs.sql", "sha256": "e1d8e823b9c3564d6d40a8a67b09edd2db79fe5a1bbac6975874b4e26d7a61ac" },
+    { "id": "0035", "filename": "0035_device_identity.sql", "sha256": "45fac1fcb38c89ffd19a3dd6c916514b63b0eaaa31e51c277609cf609e342aa1" }
   ]
 }

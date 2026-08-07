@@ -69,7 +69,7 @@ export const PUBLIC_API_ROUTES = [
   { method: "GET", path: "/v1/eval-runs/:modelVersion", transport: "http" },
   { method: "POST", path: "/v1/privacy/export", transport: "http" },
   { method: "POST", path: "/v1/privacy/delete", transport: "http" },
-  // Server-side ML proxy: the browser calls these; platform-api forwards to ml-inference with the
+  // Server-side inference proxy: the browser calls these; platform-api forwards to the worker with the
   // server-held ML_API_KEY and the actor's authoritative tenant (never the client-supplied tenantId).
   { method: "POST", path: "/v1/ml/alignments:predict", transport: "http" },
   { method: "POST", path: "/v1/ml/tajweed-findings:predict", transport: "http" },
@@ -96,6 +96,7 @@ export const CORE_TABLES = [
   "alignment_runs",
   "pilot_invitations",
   "pilot_sessions",
+  "background_jobs",
 ] as const;
 
 export const PROOF_GATES = [
@@ -834,7 +835,7 @@ export function isNonRecitedMark(text: string): boolean {
  * `audio_retention` reaches this from a consent record and from a realtime ticket claim that
  * `services/shared-ticket` carries as a deliberately UNVALIDATED string, on the stated grounds that
  * an unknown value "can only shorten retention; it can never extend it". That is only true if every
- * consumer treats unknown as discard. `services/ml-inference`'s retention sweep always did — it
+ * consumer treats unknown as discard. The worker inference retention sweep always did — it
  * keeps `training-opt-in` forever, gives `teacher-review` its own TTL, and applies the discard TTL
  * to everything else. This function did not, and nothing had ever noticed, because it had no caller
  * and no case in the corpus had shown either implementation an out-of-vocabulary value.

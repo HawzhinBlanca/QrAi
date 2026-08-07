@@ -19,6 +19,8 @@
     "smoke:sql": "node scripts/smoke-sql.mjs",
     "smoke:e2e": "node scripts/smoke-e2e.mjs",
     "smoke:all": "node scripts/smoke-all.mjs",
+    "smoke:http-canary-image": "node scripts/http-canary-image.mjs",
+    "smoke:http-canary-controller": "node scripts/http-canary-controller.mjs",
     "build": "pnpm --filter @quran-ai/contracts build && pnpm --filter @quran-ai/quran-data build && pnpm --filter @quran-ai/server build && pnpm --filter @quran-ai/web build",
     "preview": "pnpm --filter @quran-ai/web preview",
     "test": "pnpm --filter @quran-ai/contracts test && pnpm --filter @quran-ai/quran-data test && pnpm --filter @quran-ai/web test && cargo test --manifest-path services/realtime-gateway/Cargo.toml && DATABASE_URL=\"${DATABASE_URL:-postgresql://hawzhin@localhost:5432/quran_ai}\" cargo test --manifest-path services/platform-api/Cargo.toml -- --include-ignored",

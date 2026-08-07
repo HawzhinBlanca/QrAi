@@ -25,8 +25,10 @@ info:
   version: 0.3.0
   summary: Quran recitation platform API — the contract every client codes against.
   description: |
-    42 method+path pairs. Enumerated from services/platform-api/src/lib.rs and asserted by
-    tests/contract/coverage.test.mjs, so adding a route fails the gate until it is contracted.
+    The immutable Rust baseline has 42 method+path pairs, enumerated from
+    services/platform-api/src/lib.rs and asserted by tests/contract/coverage.test.mjs. The active
+    transition contract adds explicitly classified Node target operations from route-manifest.json;
+    adding an unclassified route fails the gate.
 
     Auth is one of three, resolved in this order (services/platform-api/src/auth.rs):
       1. `Authorization: Bearer <JWT>` — HS256 only.
@@ -41,6 +43,7 @@ servers:
 tags:
   - name: ops
   - name: auth
+  - name: device-identity
   - name: quran
   - name: recitation
   - name: progress
@@ -54,7 +57,7 @@ components:
     bearerAuth:
       type: http
       scheme: bearer
-      bearerFormat: JWT
+      bearerFormat: JWT or qrai_at_v1 opaque access credential
     pilotCookie:
       type: apiKey
       in: cookie
@@ -316,7 +319,7 @@ components:
       additionalProperties: false
 
     TajweedPredictionResponse:
-      description: Exact envelope returned by services/ml-inference/server.mjs::predictTajweed.
+      description: Exact envelope returned by the worker-owned predictTajweed runtime.
       type: object
       required: [traceId, fixtureCaseId, tenantId, sessionId, quranRef, evidenceId, modelVersion, auditEventId, annotations, findings, latencyMs, datasetVersion, algorithm]
       properties:
@@ -392,7 +395,7 @@ components:
       additionalProperties: false
 
     PredictedWordAlignment:
-      description: Exact word shape emitted by services/ml-inference/server.mjs::predictAlignment.
+      description: Exact word shape emitted by the worker-owned predictAlignment runtime.
       type: object
       required: [wordId, canonicalText, heardText, startMs, endMs, status, confidence, reviewStatus, tenantId, quranRef, sourceChecksum, evidenceId, modelVersion, traceId, auditEventId]
       properties:
@@ -420,7 +423,7 @@ components:
       additionalProperties: false
 
     AlignmentPredictionResponse:
-      description: Exact envelope returned by services/ml-inference/server.mjs::predictAlignment.
+      description: Exact envelope returned by the worker-owned predictAlignment runtime.
       type: object
       required: [traceId, fixtureCaseId, tenantId, sessionId, quranRef, sourceChecksum, evidenceId, modelVersion, modelAttribution, auditEventId, alignments, confidence, reviewStatus, finalizable, nonFinalizedReason, externalAsr, latencyMs, datasetVersion, algorithm]
       properties:
@@ -573,6 +576,39 @@ components:
         mode: { type: [string, "null"] }
         externalProcessingAllowed: { type: [boolean, "null"] }
 
+    LearnerRecitationHistoryItem:
+      type: object
+      required:
+        [id, quranRef, mode, reviewStatus, startedAt, findingCount, pendingFindingCount,
+         reviewedFindingCount, blockedFindingCount]
+      properties:
+        id: { type: string, minLength: 1 }
+        quranRef: { $ref: '#/components/schemas/QuranRef' }
+        mode:
+          type: string
+          enum: [listen, guided-recite, memory-recite, correction, drill, complete]
+        reviewStatus:
+          type: string
+          enum: [draft, ai-suggested, teacher-review-required, teacher-reviewed, scholar-approved, blocked]
+        startedAt:
+          type: string
+          pattern: '^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{3}|\.\d{6})?\+00:00$'
+        findingCount: { type: integer, minimum: 0 }
+        pendingFindingCount: { type: integer, minimum: 0 }
+        reviewedFindingCount: { type: integer, minimum: 0 }
+        blockedFindingCount: { type: integer, minimum: 0 }
+      additionalProperties: false
+
+    LearnerRecitationHistoryPage:
+      type: object
+      required: [items, nextCursor]
+      properties:
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/LearnerRecitationHistoryItem' }
+        nextCursor: { type: [string, "null"] }
+      additionalProperties: false
+
     RealtimeSessionTicket:
       type: object
       required:
@@ -590,7 +626,7 @@ components:
         externalAsrProcessing: { type: boolean }
         # rt_v2.{session}.{tenant}.{learner}.{bool}.{audioRetention}.{expiry}.{nonce}.{hex hmac-sha256}
         # audioRetention joined the payload on 2026-08-03: the gateway has no database, so the ticket
-        # is the only way a learner's retention choice can reach ml-inference, which decides how long
+        # is the only way a learner's retention choice can reach the worker ingress, which decides how long
         # the recording is kept. Field count 8 -> 9, hence the version bump.
         token: { type: string, pattern: '^rt_v2\.[^.]+\.[^.]+\.[^.]+\.(true|false)\.[^.]+\.\d+\.[^.]+\.[0-9a-f]{64}$' }
         auditEventId: { type: string, minLength: 1 }
@@ -649,6 +685,38 @@ components:
         role: { type: string, enum: [learner, teacher, scholar, admin, ops] }
         audit_event_id: { type: string }
       additionalProperties: true
+
+    DeviceEnrollmentExchangeRequest:
+      type: object
+      required: [invitationToken]
+      properties:
+        invitationToken: { type: string, pattern: '^qrai_inv_v1\.[A-Za-z0-9_-]{43}$' }
+      additionalProperties: false
+
+    DeviceSessionRefreshRequest:
+      type: object
+      required: [refreshToken]
+      properties:
+        refreshToken: { type: string, pattern: '^qrai_rt_v1\.[A-Za-z0-9_-]{43}$' }
+      additionalProperties: false
+
+    DeviceCredentialBundle:
+      type: object
+      required: [accessExpiresAt, accessToken, absoluteExpiresAt, idleExpiresAt, refreshToken]
+      properties:
+        accessExpiresAt: { type: string, format: date-time }
+        accessToken: { type: string, pattern: '^qrai_at_v1\.[A-Za-z0-9_-]{43}$' }
+        absoluteExpiresAt: { type: string, format: date-time }
+        idleExpiresAt: { type: string, format: date-time }
+        refreshToken: { type: string, pattern: '^qrai_rt_v1\.[A-Za-z0-9_-]{43}$' }
+      additionalProperties: false
+
+    DeviceSessionRevocationResult:
+      type: object
+      required: [revoked]
+      properties:
+        revoked: { type: boolean, const: true }
+      additionalProperties: false
 
     PilotSession:
       type: object
@@ -1009,6 +1077,54 @@ paths:
         '200': { description: minted, content: { application/json: { schema: { $ref: '#/components/schemas/AuthToken' } } } }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
+  /v1/device-enrollments:exchange:
+    post:
+      tags: [device-identity]
+      x-owner-gate: DEVICE_IDENTITY_ENABLED=1
+      security: []
+      summary: Exchange one single-use device invitation for rotating opaque credentials.
+      description: |
+        Disabled by default until the owner enables production device identity. The request cannot
+        supply tenant, user, role, or lifetime; all authority comes from the stored invitation and
+        current same-tenant user row. Unknown, expired, consumed, and forged invitations share one
+        generic 401 response.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/DeviceEnrollmentExchangeRequest' }
+      responses:
+        '200': { description: device session issued, content: { application/json: { schema: { $ref: '#/components/schemas/DeviceCredentialBundle' } } } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '422': { description: request body is missing or contains undeclared fields, content: { text/plain: { schema: { type: string, minLength: 1 } } } }
+  /v1/device-sessions:refresh:
+    post:
+      tags: [device-identity]
+      x-owner-gate: DEVICE_IDENTITY_ENABLED=1
+      security: []
+      summary: Atomically rotate both credentials and detect refresh replay.
+      description: |
+        Replay commits whole-family revocation before returning the same generic 401 used for every
+        other invalid refresh credential. The request cannot select a session or lifetime.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/DeviceSessionRefreshRequest' }
+      responses:
+        '200': { description: next credential generation issued, content: { application/json: { schema: { $ref: '#/components/schemas/DeviceCredentialBundle' } } } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '422': { description: request body is missing or contains undeclared fields, content: { text/plain: { schema: { type: string, minLength: 1 } } } }
+  /v1/device-sessions/current:
+    delete:
+      tags: [device-identity]
+      x-owner-gate: DEVICE_IDENTITY_ENABLED=1
+      security: [{ bearerAuth: [] }]
+      summary: Revoke the current opaque device-session family.
+      description: Accepts only a qrai_at_v1 device access credential; a JWT cannot name a device session.
+      responses:
+        '200': { description: current family revoked, content: { application/json: { schema: { $ref: '#/components/schemas/DeviceSessionRevocationResult' } } } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
   /v1/auth/register:
     post:
       tags: [auth]
@@ -1070,6 +1186,38 @@ paths:
         '404': { $ref: '#/components/responses/NotFound' }
 
   # ── recitation ────────────────────────────────────────────────────────────────────────────────
+  /v1/learner/recitation-sessions:
+    get:
+      tags: [recitation]
+      summary: List the authenticated learner's own practice history.
+      description: |
+        Learner-only, own-tenant and own-user. This compact history reports acoustic finding state
+        counts so delayed teacher review appears on refresh. It never returns a tajweed judgement,
+        confidence, explanation, source, learner id, or tenant id; detailed feedback remains behind
+        the per-session review and evidence gate.
+
+        Pagination is keyset-based over `(started_at DESC, id DESC)`. `cursor` names the final
+        session from the previous page. Unknown, other-owner, and cross-tenant cursors all return
+        404 so the endpoint cannot probe session existence.
+      parameters:
+        - name: cursor
+          in: query
+          required: false
+          schema: { type: string }
+        - name: limit
+          in: query
+          required: false
+          schema: { type: integer, minimum: 1, maximum: 50, default: 20 }
+      responses:
+        '200':
+          description: The learner's own recitation history page.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/LearnerRecitationHistoryPage' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
   /v1/recitation-sessions:
     get:
       tags: [recitation]
@@ -1123,7 +1271,7 @@ paths:
       summary: Turn a streamed recitation into a reviewable one, server-side.
       description: |
         `stored audio chunks -> transcript -> alignment -> persisted word_alignments`. The gateway
-        forwards audio to ml-inference and stops there; without this a streamed recitation produced
+        forwards audio to the worker inference ingress and stops there; without this a streamed recitation produced
         no transcript, so no alignment, so no finding a teacher could review.
 
         **The client does not supply the transcript.** Whoever supplies the recognised words decides
@@ -1152,6 +1300,10 @@ paths:
                   reason: { type: string }
                   persisted: { type: integer }
                   chunkCount: { type: integer }
+                  lostChunkCount:
+                    type: integer
+                    minimum: 0
+                    description: Interior chunk gaps detected during transcript assembly; zero when complete.
                   auditEventId: { type: string }
         '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }
@@ -1256,7 +1408,8 @@ paths:
       description: |
         Internal gateway boundary. Tenant, learner, session, retention and expiry come from the
         signed ticket; caller-supplied tenantId or learnerId has no authority. Retrying the same
-        chunk id is idempotent.
+        chunk id is idempotent. The object key is derived from the verified ticket plus the chunk
+        id; any legacy caller-supplied objectKey has no authority and is ignored.
       parameters:
         - name: x-realtime-ticket
           in: header
@@ -1268,11 +1421,11 @@ paths:
           application/json:
             schema:
               type: object
-              required: [sessionId, chunkId, objectKey, startMs, endMs]
+              required: [sessionId, chunkId, startMs, endMs]
               properties:
                 sessionId: { type: string, minLength: 1 }
                 chunkId: { type: string, minLength: 1 }
-                objectKey: { type: string, minLength: 1 }
+                objectKey: { type: string, minLength: 1, deprecated: true, description: 'Ignored compatibility field; the server derives the key.' }
                 startMs: { type: integer, minimum: 0 }
                 endMs: { type: integer, minimum: 1 }
                 sampleRate: { type: integer, minimum: 1, default: 16000 }
@@ -1479,7 +1632,8 @@ paths:
       tags: [privacy]
       summary: Erase a learner. Scoped to ONE learner — other learners' records survive.
       description: |
-        Also erases audio via the ML service and reports the exact object keys it erased. A
+        Also erases audio through the worker-owned private object-store lifecycle and reports the
+        exact object keys it erased. A
         cross-tenant delete is Forbidden and must leave the row intact.
       # Both privacy routes deserialize the SAME `PrivacyJobRequest { learner_id: String }`
       # (types.rs:305), but only export documented it. A client written from this contract would

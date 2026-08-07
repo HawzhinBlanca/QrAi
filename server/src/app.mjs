@@ -2,12 +2,12 @@
  * Side-effect-free Fastify composition for the Node API.
  * specs/node-backend-port/plan.md §3 · specs/migration-completion/plan.md §2 (N7)
  *
- *   client ──► THIS ──┬── ported route  ──► Postgres
- *                     └── everything else ──► Rust platform-api, verbatim
+ *   standalone:   client ──► every executable route ──► Node/Postgres
+ *   compatibility: client ──┬── selected local route ──► Node/Postgres
+ *                            └── everything else ───────► explicit Rust oracle/canary
  *
- * Every route not named in `NODE_API_PORTED` is proxied unchanged. That is what makes each step of
- * the port independently reversible: backing a route out is deleting one entry, not redeploying a
- * rewrite.
+ * No upstream is the production-shaped default and cannot proxy. Supplying an upstream explicitly
+ * enables the reversible compatibility shell used by parity and canary verification.
  *
  * N7 moved the handlers into `routes/` and the forwarder into `lib/proxy.mjs`. What is left here is
  * exactly the shell: config, middleware order, registration, the catch-all, and error shaping.
@@ -17,18 +17,21 @@
  */
 import Fastify from "fastify";
 import cors from "@fastify/cors";
-
+import { createJobStore } from "./jobs/store.mjs";
+import { createTokenBucketLimiter } from "./lib/admission.mjs";
 import { ApiError } from "./lib/authz.mjs";
 import { createDb } from "./lib/db.mjs";
+import { createIncomingRequestDeadline, isDeadlineError } from "./lib/deadline.mjs";
 import { stringifyRust } from "./lib/json.mjs";
 import { createMetrics } from "./lib/metrics.mjs";
 import { proxy } from "./lib/proxy.mjs";
-import { ROUTES, fastifyPath } from "./routes/index.mjs";
+import { shutdownPhases } from "./lib/shutdown.mjs";
+import { ROUTES, ROUTE_KEYS, fastifyPath } from "./routes/index.mjs";
 
 export function createApplication(config) {
   const {
     upstream,
-    ported = new Set(),
+    compatibilityRouteKeys = new Set(),
     databaseUrl,
     jwtSecret = "quran-ai-dev-secret",
     allowHeaderAuth = false,
@@ -36,19 +39,142 @@ export function createApplication(config) {
     ticketSecret = "smoke-secret",
     metricsToken = null,
     metricsDevOpen = false,
+    enforceRestrictedDbRole = true,
+    deviceIdentityEnabled = false,
+    maintenanceMode = false,
+    rateLimitEnabled = true,
+    canaryProofHeaders = false,
+    trustedProxyHops = 0,
+    rateLimitOptions = {},
     // lib.rs:79-82 — same names, same defaults.
-    mlInferenceUrl = "http://127.0.0.1:8090",
+    mlInferenceUrl = "http://127.0.0.1:8098",
     mlApiKey = "smoke-ml-api-key",
     asrInferenceUrl = "http://127.0.0.1:8091",
     asrApiKey = "smoke-asr-api-key",
+    audioObjectStore = null,
+    upstreamTimeoutMs = 60_000,
+    shutdownGraceMs = 8_000,
     logger = false,
   } = config;
 
-  if (!upstream) throw new TypeError("createApplication: upstream is required and has no default");
+  if (!(compatibilityRouteKeys instanceof Set)) {
+    throw new TypeError("createApplication: compatibilityRouteKeys must be a Set");
+  }
+  if (!upstream && compatibilityRouteKeys.size > 0) {
+    throw new TypeError("createApplication: compatibilityRouteKeys requires an upstream");
+  }
+  for (const routeKey of compatibilityRouteKeys) {
+    if (!ROUTE_KEYS.includes(routeKey)) {
+      throw new TypeError(`createApplication: unknown executable route ${routeKey}`);
+    }
+  }
+  if (
+    !Number.isSafeInteger(upstreamTimeoutMs) ||
+    upstreamTimeoutMs <= 0 ||
+    upstreamTimeoutMs > 2_147_483_647
+  ) {
+    throw new TypeError("createApplication: upstreamTimeoutMs must be a positive whole number");
+  }
+  let shutdown;
+  try {
+    shutdown = shutdownPhases(shutdownGraceMs);
+  } catch (error) {
+    throw new TypeError(`createApplication: ${error.message}`);
+  }
+  if (typeof maintenanceMode !== "boolean") {
+    throw new TypeError("createApplication: maintenanceMode must be boolean");
+  }
+  if (typeof enforceRestrictedDbRole !== "boolean") {
+    throw new TypeError("createApplication: enforceRestrictedDbRole must be boolean");
+  }
+  if (typeof deviceIdentityEnabled !== "boolean") {
+    throw new TypeError("createApplication: deviceIdentityEnabled must be boolean");
+  }
+  if (typeof rateLimitEnabled !== "boolean") {
+    throw new TypeError("createApplication: rateLimitEnabled must be boolean");
+  }
+  if (typeof canaryProofHeaders !== "boolean") {
+    throw new TypeError("createApplication: canaryProofHeaders must be boolean");
+  }
+  if (canaryProofHeaders && !upstream) {
+    throw new TypeError("createApplication: canaryProofHeaders requires an upstream");
+  }
+  if (!Number.isSafeInteger(trustedProxyHops) || trustedProxyHops < 0 || trustedProxyHops > 32) {
+    throw new TypeError("createApplication: trustedProxyHops must be a whole number from 0 to 32");
+  }
+  if (rateLimitOptions === null || typeof rateLimitOptions !== "object" || Array.isArray(rateLimitOptions)) {
+    throw new TypeError("createApplication: rateLimitOptions must be an object");
+  }
+  if (
+    audioObjectStore !== null &&
+    (!audioObjectStore ||
+      typeof audioObjectStore.get !== "function" ||
+      typeof audioObjectStore.listLearner !== "function" ||
+      typeof audioObjectStore.deleteLearner !== "function" ||
+      typeof audioObjectStore.assertReady !== "function" ||
+      typeof audioObjectStore.close !== "function")
+  ) {
+    throw new TypeError("createApplication: audioObjectStore does not implement the storage boundary");
+  }
 
-  const app = Fastify({ logger, bodyLimit: 2 * 1024 * 1024 });
-  const db = ported.size > 0 && databaseUrl ? createDb(databaseUrl) : null;
+  const enabledRoutes = ROUTES.filter(
+    (route) => route.ownerGate === undefined ||
+      (route.ownerGate === "device-identity" && deviceIdentityEnabled),
+  );
+  const enabledRouteKeys = new Set(enabledRoutes.map((route) => route.key));
+  for (const route of ROUTES) {
+    if (route.ownerGate !== undefined && route.ownerGate !== "device-identity") {
+      throw new TypeError(`createApplication: unknown owner gate ${route.ownerGate}`);
+    }
+  }
+  if (upstream) {
+    for (const routeKey of compatibilityRouteKeys) {
+      if (!enabledRouteKeys.has(routeKey)) {
+        throw new TypeError(`createApplication: owner-gated route is disabled: ${routeKey}`);
+      }
+    }
+  }
+
+  const apiMode = upstream ? "compatibility" : "standalone";
+  const localRouteKeys = upstream ? compatibilityRouteKeys : enabledRouteKeys;
+  const app = Fastify({
+    logger,
+    bodyLimit: 2 * 1024 * 1024,
+    // Keep active requests alive for the process controller's drain phase. On pinned Fastify 5.11,
+    // the native-server close branch treats the documented `"idle"` value as truthy and invokes
+    // closeAllConnections(), dropping active requests. `false` delegates idle reaping to Node 22's
+    // server.close(); the process controller alone owns timed active-socket destruction.
+    forceCloseConnections: false,
+    return503OnClosing: true,
+    // Zero ignores every forwarded identity header. A positive count trusts only that many nearest
+    // hops; process startup makes the opt-in explicit and refuses inert/invalid hop configuration.
+    trustProxy: trustedProxyHops === 0 ? false : trustedProxyHops,
+  });
+  const db = localRouteKeys.size > 0 && databaseUrl
+      ? createDb(databaseUrl, {
+        closeTimeoutMs: shutdown.resourceCloseMs,
+        statementTimeoutMs: Math.min(10_000, upstreamTimeoutMs),
+        // postgres.js exposes connect_timeout in whole seconds. Round up so a sub-second request
+        // still has a connection attempt, but never retain the old independent 10-second default.
+        connectTimeout: Math.max(1, Math.min(10, Math.ceil(upstreamTimeoutMs / 1_000))),
+      })
+    : null;
   const metrics = createMetrics();
+  const rateLimiter = rateLimitEnabled ? createTokenBucketLimiter(rateLimitOptions) : null;
+  const jobStore = db ? createJobStore({ db }) : null;
+
+  if (db) {
+    // `onReady` completes before Fastify binds a listening socket. A privileged connection makes
+    // forced RLS an illusion, so it is a boot failure rather than a degraded readiness state.
+    if (enforceRestrictedDbRole) {
+      app.addHook("onReady", async () => db.assertRestrictedRole());
+    }
+    app.addHook("onClose", async () => db.end());
+  }
+  if (audioObjectStore) {
+    app.addHook("onReady", async () => audioObjectStore.assertReady());
+    app.addHook("onClose", async () => audioObjectStore.close());
+  }
 
   // ── Middleware order is a security invariant (§2.5) ───────────────────────────────────────────
   // Effective order in Rust is CORS → maintenance → rate limit → trace → metrics → handler. CORS is
@@ -68,7 +194,33 @@ export function createApplication(config) {
   app.register(cors, {
     origin: allowList ?? "*", // literal "*", never `true`
     credentials: false, // hard-banned; asserted by a test on every response
-    methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+    methods: ["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+  });
+
+  app.decorateRequest("deadline", null);
+  app.addHook("onRequest", async (req, reply) => {
+    req.deadline = createIncomingRequestDeadline(req.raw, reply.raw, upstreamTimeoutMs);
+  });
+
+  // CORS is registered first and can end a valid preflight before these hooks spend capacity.
+  // Maintenance is next: it is an operational kill switch, so blocked work neither authenticates
+  // nor consumes a rate token. Its three exact probes continue into admission and their handlers.
+  app.addHook("onRequest", async (req, reply) => {
+    const path = req.url.split("?", 1)[0];
+    if (maintenanceMode && !["/health", "/ready", "/metrics"].includes(path)) {
+      return reply.code(503).send({ error: "service is in maintenance" });
+    }
+  });
+
+  // Authorization is deliberately later, inside handlers. Admission never trusts caller-supplied
+  // role/tenant data and uses only Fastify's peer/trusted-hop IP resolution.
+  app.addHook("onRequest", async (req, reply) => {
+    if (!rateLimiter) return;
+    const decision = rateLimiter.consume(req.ip);
+    if (!decision.allowed) {
+      reply.header("retry-after", String(Math.max(1, Math.ceil(decision.retryAfterMs / 1_000))));
+      return reply.code(429).send({ error: "rate limit exceeded" });
+    }
   });
 
   // tower-http's CorsLayer emits `vary` on EVERY response, including a plain GET with no Origin.
@@ -102,6 +254,9 @@ export function createApplication(config) {
   const VARY = "origin, access-control-request-method, access-control-request-headers";
   app.addHook("onSend", (req, reply, payload, done) => {
     const servedLocally = Boolean(req.routeOptions?.config?.axumPath);
+    if (canaryProofHeaders) {
+      reply.header("x-qrai-route-owner", servedLocally ? "node-local" : "rust-compatibility");
+    }
     if (servedLocally) reply.header("vary", VARY);
     else if (!reply.hasHeader("vary")) reply.header("vary", VARY);
     if (reply.getHeader("content-type") === "application/json; charset=utf-8") {
@@ -124,7 +279,7 @@ export function createApplication(config) {
     );
   }
 
-  // ── Ported routes ─────────────────────────────────────────────────────────────────────────────
+  // ── Local routes ──────────────────────────────────────────────────────────────────────────────
   // `ctx` is built once and closed over. Handlers take it as a third argument rather than reaching
   // for module state, so a handler is testable with a stub db and no server at all.
   // `pilotAllowedOrigins` is the SAME allowlist CORS uses — Rust reads CORS_ALLOWED_ORIGINS for
@@ -133,10 +288,11 @@ export function createApplication(config) {
     db, jwtSecret, allowHeaderAuth, ticketSecret, upstream,
     metrics, metricsToken, metricsDevOpen,
     pilotAllowedOrigins: allowList,
-    mlInferenceUrl, mlApiKey, asrInferenceUrl, asrApiKey,
+    mlInferenceUrl, mlApiKey, asrInferenceUrl, asrApiKey, upstreamTimeoutMs, audioObjectStore,
+    jobStore,
   };
   for (const route of ROUTES) {
-    if (!ported.has(route.key)) continue;
+    if (!localRouteKeys.has(route.key)) continue;
     // `config.axumPath` carries the AXUM spelling of the path (`{id}`) so the metrics label matches
     // Rust's. Fastify's own `routeOptions.url` is the `:id` form, which would silently produce a
     // second, differently-named series for the same endpoint on a scrape of the two processes.
@@ -148,7 +304,11 @@ export function createApplication(config) {
         // exactly as lib.rs does with DefaultBodyLimit on those two and nothing else.
         ...(route.bodyLimit ? { bodyLimit: route.bodyLimit } : {}),
       },
-      (req, reply) => route.handler(req, reply, ctx),
+      (req, reply) => route.handler(req, reply, {
+        ...ctx,
+        deadline: req.deadline,
+        db: db?.forDeadline(req.deadline) ?? null,
+      }),
     );
   }
 
@@ -169,15 +329,15 @@ export function createApplication(config) {
     done();
   });
 
-  // ── Everything else: proxied verbatim ─────────────────────────────────────────────────────────
-  // `setNotFoundHandler` alone IS the strangler catch-all: anything not registered above falls
-  // through to it, for every method, with no route to keep in sync.
+  // ── Explicit compatibility fallback ───────────────────────────────────────────────────────────
+  // Only compatibility mode owns a catch-all. Standalone deliberately keeps Fastify's local 404,
+  // so an unrecognised path cannot acquire a hidden Rust dependency.
   //
   // The first attempt also registered `app.all("/*")`, which Fastify rejected at boot with
   // FST_ERR_DUPLICATED_ROUTE — `all` registers GET, Fastify auto-adds HEAD for GET, and `all`
   // registers HEAD too. That is the boot-time duplicate detection §2.1 chose Fastify for, catching a
   // real bug on its first run rather than serving one handler and silently dropping the other.
-  app.setNotFoundHandler((req, reply) => proxy(req, reply, upstream));
+  if (upstream) app.setNotFoundHandler((req, reply) => proxy(req, reply, upstream));
 
   // Fastify parses a body only for content-types it knows. Every parity request sends
   // `content-type: application/json`, including GETs with no body at all, which the default JSON
@@ -209,6 +369,15 @@ export function createApplication(config) {
  * is caller-supplied by construction.
  */
 const SQLSTATE_NUL_BYTE = new Set(["22021", "22P05"]);
+const SQLSTATE_QUERY_CANCELLED = "57014";
+
+// Only framework errors whose public wording is fixed here may use a framework-supplied status.
+// An arbitrary dependency error can carry `statusCode`; trusting that property would turn a secret
+// connection/detail message into a public 5xx response and bypass the generic redaction branch.
+const PUBLIC_FASTIFY_ERRORS = new Map([
+  ["FST_ERR_CTP_BODY_TOO_LARGE", { status: 413, message: "Request body is too large" }],
+  ["FST_ERR_CTP_INVALID_MEDIA_TYPE", { status: 415, message: "Unsupported Media Type" }],
+]);
 
 /** postgres.js surfaces the SQLSTATE as `err.code`, the same string Postgres reports. */
 function isNulByteError(err) {
@@ -221,7 +390,12 @@ function isNulByteError(err) {
       return reply.code(err.status).type(err.contentType).send(err.message);
     }
     if (err instanceof ApiError) return reply.code(err.status).send({ error: err.message });
-    if (err.statusCode) return reply.code(err.statusCode).send({ error: err.message });
+    const publicFastifyError = PUBLIC_FASTIFY_ERRORS.get(err?.code);
+    if (publicFastifyError) {
+      return reply
+        .code(publicFastifyError.status)
+        .send({ error: publicFastifyError.message });
+    }
     if (isNulByteError(err)) {
       // Mirrors `impl From<sqlx::Error> for ApiError` (platform-api/src/types.rs). A fixed message,
       // NOT the driver's text: a database error can carry table and constraint names and, on a
@@ -232,9 +406,18 @@ function isNulByteError(err) {
         .code(400)
         .send({ error: "request contains a NUL byte (U+0000), which cannot be stored" });
     }
+    if (err?.code === SQLSTATE_QUERY_CANCELLED) {
+      reply.header("retry-after", "1");
+      return reply.code(503).send({ error: "database operation timed out" });
+    }
+    if (isDeadlineError(err)) {
+      reply.header("retry-after", "1");
+      return reply.code(503).send({ error: "dependency operation timed out" });
+    }
     reply.code(500).send({ error: "internal error" });
   });
 
-  app.decorate("portedRoutes", [...ported]);
+  app.decorate("apiMode", apiMode);
+  app.decorate("localRouteKeys", [...localRouteKeys]);
   return app;
 }

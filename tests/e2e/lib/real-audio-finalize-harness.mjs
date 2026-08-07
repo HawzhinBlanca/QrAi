@@ -8,12 +8,19 @@ import { dirname, join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 
+import { createJobRuntime } from "../../../server/src/jobs/runtime.mjs";
+import { createJobStore } from "../../../server/src/jobs/store.mjs";
+import { createWorkflowHandlers } from "../../../server/src/jobs/workflows.mjs";
+import { createDb } from "../../../server/src/lib/db.mjs";
+
 import {
+  DATABASE_URL,
   TENANT,
   queryJson,
   request,
   reservePort,
   startApi,
+  startShell,
 } from "../../api-parity/lib/harness.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -28,6 +35,7 @@ export const realAudioPcm = readFileSync(
 export const realAudioCapture = JSON.parse(
   readFileSync(join(fixtureDir, realAudioManifest.capture.file), "utf8"),
 );
+const MAX_AUDIO_CHUNK_BYTES = 2 * 1024 * 1024;
 
 function sha256(bytes) {
   return createHash("sha256").update(bytes).digest("hex");
@@ -78,8 +86,9 @@ function windowedCapture(windowIndex) {
 }
 
 /**
- * Start the actual ML process, a captured-real-response ASR worker, a transparent recording proxy,
- * the Rust API, and one isolated live-Postgres session. Call `stop()` in a test hook.
+ * Start the compatibility ML process for chunk ingress, a captured-real-response ASR worker,
+ * a separate local-inference job worker, the Rust API, and one isolated live-Postgres session.
+ * Call `stop()` in a test hook.
  */
 export async function startRealAudioFinalizeHarness(label) {
   assert.equal(realAudioPcm.length, realAudioManifest.derivedPcm.byteLength);
@@ -121,7 +130,7 @@ export async function startRealAudioFinalizeHarness(label) {
 
   const storageDir = mkdtempSync(join(tmpdir(), `qrai-${label}-`));
   const mlPort = await reservePort();
-  const mlProcess = spawn(process.execPath, [join(root, "services/ml-inference/server.mjs")], {
+  const mlProcess = spawn(process.execPath, [join(root, "tests/inference/lib/worker-compatibility-harness.mjs")], {
     cwd: root,
     env: {
       ...process.env,
@@ -138,45 +147,50 @@ export async function startRealAudioFinalizeHarness(label) {
     mlStderr += chunk.toString();
   });
   const mlUrl = `http://127.0.0.1:${mlPort}`;
-  await waitForHealth(`${mlUrl}/health`, "ml-inference", () => mlStderr);
+  await waitForHealth(`${mlUrl}/health`, "worker compatibility ingress", () => mlStderr);
 
-  // The proxy changes no request/response bytes. It records the exact producer envelope that the
-  // Rust finalizer received, which lets the test compare inference → DB → restricted readback.
-  const recordingProxy = createServer((req, res) => {
-    let raw = "";
-    req.on("data", (chunk) => {
-      raw += chunk;
-    });
-    req.on("end", async () => {
-      try {
-        const upstream = await fetch(`${mlUrl}${req.url}`, {
-          method: req.method,
-          headers: {
-            "content-type": req.headers["content-type"] ?? "application/json",
-            "x-ml-api-key": req.headers["x-ml-api-key"] ?? mlKey,
-          },
-          body: raw,
-        });
-        const bytes = Buffer.from(await upstream.arrayBuffer());
-        const response = JSON.parse(bytes.toString("utf8"));
-        mlCalls.push({ path: req.url, request: JSON.parse(raw), response });
-        res.writeHead(upstream.status, { "content-type": "application/json" });
-        res.end(bytes);
-      } catch (error) {
-        res.writeHead(502, { "content-type": "application/json" });
-        res.end(JSON.stringify({ error: error instanceof Error ? error.message : "proxy failure" }));
-      }
-    });
+  const inferenceEnv = {
+    AUDIO_STORAGE_DIR: storageDir,
+    ASR_API_KEY: asrKey,
+    ASR_SERVICE_URL: `http://127.0.0.1:${asrPort}`,
+    ML_API_KEY: mlKey,
+  };
+  const priorInferenceEnv = Object.fromEntries(
+    Object.keys(inferenceEnv).map((name) => [name, process.env[name]]),
+  );
+  Object.assign(process.env, inferenceEnv);
+  const { createInferenceRuntime } = await import(
+    "../../../server/src/inference/local.mjs"
+  );
+  const localInference = createInferenceRuntime();
+  const inference = createInferenceRuntime({
+    async transcribeSession(body, deadline) {
+      const response = await localInference.transcribeSession(body, deadline);
+      mlCalls.push({ path: "/v1/session-transcript", request: body, response });
+      return response;
+    },
+    async predictAlignment(body, deadline) {
+      const response = await localInference.predictAlignment(body, deadline);
+      mlCalls.push({ path: "/v1/alignments:predict", request: body, response });
+      return response;
+    },
+    async predictTajweed(body, deadline) {
+      const response = await localInference.predictTajweed(body, deadline);
+      mlCalls.push({ path: "/v1/tajweed-findings:predict", request: body, response });
+      return response;
+    },
   });
-  await new Promise((resolve, reject) => {
-    recordingProxy.once("error", reject);
-    recordingProxy.listen(0, "127.0.0.1", resolve);
-  });
-  const proxyAddress = recordingProxy.address();
-  assert.ok(proxyAddress && typeof proxyAddress === "object");
-  const proxyUrl = `http://127.0.0.1:${proxyAddress.port}`;
+  const workerDb = createDb(DATABASE_URL);
 
-  const api = await startApi({ env: { ML_INFERENCE_URL: proxyUrl, ML_API_KEY: mlKey } });
+  const apiEnv = { ML_INFERENCE_URL: mlUrl, ML_API_KEY: mlKey };
+  const rustApi = await startApi({ env: apiEnv });
+  const api = await startShell({
+    upstream: rustApi.upstreamUrl ?? rustApi.baseUrl,
+    env: {
+      ...apiEnv,
+      NODE_API_PORTED: "POST /v1/recitation-sessions/{id}/finalize",
+    },
+  });
   const created = await request(api.baseUrl, "/v1/recitation-sessions", {
     method: "POST",
     role: "learner",
@@ -208,25 +222,72 @@ export async function startRealAudioFinalizeHarness(label) {
     [sessionId],
   );
 
-  const durationMs = Math.round(
-    (realAudioPcm.length / 2 / realAudioManifest.derivedPcm.sampleRate) * 1000,
-  );
-  const stored = await fetch(`${mlUrl}/v1/audio-chunks`, {
-    method: "POST",
-    headers: { "content-type": "application/json", "x-ml-api-key": mlKey },
-    body: JSON.stringify({
-      tenantId: TENANT,
-      learnerId: "learner-1",
-      sessionId,
-      chunkId: `${sessionId}-ws-0000`,
-      sampleRate: realAudioManifest.derivedPcm.sampleRate,
-      startMs: 0,
-      endMs: durationMs,
-      audioRetention: "teacher-review",
-      audioBase64: realAudioPcm.toString("base64"),
+  const workerRuntime = createJobRuntime({
+    store: createJobStore({ db: workerDb }),
+    handlers: createWorkflowHandlers({
+      db: workerDb,
+      inference,
+      upstreamTimeoutMs: 60_000,
     }),
+    workerId: `${label}-local-inference-worker`,
+    leaseMs: 65_000,
+    operationTimeoutMs: 60_000,
+    retryBaseMs: 50,
+    retryMaxMs: 500,
   });
-  assert.equal(stored.status, 200, await stored.text());
+  let workerRunning = true;
+  const workerLoop = (async () => {
+    while (workerRunning) {
+      const jobId = await workerDb.withTenant(TENANT, async (tx) => {
+        const [row] = await tx`
+          SELECT id
+          FROM background_jobs
+          WHERE tenant_id = ${TENANT}
+            AND subject_id = ${sessionId}
+            AND status IN ('queued', 'retry')
+            AND available_at <= now()
+          ORDER BY priority DESC, created_at, id
+          LIMIT 1`;
+        return row?.id ?? null;
+      });
+      if (jobId === null) {
+        await sleep(5);
+      } else {
+        await workerRuntime.runOne(TENANT, { jobId });
+      }
+    }
+  })();
+
+  const sampleRate = realAudioManifest.derivedPcm.sampleRate;
+  for (
+    let byteOffset = 0, chunkIndex = 0;
+    byteOffset < realAudioPcm.length;
+    byteOffset += MAX_AUDIO_CHUNK_BYTES, chunkIndex += 1
+  ) {
+    const chunk = realAudioPcm.subarray(
+      byteOffset,
+      Math.min(byteOffset + MAX_AUDIO_CHUNK_BYTES, realAudioPcm.length),
+    );
+    assert.equal(chunk.length % 2, 0, "PCM fixture chunk must contain complete 16-bit samples");
+    const startMs = Math.round((byteOffset / 2 / sampleRate) * 1000);
+    const endMs = Math.round(((byteOffset + chunk.length) / 2 / sampleRate) * 1000);
+    const stored = await fetch(`${mlUrl}/v1/audio-chunks`, {
+      method: "POST",
+      headers: { "content-type": "application/json", "x-ml-api-key": mlKey },
+      body: JSON.stringify({
+        tenantId: TENANT,
+        learnerId: "learner-1",
+        sessionId,
+        chunkId: `${sessionId}-ws-${String(chunkIndex).padStart(4, "0")}`,
+        sampleRate,
+        startMs,
+        endMs,
+        audioRetention: "teacher-review",
+        audioBase64: chunk.toString("base64"),
+      }),
+    });
+    assert.equal(stored.status, 200, await stored.text());
+  }
 
   return {
     api,
@@ -235,6 +296,13 @@ export async function startRealAudioFinalizeHarness(label) {
     mlCalls,
     getAsrRequests: () => asrRequests,
     async stop() {
+      let workerFailure = null;
+      workerRunning = false;
+      try {
+        await workerLoop;
+      } catch (error) {
+        workerFailure = error;
+      }
       try {
         const alignmentAudits = await queryJson(
           "SELECT DISTINCT audit_event_id FROM word_alignments WHERE session_id = $1",
@@ -256,12 +324,18 @@ export async function startRealAudioFinalizeHarness(label) {
           await queryJson("DELETE FROM audit_events WHERE id = ANY($1::text[])", [auditIds]);
         }
       } finally {
+        await workerDb.end();
         await api.stop();
-        await new Promise((resolve) => recordingProxy.close(resolve));
+        await rustApi.stop();
         await stopChild(mlProcess);
         await new Promise((resolve) => asrServer.close(resolve));
         rmSync(storageDir, { recursive: true, force: true });
+        for (const [name, value] of Object.entries(priorInferenceEnv)) {
+          if (value === undefined) delete process.env[name];
+          else process.env[name] = value;
+        }
       }
+      if (workerFailure) throw workerFailure;
     },
   };
 }

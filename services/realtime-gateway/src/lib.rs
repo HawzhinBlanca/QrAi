@@ -1314,7 +1314,6 @@ async fn handle_audio_socket(
                     "startMs": chunk_start_ms,
                     "endMs": chunk_end_ms,
                     "sampleRate": chunk_sample_rate,
-                    "objectKey": format!("{tenant_id}/{learner_id}/{chunk_id}.bin"),
                 });
                 let mut indexed = false;
                 for attempt in 1..=MAX_ATTEMPTS {

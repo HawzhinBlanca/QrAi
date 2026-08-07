@@ -1,7 +1,14 @@
 import assert from "node:assert/strict";
 import test, { after, before } from "node:test";
 
+import { createInferenceRuntime } from "../../server/src/inference/local.mjs";
+import { createJobRuntime } from "../../server/src/jobs/runtime.mjs";
+import { createJobStore } from "../../server/src/jobs/store.mjs";
+import { createWorkflowHandlers } from "../../server/src/jobs/workflows.mjs";
+import { createDb } from "../../server/src/lib/db.mjs";
+
 import {
+  DATABASE_URL,
   OTHER_TENANT,
   RLS_PROBE_ROLE,
   TENANT,
@@ -24,11 +31,71 @@ import {
  */
 
 let api;
+let workerDb;
+let workerLoop;
+let workerRunning = false;
+const privacyExportLearners = new Set();
 before(async () => {
+  workerDb = createDb(DATABASE_URL);
+  const inference = createInferenceRuntime({
+    predictAlignment: async () => assert.fail("privacy export must not align"),
+    predictTajweed: async () => assert.fail("privacy export must not evaluate Tajweed"),
+    transcribeSession: async () => assert.fail("privacy export must not transcribe"),
+  });
+  const workerRuntime = createJobRuntime({
+    store: createJobStore({ db: workerDb }),
+    handlers: createWorkflowHandlers({
+      db: workerDb,
+      inference,
+      upstreamTimeoutMs: 1_000,
+    }),
+    workerId: "default-parity-privacy-export-worker",
+    leaseMs: 2_000,
+    operationTimeoutMs: 1_500,
+    retryBaseMs: 10,
+    retryMaxMs: 100,
+  });
+  workerRunning = true;
+  workerLoop = (async () => {
+    while (workerRunning) {
+      const learners = [...privacyExportLearners];
+      if (learners.length === 0) {
+        await new Promise((resolve) => setTimeout(resolve, 5));
+        continue;
+      }
+      const jobId = await workerDb.withTenant(TENANT, async (tx) => {
+        const [row] = await tx`
+          SELECT id
+          FROM background_jobs
+          WHERE tenant_id = ${TENANT}
+            AND kind = 'privacy.export'
+            AND subject_id = ANY(${learners})
+            AND status IN ('queued', 'retry')
+            AND available_at <= now()
+          ORDER BY priority DESC, created_at, id
+          LIMIT 1`;
+        return row?.id ?? null;
+      });
+      if (jobId === null) {
+        await new Promise((resolve) => setTimeout(resolve, 5));
+      } else {
+        await workerRuntime.runOne(TENANT, { jobId });
+      }
+    }
+  })();
   api = await startApi();
 });
 after(async () => {
+  let workerFailure = null;
+  workerRunning = false;
+  try {
+    await workerLoop;
+  } catch (error) {
+    workerFailure = error;
+  }
+  await workerDb?.end();
   await api?.stop();
+  if (workerFailure) throw workerFailure;
 });
 
 const seedLearner = async (id, tenant = TENANT) => {
@@ -343,6 +410,17 @@ test("a teacher of another tenant reads none of this tenant's session, alignment
   });
   assert.equal(stolenFindings.status, 200);
   assert.deepEqual(stolenFindings.body, [], "findings leaked into another tenant's teacher queue");
+
+  const stolenSessionFindings = await request(
+    api.baseUrl,
+    `/v1/recitation-sessions/${sessionId}/tajweed-findings`,
+    { role: "teacher", tenant: tenantB },
+  );
+  assert.equal(
+    stolenSessionFindings.status,
+    404,
+    "another tenant must not learn whether this session has learner-performance findings",
+  );
 });
 
 // ════════════════════════════════════════════════════════════════════════════════════════════════
@@ -502,6 +580,7 @@ test("ML analysis against a nonexistent session is refused BEFORE any upstream f
 // integration.rs:1664 — privacy_export_reports_included_records_but_deletes_nothing
 test("a privacy EXPORT lists what it found and deletes nothing", async () => {
   const learnerId = await seedLearner(`learner-privacy-export-${uniqueSuffix()}`);
+  privacyExportLearners.add(learnerId);
   const sessionId = await createSession(learnerId);
 
   const exported = await request(api.baseUrl, "/v1/privacy/export", {

@@ -30,12 +30,23 @@
  */
 import postgres from "postgres";
 
+import { DeadlineExceededError } from "./deadline.mjs";
+
 const isNonEmptyString = (v) => typeof v === "string" && v.trim() !== "";
 
 export function createDb(connectionString, options = {}) {
   if (!isNonEmptyString(connectionString)) {
     throw new TypeError("createDb: connectionString is required and has no default");
   }
+  const statementTimeoutMs = Number(options.statementTimeoutMs ?? 10_000);
+  if (!Number.isSafeInteger(statementTimeoutMs) || statementTimeoutMs <= 0) {
+    throw new TypeError("createDb: statementTimeoutMs must be a positive whole number");
+  }
+  const closeTimeoutMs = Number(options.closeTimeoutMs ?? 5_000);
+  if (!Number.isSafeInteger(closeTimeoutMs) || closeTimeoutMs <= 0) {
+    throw new TypeError("createDb: closeTimeoutMs must be a positive whole number");
+  }
+  const pgOptions = options.pg ?? {};
   const sql = postgres(connectionString, {
     max: options.max ?? 10,
     idle_timeout: options.idleTimeout ?? 30,
@@ -43,8 +54,34 @@ export function createDb(connectionString, options = {}) {
     // The tenant GUC must never be pre-set on a fresh connection. Anything relying on a connection
     // default would work in tests and leak in production, where the pool is shared.
     onnotice: () => {},
-    ...options.pg,
+    ...pgOptions,
+    // Server-side cancellation is authoritative. A Promise race can return while a transaction
+    // later commits; statement_timeout aborts the statement and therefore the open transaction.
+    connection: {
+      ...(pgOptions.connection ?? {}),
+      statement_timeout: String(statementTimeoutMs),
+      idle_in_transaction_session_timeout: String(statementTimeoutMs),
+    },
   });
+
+  function deadlineTimeout(deadline) {
+    if (deadline === null) return statementTimeoutMs;
+    const remainingMs = deadline.remainingMs();
+    if (deadline.signal?.aborted || remainingMs <= 0) throw new DeadlineExceededError();
+    return Math.max(1, Math.min(statementTimeoutMs, remainingMs));
+  }
+
+  async function setTenantContext(tx, tenantId, deadline = null) {
+    if (!isNonEmptyString(tenantId)) {
+      throw new TypeError(
+        `tenant context must be a non-empty string, got ${JSON.stringify(tenantId)}`,
+      );
+    }
+    await tx`SELECT set_config('app.tenant_id', ${tenantId}, true)`;
+    // A runaway statement is how a connection ends up abandoned mid-transaction in the first
+    // place. Bounding it here is part of the same defence, not a separate nicety.
+    await tx.unsafe(`SET LOCAL statement_timeout = '${deadlineTimeout(deadline)}ms'`);
+  }
 
   /**
    * Run `fn` with the tenant context set for the life of one transaction.
@@ -52,19 +89,81 @@ export function createDb(connectionString, options = {}) {
    * `set_config(..., true)` is transaction-local, matching `begin_tenant_tx`. Because `sql.begin`
    * owns the connection, there is no path where the caller keeps it past the transaction.
    */
-  async function withTenant(tenantId, fn) {
+  async function withTenant(tenantId, fn, deadline = null) {
     // A null/empty tenant would set the GUC to '' — which fails closed, but silently, turning an
     // auth bug into an empty page instead of an error. Refuse it.
     if (!isNonEmptyString(tenantId)) {
       throw new TypeError(`withTenant: tenantId must be a non-empty string, got ${JSON.stringify(tenantId)}`);
     }
+    deadlineTimeout(deadline);
     return sql.begin(async (tx) => {
-      await tx`SELECT set_config('app.tenant_id', ${tenantId}, true)`;
-      // A runaway statement is how a connection ends up abandoned mid-transaction in the first
-      // place. Bounding it here is part of the same defence, not a separate nicety.
-      await tx.unsafe(`SET LOCAL statement_timeout = '${Number(options.statementTimeoutMs ?? 10_000)}ms'`);
+      await setTenantContext(tx, tenantId, deadline);
       return fn(tx);
     });
+  }
+
+  /**
+   * Discover an otherwise unknown tenant, then scope the REST of that same transaction.
+   *
+   * Only a locked-down security-definer lookup belongs in `discover`. Tenant-owned reads/writes
+   * belong in `fn`, which cannot run until the returned `tenantId` has installed the same GUC and
+   * statement timeout as `withTenant`.
+   */
+  async function withDiscoveredTenant(discover, fn, deadline = null) {
+    if (typeof discover !== "function" || typeof fn !== "function") {
+      throw new TypeError("withDiscoveredTenant: discover and fn must be functions");
+    }
+    deadlineTimeout(deadline);
+    return sql.begin(async (tx) => {
+      const discovery = await discover(tx);
+      await setTenantContext(tx, discovery?.tenantId, deadline);
+      return fn(tx, discovery);
+    });
+  }
+
+  function forDeadline(deadline) {
+    if (
+      deadline === null ||
+      typeof deadline?.remainingMs !== "function" ||
+      !(deadline?.signal instanceof AbortSignal)
+    ) {
+      throw new TypeError("forDeadline: a deadline is required");
+    }
+    return Object.freeze({
+      sql,
+      withTenant: (tenantId, fn) => withTenant(tenantId, fn, deadline),
+      withDiscoveredTenant: (discover, fn) => withDiscoveredTenant(discover, fn, deadline),
+      assertRestrictedRole,
+      listTenantIds,
+      currentTenantSetting,
+      end: () => sql.end({ timeout: closeTimeoutMs / 1_000 }),
+    });
+  }
+
+  /** Refuse a runtime role whose capabilities make the restricted DB boundary untrue. */
+  async function assertRestrictedRole() {
+    const [role] = await sql`
+      SELECT current_user AS role_name,
+             rolsuper, rolbypassrls, rolcreatedb, rolcreaterole, rolreplication
+      FROM pg_roles
+      WHERE rolname = current_user`;
+    if (!role) {
+      throw new Error("database role metadata is unavailable; refusing to start");
+    }
+
+    const forbidden = [
+      ["SUPERUSER", role.rolsuper],
+      ["BYPASSRLS", role.rolbypassrls],
+      ["CREATEDB", role.rolcreatedb],
+      ["CREATEROLE", role.rolcreaterole],
+      ["REPLICATION", role.rolreplication],
+    ].filter(([, enabled]) => enabled).map(([name]) => name);
+    if (forbidden.length > 0) {
+      throw new Error(
+        `database role has forbidden capability ${forbidden.join(", ")}; ` +
+          "tenant isolation requires a restricted runtime role",
+      );
+    }
   }
 
   /** Read the tenant GUC on a pooled connection. Exists for the leak test — nothing else uses it. */
@@ -73,5 +172,27 @@ export function createDb(connectionString, options = {}) {
     return row.tenant;
   }
 
-  return { sql, withTenant, currentTenantSetting, end: () => sql.end({ timeout: 5 }) };
+  /**
+   * Enumerate the global institution registry for fair worker polling. Institutions are the tenant
+   * authority itself, not a tenant-owned table; every subsequent job read/write still uses
+   * `withTenant` and forced RLS. A fixed ceiling prevents an unbounded in-process poll set.
+   */
+  async function listTenantIds(limit = 10_000) {
+    if (!Number.isSafeInteger(limit) || limit <= 0 || limit > 10_000) {
+      throw new TypeError("listTenantIds limit must be a whole number from 1 to 10000");
+    }
+    const rows = await sql`SELECT id FROM institutions ORDER BY id LIMIT ${limit}`;
+    return rows.map((row) => row.id);
+  }
+
+  return {
+    sql,
+    withTenant,
+    withDiscoveredTenant,
+    forDeadline,
+    assertRestrictedRole,
+    listTenantIds,
+    currentTenantSetting,
+    end: () => sql.end({ timeout: closeTimeoutMs / 1_000 }),
+  };
 }

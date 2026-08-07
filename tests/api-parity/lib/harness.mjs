@@ -21,9 +21,11 @@
  */
 import { spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { existsSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { createServer } from "node:http";
 import { createServer as createNetServer } from "node:net";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 
 import pg from "pg";
@@ -541,12 +543,16 @@ export const SHELL_URLS = new Set();
 
 export async function startShell({ upstream, env = {}, timeoutMs = 20_000 }) {
   const port = await reservePort();
+  const ownsAudioStorage = !env.AUDIO_STORAGE_DIR;
+  const audioStorageDir = env.AUDIO_STORAGE_DIR ?? mkdtempSync(join(tmpdir(), "qrai-node-shell-audio-"));
   const child = spawn(process.execPath, ["server/src/main.mjs"], {
     env: {
       PATH: process.env.PATH,
       HOME: process.env.HOME,
       DATABASE_URL,
       ...BASE_ENV,
+      AUDIO_STORAGE_DRIVER: "filesystem",
+      AUDIO_STORAGE_DIR: audioStorageDir,
       ...env,
       ...(MUTATION ? (MUTATIONS[MUTATION] ?? {}) : {}),
       PLATFORM_API_UPSTREAM: upstream,
@@ -619,6 +625,7 @@ export async function startShell({ upstream, env = {}, timeoutMs = 20_000 }) {
       while (!exited && Date.now() < hard) await sleep(25);
       if (!exited) child.kill("SIGKILL");
       while (!exited) await sleep(25);
+      if (ownsAudioStorage) rmSync(audioStorageDir, { recursive: true, force: true });
     },
   };
 }

@@ -55,6 +55,7 @@ describe("Quran AI platform contracts", () => {
     expect(CORE_TABLES).toContain("consent_records");
     expect(CORE_TABLES).toContain("realtime_session_tickets");
     expect(CORE_TABLES).toContain("privacy_jobs");
+    expect(CORE_TABLES).toContain("background_jobs");
   });
 
   it("detects modified canonical Quran text through checksum verification", () => {

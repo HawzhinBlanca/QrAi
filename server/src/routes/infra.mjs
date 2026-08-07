@@ -34,6 +34,9 @@ export async function ready(_req, reply, ctx) {
   if (!ctx.db) return send(503, "not ready");
   try {
     await ctx.db.sql`SELECT 1`;
+    if (ctx.audioObjectStore) {
+      await ctx.audioObjectStore.assertReady({ signal: ctx.deadline?.signal });
+    }
     return send(200, "ready");
   } catch {
     // Deliberately no detail: the reason a database is unreachable is topology, and this endpoint

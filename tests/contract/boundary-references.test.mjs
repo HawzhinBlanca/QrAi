@@ -55,7 +55,7 @@ test("boundary.md states the gaps, not only the evidence", () => {
     "x-unvalidated",
     "ADR-0022",
     "no fixture and no parity test",
-    "delegated, not ported",
+    "Delegation is compatibility-only",
   ]) {
     assert.ok(doc.includes(required), `boundary.md must still disclose: ${required}`);
   }
@@ -67,7 +67,8 @@ test("boundary.md does not claim anything is deployed", () => {
     /Nothing described here is deployed/,
     "the package must open by saying the boundary is not live",
   );
-  assert.match(doc, /serves \*\*0 of 38\*\*/, "it must state the served-route count");
+  assert.match(doc, /\*\*41 executable routes\*\*/, "it must state the standalone route count");
+  assert.match(doc, /\*\*2 routes locally\*\*/, "it must state the deployed shadow route count");
 });
 
 test("a refusal is presented as a legitimate outcome", () => {

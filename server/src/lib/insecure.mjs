@@ -26,6 +26,7 @@ export const LEGACY_ONE_ONLY = ["1"];
 export const LEGACY_ONE_OR_TRUE = ["1", "true"];
 
 export const ALLOW_INSECURE_SECRETS = "ALLOW_INSECURE_SECRETS";
+export const ALLOW_SUPERUSER_DB_ROLE = "ALLOW_SUPERUSER_DB_ROLE";
 
 /**
  * The known-weak values `main.rs` `ensure_secure_config` refuses, transcribed exactly.

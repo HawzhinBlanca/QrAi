@@ -383,6 +383,8 @@ pub enum ApiError {
     Database(String),
     #[error("{0}")]
     BadRequest(String),
+    #[error("{0}")]
+    Conflict(String),
     /// An upstream/proxied service (e.g. ML inference) failed. The message is GENERIC and safe to
     /// return to clients — detailed errors are logged server-side, never surfaced (no topology leak).
     #[error("{0}")]
@@ -504,6 +506,7 @@ impl IntoResponse for ApiError {
             Self::MissingSources | Self::HighRiskApproval | Self::BadRequest(_) => {
                 StatusCode::BAD_REQUEST
             }
+            Self::Conflict(_) => StatusCode::CONFLICT,
             Self::Database(_) => StatusCode::INTERNAL_SERVER_ERROR,
             Self::Upstream(_) => StatusCode::BAD_GATEWAY,
             Self::Unavailable(_) => StatusCode::SERVICE_UNAVAILABLE,

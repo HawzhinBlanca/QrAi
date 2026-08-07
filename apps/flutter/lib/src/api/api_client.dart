@@ -143,7 +143,7 @@ class ApiClient {
   /// Turn a streamed recitation into a reviewable one: transcript -> alignment -> stored
   /// `word_alignments`, all server-side.
   ///
-  /// This app streams audio to the realtime gateway, which forwards it to the ML service and stops
+  /// This app streams audio to the realtime gateway, which forwards it to the worker ingress and stops
   /// there. Without this call the recitation produces no alignment, so a tajweed finding has nothing
   /// to anchor to, so nothing reaches a teacher and nothing ever comes back.
   ///

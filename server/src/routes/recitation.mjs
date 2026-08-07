@@ -11,12 +11,124 @@
  */
 import { createHash, randomUUID } from "node:crypto";
 
-import { ApiError, NotFound, requireAnyRole, requireSelfOrAny, resolveActor } from "../lib/authz.mjs";
+import {
+  ApiError,
+  NotFound,
+  RejectionError,
+  Unauthorized,
+  requireAnyRole,
+  requireSelfOrAny,
+  resolveActor,
+} from "../lib/authz.mjs";
 import { proxy } from "../lib/proxy.mjs";
-import { issueRealtimeTicket } from "../lib/ticket.mjs";
+import { issueRealtimeTicket, validateRealtimeTicket } from "../lib/ticket.mjs";
+import { deriveAudioObjectKey } from "../storage/audio-object-store.mjs";
 
 /** services/platform-api/src/lib.rs:19 */
 const REALTIME_TICKET_TTL_SECONDS = 300;
+
+function usableSpan(startMs, endMs) {
+  if (!Number.isInteger(startMs) || !Number.isInteger(endMs)) return null;
+  if (startMs < 0 || endMs <= startMs) return null;
+  if (startMs > 2_147_483_647 || endMs > 2_147_483_647) return null;
+  return { startMs, endMs };
+}
+
+/** POST /v1/audio-chunks — handlers/recitation.rs::index_audio_chunk. */
+export async function indexAudioChunk(req, reply, ctx) {
+  const ticket = req.headers["x-realtime-ticket"];
+  if (typeof ticket !== "string" || ticket.trim() === "") throw Unauthorized();
+
+  const body = req.body;
+  if (!body || typeof body !== "object" || Array.isArray(body)) {
+    throw new RejectionError("request body must be an object", 422);
+  }
+  const { sessionId, chunkId } = body;
+  if (typeof sessionId !== "string" || sessionId === "") {
+    throw new RejectionError("sessionId is required", 422);
+  }
+  if (typeof chunkId !== "string" || chunkId === "") {
+    throw new RejectionError("chunkId is required", 422);
+  }
+
+  const claims = validateRealtimeTicket(
+    sessionId,
+    ticket,
+    ctx.ticketSecret,
+    Math.floor(Date.now() / 1000),
+  );
+  if (!claims) throw Unauthorized();
+
+  const span = usableSpan(body.startMs, body.endMs);
+  if (!span) {
+    throw new ApiError("startMs/endMs must be integers with 0 <= startMs < endMs", 400);
+  }
+  const sampleRate = body.sampleRate == null ? 16_000 : body.sampleRate;
+  if (
+    !Number.isInteger(sampleRate) ||
+    sampleRate < -2_147_483_648 ||
+    sampleRate > 2_147_483_647
+  ) {
+    throw new RejectionError("sampleRate must be an integer", 422);
+  }
+
+  const response = await ctx.db.withTenant(claims.tenantId, async (tx) => {
+    const [session] = await tx`
+      SELECT s.audit_event_id, s.learner_id, c.audio_retention
+      FROM recitation_sessions s
+      JOIN consent_records c ON c.id = s.consent_record_id
+      WHERE s.id = ${claims.sessionId} AND s.tenant_id = ${claims.tenantId}`;
+    if (!session) throw NotFound();
+    if (
+      session.learner_id !== claims.learnerId ||
+      session.audio_retention !== claims.audioRetention
+    ) {
+      throw Unauthorized();
+    }
+    let objectKey;
+    try {
+      objectKey = deriveAudioObjectKey({
+        tenantId: claims.tenantId,
+        learnerId: claims.learnerId,
+        sessionId: claims.sessionId,
+        chunkId,
+      });
+    } catch {
+      throw new ApiError("chunk identity cannot form a safe object key", 400);
+    }
+
+    const inserted = await tx`
+      INSERT INTO audio_chunks
+        (id, tenant_id, session_id, evidence_id, start_ms, end_ms, sample_rate, status,
+         object_key, audit_event_id)
+      VALUES (${chunkId}, ${claims.tenantId}, ${claims.sessionId}, ${chunkId},
+              ${span.startMs}, ${span.endMs}, ${sampleRate}, 'aligned', ${objectKey},
+              ${session.audit_event_id})
+      ON CONFLICT (id) DO NOTHING
+      RETURNING id`;
+
+    if (inserted.length === 0) {
+      const [existing] = await tx`
+        SELECT tenant_id, session_id, start_ms, end_ms, sample_rate, object_key
+        FROM audio_chunks
+        WHERE id = ${chunkId} AND tenant_id = ${claims.tenantId}`;
+      if (
+        !existing ||
+        existing.session_id !== claims.sessionId ||
+        Number(existing.start_ms) !== span.startMs ||
+        Number(existing.end_ms) !== span.endMs ||
+        Number(existing.sample_rate) !== sampleRate ||
+        existing.object_key !== objectKey
+      ) {
+        throw new ApiError("chunk id already indexes different immutable audio metadata", 409);
+      }
+    }
+
+    return { chunkId, indexed: true, sessionId: claims.sessionId };
+  });
+
+  return reply.send(response);
+}
 
 /** POST /v1/realtime-session-tickets — handlers/recitation.rs:298 */
 export async function createRealtimeTicket(req, reply, ctx) {
@@ -73,7 +185,7 @@ export async function createRealtimeTicket(req, reply, ctx) {
         learnerId: row.learner_id,
         externalAsrProcessing: externalAsr,
         // Same rule as the flag above: the learner's STORED answer, joined from their consent
-        // record. The gateway forwards it to ml-inference, which is where a recording's lifetime
+        // record. The gateway forwards it to the worker ingress, which is where the recording's lifetime
         // is actually decided.
         audioRetention: row.audio_retention,
         expiresAtUnixSeconds: expiresAt,

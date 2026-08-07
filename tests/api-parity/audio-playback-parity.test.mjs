@@ -20,7 +20,12 @@
  * is real here is the authorization, the consent decision, the audit, and the proxying.
  */
 import assert from "node:assert/strict";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import test, { after, before } from "node:test";
+
+import { createFilesystemAudioObjectStore } from "../../server/src/storage/audio-object-store.mjs";
 
 import {
   TENANT,
@@ -50,6 +55,8 @@ let api;
 let shell;
 let mlMock;
 let fixture;
+let storageDir;
+let objectStore;
 
 /** A finding with a real span, its own session, and a consent record we control. */
 async function seedFinding({ retention, withChunk }) {
@@ -110,7 +117,13 @@ async function seedFinding({ retention, withChunk }) {
          (id, tenant_id, session_id, evidence_id, start_ms, end_ms, sample_rate, status, object_key,
           audit_event_id)
        VALUES ($1, $2, $3, 'ev', 600, 1400, 16000, 'aligned', $4, $5)`,
-      [ids.chunk, TENANT, ids.session, `${TENANT}/${learner.id}/${ids.chunk}.bin`, ids.audit],
+      [
+        ids.chunk,
+        TENANT,
+        ids.session,
+        `audio/v1/${TENANT}/${learner.id}/${ids.session}/${ids.chunk}.pcm`,
+        ids.audit,
+      ],
     );
   }
   return { ...ids, learnerId: learner.id };
@@ -124,8 +137,10 @@ const auditRowsFor = (findingId) =>
   );
 
 before(async () => {
+  storageDir = mkdtempSync(join(tmpdir(), "qrai-playback-store-"));
+  objectStore = createFilesystemAudioObjectStore({ rootDir: storageDir });
   // The mock stands in for ml-inference's /v1/audio-objects:read. Its own behaviour is tested in
-  // services/ml-inference/chunk-overwrite.test.mjs; what matters here is that platform-api asks it
+  // tests/inference/chunk-overwrite.test.mjs; what matters here is that platform-api asks it
   // the right question and never asks it at all when consent says no.
   mlMock = await startMockUpstream(({ path }) =>
     path === "/v1/audio-objects:read"
@@ -143,18 +158,37 @@ before(async () => {
       : { status: 404, body: { error: "not found" } },
   );
   api = await startApi({ env: { ML_INFERENCE_URL: mlMock.url } });
-  shell = await startShell({ upstream: api.upstreamUrl ?? api.baseUrl, env: { NODE_API_PORTED: PORTED, ML_INFERENCE_URL: mlMock.url } });
+  shell = await startShell({
+    upstream: api.upstreamUrl ?? api.baseUrl,
+    env: {
+      NODE_API_PORTED: PORTED,
+      ML_INFERENCE_URL: mlMock.url,
+      AUDIO_STORAGE_DIR: storageDir,
+    },
+  });
   fixture = {
     retained: await seedFinding({ retention: "teacher-review", withChunk: true }),
     discarded: await seedFinding({ retention: "discard", withChunk: true }),
     noChunk: await seedFinding({ retention: "teacher-review", withChunk: false }),
   };
+  await objectStore.put({
+    tenantId: TENANT,
+    learnerId: fixture.retained.learnerId,
+    sessionId: fixture.retained.session,
+    chunkId: fixture.retained.chunk,
+    startMs: 600,
+    endMs: 1400,
+    sampleRate: 16000,
+    audioRetention: "teacher-review",
+    audioBytes: Buffer.from("recitation-bytes"),
+  });
 });
 
 after(async () => {
   await shell?.stop();
   await api?.stop();
   await mlMock?.stop();
+  if (storageDir) rmSync(storageDir, { recursive: true, force: true });
 });
 
 const impls = () => [
@@ -273,17 +307,15 @@ test("a retained recording is served, audited, and located", async () => {
   }
 });
 
-test("the tenant sent to storage is the ACTOR's, never a value read from the row", async () => {
-  // A tenant id taken from data is a tenant id an attacker can influence. This asserts what actually
-  // went over the wire to storage rather than trusting the handler's own comment about it.
+test("the Node route reads its injected private store directly, never the ML compatibility hop", async () => {
   mlMock.received.length = 0;
-  await request(shell.baseUrl, audioPath(fixture.retained.finding), { role: "teacher" });
-  const asked = mlMock.received.filter((r) => r.path === "/v1/audio-objects:read");
-  assert.equal(asked.length, 1, "storage was asked something other than once");
-  assert.equal(asked[0].body.tenantId, TENANT);
-  assert.equal(asked[0].body.chunkId, fixture.retained.chunk);
-  // The key's PARTS, never the key: a path-shaped string would have to be filtered for traversal.
-  assert.ok(!("objectKey" in asked[0].body), "platform-api sent a path-shaped key to storage");
+  const response = await request(shell.baseUrl, audioPath(fixture.retained.finding), { role: "teacher" });
+  assert.equal(response.status, 200, response.text);
+  assert.deepEqual(
+    mlMock.received.filter((r) => r.path === "/v1/audio-objects:read"),
+    [],
+    "Node delegated a production storage read back to transitional ML",
+  );
 });
 
 test("storage is not asked at all when consent says no", async () => {

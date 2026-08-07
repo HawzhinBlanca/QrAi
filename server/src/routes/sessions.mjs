@@ -197,6 +197,108 @@ export async function listSessions(req, reply, ctx) {
 }
 
 /**
+ * GET /v1/learner/recitation-sessions — ADR-0038 / W2.8.
+ *
+ * This is intentionally separate from the tenant-wide staff list above. It is a compact practice
+ * inbox, not a second feedback surface: counts communicate that review work exists, while every
+ * judgement, confidence, explanation and source stays behind the per-session learner gate.
+ */
+export async function listLearnerSessionHistory(req, reply, ctx) {
+  const resolved = await resolveActor(req, ctx);
+  if (resolved.delegate) return proxy(req, reply, ctx.upstream);
+  const { actor } = resolved;
+
+  requireAnyRole(actor, ["learner"]);
+
+  const rawLimit = req.query?.limit;
+  const limit = rawLimit === undefined ? 20 : Number(rawLimit);
+  if (
+    rawLimit !== undefined &&
+    (typeof rawLimit !== "string" || !/^\d+$/.test(rawLimit))
+  ) {
+    throw new ApiError("limit must be an integer between 1 and 50", 400);
+  }
+  if (!Number.isSafeInteger(limit) || limit < 1 || limit > 50) {
+    throw new ApiError("limit must be an integer between 1 and 50", 400);
+  }
+
+  const rawCursor = req.query?.cursor;
+  if (rawCursor !== undefined && (typeof rawCursor !== "string" || rawCursor.length === 0)) {
+    throw new ApiError("cursor must be a non-empty session id", 400);
+  }
+  const cursor = rawCursor ?? null;
+
+  const body = await ctx.db.withTenant(actor.tenantId, async (tx) => {
+    if (cursor !== null) {
+      const [ownedCursor] = await tx`
+        SELECT 1
+        FROM recitation_sessions
+        WHERE id = ${cursor}
+          AND tenant_id = ${actor.tenantId}
+          AND learner_id = ${actor.userId}`;
+      if (!ownedCursor) throw NotFound();
+    }
+
+    // Resolve the cursor inside Postgres rather than round-tripping started_at through a JS Date.
+    // JS would discard the final three microsecond digits and could duplicate or skip a boundary
+    // row. The id tie-breaker makes equal timestamps deterministic.
+    const rows = await tx`
+      SELECT s.id, s.quran_ref, s.mode, s.review_status,
+             to_char(s.started_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS') AS started_base,
+             (EXTRACT(microseconds FROM s.started_at)::bigint % 1000000) AS started_us,
+             count(tf.id)::int AS finding_count,
+             count(tf.id) FILTER (
+               WHERE tf.review_status IN ('draft', 'ai-suggested', 'teacher-review-required')
+             )::int AS pending_finding_count,
+             count(tf.id) FILTER (
+               WHERE tf.review_status IN ('teacher-reviewed', 'scholar-approved')
+             )::int AS reviewed_finding_count,
+             count(tf.id) FILTER (WHERE tf.review_status = 'blocked')::int AS blocked_finding_count
+      FROM recitation_sessions s
+      LEFT JOIN word_alignments wa
+        ON wa.session_id = s.id AND wa.tenant_id = s.tenant_id
+      LEFT JOIN tajweed_findings tf
+        ON tf.alignment_id = wa.id
+       AND tf.tenant_id = s.tenant_id
+       AND tf.analysis_basis = 'acoustic'
+      WHERE s.tenant_id = ${actor.tenantId}
+        AND s.learner_id = ${actor.userId}
+        AND (
+          ${cursor === null}::boolean
+          OR (s.started_at, s.id) < (
+            SELECT c.started_at, c.id
+            FROM recitation_sessions c
+            WHERE c.id = ${cursor}
+              AND c.tenant_id = ${actor.tenantId}
+              AND c.learner_id = ${actor.userId}
+          )
+        )
+      GROUP BY s.id
+      ORDER BY s.started_at DESC, s.id DESC
+      LIMIT ${limit + 1}`;
+
+    const page = rows.slice(0, limit).map((row) => ({
+      id: row.id,
+      quranRef: sortKeysDeep(row.quran_ref ?? {}),
+      mode: row.mode ?? "",
+      reviewStatus: requireKnownReviewStatus(row.review_status),
+      startedAt: `${row.started_base}${fractional(Number(row.started_us))}+00:00`,
+      findingCount: Number(row.finding_count),
+      pendingFindingCount: Number(row.pending_finding_count),
+      reviewedFindingCount: Number(row.reviewed_finding_count),
+      blockedFindingCount: Number(row.blocked_finding_count),
+    }));
+
+    return {
+      items: page,
+      nextCursor: rows.length > limit ? page.at(-1).id : null,
+    };
+  });
+
+  return reply.send(body);
+}
+
+/**
  * GET /v1/learners/active — recitation.rs:310
  *
  * The COMPLETE set of learner ids with at least one session, deliberately with NO limit:

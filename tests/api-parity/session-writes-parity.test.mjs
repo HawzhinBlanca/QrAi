@@ -257,6 +257,8 @@ test("an unsupported language is 400 naming the allowed set", async () => {
 
 // ── persist_session_alignments ─────────────────────────────────────────────────────────────────
 
+// integration.rs:6310 — a_client_posted_alignment_is_recorded_as_client_reported
+
 async function freshSession(baseUrl) {
   const res = await createOn(baseUrl, sessionBody());
   assert.equal(res.status, 200, res.text);

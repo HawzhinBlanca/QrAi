@@ -26,7 +26,8 @@ fn parse_review_status(value: &str) -> Result<ReviewStatus, ApiError> {
 pub struct IndexAudioChunkRequest {
     pub session_id: String,
     pub chunk_id: String,
-    pub object_key: String,
+    #[serde(default)]
+    pub object_key: Option<String>,
     #[serde(default)]
     pub start_ms: serde_json::Value,
     #[serde(default)]
@@ -37,6 +38,29 @@ pub struct IndexAudioChunkRequest {
     // a row deciding whose recording a teacher is later played; both come from the signed ticket.
     // serde drops unknown fields, so sending them is not an error — it simply has no effect, which
     // `tests/api-parity/audio-index-parity.test.mjs` asserts rather than assumes.
+}
+
+fn audio_storage_segment(value: &str) -> bool {
+    let bytes = value.as_bytes();
+    !bytes.is_empty()
+        && bytes.len() <= 128
+        && bytes[0].is_ascii_alphanumeric()
+        && !value.contains("..")
+        && bytes
+            .iter()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b':' | b'-'))
+}
+
+fn audio_object_key(
+    tenant_id: &str,
+    learner_id: &str,
+    session_id: &str,
+    chunk_id: &str,
+) -> Option<String> {
+    [tenant_id, learner_id, session_id, chunk_id]
+        .iter()
+        .all(|value| audio_storage_segment(value))
+        .then(|| format!("audio/v1/{tenant_id}/{learner_id}/{session_id}/{chunk_id}.pcm"))
 }
 
 /// `POST /v1/audio-chunks` — the gateway records that a chunk of audio exists (ADR-0037).
@@ -104,11 +128,21 @@ pub async fn index_audio_chunk(
     // Reusing the session's audit event rather than minting one per chunk: a chunk arrives every few
     // seconds per learner, and an audit row each would bury the events a human actually reads.
     let audit_event_id: String = session.try_get("audit_event_id").unwrap_or_default();
+    let object_key = audio_object_key(
+        &claims.tenant_id,
+        &claims.learner_id,
+        &claims.session_id,
+        &req.chunk_id,
+    )
+    .ok_or_else(|| {
+        ApiError::BadRequest("chunk identity cannot form a safe object key".to_owned())
+    })?;
 
     // ON CONFLICT DO NOTHING, because the gateway RETRIES a chunk whose response was lost. Failing a
     // retry would make a delivered chunk look undelivered and the gateway would count a loss that did
     // not happen — the opposite of what its lossy-session accounting is for.
-    sqlx::query(
+    let sample_rate = req.sample_rate.unwrap_or(16_000);
+    let inserted = sqlx::query(
         "INSERT INTO audio_chunks
             (id, tenant_id, session_id, evidence_id, start_ms, end_ms, sample_rate, status,
              object_key, audit_event_id)
@@ -121,11 +155,36 @@ pub async fn index_audio_chunk(
     .bind(&req.chunk_id)
     .bind(start_ms)
     .bind(end_ms)
-    .bind(req.sample_rate.unwrap_or(16_000))
-    .bind(&req.object_key)
+    .bind(sample_rate)
+    .bind(&object_key)
     .bind(&audit_event_id)
     .execute(&mut *tx)
     .await?;
+
+    if inserted.rows_affected() == 0 {
+        let existing = sqlx::query(
+            "SELECT session_id, start_ms, end_ms, sample_rate, object_key
+             FROM audio_chunks WHERE id = $1 AND tenant_id = $2",
+        )
+        .bind(&req.chunk_id)
+        .bind(&claims.tenant_id)
+        .fetch_optional(&mut *tx)
+        .await?;
+        let identical = existing.is_some_and(|row| {
+            row.try_get::<String, _>("session_id").ok().as_deref()
+                == Some(claims.session_id.as_str())
+                && row.try_get::<i32, _>("start_ms").ok() == Some(start_ms)
+                && row.try_get::<i32, _>("end_ms").ok() == Some(end_ms)
+                && row.try_get::<i32, _>("sample_rate").ok() == Some(sample_rate)
+                && row.try_get::<String, _>("object_key").ok().as_deref()
+                    == Some(object_key.as_str())
+        });
+        if !identical {
+            return Err(ApiError::Conflict(
+                "chunk id already indexes different immutable audio metadata".to_owned(),
+            ));
+        }
+    }
 
     tx.commit().await?;
 

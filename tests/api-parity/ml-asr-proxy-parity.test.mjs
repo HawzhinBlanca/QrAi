@@ -18,8 +18,22 @@
 import assert from "node:assert/strict";
 import test, { after, before } from "node:test";
 
+import { createInferenceRuntime } from "../../server/src/inference/local.mjs";
+import { createJobRuntime } from "../../server/src/jobs/runtime.mjs";
+import { createJobStore } from "../../server/src/jobs/store.mjs";
+import { createWorkflowHandlers } from "../../server/src/jobs/workflows.mjs";
+import { createDb } from "../../server/src/lib/db.mjs";
+
 import { assertABMutating } from "./lib/ab.mjs";
-import { TENANT, queryJson, request, startApi, startMockUpstream, startShell } from "./lib/harness.mjs";
+import {
+  DATABASE_URL,
+  TENANT,
+  queryJson,
+  request,
+  startApi,
+  startMockUpstream,
+  startShell,
+} from "./lib/harness.mjs";
 
 /**
  * The routes this file is ABOUT, served by the shell rather than proxied to Rust.
@@ -57,11 +71,14 @@ let received;
 let learnerId;
 let sessionId;
 let attributionFault;
+let workerDb;
+let workerLoop;
+let workerRunning = false;
 
 before(async () => {
   received = [];
   attributionFault = null;
-  mock = await startMockUpstream(({ path, body }) => {
+  const respondInference = ({ path, body }) => {
     received.push({ path, body });
     // Echo, so the test can see exactly what the proxy forwarded, while carrying the strict
     // server-authored attribution every model-producing route now requires.
@@ -109,7 +126,59 @@ before(async () => {
       response.body.modelVersion = "different-from-primary";
     }
     return response;
+  };
+  mock = await startMockUpstream(respondInference);
+
+  const inference = createInferenceRuntime({
+    predictAlignment: async () => assert.fail("session evaluation must not run alignment"),
+    transcribeSession: async () => assert.fail("session evaluation must not run transcription"),
+    async predictTajweed(body, deadline) {
+      deadline.throwIfExpired();
+      return respondInference({ path: "/v1/tajweed-findings:predict", body }).body;
+    },
   });
+  workerDb = createDb(DATABASE_URL);
+  const workerRuntime = createJobRuntime({
+    store: createJobStore({ db: workerDb }),
+    handlers: createWorkflowHandlers({
+      db: workerDb,
+      inference,
+      upstreamTimeoutMs: 1_000,
+    }),
+    workerId: "ml-asr-proxy-parity-worker",
+    leaseMs: 2_000,
+    operationTimeoutMs: 1_500,
+    retryBaseMs: 10,
+    retryMaxMs: 100,
+  });
+  workerRunning = true;
+  workerLoop = (async () => {
+    while (workerRunning) {
+      if (!sessionId) {
+        await new Promise((resolve) => setTimeout(resolve, 5));
+        continue;
+      }
+      const jobId = await workerDb.withTenant(TENANT, async (tx) => {
+        const [row] = await tx`
+          SELECT id
+          FROM background_jobs
+          WHERE tenant_id = ${TENANT}
+            AND kind = 'session.evaluate'
+            AND subject_id = ${sessionId}
+            AND status IN ('queued', 'retry')
+            AND available_at <= now()
+          ORDER BY priority DESC, created_at, id
+          LIMIT 1`;
+        return row?.id ?? null;
+      });
+      if (jobId === null) {
+        await new Promise((resolve) => setTimeout(resolve, 5));
+      } else {
+        await workerRuntime.runOne(TENANT, { jobId });
+      }
+    }
+  })();
+
   const env = { ML_INFERENCE_URL: mock.url, ASR_INFERENCE_URL: mock.url };
   api = await startApi({ env });
   rustUrl = api.upstreamUrl ?? api.baseUrl;
@@ -127,9 +196,18 @@ before(async () => {
 });
 
 after(async () => {
+  let workerFailure = null;
+  workerRunning = false;
+  try {
+    await workerLoop;
+  } catch (error) {
+    workerFailure = error;
+  }
+  await workerDb?.end();
   await shell?.stop();
   await api?.stop();
   await mock?.stop();
+  if (workerFailure) throw workerFailure;
 });
 
 const ML_PATH = "/v1/ml/alignments:predict";

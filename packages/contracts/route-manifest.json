@@ -9,6 +9,7 @@
       "method": "GET",
       "path": "/v1/agent-runs",
       "target": "retire",
+      "nodeImplementationStatus": "implemented-transition",
       "decision": "ADR-0038",
       "removalGate": "zero-production-callers",
       "removalState": "blocked-by-transitional-callers",
@@ -37,6 +38,7 @@
       "method": "POST",
       "path": "/v1/agent-runs",
       "target": "retire",
+      "nodeImplementationStatus": "implemented-transition",
       "decision": "ADR-0038",
       "removalGate": "zero-production-callers",
       "removalState": "blocked-by-transitional-callers",
@@ -52,6 +54,7 @@
       "method": "POST",
       "path": "/v1/auth/login",
       "target": "retire",
+      "nodeImplementationStatus": "rust-only-transition",
       "decision": "ADR-0038",
       "removalGate": "zero-production-callers",
       "removalState": "blocked-by-transitional-callers",
@@ -64,6 +67,7 @@
       "method": "POST",
       "path": "/v1/auth/register",
       "target": "retire",
+      "nodeImplementationStatus": "rust-only-transition",
       "decision": "ADR-0038",
       "removalGate": "zero-production-callers",
       "removalState": "blocked-by-transitional-callers",
@@ -94,28 +98,28 @@
       "path": "/v1/device-enrollments:exchange",
       "feature": "device-enrollment",
       "decision": "ADR-0038",
-      "implementationStatus": "planned-owner-gated"
+      "implementationStatus": "implemented-owner-gated"
     },
     {
       "method": "POST",
       "path": "/v1/device-sessions:refresh",
       "feature": "device-session-refresh",
       "decision": "ADR-0038",
-      "implementationStatus": "planned-owner-gated"
+      "implementationStatus": "implemented-owner-gated"
     },
     {
       "method": "DELETE",
       "path": "/v1/device-sessions/current",
       "feature": "device-session-revocation",
       "decision": "ADR-0038",
-      "implementationStatus": "planned-owner-gated"
+      "implementationStatus": "implemented-owner-gated"
     },
     {
       "method": "GET",
       "path": "/v1/learner/recitation-sessions",
       "feature": "learner-history",
       "decision": "ADR-0038",
-      "implementationStatus": "planned"
+      "implementationStatus": "implemented-node"
     }
   ]
 }

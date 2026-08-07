@@ -6,6 +6,9 @@
  * specs/migration-completion/plan.md §2 (N7)
  */
 
+import { ApiError } from "./authz.mjs";
+import { fetchWithDeadline } from "./deadline.mjs";
+
 const HOP_BY_HOP = new Set([
   "connection",
   "keep-alive",
@@ -34,14 +37,20 @@ export async function proxy(req, reply, upstream) {
   }
 
   const hasBody = !["GET", "HEAD"].includes(req.method);
-  const upstreamRes = await fetch(new URL(req.url, upstream), {
-    method: req.method,
-    headers,
-    // req.body is already parsed by Fastify; re-serialize. `rawBody` would be better but needs a
-    // content-type-agnostic parser, and every body this API accepts is JSON.
-    body: hasBody && req.body !== undefined ? JSON.stringify(req.body) : undefined,
-    redirect: "manual",
-  });
+  let upstreamRes;
+  try {
+    upstreamRes = await fetchWithDeadline(new URL(req.url, upstream), {
+      deadline: req.deadline,
+      method: req.method,
+      headers,
+      // req.body is already parsed by Fastify; re-serialize. `rawBody` would be better but needs a
+      // content-type-agnostic parser, and every body this API accepts is JSON.
+      body: hasBody && req.body !== undefined ? JSON.stringify(req.body) : undefined,
+      redirect: "manual",
+    });
+  } catch {
+    throw new ApiError("compatibility service unavailable", 502);
+  }
 
   for (const [k, v] of upstreamRes.headers) {
     if (HOP_BY_HOP.has(k.toLowerCase()) || k.toLowerCase() === "set-cookie") continue;
@@ -53,7 +62,12 @@ export async function proxy(req, reply, upstream) {
 
   reply.code(upstreamRes.status);
 
-  const body = Buffer.from(await upstreamRes.arrayBuffer());
+  let body;
+  try {
+    body = Buffer.from(await upstreamRes.arrayBuffer());
+  } catch {
+    throw new ApiError("compatibility service unavailable", 502);
+  }
   // Fastify stamps a content-type on any payload it serializes. Upstream responses that carry NONE
   // — the /metrics 404, empty error bodies — would come back with one invented by the proxy, which
   // the Phase 5 differ caught as `keys differ ... got [.., content-type]`. Send nothing at all when

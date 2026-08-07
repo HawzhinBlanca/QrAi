@@ -22,8 +22,8 @@ RUN pnpm --filter @quran-ai/server deploy --legacy --prod /out
 FROM ${NODE_IMAGE} AS runtime
 ENV NODE_ENV=production
 WORKDIR /app
-LABEL org.opencontainers.image.title="Quran AI Node API" \
-      org.opencontainers.image.description="Internal shadow API for the Flutter/Node consolidation" \
+LABEL org.opencontainers.image.title="Quran AI Node Backend" \
+      org.opencontainers.image.description="Node API and inference worker roles for the Flutter/Node consolidation" \
       org.opencontainers.image.source="https://github.com/hawzhin/QrAi"
 
 # `/out` contains only declared production dependencies. Put them at the application root so the
@@ -32,12 +32,17 @@ COPY --from=deploy --chown=node:node /out/node_modules ./node_modules
 COPY --from=deploy --chown=node:node /out/package.json ./server/package.json
 COPY --from=deploy --chown=node:node /out/src ./server/src
 COPY --from=deploy --chown=node:node /out/scripts ./server/scripts
-# The transitional ML proxy imports the shared validator, which binds its quran-aligner identity to
-# these exact implementation/provenance bytes. Copy the three files, never either broad source tree.
-COPY --chown=node:node services/ml-inference/model-attribution.mjs services/ml-inference/alignment.js ./services/ml-inference/
+# Canary compatibility mode derives its exact retained operation set from this reviewed contract;
+# it is never a copied environment-variable list.
+COPY --chown=node:node packages/contracts/route-manifest.json ./packages/contracts/route-manifest.json
+# The server-owned inference validator binds its quran-aligner identity to this exact provenance.
 COPY --chown=node:node packages/quran-data/src/data/full-quran/provenance-v2.json ./packages/quran-data/src/data/full-quran/
+# The worker and Python ASR service validate the same immutable acoustic candidate declaration.
+COPY --chown=node:node services/asr-inference/acoustic-candidates.json ./services/asr-inference/acoustic-candidates.json
+RUN mkdir -p /data/audio-storage && chown node:node /data/audio-storage
 
 USER node
-EXPOSE 8082
+EXPOSE 8082 8098
 HEALTHCHECK --interval=10s --timeout=5s --retries=3 CMD ["node", "server/src/container-healthcheck.mjs"]
+STOPSIGNAL SIGTERM
 CMD ["node", "server/src/main.mjs"]

@@ -20,6 +20,7 @@ export const TICKET_VERSION = "rt_v2";
 
 /** Field count of a well-formed ticket: version + 7 payload fields + signature. */
 const TICKET_PARTS = 9;
+const U64_MAX = 18_446_744_073_709_551_615n;
 
 /**
  * Reject what `validate_realtime_ticket` rejects (shared-ticket/src/lib.rs:92-99), at MINT time.
@@ -109,6 +110,93 @@ export function verifyRealtimeTicket(ticket, secret) {
   const expected = signTicketPayload(rest.join("."), secret);
   if (signature.length !== expected.length) return false;
   return timingSafeEqual(Buffer.from(signature, "utf8"), Buffer.from(expected, "utf8"));
+}
+
+/**
+ * Validate the complete ticket boundary and return its signed claims.
+ *
+ * Mirrors `services/shared-ticket::validate_realtime_ticket`: exact field count/version, session
+ * binding, unsigned-u64 expiry, strict boolean rendering, and constant-time HMAC comparison. Every
+ * refusal is `null` so the HTTP boundary can return one generic 401 without revealing which claim
+ * failed.
+ */
+export function validateRealtimeTicket(expectedSessionId, ticket, secret, nowUnixSeconds) {
+  if (
+    typeof expectedSessionId !== "string" ||
+    expectedSessionId.trim() === "" ||
+    typeof ticket !== "string" ||
+    typeof secret !== "string"
+  ) {
+    return null;
+  }
+  const parts = ticket.trim().split(".");
+  if (parts.length !== TICKET_PARTS) return null;
+  const [
+    version,
+    sessionId,
+    tenantId,
+    learnerId,
+    externalAsr,
+    audioRetention,
+    expiresAtText,
+    nonce,
+    signature,
+  ] = parts;
+  if (
+    version !== TICKET_VERSION ||
+    sessionId !== expectedSessionId ||
+    tenantId.trim() === "" ||
+    learnerId.trim() === "" ||
+    audioRetention.trim() === "" ||
+    nonce.trim() === "" ||
+    (externalAsr !== "true" && externalAsr !== "false") ||
+    !/^\d+$/.test(expiresAtText)
+  ) {
+    return null;
+  }
+
+  let expiresAt;
+  let now;
+  try {
+    expiresAt = BigInt(expiresAtText);
+    now = typeof nowUnixSeconds === "bigint" ? nowUnixSeconds : BigInt(nowUnixSeconds);
+  } catch {
+    return null;
+  }
+  if (
+    expiresAt > U64_MAX ||
+    now < 0n ||
+    (typeof nowUnixSeconds === "number" && !Number.isSafeInteger(nowUnixSeconds)) ||
+    expiresAt <= now
+  ) {
+    return null;
+  }
+
+  const externalAsrProcessing = externalAsr === "true";
+  const payload = ticketPayload({
+    sessionId,
+    tenantId,
+    learnerId,
+    externalAsrProcessing,
+    audioRetention,
+    expiresAtUnixSeconds: expiresAt,
+    nonce,
+  });
+  const expectedSignature = signTicketPayload(payload, secret);
+  if (signature.length !== expectedSignature.length) return null;
+  if (!timingSafeEqual(Buffer.from(signature, "utf8"), Buffer.from(expectedSignature, "utf8"))) {
+    return null;
+  }
+
+  return {
+    sessionId,
+    tenantId,
+    learnerId,
+    externalAsrProcessing,
+    audioRetention,
+    expiresAtUnixSeconds: expiresAt,
+    nonce,
+  };
 }
 
 /** Matches the Rust minter's nonce shape: 32 lowercase hex characters. */

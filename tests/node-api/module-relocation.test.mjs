@@ -30,6 +30,8 @@ const newEntrypointPath = join(repo, "server", "src", "main.mjs");
 const routeFiles = [
   "agent-write.mjs",
   "auth.mjs",
+  "canary.mjs",
+  "device-identity.mjs",
   "index.mjs",
   "infra.mjs",
   "ml-proxy.mjs",
@@ -76,6 +78,7 @@ const ticketCallerPaths = [
   ["tests", "gateway", "audio-retention-e2e.test.mjs"],
   ["tests", "e2e", "teacher-audio-index.test.mjs"],
   ["tests", "node-api", "ticket-vectors.test.mjs"],
+  ["tests", "api-parity", "audio-index-parity.test.mjs"],
   ["scripts", "smoke-gateway.mjs"],
   ["scripts", "chaos-realtime-reconnect.mjs"],
 ];
@@ -108,6 +111,7 @@ test("the first security leaf has one owner under the server package", async () 
   const module = await import(pathToFileURL(newInsecurePath).href);
   assert.deepEqual(Object.keys(module).sort(), [
     "ALLOW_INSECURE_SECRETS",
+    "ALLOW_SUPERUSER_DB_ROLE",
     "LEGACY_ONE_ONLY",
     "LEGACY_ONE_OR_TRUE",
     "LEGACY_VAR",
@@ -274,6 +278,7 @@ test("the realtime ticket authority has one owner under the server package", asy
     "newNonce",
     "signTicketPayload",
     "ticketPayload",
+    "validateRealtimeTicket",
     "verifyRealtimeTicket",
   ]);
 });
@@ -342,14 +347,14 @@ test("the complete route layer has one owner under the server package", async ()
   assert.deepEqual(readdirSync(newRoutesPath).filter((name) => name.endsWith(".mjs")).sort(), routeFiles);
 
   const module = await import(pathToFileURL(join(newRoutesPath, "index.mjs")).href);
-  assert.deepEqual(Object.keys(module).sort(), ["ROUTES", "fastifyPath"]);
-  assert.equal(module.ROUTES.length, 37, "the route composition count must not change during relocation");
+  assert.deepEqual(Object.keys(module).sort(), ["ROUTES", "ROUTE_KEYS", "fastifyPath"]);
+  assert.equal(module.ROUTES.length, 44, "the three owner-gated device routes must be declared");
 });
 
 test("route runtime and executable source consumers use the server package owner", () => {
   const consumers = [
     ["server", "src", "app.mjs"],
-    ["tests", "node-api", "routes-table.test.mjs"],
+    ["tests", "node-api", "route-registry.test.mjs"],
     ["tests", "node-api", "readiness-fault.test.mjs"],
     ["tests", "node-api", "authz.test.mjs"],
     ["tests", "contract", "learner-feedback-gate.test.mjs"],
@@ -381,9 +386,8 @@ test("the Node API has one composition root and one package-owned entrypoint", a
   const application = await import(pathToFileURL(newApplicationPath).href);
   const entrypoint = await import(pathToFileURL(newEntrypointPath).href);
   assert.deepEqual(Object.keys(application), ["createApplication"]);
-  assert.deepEqual(Object.keys(entrypoint), ["PORTABLE"]);
+  assert.deepEqual(Object.keys(entrypoint), []);
   assert.equal(typeof application.createApplication, "function");
-  assert.equal(entrypoint.PORTABLE.length, 37);
 
   const applicationSource = readFileSync(newApplicationPath, "utf8");
   const entrypointSource = readFileSync(newEntrypointPath, "utf8");
@@ -404,7 +408,7 @@ test("every executable entrypoint consumer uses the server package owner", () =>
     ["tests", "node-api", "boot-guard.test.mjs"],
     ["tests", "node-api", "no-secret-logging.test.mjs"],
     ["tests", "node-api", "nul-byte-is-a-400.test.mjs"], // gitleaks:allow -- source-path tuple, not a credential
-    ["tests", "node-api", "routes-table.test.mjs"],
+    ["tests", "node-api", "route-registry.test.mjs"],
     ["tests", "node-api", "shell.test.mjs"],
   ];
   for (const parts of consumers) {
@@ -412,7 +416,7 @@ test("every executable entrypoint consumer uses the server package owner", () =>
     assert.doesNotMatch(source, /services\/node-api\/server\.mjs/, `${parts.join("/")} is stale`);
     assert.match(
       source,
-      /server\/src\/(?:app|main)\.mjs|"server", "src", "(?:app|main)\.mjs"/,
+      /server\/src\/(?:app|main|routes\/index)\.mjs|"server", "src", "(?:app|main)\.mjs"/,
       `${parts.join("/")} must name the package owner`,
     );
   }

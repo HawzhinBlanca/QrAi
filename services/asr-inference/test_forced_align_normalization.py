@@ -3,7 +3,7 @@
     python test_forced_align_normalization.py
 
 Why this file exists: `_DIACRITICS` shipped as a literal-character transcription of the JS class in
-services/ml-inference/alignment.js:7, and the transcription merged two ranges into U+0610-U+0670 —
+server/src/inference/alignment.mjs:7, and the transcription merged two ranges into U+0610-U+0670 —
 which covers the entire Arabic LETTER block U+0621-U+064A. `_strip_diacritics("بِسْمِ ٱللَّهِ")`
 returned " ٱ ٱ": every letter deleted. align_words then looked up "<unk>" for every word and returned
 fabricated timings, while docs reported a 64ms alignment MAE that could not have been real.
@@ -71,11 +71,11 @@ def test_known_diacritics_are_removed():
 
 
 def test_matches_the_js_reference_class():
-    """The Python class must equal services/ml-inference/alignment.js:7 (plus the BOM).
+    """The Python class must equal server/src/inference/alignment.mjs:7 (plus the BOM).
 
     Two normalizers over the same scripture that disagree is the bug this whole file guards.
     """
-    js = open("../ml-inference/alignment.js", encoding="utf-8").read()
+    js = open("../../server/src/inference/alignment.mjs", encoding="utf-8").read()
     m = re.search(r"\.replace\(/\[([^\]]+)\]/g, \"\"\)", js)
     assert m, "could not find the JS diacritic class"
     js_ranges = set(re.findall(r"\\u([0-9A-Fa-f]{4})(?:-\\u([0-9A-Fa-f]{4}))?", m.group(1)))

@@ -10,6 +10,13 @@
 import http from "node:http";
 import { realpathSync } from "node:fs";
 import { pathToFileURL } from "node:url";
+import {
+  createDeadline,
+  createIncomingRequestDeadline,
+  fetchWithDeadline,
+  isDeadlineError,
+  parseTimeoutSeconds,
+} from "../../server/src/lib/deadline.mjs";
 import { runTajweedExplainer } from "./lib/tajweedExplainer.mjs";
 import { runMistakePatternSummarizer } from "./lib/mistakePatterns.mjs";
 import { runPracticeRecommender } from "./lib/practiceRecommender.mjs";
@@ -17,6 +24,7 @@ import { runPracticeRecommender } from "./lib/practiceRecommender.mjs";
 const PORT = Number(process.env.AGENTS_PORT || 8092);
 const PLATFORM_API_URL = process.env.PLATFORM_API_URL || "http://127.0.0.1:8080";
 const TENANT_ID = process.env.AGENTS_TENANT_ID || "hikmah-pilot-erbil";
+const UPSTREAM_TIMEOUT_MS = parseTimeoutSeconds(process.env.UPSTREAM_TIMEOUT_SECS ?? "60");
 
 // Ops identity for the internal calls. In production this is a real ops JWT (Bearer);
 // in dev the header fallback works when platform-api runs with ALLOW_HEADER_AUTH=1.
@@ -44,51 +52,68 @@ function toArray(value) {
   return Array.isArray(value) ? value : [];
 }
 
-async function fetchTajweedFindings() {
-  const res = await fetch(`${PLATFORM_API_URL}/v1/tajweed-findings`, { headers: authHeaders() });
-  if (!res.ok) throw new Error(`tajweed-findings ${res.status}`);
-  return res.json();
+class PlatformDependencyError extends Error {}
+
+async function platformJson(path, init, deadline) {
+  let response;
+  try {
+    response = await fetchWithDeadline(`${PLATFORM_API_URL}${path}`, {
+      ...init,
+      deadline,
+    });
+  } catch (error) {
+    if (isDeadlineError(error)) throw error;
+    throw new PlatformDependencyError("platform dependency unavailable");
+  }
+  if (!response.ok) throw new PlatformDependencyError("platform dependency failed");
+  try {
+    return await response.json();
+  } catch (error) {
+    if (isDeadlineError(error)) throw error;
+    throw new PlatformDependencyError("platform dependency returned invalid JSON");
+  }
 }
 
-async function fetchLearnerProgress(learnerId) {
-  const url = `${PLATFORM_API_URL}/v1/learner/progress?learnerId=${encodeURIComponent(learnerId)}`;
-  const res = await fetch(url, { headers: authHeaders() });
-  if (!res.ok) throw new Error(`learner-progress ${res.status}`);
-  return res.json();
+async function fetchTajweedFindings(deadline) {
+  return platformJson("/v1/tajweed-findings", { headers: authHeaders() }, deadline);
+}
+
+async function fetchLearnerProgress(learnerId, deadline) {
+  const path = `/v1/learner/progress?learnerId=${encodeURIComponent(learnerId)}`;
+  return platformJson(path, { headers: authHeaders() }, deadline);
 }
 
 /** The COMPLETE set of distinct learner ids with at least one recitation session — from the dedicated
  *  /v1/learners/active endpoint, NOT the UI-capped session listing (which silently drops learners past
  *  its 50-row LIMIT and made the recommender skip them). */
-async function fetchActiveLearnerIds() {
-  const res = await fetch(`${PLATFORM_API_URL}/v1/learners/active`, { headers: authHeaders() });
-  if (!res.ok) throw new Error(`learners-active ${res.status}`);
-  return toArray(await res.json());
+async function fetchActiveLearnerIds(deadline) {
+  return toArray(await platformJson("/v1/learners/active", { headers: authHeaders() }, deadline));
 }
 
-async function recordAgentRun(run) {
-  const res = await fetch(`${PLATFORM_API_URL}/v1/agent-runs`, {
+async function recordAgentRun(run, deadline) {
+  return platformJson("/v1/agent-runs", {
     method: "POST",
     headers: { "content-type": "application/json", ...authHeaders() },
     body: JSON.stringify(run),
-  });
-  if (!res.ok) throw new Error(`agent-runs ${res.status}: ${await res.text()}`);
-  return res.json();
+  }, deadline);
 }
 
 /** Existing agent runs (for dedup). Each carries `findingId` (surfaced from the run's trace by
  *  platform-api's list_agent_runs) — the explainer skips findings that already have a run. */
-async function fetchExistingAgentRuns() {
-  const res = await fetch(`${PLATFORM_API_URL}/v1/agent-runs`, { headers: authHeaders() });
-  if (!res.ok) throw new Error(`agent-runs list ${res.status}`);
-  return toArray(await res.json());
+async function fetchExistingAgentRuns(deadline) {
+  return toArray(await platformJson("/v1/agent-runs", { headers: authHeaders() }, deadline));
 }
 
 // The core pipeline: findings -> explainer -> gate -> recorded runs. Exported for tests.
-export async function runTajweedExplainerBatch({ fetchFindings, record, fetchExisting } = {}) {
-  const getFindings = fetchFindings || fetchTajweedFindings;
-  const write = record || recordAgentRun;
-  const getExisting = fetchExisting || fetchExistingAgentRuns;
+export async function runTajweedExplainerBatch({
+  fetchFindings,
+  record,
+  fetchExisting,
+  deadline = createDeadline(UPSTREAM_TIMEOUT_MS),
+} = {}) {
+  const getFindings = fetchFindings || (() => fetchTajweedFindings(deadline));
+  const write = record || ((run) => recordAgentRun(run, deadline));
+  const getExisting = fetchExisting || (() => fetchExistingAgentRuns(deadline));
   // Coerce to an array: a malformed upstream (non-array body with HTTP 200) must not throw
   // "findings is not iterable" (500) — it means "no findings".
   const findings = toArray(await getFindings());
@@ -127,9 +152,13 @@ export async function runTajweedExplainerBatch({ fetchFindings, record, fetchExi
 }
 
 // findings -> one cohort summary run. IO injectable for tests.
-export async function runMistakePatternSummarizerBatch({ fetchFindings, record } = {}) {
-  const getFindings = fetchFindings || fetchTajweedFindings;
-  const write = record || recordAgentRun;
+export async function runMistakePatternSummarizerBatch({
+  fetchFindings,
+  record,
+  deadline = createDeadline(UPSTREAM_TIMEOUT_MS),
+} = {}) {
+  const getFindings = fetchFindings || (() => fetchTajweedFindings(deadline));
+  const write = record || ((run) => recordAgentRun(run, deadline));
   const findings = toArray(await getFindings());
   const candidate = runMistakePatternSummarizer(findings);
   const runs = candidate ? [await write(candidate)] : [];
@@ -142,10 +171,16 @@ export async function runMistakePatternSummarizerBatch({ fetchFindings, record }
 }
 
 // active learners -> per-learner progress -> next-step recommendation run. IO injectable.
-export async function runPracticeRecommenderBatch({ fetchLearnerIds, fetchProgress, record, now } = {}) {
-  const getLearnerIds = fetchLearnerIds || fetchActiveLearnerIds;
-  const getProgress = fetchProgress || fetchLearnerProgress;
-  const write = record || recordAgentRun;
+export async function runPracticeRecommenderBatch({
+  fetchLearnerIds,
+  fetchProgress,
+  record,
+  now,
+  deadline = createDeadline(UPSTREAM_TIMEOUT_MS),
+} = {}) {
+  const getLearnerIds = fetchLearnerIds || (() => fetchActiveLearnerIds(deadline));
+  const getProgress = fetchProgress || ((learnerId) => fetchLearnerProgress(learnerId, deadline));
+  const write = record || ((run) => recordAgentRun(run, deadline));
   const nowIso = now || new Date().toISOString();
   const learnerIds = toArray(await getLearnerIds());
   const runs = [];
@@ -159,10 +194,11 @@ export async function runPracticeRecommenderBatch({ fetchLearnerIds, fetchProgre
 
 // Run every agent and aggregate. Exported for tests.
 export async function runAllAgents(overrides = {}) {
+  const deadline = overrides.deadline ?? createDeadline(UPSTREAM_TIMEOUT_MS);
   const results = [
-    await runTajweedExplainerBatch(overrides.tajweed),
-    await runMistakePatternSummarizerBatch(overrides.mistakes),
-    await runPracticeRecommenderBatch(overrides.recommend),
+    await runTajweedExplainerBatch({ ...overrides.tajweed, deadline }),
+    await runMistakePatternSummarizerBatch({ ...overrides.mistakes, deadline }),
+    await runPracticeRecommenderBatch({ ...overrides.recommend, deadline }),
   ];
   return { agents: results, created: results.reduce((sum, r) => sum + r.created, 0) };
 }
@@ -188,22 +224,30 @@ const server = http.createServer(async (req, res) => {
       if (!isAuthorized(req)) {
         return sendJson(res, 401, { error: "unauthorized" });
       }
+      const deadline = createIncomingRequestDeadline(req, res, UPSTREAM_TIMEOUT_MS);
       if (req.url === "/run") {
-        return sendJson(res, 200, await runAllAgents());
+        return sendJson(res, 200, await runAllAgents({ deadline }));
       }
       if (req.url === "/run/tajweed") {
-        return sendJson(res, 200, await runTajweedExplainerBatch());
+        return sendJson(res, 200, await runTajweedExplainerBatch({ deadline }));
       }
       if (req.url === "/run/mistakes") {
-        return sendJson(res, 200, await runMistakePatternSummarizerBatch());
+        return sendJson(res, 200, await runMistakePatternSummarizerBatch({ deadline }));
       }
       if (req.url === "/run/recommend") {
-        return sendJson(res, 200, await runPracticeRecommenderBatch());
+        return sendJson(res, 200, await runPracticeRecommenderBatch({ deadline }));
       }
     }
     return sendJson(res, 404, { error: "not found" });
   } catch (err) {
-    return sendJson(res, 500, { error: String(err && err.message ? err.message : err) });
+    if (isDeadlineError(err)) {
+      res.setHeader("retry-after", "1");
+      return sendJson(res, 503, { error: "dependency operation timed out" });
+    }
+    if (err instanceof PlatformDependencyError) {
+      return sendJson(res, 502, { error: "platform dependency unavailable" });
+    }
+    return sendJson(res, 500, { error: "internal error" });
   }
 });
 
@@ -212,7 +256,7 @@ const server = http.createServer(async (req, res) => {
 // form breaks when the process is launched through a symlink (argv[1] is the symlink path while
 // import.meta.url resolves to the real file) or when the path needs URL-encoding, silently
 // leaving isMain false and the server never binding its port. Mirrors the identical fix already
-// applied in services/ml-inference/server.mjs (see that file's isMain comment).
+// applied by the server-owned worker compatibility boundary.
 const isMain = process.argv[1]
   ? import.meta.url === pathToFileURL(realpathSync(process.argv[1])).href
   : false;

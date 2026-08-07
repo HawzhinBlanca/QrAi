@@ -20,7 +20,7 @@ MODEL_ID = os.environ.get("FORCE_ALIGN_MODEL", "jonatasgrosman/wav2vec2-large-xl
 # Arabic combining marks (harakat/tanwin/tatweel/quranic annotation) absent from the model vocab.
 #
 # Written as \u escapes, NOT literal characters, and kept identical to the reference implementation
-# in services/ml-inference/alignment.js:7. The previous version of this line was a literal-character
+# in server/src/inference/alignment.mjs:7. The previous version of this line was a literal-character
 # transcription of that JS class, and the transcription silently merged two ranges into
 # U+0610-U+0670 — which swallows the entire Arabic LETTER block (U+0621-U+064A). It stripped every
 # letter ("بِسْمِ" -> ""), so align_words fell through to <unk> for every word and returned

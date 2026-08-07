@@ -4,7 +4,7 @@ import { dirname, join } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 
-import { analyzeWord } from "../../services/ml-inference/tajweed.js";
+import { analyzeWord } from "../../server/src/inference/tajweed.mjs";
 
 /**
  * W1.9 — deterministic Quran instruction and learner-performance findings are disjoint types.

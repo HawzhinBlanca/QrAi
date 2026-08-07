@@ -75,8 +75,12 @@ test("public proxies reject forged acoustic identity and inject only stored meas
 
 
 test("the learner response retains zero uncalibrated findings and never returns raw observations", () => {
-  const source = read("services/ml-inference/server.mjs");
-  const predict = source.match(/async function predictTajweed\(requestBody\) \{[\s\S]*?\n\}/)?.[0] ?? "";
+  const source = read("server/src/inference/runtime.mjs");
+  const predict = source.match(
+    /async function predictTajweed\([\s\S]*?^\}/m,
+  )?.[0] ?? "";
+  assert.match(predict, /store = defaultAudioObjectStore\(\)/);
+  assert.match(predict, /runAcousticShadow\(requestBody, canonicalWords, deadline, store\)/);
   assert.match(predict, /findings: \[\]/);
   assert.doesNotMatch(predict, /return \{[\s\S]*?observations/);
   assert.match(predict, /acousticShadow/);
@@ -84,7 +88,7 @@ test("the learner response retains zero uncalibrated findings and never returns 
 });
 
 
-test("both inference images consume the single checked-in candidate manifest", () => {
+test("the ASR and single Node backend images consume the checked-in candidate manifest", () => {
   const asrDockerfile = read("services/asr-inference/Dockerfile");
   assert.match(
     asrDockerfile,
@@ -104,7 +108,7 @@ test("both inference images consume the single checked-in candidate manifest", (
   assert.match(acousticLock, /quran-muaalem @ https:\/\/codeload\.github\.com\/obadx\/quran-muaalem\/tar\.gz\/2e444e/);
   assert.match(acousticLock, /quran-transcript @ https:\/\/codeload\.github\.com\/obadx\/quran-transcript\/tar\.gz\/fb64a1/);
   assert.match(
-    read("services/ml-inference/Dockerfile"),
+    read("server/Dockerfile"),
     /services\/asr-inference\/acoustic-candidates\.json/,
   );
 });

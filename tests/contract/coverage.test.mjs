@@ -4,15 +4,16 @@ import { dirname, join } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 
+import { ROUTES } from "../../server/src/routes/index.mjs";
 import { loadOpenapi, routePairsFromRust } from "./lib/openapi.mjs";
 
 /**
- * F1 — every route in the service is contracted, exactly once.
+ * F1 — every active route is contracted, exactly once.
  * specs/flutter-client/plan.md
  *
- * Parses `services/platform-api/src/lib.rs` and compares against the hand-authored spec, so adding a
- * route fails this gate until it is contracted. Same deliberate coupling as PAR6's parser on
- * `integration.rs`; if that is why your build is red, add the path to `packages/contracts/openapi.yaml`.
+ * The Rust router remains the immutable 42-operation baseline. During the strangler transition,
+ * route-manifest.json may classify a target addition as implemented-node; only those additions may
+ * extend the active OpenAPI surface, and each must exist in the executable Node route table.
  *
  * Hermetic: no database, no service, no network.
  */
@@ -20,6 +21,9 @@ import { loadOpenapi, routePairsFromRust } from "./lib/openapi.mjs";
 const here = dirname(fileURLToPath(import.meta.url));
 const repoRoot = join(here, "..", "..");
 const spec = loadOpenapi(join(repoRoot, "packages/contracts/openapi.yaml"));
+const manifest = JSON.parse(
+  readFileSync(join(repoRoot, "packages/contracts/route-manifest.json"), "utf8"),
+);
 const rustPairs = routePairsFromRust(
   readFileSync(join(repoRoot, "services/platform-api/src/lib.rs"), "utf8"),
 );
@@ -35,21 +39,35 @@ const specPairs = new Set(
   ),
 );
 const rustSet = new Set(rustPairs.map(({ method, path }) => `${method} ${shape(path)}`));
+const nodeSet = new Set(ROUTES.map(({ key }) => shape(key)));
+const implementedAdditionSet = new Set(
+  manifest.targetAdditions
+    .filter(({ implementationStatus }) =>
+      ["implemented-node", "implemented-owner-gated"].includes(implementationStatus),
+    )
+    .map(({ method, path }) => `${method.toUpperCase()} ${shape(path)}`),
+);
+const activeSet = new Set([...rustSet, ...implementedAdditionSet]);
 
-test("every route the service registers is present in the contract", () => {
-  const missing = [...rustSet].filter((p) => !specPairs.has(p)).sort();
+test("every active transition route is present in the contract", () => {
+  const missing = [...activeSet].filter((p) => !specPairs.has(p)).sort();
   assert.deepEqual(
     missing,
     [],
-    `these routes exist in lib.rs but are NOT contracted:\n  ${missing.join("\n  ")}\n` +
+    `these active routes are NOT contracted:\n  ${missing.join("\n  ")}\n` +
       `Add them to packages/contracts/openapi.yaml. Do not delete this check.`,
   );
 });
 
-test("the contract describes no route the service does not serve", () => {
+test("implemented target additions exist in the Node route table", () => {
+  const missing = [...implementedAdditionSet].filter((pair) => !nodeSet.has(pair)).sort();
+  assert.deepEqual(missing, [], `implemented addition but NOT declared by Node:\n  ${missing.join("\n  ")}`);
+});
+
+test("the contract describes no route the active transition does not serve", () => {
   // The other direction: a contract promising a route that does not exist is worse than a missing
   // one, because a client will code against it.
-  const phantom = [...specPairs].filter((p) => !rustSet.has(p)).sort();
+  const phantom = [...specPairs].filter((p) => !activeSet.has(p)).sort();
   assert.deepEqual(phantom, [], `contracted but NOT served:\n  ${phantom.join("\n  ")}`);
 });
 
@@ -61,7 +79,7 @@ test("the route inventory contains all 42 method/path pairs", () => {
   // Pin both names as well as the total so another parser defect cannot preserve the count by losing
   // one route while accidentally gaining another.
   assert.equal(rustPairs.length, 42, "lib.rs no longer registers 42 method+path pairs");
-  assert.equal(specPairs.size, 42);
+  assert.equal(specPairs.size, activeSet.size, "OpenAPI must equal baseline plus implemented additions");
   assert.ok(
     rustSet.has("GET /v1/tajweed-findings/{}/audio"),
     "finding-audio route disappeared from the Rust inventory",

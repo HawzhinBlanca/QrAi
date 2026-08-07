@@ -8,6 +8,7 @@ import {
   issueRealtimeTicket,
   signTicketPayload,
   ticketPayload,
+  validateRealtimeTicket,
   verifyRealtimeTicket,
 } from "../../server/src/lib/ticket.mjs";
 
@@ -159,6 +160,31 @@ test("verify accepts a freshly minted ticket and REJECTS a tampered one", () => 
     false,
     "a pre-retention v1 ticket",
   );
+});
+
+test("claims validation binds the session, expiry, boolean, and unsigned-u64 domain", () => {
+  const secret = "claims-secret";
+  const ticket = issueRealtimeTicket(validFields(), secret);
+  assert.deepEqual(validateRealtimeTicket("session-1", ticket, secret, 1_999), {
+    sessionId: "session-1",
+    tenantId: "tenant-1",
+    learnerId: "learner-1",
+    externalAsrProcessing: true,
+    audioRetention: "discard",
+    expiresAtUnixSeconds: 2_000n,
+    nonce: "nonce-1",
+  });
+  assert.equal(validateRealtimeTicket("another-session", ticket, secret, 1_999), null);
+  assert.equal(validateRealtimeTicket("session-1", ticket, secret, 2_000), null);
+  assert.equal(validateRealtimeTicket("session-1", ticket, "wrong-secret", 1_999), null);
+
+  for (const payload of [
+    "session-1.tenant-1.learner-1.TRUE.discard.2000.nonce-1",
+    "session-1.tenant-1.learner-1.true.discard.18446744073709551616.nonce-1",
+  ]) {
+    const malformed = `rt_v2.${payload}.${signTicketPayload(payload, secret)}`;
+    assert.equal(validateRealtimeTicket("session-1", malformed, secret, 1_999), null);
+  }
 });
 
 test("the payload is exactly the documented format", () => {

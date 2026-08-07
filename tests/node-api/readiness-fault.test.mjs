@@ -3,7 +3,7 @@
  *
  * The Rust side is covered by `readiness_reports_503_when_postgres_is_unreachable_while_liveness_holds`
  * (services/platform-api/tests/integration.rs). This is the same contract on the other implementation,
- * and it is NOT redundant: `GET /ready` is in the shell's own `PORTABLE` list, so during a cutover the
+ * and it is NOT redundant: `GET /ready` is in the executable route registry, so during a cutover the
  * Node process is the one an orchestrator asks. A port that answered 200 while its pool was dead would
  * keep traffic flowing to a process where every request fails — and the existing A/B coverage
  * (`infra-parity.test.mjs`) only ever exercises the HAPPY path, `s.text === "ready"`.

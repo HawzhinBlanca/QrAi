@@ -2,15 +2,15 @@
  * N16 — the ML and ASR proxies. Port of handlers/ml_proxy.rs.
  *
  * ── What these routes are FOR ───────────────────────────────────────────────────────────────────
- * The browser must never reach the ML or ASR service directly. It once posted audio straight to
+ * The browser must never reach the inference worker or ASR service directly. It once posted audio straight to
  * :8091, which had no auth at all. These four routes exist so the API keys stay server-side and the
  * request is authenticated before any audio leaves.
  *
  * ── Three things the client says that the server OVERWRITES ─────────────────────────────────────
  * 1. `tenantId` — replaced with the actor's server-validated tenant. Otherwise a learner
- *    authenticated for tenant A sets `tenantId: "tenant-B"` and the ML service writes audit and
+ *    authenticated for tenant A sets `tenantId: "tenant-B"` and the inference runtime writes audit and
  *    storage records under another tenant's namespace.
- * 2. `consent` — replaced with the record captured when the SESSION was created. The ML service
+ * 2. `consent` — replaced with the record captured when the SESSION was created. The inference runtime
  *    decides external-ASR and child-safety gating from this object, so a client re-supplying
  *    `{guardianApproved: true, externalAsrProcessing: true}` would be claiming approval it never
  *    gave. The only trustworthy consent is the stored one.
@@ -19,12 +19,15 @@
  *
  * These are the three fields that make this a security boundary rather than a forwarder.
  */
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 
+import { waitForJobResult } from "../jobs/wait-for-job.mjs";
 import { ApiError, requireSelfOrAny, resolveActor } from "../lib/authz.mjs";
+import { createDeadline } from "../lib/deadline.mjs";
 import { clearsLearnerFeedbackGate } from "../lib/learner-feedback-gate.mjs";
+import { requireProducerAttribution } from "../lib/model-attribution.mjs";
 import { proxy } from "../lib/proxy.mjs";
-import { validateModelAttribution } from "../../../services/ml-inference/model-attribution.mjs";
+import { postJson } from "../lib/upstream.mjs";
 
 const newId = (prefix) => `${prefix}-${randomUUID()}`;
 
@@ -45,32 +48,6 @@ const SEVERITIES = ["practice", "warning", "critical"];
  * a learner's transcript. The stage label already carries the operational signal the comment above
  * claims for it; the error object only ever added the content. (N-7, `no-secret-logging.test.mjs`.)
  */
-async function forward({ url, keyHeader, keyValue, body, label, service }) {
-  let response;
-  try {
-    response = await fetch(url, {
-      method: "POST",
-      headers: { "content-type": "application/json", [keyHeader]: keyValue },
-      body: JSON.stringify(body),
-    });
-  } catch (e) {
-    console.error(`${service} proxy ${label} send error: ${e}`);
-    throw new ApiError(`${service} service unavailable`, 502);
-  }
-
-  if (!response.ok) {
-    console.warn(`${service} proxy ${label} upstream status ${response.status}`);
-    throw new ApiError(`${service} service error`, 502);
-  }
-
-  try {
-    return await response.json();
-  } catch {
-    console.error(`${service} proxy ${label}: upstream response was not valid JSON`);
-    throw new ApiError(`${service} service returned an invalid response`, 502);
-  }
-}
-
 /**
  * Who may analyse a session that is not their own, and therefore who receives the findings
  * unredacted. ONE list for both, mirroring `ANALYSIS_STAFF` in ml_proxy.rs. Teacher is deliberately
@@ -132,25 +109,6 @@ function callerTrace(req) {
 }
 
 /** The shared ML path — `proxy_ml` (ml_proxy.rs:19). */
-function requireProducerAttribution(result, expectedComponent, label) {
-  try {
-    const attribution = validateModelAttribution(result?.modelAttribution, {
-      legacyModelVersion: result?.modelVersion,
-    });
-    if (attribution.primaryComponent !== expectedComponent) {
-      throw new Error(
-        `expected primary component ${expectedComponent}, received ${attribution.primaryComponent}`,
-      );
-    }
-  } catch (error) {
-    // Never log the response: an ASR response contains a learner transcript.
-    console.error(`${label} service returned invalid model attribution`, {
-      error: error instanceof Error ? error.message : String(error),
-    });
-    throw new ApiError(`${label} service returned invalid model attribution`, 502);
-  }
-}
-
 /** Refuse any upstream attempt to blur canonical instruction into learner performance. */
 function requireTajweedSemantics(result) {
   if (!Array.isArray(result?.annotations) || !Array.isArray(result?.findings)) {
@@ -227,6 +185,8 @@ function orderJsonObjectKeys(value) {
   return Object.fromEntries(Object.keys(value).sort().map((key) => [key, value[key]]));
 }
 
+const evaluationHash = (value) => createHash("sha256").update(JSON.stringify(value)).digest("hex");
+
 async function proxyMl(req, reply, ctx, label, path) {
   const resolved = await resolveActor(req, ctx);
   if (resolved.delegate) return proxy(req, reply, ctx.upstream);
@@ -267,7 +227,7 @@ async function proxyMl(req, reply, ctx, label, path) {
   const forwarded = { ...body, tenantId: actor.tenantId };
 
   // The trace has to cross the boundary or the two audit trails cannot be joined (P5.3). This
-  // service audits the trace from `x-trace-id`; ml-inference audits `requestBody.traceId`. The
+  // API audits the trace from `x-trace-id`; the worker runtime audits `requestBody.traceId`. The
   // forward carried neither, so one side recorded the caller's trace, the other recorded null, and
   // "which ML call produced this finding" had no answer.
   //
@@ -333,13 +293,45 @@ async function proxyMl(req, reply, ctx, label, path) {
     }
   }
 
-  const result = await forward({
+  if (label === "tajweed" && typeof body.sessionId === "string") {
+    // Persist only the closed, server-authoritative inference envelope. Arbitrary caller fields are
+    // neither necessary for Tajweed evaluation nor acceptable durable queue material.
+    const input = {
+      acousticSegments: forwarded.acousticSegments,
+      consent: forwarded.consent,
+      learnerId: forwarded.learnerId,
+      quranRef: forwarded.quranRef,
+      sessionId: body.sessionId,
+      sourceChecksum: forwarded.sourceChecksum,
+      tenantId: actor.tenantId,
+      ...(trace === null ? {} : { traceId: trace }),
+    };
+    const inputVersion = evaluationHash(input);
+    const job = await ctx.jobStore.enqueue({
+      tenantId: actor.tenantId,
+      kind: "session.evaluate",
+      subjectId: body.sessionId,
+      actorId: actor.userId,
+      idempotencyKey: `session.evaluate:${actor.userId}:${actor.role}:${body.sessionId}:${inputVersion}`,
+      payload: {
+        input,
+        inputVersion,
+        requestTrace: trace,
+        responseRole: actor.role,
+      },
+    });
+    return reply.send(await waitForJobResult(ctx, job));
+  }
+
+  const result = await postJson({
     url: `${ctx.mlInferenceUrl}${path}`,
     keyHeader: "x-ml-api-key",
     keyValue: ctx.mlApiKey,
     body: forwarded,
     label,
     service: "ML",
+    timeoutMs: ctx.upstreamTimeoutMs,
+    deadline: ctx.deadline,
   });
 
   if (label === "alignment") {
@@ -352,10 +344,6 @@ async function proxyMl(req, reply, ctx, label, path) {
   // Store what the model said, so a teacher can review it — `persist_tajweed_findings`
   // (ml_proxy.rs:297). W1.10 returns zero public findings because the acoustic probabilities are
   // uncalibrated; later calibrated outputs still pass through this existing review boundary.
-  if (label === "tajweed" && typeof result?.sessionId === "string") {
-    await persistTajweedFindings(ctx, actor, result.sessionId, result, trace);
-  }
-
   // The learner gate applies to the RESPONSE — ml_proxy.rs `redact_withheld_findings`.
   if (label === "tajweed" && !ANALYSIS_STAFF.includes(actor.role)) {
     redactWithheldFindings(result);
@@ -379,11 +367,16 @@ async function proxyMl(req, reply, ctx, label, path) {
  * Everything not-storable is SKIPPED, never a 500: a learner asking for analysis must not get an
  * error because the model named a word that is not in their alignment set.
  */
-async function persistTajweedFindings(ctx, actor, sessionId, result, trace) {
+export async function persistTajweedFindingsInTransaction({
+  tx,
+  actor,
+  sessionId,
+  result,
+  trace,
+}) {
   const findings = Array.isArray(result?.findings) ? result.findings : [];
   if (findings.length === 0) return;
 
-  await ctx.db.withTenant(actor.tenantId, async (tx) => {
     const [existing] = await tx`
       SELECT 1 FROM tajweed_findings tf
       JOIN word_alignments wa ON wa.id = tf.alignment_id
@@ -450,7 +443,26 @@ async function persistTajweedFindings(ctx, actor, sessionId, result, trace) {
                 ${finding.acousticDatasetManifestSha256}, ${finding.calibratorId},
                 ${finding.calibratorArtifactSha256})`;
     }
-  });
+}
+
+/** Repeatable external session evaluation; only the returned fenced commit writes findings. */
+export async function prepareSessionEvaluation({ ctx, job, signal }) {
+  const deadline = createDeadline(ctx.upstreamTimeoutMs, { parentSignal: signal });
+  const result = await ctx.inference.predictTajweed(job.payload.input, deadline);
+  requireTajweedSemantics(result);
+
+  const response = structuredClone(result);
+  if (!ANALYSIS_STAFF.includes(job.payload.responseRole)) redactWithheldFindings(response);
+  return {
+    result: { response: orderJsonObjectKeys(response) },
+    commit: async (tx) => persistTajweedFindingsInTransaction({
+      tx,
+      actor: { tenantId: job.tenantId, userId: job.actorId },
+      sessionId: job.subjectId,
+      result,
+      trace: job.payload.requestTrace,
+    }),
+  };
 }
 
 /** The shared ASR path — `proxy_asr` (ml_proxy.rs:211). */
@@ -469,13 +481,15 @@ async function proxyAsr(req, reply, ctx, label, path) {
       ? { ...req.body, traceId: trace }
       : req.body;
 
-  const result = await forward({
+  const result = await postJson({
     url: `${ctx.asrInferenceUrl}${path}`,
     keyHeader: "x-asr-api-key",
     keyValue: ctx.asrApiKey,
     body,
     label,
     service: "ASR",
+    timeoutMs: ctx.upstreamTimeoutMs,
+    deadline: ctx.deadline,
   });
 
   requireProducerAttribution(

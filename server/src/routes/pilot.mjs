@@ -32,22 +32,16 @@ export async function bootstrap(req, reply, ctx) {
   const token = req.body?.token;
   if (typeof token !== "string") throw new RejectionError("token is required", 422);
 
-  const body = await ctx.db.sql.begin(async (tx) => {
-    // A plain transaction, NOT withTenant: the tenant is not known until the invitation is
-    // consumed. `consume_pilot_invitation_by_hash` is SECURITY DEFINER for exactly that reason.
+  const body = await ctx.db.withDiscoveredTenant(async (tx) => {
+    // The tenant is not known until this locked-down SECURITY DEFINER function consumes the token.
     const [row] = await tx`
       SELECT tenant_id, learner_id FROM app.consume_pilot_invitation_by_hash(${sha256Hex(token)})`;
-    // 401, not 404: an invitation that is missing, expired or ALREADY CONSUMED are the same answer.
-    // Distinguishing them would tell a caller which tokens once existed.
+    // 401, not 404: missing, expired, and already-consumed invitations are the same answer.
     if (!row) throw Unauthorized("invitation not valid");
-
-    const tenantId = row.tenant_id;
-    const learnerId = row.learner_id;
-
-    // Now that the tenant is known, set the GUC for the REST of this transaction so the user lookup
-    // below is RLS-scoped. Bound parameter, never interpolated — same rule as begin_tenant_tx.
-    await tx`SELECT set_config('app.tenant_id', ${tenantId}, true)`;
-
+    return { tenantId: row.tenant_id, learnerId: row.learner_id };
+  }, async (tx, { tenantId, learnerId }) => {
+    // `withDiscoveredTenant` installed the transaction-local GUC and shared statement timeout
+    // before this tenant-owned work became callable.
     const [user] = await tx`
       SELECT display_name, role FROM users WHERE id = ${learnerId} AND tenant_id = ${tenantId}`;
     if (!user) throw new ApiError("invited user not found", 500);

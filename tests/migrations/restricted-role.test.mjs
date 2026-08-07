@@ -33,7 +33,16 @@ test("provisioning produces a login role that cannot bypass RLS", async (t) => {
     `select r.rolcanlogin, r.rolsuper, r.rolbypassrls, r.rolcreatedb, r.rolcreaterole,
             has_schema_privilege($1, 'public', 'usage') as public_usage,
             has_table_privilege($1, 'public.users', 'select') as users_select,
-            has_function_privilege($1, 'app.current_tenant_id()', 'execute') as tenant_function
+            has_function_privilege($1, 'app.current_tenant_id()', 'execute') as tenant_function,
+            has_function_privilege(
+              $1, 'app.consume_device_enrollment_invitation_by_hash(text)', 'execute'
+            ) as device_enrollment_function,
+            has_function_privilege(
+              $1, 'app.get_device_session_by_access_hash(text)', 'execute'
+            ) as device_access_function,
+            has_function_privilege(
+              $1, 'app.get_device_session_by_refresh_hash(text)', 'execute'
+            ) as device_refresh_function
      from pg_roles r where r.rolname = $1`,
     [roleName],
   );
@@ -47,5 +56,8 @@ test("provisioning produces a login role that cannot bypass RLS", async (t) => {
     public_usage: true,
     users_select: true,
     tenant_function: true,
+    device_enrollment_function: true,
+    device_access_function: true,
+    device_refresh_function: true,
   });
 });

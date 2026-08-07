@@ -35,7 +35,76 @@ test("the permanent contract and manifest preserve the exact 42-operation runtim
   assert.equal(manifest.baselineSource, "services/platform-api/src/lib.rs");
   assert.equal(manifest.baselineOperations.length, 42);
   assert.deepEqual(sortedKeys(manifest.baselineOperations), sortedKeys(runtime));
-  assert.deepEqual(sortedKeys(openapiOperations()), sortedKeys(runtime));
+});
+
+test("the active contract is the baseline plus only implemented target additions", () => {
+  const implemented = manifest.targetAdditions.filter((operation) =>
+    ["implemented-node", "implemented-owner-gated"].includes(operation.implementationStatus),
+  );
+  assert.deepEqual(sortedKeys(openapiOperations()), sortedKeys([...runtime, ...implemented]));
+  assert.equal(openapiOperations().length, 46, "the contract is baseline plus four target additions");
+});
+
+test("learner history is an implemented, strict, bounded target addition", () => {
+  const addition = manifest.targetAdditions.find((operation) => operation.feature === "learner-history");
+  assert.equal(addition?.implementationStatus, "implemented-node");
+
+  const operation = spec.paths["/v1/learner/recitation-sessions"]?.get;
+  assert.ok(operation, "the implemented learner-history operation is missing from OpenAPI");
+  const parameters = Object.fromEntries((operation.parameters ?? []).map((parameter) => [parameter.name, parameter]));
+  assert.deepEqual(parameters.limit?.schema, {
+    type: "integer",
+    minimum: 1,
+    maximum: 50,
+    default: 20,
+  });
+  assert.equal(parameters.cursor?.schema?.type, "string");
+  assert.deepEqual(operation.responses?.["200"]?.content?.["application/json"]?.schema, {
+    $ref: "#/components/schemas/LearnerRecitationHistoryPage",
+  });
+  for (const schema of ["LearnerRecitationHistoryItem", "LearnerRecitationHistoryPage"]) {
+    assert.equal(spec.components.schemas[schema]?.additionalProperties, false, `${schema} must be strict`);
+  }
+});
+
+test("device identity exposes exactly three strict owner-gated operations", () => {
+  const additions = manifest.targetAdditions.filter((operation) =>
+    operation.feature.startsWith("device-"),
+  );
+  assert.equal(additions.length, 3);
+  assert.ok(additions.every((operation) => operation.implementationStatus === "implemented-owner-gated"));
+
+  const operations = [
+    ["post", "/v1/device-enrollments:exchange", "DeviceEnrollmentExchangeRequest", "DeviceCredentialBundle"],
+    ["post", "/v1/device-sessions:refresh", "DeviceSessionRefreshRequest", "DeviceCredentialBundle"],
+    ["delete", "/v1/device-sessions/current", null, "DeviceSessionRevocationResult"],
+  ];
+  for (const [method, path, requestSchema, responseSchema] of operations) {
+    const operation = spec.paths[path]?.[method];
+    assert.ok(operation, `${method.toUpperCase()} ${path} is absent`);
+    assert.equal(operation["x-owner-gate"], "DEVICE_IDENTITY_ENABLED=1");
+    assert.deepEqual(operation.responses?.["200"]?.content?.["application/json"]?.schema, {
+      $ref: `#/components/schemas/${responseSchema}`,
+    });
+    if (requestSchema) {
+      assert.deepEqual(
+        operation.requestBody?.content?.["application/json"]?.schema,
+        { $ref: `#/components/schemas/${requestSchema}` },
+      );
+    } else {
+      assert.equal(operation.requestBody, undefined);
+      assert.deepEqual(operation.security, [{ bearerAuth: [] }]);
+    }
+  }
+
+  for (const schemaName of [
+    "DeviceEnrollmentExchangeRequest",
+    "DeviceSessionRefreshRequest",
+    "DeviceCredentialBundle",
+    "DeviceSessionRevocationResult",
+  ]) {
+    assert.equal(spec.components.schemas[schemaName]?.additionalProperties, false, `${schemaName} is permissive`);
+  }
 });
 
 test("retained baseline plus explicit additions mechanically produces the target", () => {
@@ -236,7 +305,7 @@ test("strict proxy response fixtures validate and undeclared envelope fields fai
 test("the real ML producers satisfy the permanent response contract", async () => {
   process.env.AUDIO_STORAGE_DIR = mkdtempSync(join(tmpdir(), "qrai-openapi-producer-"));
   const { predictAlignment, predictTajweed } = await import(
-    "../../services/ml-inference/server.mjs"
+    "../../server/src/inference/runtime.mjs"
   );
   const validators = compileResponseValidators(spec);
   const requests = [

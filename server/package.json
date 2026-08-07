@@ -11,16 +11,18 @@
     "scripts"
   ],
   "scripts": {
-    "lint": "node --check src/app.mjs src/main.mjs src/container-healthcheck.mjs",
+    "lint": "node --check src/app.mjs src/main.mjs src/worker.mjs src/container-healthcheck.mjs src/identity/*.mjs src/inference/*.mjs src/jobs/*.mjs src/lib/*.mjs src/routes/*.mjs src/storage/*.mjs scripts/provision-device-enrollment.mjs scripts/requeue-dead-job.mjs",
     "typecheck": "tsc --project tsconfig.json",
     "test": "node --test ../tests/node-api/standalone-lifecycle.test.mjs",
-    "build": "pnpm run lint && pnpm run typecheck"
+    "build": "pnpm run lint && pnpm run typecheck",
+    "provision:device-enrollment": "node scripts/provision-device-enrollment.mjs"
   },
   "engines": {
     "node": ">=22.13"
   },
   "packageManager": "pnpm@11.7.0",
   "dependencies": {
+    "@aws-sdk/client-s3": "3.1101.0",
     "@fastify/cors": "^11.3.0",
     "fastify": "^5.11.0",
     "jose": "^6.2.5",

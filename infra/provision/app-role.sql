@@ -41,6 +41,24 @@ begin
   if to_regprocedure('app.consume_pilot_invitation_by_hash(text)') is not null then
     execute format('grant execute on function app.consume_pilot_invitation_by_hash(text) to %I', role_name);
   end if;
+  if to_regprocedure('app.consume_device_enrollment_invitation_by_hash(text)') is not null then
+    execute format(
+      'grant execute on function app.consume_device_enrollment_invitation_by_hash(text) to %I',
+      role_name
+    );
+  end if;
+  if to_regprocedure('app.get_device_session_by_access_hash(text)') is not null then
+    execute format(
+      'grant execute on function app.get_device_session_by_access_hash(text) to %I',
+      role_name
+    );
+  end if;
+  if to_regprocedure('app.get_device_session_by_refresh_hash(text)') is not null then
+    execute format(
+      'grant execute on function app.get_device_session_by_refresh_hash(text) to %I',
+      role_name
+    );
+  end if;
 
   execute format('grant select, insert, update, delete on all tables in schema public to %I', role_name);
   execute format(

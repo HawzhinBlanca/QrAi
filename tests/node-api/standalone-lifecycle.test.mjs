@@ -10,6 +10,7 @@ const serverPackagePath = join(repo, "server", "package.json");
 const appPath = join(repo, "server", "src", "app.mjs");
 
 const runtimeDependencies = {
+  "@aws-sdk/client-s3": "3.1101.0",
   "@fastify/cors": "^11.3.0",
   fastify: "^5.11.0",
   jose: "^6.2.5",
@@ -32,7 +33,10 @@ test("server is an ESM workspace with an explicit production dependency boundary
     assert.equal(manifest.devDependencies?.[dependency], undefined, `${dependency} must be a production dependency`);
   }
   assert.equal(manifest.exports?.["."], "./src/app.mjs");
-  assert.equal(manifest.scripts?.lint, "node --check src/app.mjs src/main.mjs src/container-healthcheck.mjs");
+  assert.equal(
+    manifest.scripts?.lint,
+    "node --check src/app.mjs src/main.mjs src/worker.mjs src/container-healthcheck.mjs src/identity/*.mjs src/inference/*.mjs src/jobs/*.mjs src/lib/*.mjs src/routes/*.mjs src/storage/*.mjs scripts/provision-device-enrollment.mjs scripts/requeue-dead-job.mjs",
+  );
   assert.equal(manifest.scripts?.typecheck, "tsc --project tsconfig.json");
   assert.equal(manifest.scripts?.build, "pnpm run lint && pnpm run typecheck");
 });
@@ -69,16 +73,14 @@ test("importing the composition root has no listen side effect and exposes one a
 
 test("the package composition root starts and closes the unchanged local health route", async (t) => {
   const { createApplication } = await import(pathToFileURL(appPath).href);
-  const app = createApplication({
-    logger: false,
-    ported: new Set(["GET /health"]),
-    upstream: "http://127.0.0.1:1",
-  });
+  const app = createApplication({ logger: false });
   t.after(() => app.close());
 
   await app.ready();
   const response = await app.inject({ method: "GET", url: "/health" });
 
   assert.equal(response.statusCode, 200);
-  assert.deepEqual(app.portedRoutes, ["GET /health"]);
+  assert.equal(app.apiMode, "standalone");
+  assert.ok(app.localRouteKeys.includes("GET /health"));
+  assert.ok(app.localRouteKeys.length >= 40, "standalone did not register the executable API");
 });

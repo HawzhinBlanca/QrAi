@@ -3,11 +3,8 @@
  *
  *   node --test tests/api-parity/audio-index-parity.test.mjs
  *
- * This file used to document `NODE_API_PORTED="POST /v1/audio-chunks"`. That command has never
- * worked: the route has no Node handler and is not in PORTABLE, so the shell refuses to boot with
- * `NODE_API_PORTED names an unportable route`. Nobody ran it. The "shell" side here is therefore a
- * PROXY to Rust by necessity, which is the harness-soundness half of the A/B rather than a claim
- * about a port — and that is correct for a route nobody has ported.
+ * The shell is explicitly started with the index and playback routes in `NODE_API_PORTED` so the
+ * vertical proof cannot silently send either half back through the Rust compatibility runtime.
  *
  * The missing half of playback. Audio was stored by ml-inference and NOTHING wrote the row that says
  * where it is, so `audio_chunks` was populated by a test fixture and a smoke script and by nothing
@@ -26,6 +23,9 @@
  * whose recording a teacher is later played.
  */
 import assert from "node:assert/strict";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import test, { after, before } from "node:test";
 
 import {
@@ -36,10 +36,14 @@ import {
   startApi,
   startShell,
 } from "./lib/harness.mjs";
+import { issueRealtimeTicket } from "../../server/src/lib/ticket.mjs";
+import { createFilesystemAudioObjectStore } from "../../server/src/storage/audio-object-store.mjs";
 
 let api;
 let shell;
 let seeded;
+let audioStorageDir;
+let audioObjectStore;
 
 const TICKET_SECRET = "audio-index-test-secret";
 
@@ -93,13 +97,24 @@ async function ticketFor(sessionId, learnerId) {
 before(async () => {
   const env = { REALTIME_GATEWAY_TICKET_SECRET: TICKET_SECRET };
   api = await startApi({ env });
-  shell = await startShell({ upstream: api.upstreamUrl ?? api.baseUrl, env });
+  audioStorageDir = mkdtempSync(join(tmpdir(), "qrai-audio-index-parity-"));
+  audioObjectStore = createFilesystemAudioObjectStore({ rootDir: audioStorageDir });
+  shell = await startShell({
+    upstream: api.upstreamUrl ?? api.baseUrl,
+    env: {
+      ...env,
+      AUDIO_STORAGE_DIR: audioStorageDir,
+      NODE_API_PORTED:
+        "POST /v1/audio-chunks,GET /v1/tajweed-findings/{id}/audio",
+    },
+  });
   seeded = await seedSession();
 });
 
 after(async () => {
   await shell?.stop();
   await api?.stop();
+  if (audioStorageDir) rmSync(audioStorageDir, { recursive: true, force: true });
 });
 
 const impls = () => [
@@ -118,7 +133,7 @@ const chunkBody = (over = {}) => ({
 });
 
 const rowsFor = (chunkId) =>
-  queryJson("SELECT tenant_id, session_id, start_ms, end_ms FROM audio_chunks WHERE id = $1", [chunkId]);
+  queryJson("SELECT tenant_id, session_id, start_ms, end_ms, object_key FROM audio_chunks WHERE id = $1", [chunkId]);
 
 test("a valid ticket indexes the chunk", async () => {
   for (const [impl, base] of impls()) {
@@ -138,6 +153,11 @@ test("a valid ticket indexes the chunk", async () => {
     assert.equal(row.session_id, seeded.session);
     assert.equal(Number(row.start_ms), 640, `${impl}: the span did not survive`);
     assert.equal(Number(row.end_ms), 1230);
+    assert.equal(
+      row.object_key,
+      `audio/v1/${TENANT}/${seeded.learnerId}/${seeded.session}/${body.chunkId}.pcm`,
+      `${impl}: the caller rather than verified session identity authored object_key`,
+    );
   }
 });
 
@@ -145,12 +165,25 @@ test("no ticket, a forged one, or one for another session is refused", async () 
   const good = await ticketFor(seeded.session, seeded.learnerId);
   const other = await seedSession();
   const otherToken = await ticketFor(other.session, other.learnerId);
+  const expired = issueRealtimeTicket(
+    {
+      sessionId: seeded.session,
+      tenantId: TENANT,
+      learnerId: seeded.learnerId,
+      externalAsrProcessing: false,
+      audioRetention: "teacher-review",
+      expiresAtUnixSeconds: Math.floor(Date.now() / 1000) - 1,
+      nonce: `expired-${Date.now().toString(36)}`,
+    },
+    TICKET_SECRET,
+  );
 
   for (const [impl, base] of impls()) {
     for (const [label, headers] of [
       ["no ticket", {}],
       ["forged ticket", { "x-realtime-ticket": "not.a.ticket" }],
       ["ticket signed for a DIFFERENT session", { "x-realtime-ticket": otherToken }],
+      ["expired ticket", { "x-realtime-ticket": expired }],
       // A valid ticket with its signature truncated: the claims still read, so a route that parsed
       // without verifying would accept it.
       ["ticket with a broken signature", { "x-realtime-ticket": `${good.slice(0, -4)}AAAA` }],
@@ -169,6 +202,34 @@ test("no ticket, a forged one, or one for another session is refused", async () 
         `${impl}: "${label}" was refused but still wrote a row`,
       );
     }
+  }
+});
+
+test("signed learner or retention claims that disagree with current session state fail closed", async () => {
+  for (const [label, claims] of [
+    ["learner", { learnerId: "another-learner", audioRetention: "teacher-review" }],
+    ["retention", { learnerId: seeded.learnerId, audioRetention: "training-opt-in" }],
+  ]) {
+    const token = issueRealtimeTicket(
+      {
+        sessionId: seeded.session,
+        tenantId: TENANT,
+        externalAsrProcessing: false,
+        expiresAtUnixSeconds: Math.floor(Date.now() / 1000) + 300,
+        nonce: `${label}-${Date.now().toString(36)}`,
+        ...claims,
+      },
+      TICKET_SECRET,
+    );
+    const body = chunkBody();
+    const res = await request(shell.baseUrl, "/v1/audio-chunks", {
+      method: "POST",
+      tenant: null,
+      headers: { "x-realtime-ticket": token },
+      body,
+    });
+    assert.equal(res.status, 401, `${label} mismatch answered ${res.status}: ${res.text}`);
+    assert.equal((await rowsFor(body.chunkId)).length, 0, `${label} mismatch wrote an index row`);
   }
 });
 
@@ -210,6 +271,27 @@ test("a retry of the same chunk is idempotent, not a conflict", async () => {
     assert.equal(first.status, 200, `${impl}: ${first.text}`);
     assert.equal(second.status, 200, `${impl}: a retry answered ${second.status}: ${second.text}`);
     assert.equal((await rowsFor(body.chunkId)).length, 1, `${impl}: the retry duplicated the row`);
+  }
+});
+
+test("the same chunk id cannot silently accept different immutable metadata", async () => {
+  for (const [impl, base] of impls()) {
+    const token = await ticketFor(seeded.session, seeded.learnerId);
+    const body = chunkBody();
+    const first = await request(base, "/v1/audio-chunks", {
+      method: "POST", tenant: null, headers: { "x-realtime-ticket": token }, body,
+    });
+    const conflict = await request(base, "/v1/audio-chunks", {
+      method: "POST",
+      tenant: null,
+      headers: { "x-realtime-ticket": token },
+      body: { ...body, startMs: body.startMs + 2_000, endMs: body.endMs + 2_000 },
+    });
+    assert.equal(first.status, 200, `${impl}: ${first.text}`);
+    assert.equal(conflict.status, 409, `${impl}: altered retry answered ${conflict.status}: ${conflict.text}`);
+    const [row] = await rowsFor(body.chunkId);
+    assert.equal(Number(row.start_ms), body.startMs, `${impl}: altered retry replaced the original span`);
+    assert.equal(Number(row.end_ms), body.endMs, `${impl}: altered retry replaced the original span`);
   }
 });
 
@@ -271,6 +353,22 @@ test("indexing a chunk makes its finding's audio reachable — the whole point",
   // (ADR-0036) — so a freshly seeded one sorts to the bottom and falls outside the page. That is a
   // real property of the queue worth knowing, and it is not what this test is about.
   const audioPath = `/v1/tajweed-findings/${findingId}/audio`;
+  const chunkId = `chunk-e2e-${Date.now().toString(36)}`;
+
+  // The real flow stores first and indexes second. Keeping the object present while the index is
+  // absent proves the API does not enumerate storage as an authorization or discovery shortcut.
+  const storedBytes = Buffer.from("indexed-private-recitation");
+  await audioObjectStore.put({
+    tenantId: TENANT,
+    learnerId: s.learnerId,
+    sessionId: s.session,
+    chunkId,
+    startMs: 600,
+    endMs: 1400,
+    sampleRate: 16000,
+    audioRetention: "teacher-review",
+    audioBytes: storedBytes,
+  });
 
   const before = await request(shell.baseUrl, audioPath, { role: "teacher" });
   assert.equal(
@@ -286,7 +384,7 @@ test("indexing a chunk makes its finding's audio reachable — the whole point",
     headers: { "x-realtime-ticket": token },
     body: {
       sessionId: s.session,
-      chunkId: `chunk-e2e-${Date.now().toString(36)}`,
+      chunkId,
       startMs: 600,
       endMs: 1400,
       sampleRate: 16000,
@@ -295,18 +393,10 @@ test("indexing a chunk makes its finding's audio reachable — the whole point",
   });
   assert.equal(res.status, 200, res.text);
 
-  // After indexing the route gets PAST the consent and index checks and goes to storage, which is
-  // not running here — so a 502 is the proof. Still 404 would mean the row was written and nothing
-  // reads it, which is the failure this whole piece exists to prevent.
+  // After indexing, the route gets past consent and index checks and validates the exact private
+  // object. This is stronger than the old expected-502 proof because storage is now an injected
+  // part of the Node composition rather than an absent compatibility service.
   const after = await request(shell.baseUrl, audioPath, { role: "teacher" });
-  assert.notEqual(
-    after.status,
-    404,
-    "the chunk was indexed but the finding still reports no audio — the index is not being read",
-  );
-  assert.equal(
-    after.status,
-    502,
-    `expected the route to reach storage and fail there (502), got ${after.status}: ${after.text}`,
-  );
+  assert.equal(after.status, 200, `indexed private audio was not served: ${after.text}`);
+  assert.deepEqual(Buffer.from(after.body.audioBase64, "base64"), storedBytes);
 });

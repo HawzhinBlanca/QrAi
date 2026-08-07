@@ -18,36 +18,16 @@ import { createHash, timingSafeEqual } from "node:crypto";
 
 import { jwtVerify } from "jose";
 
-export class ApiError extends Error {
-  constructor(message, status, detail) {
-    super(message);
-    this.name = "ApiError";
-    this.status = status;
-    /** Server-side only. Never serialized into a response. */
-    this.detail = detail;
-  }
-}
+import { DEVICE_ACCESS_PREFIX, resolveDeviceAccess } from "../identity/device-sessions.mjs";
+import {
+  ApiError,
+  Forbidden,
+  NotFound,
+  RejectionError,
+  Unauthorized,
+} from "./api-errors.mjs";
 
-/**
- * An axum EXTRACTOR rejection — a request rejected before the handler ran.
- *
- * These do not use the `{"error": …}` JSON body every in-handler failure uses. `Json<T>` failing to
- * deserialize, and `Path<i32>` failing to parse, both return `text/plain; charset=utf-8` with the
- * extractor's own message. Found twice by the differ (N9 on a path parameter, N12a on a body), so
- * it is one type rather than a second bespoke helper each time it turns up.
- *
- * The message TEXT of a serde rejection is a recorded, unfixed divergence: reproducing it
- * byte-for-byte means reimplementing serde's error formatting including line/column offsets, and it
- * leaks deserializer internals. The STATUS and the CONTENT-TYPE are what clients branch on, and
- * those are matched.
- */
-export class RejectionError extends ApiError {
-  constructor(message, status) {
-    super(message, status);
-    this.name = "RejectionError";
-    this.contentType = "text/plain; charset=utf-8";
-  }
-}
+export { ApiError, Forbidden, NotFound, RejectionError, Unauthorized };
 
 /**
  * The wire messages are transcribed VERBATIM from services/platform-api/src/types.rs:334-340.
@@ -56,10 +36,6 @@ export class RejectionError extends ApiError {
  * better and were wrong. The `detail` argument is for server-side context only; it never reaches a
  * client, because a message that varies with internal state is a topology leak.
  */
-export const Unauthorized = (detail) => new ApiError("missing or invalid authorization", 401, detail);
-export const Forbidden = (detail) => new ApiError("actor is not allowed to perform this action", 403, detail);
-export const NotFound = (detail) => new ApiError("record not found", 404, detail);
-
 const isNonEmptyString = (v) => typeof v === "string" && v.trim() !== "";
 
 /**
@@ -107,8 +83,8 @@ function actorFrom(tenantId, userId, role) {
 /**
  * Resolve the caller.
  *
- * Returns `{ actor }` when this service can authenticate the request itself, or
- * `{ delegate: "reason" }` when it cannot and the request must be proxied to the Rust service.
+ * Returns `{ actor }` when this service can authenticate the request itself. Compatibility mode
+ * may return `{ delegate: "reason" }` only when an explicit Rust upstream exists.
  *
  * **Delegation is deliberate, and it is fail-SAFE.** The pilot `__Host-qrai-pilot` cookie path is
  * 306 lines of session lookup, idle-roll, CSRF and Origin checks (`handlers/pilot.rs`) that this
@@ -126,10 +102,16 @@ export async function resolveActor(req, ctx) {
   // Until N13a this function returned `{ delegate }` on any cookie, which made the order moot.
   const auth = h.authorization;
   if (isNonEmptyString(auth) && auth.startsWith("Bearer ")) {
+    const bearer = auth.slice(7);
+    if (bearer.startsWith(DEVICE_ACCESS_PREFIX)) {
+      if (!ctx.db) throw Unauthorized("device identity database is unavailable");
+      const { actor } = await resolveDeviceAccess(ctx.db, bearer);
+      return { actor };
+    }
     try {
       // `algorithms` is not optional. Without it a token declaring `alg: none` — or HS256 signed
       // with a public key the attacker chose — is accepted. jose refuses by construction here.
-      const { payload } = await jwtVerify(auth.slice(7), new TextEncoder().encode(jwtSecret), {
+      const { payload } = await jwtVerify(bearer, new TextEncoder().encode(jwtSecret), {
         algorithms: ["HS256"],
       });
       const actor = actorFrom(payload.tenant_id, payload.sub, payload.role);
@@ -143,9 +125,12 @@ export async function resolveActor(req, ctx) {
 
   const cookieToken = pilotCookieToken(h.cookie);
   if (cookieToken !== null) {
-    // No database means nothing is ported and there is nothing to authenticate against — keep the
-    // pre-N13a behaviour and let Rust do it. This is also what keeps `authz.test.mjs` hermetic.
-    if (!ctx.db) return { delegate: "pilot cookie auth needs a database" };
+    // A compatibility shell can still delegate while its local DB is absent. Standalone has no
+    // such escape hatch: fail closed with the same generic 401 used for invalid credentials.
+    if (!ctx.db) {
+      if (ctx.upstream) return { delegate: "pilot cookie auth needs a database" };
+      throw Unauthorized("pilot cookie auth needs a database");
+    }
     return { actor: await resolvePilotSession(req, cookieToken, ctx) };
   }
 

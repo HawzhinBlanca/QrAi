@@ -1,154 +1,15 @@
-import { createHash } from "node:crypto";
-import {
-  existsSync,
-  lstatSync,
-  readFileSync,
-  readdirSync,
-  statSync,
-} from "node:fs";
-import { basename, join, relative, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import pg from "pg";
 
+import {
+  AudioObjectIntegrityError,
+  AudioObjectNotFoundError,
+  createAudioObjectStoreFromEnv,
+} from "../src/storage/audio-object-store.mjs";
+
 const { Client } = pg;
 const RETAINED_AUDIO = new Set(["teacher-review", "training-opt-in"]);
-
-/**
- * @typedef {object} RepairSummary
- * @property {"apply" | "dry-run"} mode
- * @property {number} scanned
- * @property {number} retainedCandidates
- * @property {number} skippedRetention
- * @property {number} wouldRepair
- * @property {number} repaired
- * @property {number} alreadyIndexed
- * @property {number} refused
- * @property {Array<{metadataPath: string, chunkId?: string, reason: string}>} errors
- */
-
-function safeSegment(value, fieldName) {
-  if (
-    typeof value !== "string" ||
-    value.length === 0 ||
-    value.length > 128 ||
-    value === "." ||
-    value === ".." ||
-    value.includes("..") ||
-    value.includes("/") ||
-    value.includes("\\") ||
-    value.includes("\0") ||
-    !/^[A-Za-z0-9][A-Za-z0-9._:-]*$/.test(value)
-  ) {
-    throw new Error(`${fieldName} is not a safe storage segment`);
-  }
-  return value;
-}
-
-function integer(value, fieldName, { minimum = 0, maximum = Number.MAX_SAFE_INTEGER } = {}) {
-  if (!Number.isSafeInteger(value) || value < minimum || value > maximum) {
-    throw new Error(`${fieldName} must be an integer in ${minimum}..${maximum}`);
-  }
-  return value;
-}
-
-function metadataPaths(audioStorageDir) {
-  if (!audioStorageDir || !existsSync(audioStorageDir) || !statSync(audioStorageDir).isDirectory()) {
-    throw new Error(`AUDIO_STORAGE_DIR is not a readable directory: ${audioStorageDir || "<unset>"}`);
-  }
-  /** @type {string[]} */
-  const paths = [];
-  for (const tenantEntry of readdirSync(audioStorageDir, { withFileTypes: true })) {
-    if (!tenantEntry.isDirectory()) continue;
-    const tenantDir = join(audioStorageDir, tenantEntry.name);
-    for (const learnerEntry of readdirSync(tenantDir, { withFileTypes: true })) {
-      if (!learnerEntry.isDirectory()) continue;
-      const learnerDir = join(tenantDir, learnerEntry.name);
-      for (const file of readdirSync(learnerDir, { withFileTypes: true })) {
-        if (file.isFile() && file.name.endsWith(".meta.json")) {
-          paths.push(join(learnerDir, file.name));
-        }
-      }
-    }
-  }
-  return paths.sort();
-}
-
-function loadCandidate(audioStorageDir, metadataPath) {
-  const parts = relative(audioStorageDir, metadataPath).split(sep);
-  if (parts.length !== 3) throw new Error("metadata is not at <tenant>/<learner>/<chunk>.meta.json");
-  const [pathTenant, pathLearner, metadataName] = parts;
-  safeSegment(pathTenant, "path tenantId");
-  safeSegment(pathLearner, "path learnerId");
-
-  let metadata;
-  try {
-    metadata = JSON.parse(readFileSync(metadataPath, "utf8"));
-  } catch {
-    throw new Error("metadata is not valid JSON");
-  }
-  if (!metadata || typeof metadata !== "object" || Array.isArray(metadata)) {
-    throw new Error("metadata must be an object");
-  }
-
-  const tenantId = safeSegment(metadata.tenantId, "metadata tenantId");
-  const learnerId = safeSegment(metadata.learnerId, "metadata learnerId");
-  const sessionId = safeSegment(metadata.sessionId, "metadata sessionId");
-  const chunkId = safeSegment(metadata.chunkId, "metadata chunkId");
-  if (tenantId !== pathTenant || learnerId !== pathLearner) {
-    throw new Error("path ownership does not match metadata tenantId/learnerId");
-  }
-  if (metadataName !== `${chunkId}.meta.json` || basename(metadataPath) !== metadataName) {
-    throw new Error("metadata filename does not match chunkId");
-  }
-
-  if (!RETAINED_AUDIO.has(metadata.audioRetention)) {
-    return { skippedRetention: true, chunkId, metadataPath };
-  }
-
-  const startMs = integer(metadata.startMs, "startMs");
-  const endMs = integer(metadata.endMs, "endMs");
-  if (endMs <= startMs) throw new Error("startMs/endMs must satisfy 0 <= startMs < endMs");
-  const sampleRate = integer(metadata.sampleRate ?? 16_000, "sampleRate", {
-    minimum: 1,
-    maximum: 384_000,
-  });
-  const expectedObjectKey = `${tenantId}/${learnerId}/${chunkId}.bin`;
-  if (metadata.objectKey !== expectedObjectKey) {
-    throw new Error("objectKey does not match the storage path and declared ownership");
-  }
-
-  const audioPath = join(audioStorageDir, tenantId, learnerId, `${chunkId}.bin`);
-  if (!existsSync(audioPath)) throw new Error("metadata has no matching audio object");
-  const audioStat = lstatSync(audioPath);
-  if (!audioStat.isFile() || audioStat.isSymbolicLink()) {
-    throw new Error("matching audio object must be a regular non-symlink file");
-  }
-  const audioSize = audioStat.size;
-  if (metadata.audioSize != null && integer(metadata.audioSize, "audioSize") !== audioSize) {
-    throw new Error("audioSize does not match the stored object");
-  }
-  if (metadata.audioSha256 != null) {
-    if (!/^[a-f0-9]{64}$/.test(metadata.audioSha256)) {
-      throw new Error("audioSha256 is malformed");
-    }
-    const actualHash = createHash("sha256").update(readFileSync(audioPath)).digest("hex");
-    if (actualHash !== metadata.audioSha256) throw new Error("audioSha256 does not match the object");
-  }
-
-  return {
-    skippedRetention: false,
-    metadataPath,
-    tenantId,
-    learnerId,
-    sessionId,
-    chunkId,
-    startMs,
-    endMs,
-    sampleRate,
-    objectKey: expectedObjectKey,
-  };
-}
 
 function sameIndex(row, candidate) {
   return (
@@ -178,7 +39,7 @@ async function reconcileCandidate(client, candidate, apply) {
     }
     if (session.learner_id !== candidate.learnerId) {
       await client.query("ROLLBACK");
-      return { status: "refused", reason: "database learner ownership disagrees with the sidecar" };
+      return { status: "refused", reason: "database learner ownership disagrees with the stored object" };
     }
 
     const existingResult = await client.query(
@@ -192,7 +53,7 @@ async function reconcileCandidate(client, candidate, apply) {
       await client.query("ROLLBACK");
       return sameIndex(existing, candidate)
         ? { status: "alreadyIndexed" }
-        : { status: "refused", reason: "existing index disagrees with the stored sidecar" };
+        : { status: "refused", reason: "existing index disagrees with the stored object" };
     }
     if (!apply) {
       await client.query("ROLLBACK");
@@ -226,75 +87,183 @@ async function reconcileCandidate(client, candidate, apply) {
   }
 }
 
+async function indexedRowsForTenant(client, tenantId) {
+  await client.query("BEGIN");
+  try {
+    await client.query("SELECT set_config('app.tenant_id', $1, true)", [tenantId]);
+    const result = await client.query(
+      `SELECT id, tenant_id, session_id, start_ms, end_ms, sample_rate, object_key
+         FROM audio_chunks
+        WHERE tenant_id = $1
+        ORDER BY id`,
+      [tenantId],
+    );
+    await client.query("ROLLBACK");
+    return result.rows;
+  } catch (error) {
+    await client.query("ROLLBACK").catch(() => {});
+    throw error;
+  }
+}
+
 /**
- * Reconcile retained audio sidecars with `audio_chunks` without trusting storage as an ownership
- * authority. The sidecar identifies a candidate; the tenant-scoped session row must independently
- * confirm both tenant and learner before any insert occurs.
+ * Reconcile private storage with `audio_chunks` without treating an object key as ownership
+ * authority. Storage supplies a candidate; the tenant-scoped session independently confirms its
+ * tenant and learner before repair. Dry-run is the default. Incomplete/corrupt and inverse
+ * index-without-object states are reported, never silently deleted.
  *
- * @param {{databaseUrl?: string, audioStorageDir?: string, apply?: boolean}} [options]
- * @returns {Promise<RepairSummary>}
+ * `tenantIds` is additive to tenants discovered from storage. A restricted RLS role cannot list
+ * every tenant globally, so operators pass a tenant when they need inverse-orphan coverage for a
+ * tenant that currently has no objects at all.
  */
 export async function repairAudioIndex(options = {}) {
-  const { databaseUrl, audioStorageDir, apply = false } = options;
+  const {
+    databaseUrl,
+    audioStorageDir,
+    audioObjectStore = null,
+    apply = false,
+    tenantIds = [],
+    env = process.env,
+  } = options;
   if (!databaseUrl) throw new Error("DATABASE_URL is required");
-  /** @type {RepairSummary} */
+  const ownsStore = audioObjectStore === null;
+  const store = audioObjectStore ?? createAudioObjectStoreFromEnv({
+    env: {
+      ...env,
+      ...(audioStorageDir ? { AUDIO_STORAGE_DIR: audioStorageDir } : {}),
+    },
+    production: env.NODE_ENV === "production",
+  });
   const summary = {
     mode: apply ? "apply" : "dry-run",
+    driver: store.driver,
     scanned: 0,
     retainedCandidates: 0,
     skippedRetention: 0,
     wouldRepair: 0,
     repaired: 0,
     alreadyIndexed: 0,
+    incompleteObjects: 0,
+    indexWithoutObject: 0,
     refused: 0,
     errors: [],
   };
-  const paths = metadataPaths(audioStorageDir);
   const client = new Client({ connectionString: databaseUrl });
   await client.connect();
   try {
-    for (const metadataPath of paths) {
+    const inventory = await store.inventory();
+    const readableByKey = new Map();
+    const tenants = new Set(tenantIds);
+    for (const entry of inventory) {
       summary.scanned += 1;
-      let candidate;
-      try {
-        candidate = loadCandidate(audioStorageDir, metadataPath);
-      } catch (error) {
+      if (entry.identity?.tenantId) tenants.add(entry.identity.tenantId);
+      if (!entry.dataPresent || !entry.metadataPresent || !entry.identity) {
+        summary.incompleteObjects += 1;
         summary.refused += 1;
-        summary.errors.push({ metadataPath, reason: error.message });
+        summary.errors.push({
+          objectKey: entry.objectKey,
+          chunkId: entry.identity?.chunkId,
+          reason: "object data/metadata pair is incomplete or has an invalid identity",
+        });
         continue;
       }
-      if (candidate.skippedRetention) {
+      let stored;
+      try {
+        stored = await store.get({ ...entry.identity, legacy: entry.legacy });
+      } catch (error) {
+        summary.refused += 1;
+        summary.errors.push({
+          objectKey: entry.objectKey,
+          chunkId: entry.identity.chunkId,
+          reason:
+            error instanceof AudioObjectIntegrityError || error instanceof AudioObjectNotFoundError
+              ? "object failed data/metadata integrity validation"
+              : "object storage read failed",
+        });
+        continue;
+      }
+      readableByKey.set(stored.objectKey, stored);
+      if (!RETAINED_AUDIO.has(stored.audioRetention)) {
         summary.skippedRetention += 1;
         continue;
       }
+      if (!Number.isSafeInteger(stored.startMs) || !Number.isSafeInteger(stored.endMs)) {
+        summary.refused += 1;
+        summary.errors.push({
+          objectKey: stored.objectKey,
+          chunkId: stored.chunkId,
+          reason: "retained object has no usable audio span",
+        });
+        continue;
+      }
       summary.retainedCandidates += 1;
+      const candidate = {
+        tenantId: stored.tenantId,
+        learnerId: stored.learnerId,
+        sessionId: stored.sessionId,
+        chunkId: stored.chunkId,
+        startMs: stored.startMs,
+        endMs: stored.endMs,
+        sampleRate: stored.sampleRate,
+        objectKey: stored.objectKey,
+      };
       const outcome = await reconcileCandidate(client, candidate, apply);
       if (outcome.status === "refused") {
         summary.refused += 1;
         summary.errors.push({
-          metadataPath,
-          chunkId: candidate.chunkId,
+          objectKey: stored.objectKey,
+          chunkId: stored.chunkId,
           reason: outcome.reason,
         });
       } else {
         summary[outcome.status] += 1;
       }
     }
+
+    for (const tenantId of [...tenants].sort()) {
+      if (typeof tenantId !== "string" || tenantId.trim() === "") {
+        throw new Error("tenantIds must contain non-empty strings");
+      }
+      for (const row of await indexedRowsForTenant(client, tenantId)) {
+        if (!readableByKey.has(row.object_key)) {
+          summary.indexWithoutObject += 1;
+          summary.errors.push({
+            objectKey: row.object_key,
+            chunkId: row.id,
+            reason: "database index has no readable matching audio object",
+          });
+        }
+      }
+    }
   } finally {
     await client.end();
+    if (ownsStore) await store.close();
   }
   return summary;
 }
 
-async function main() {
-  const args = process.argv.slice(2);
-  if (args.some((argument) => argument !== "--apply")) {
-    throw new Error("usage: node server/scripts/repair-audio-index.mjs [--apply]");
+function parseArgs(args) {
+  const tenantIds = [];
+  let apply = false;
+  for (const argument of args) {
+    if (argument === "--apply") apply = true;
+    else if (argument.startsWith("--tenant=")) tenantIds.push(argument.slice("--tenant=".length));
+    else throw new Error("usage: node server/scripts/repair-audio-index.mjs [--apply] [--tenant=ID ...]");
   }
+  return { apply, tenantIds };
+}
+
+async function main() {
+  const args = parseArgs(process.argv.slice(2));
+  const envTenantIds = (process.env.AUDIO_RECONCILE_TENANT_IDS ?? "")
+    .split(",")
+    .map((value) => value.trim())
+    .filter(Boolean);
   const result = await repairAudioIndex({
     databaseUrl: process.env.DATABASE_URL,
     audioStorageDir: process.env.AUDIO_STORAGE_DIR,
-    apply: args.includes("--apply"),
+    apply: args.apply,
+    tenantIds: [...envTenantIds, ...args.tenantIds],
   });
   process.stdout.write(`${JSON.stringify(result)}\n`);
   if (result.refused > 0) process.exitCode = 2;

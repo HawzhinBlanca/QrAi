@@ -16,10 +16,22 @@
  */
 import { randomUUID } from "node:crypto";
 
-import { ApiError, NotFound, RejectionError, requireAnyRole, resolveActor } from "../lib/authz.mjs";
+import {
+  ApiError,
+  NotFound,
+  RejectionError,
+  requireAnyRole,
+  requireSelfOrAny,
+  resolveActor,
+} from "../lib/authz.mjs";
+
 import { f64, sortKeysDeep } from "../lib/json.mjs";
 import { clearsLearnerFeedbackGate } from "../lib/learner-feedback-gate.mjs";
 import { proxy } from "../lib/proxy.mjs";
+import {
+  AudioObjectIntegrityError,
+  AudioObjectNotFoundError,
+} from "../storage/audio-object-store.mjs";
 
 const newId = (prefix) => `${prefix}-${randomUUID()}`;
 const traceId = (req) => req.headers["x-trace-id"] ?? null;
@@ -77,7 +89,10 @@ function storedFindingGateInput(row) {
     calibrationStatus: "uncalibrated",
     calibratorArtifactSha256: row.calibrator_artifact_sha256 ?? null,
     calibratorId: row.calibrator_id ?? null,
-    confidence: f64(Number(row.confidence ?? 0)),
+    // Gate inputs stay ordinary numbers. `RustF64` is a wire-only wrapper; feeding it to
+    // `clearsLearnerFeedbackGate` makes `typeof confidence === "number"` false and would keep even
+    // future release-trusted evidence withheld. Wrap only when constructing the HTTP response.
+    confidence: Number(row.confidence ?? 0),
     endMs: row.end_ms ?? null,
     evaluationEvidenceId: row.evaluation_evidence_id ?? null,
     evaluationEvidenceSha256: row.evaluation_evidence_sha256 ?? null,
@@ -118,7 +133,7 @@ export async function getFindingAudio(req, reply, ctx) {
   const findingId = req.params.id;
   const prepared = await ctx.db.withTenant(actor.tenantId, async (tx) => {
     const [row] = await tx`
-      SELECT rs.learner_id, cr.audio_retention,
+      SELECT rs.learner_id, wa.session_id, cr.audio_retention,
              ac.id AS chunk_id,
              wa.start_ms AS finding_start_ms, wa.end_ms AS finding_end_ms,
              (SELECT count(*) FROM audio_chunks c2
@@ -152,6 +167,7 @@ export async function getFindingAudio(req, reply, ctx) {
               ${tx.json({
                 trace_id: traceId(req),
                 outcome: status,
+                delivery: "attempted",
                 chunk_id: row.chunk_id ?? null,
                 learner_id: row.learner_id ?? null,
               })})`;
@@ -161,6 +177,7 @@ export async function getFindingAudio(req, reply, ctx) {
       auditId,
       chunkId: row.chunk_id ?? null,
       learnerId: row.learner_id ?? null,
+      sessionId: row.session_id ?? null,
       findingStartMs: Number(row.finding_start_ms ?? 0),
       findingEndMs: Number(row.finding_end_ms ?? 0),
       overlapping: Number(row.overlapping ?? 0),
@@ -180,39 +197,55 @@ export async function getFindingAudio(req, reply, ctx) {
   if (prepared.status === "unknown") {
     throw new ApiError("retention for this recording cannot be established", 410);
   }
-  if (prepared.status !== "available" || !prepared.chunkId || !prepared.learnerId) throw NotFound();
+  if (
+    prepared.status !== "available" ||
+    !prepared.chunkId ||
+    !prepared.learnerId ||
+    !prepared.sessionId
+  ) throw NotFound();
 
-  // The object key's PARTS, never the key — and the tenant is the ACTOR's, never a value read from
-  // the row. A tenant id taken from data is a tenant id an attacker can influence.
-  let upstream;
-  try {
-    upstream = await fetch(`${ctx.mlInferenceUrl}/v1/audio-objects:read`, {
-      method: "POST",
-      headers: { "content-type": "application/json", "x-ml-api-key": ctx.mlApiKey },
-      body: JSON.stringify({
-        tenantId: actor.tenantId,
-        learnerId: prepared.learnerId,
-        chunkId: prepared.chunkId,
-      }),
-    });
-  } catch {
+  if (!ctx.audioObjectStore) {
     throw new ApiError("audio storage unavailable", 502);
   }
 
-  if (upstream.status === 410) {
-    // ml-inference checks the retention stored ALONGSIDE the bytes. Reaching here means the two
-    // records disagree — the consent row said retain, the object said otherwise. Refuse.
-    throw new ApiError("this recording was not retained for review", 410);
-  }
-  if (upstream.status === 404) throw NotFound();
-  if (!upstream.ok) throw new ApiError("audio storage error", 502);
-
   let object;
   try {
-    object = await upstream.json();
-  } catch {
-    throw new ApiError("audio storage returned an invalid response", 502);
+    const stored = await ctx.audioObjectStore.get(
+      {
+        tenantId: actor.tenantId,
+        learnerId: prepared.learnerId,
+        sessionId: prepared.sessionId,
+        chunkId: prepared.chunkId,
+      },
+      { signal: ctx.deadline?.signal },
+    );
+    if (stored.audioRetention !== "teacher-review" && stored.audioRetention !== "training-opt-in") {
+      throw new ApiError("this recording was not retained for review", 410);
+    }
+    object = {
+      audioBase64: stored.audioBytes.toString("base64"),
+      endMs: stored.endMs,
+      sampleRate: stored.sampleRate,
+      startMs: stored.startMs,
+    };
+  } catch (error) {
+    if (error instanceof ApiError) throw error;
+    if (error instanceof AudioObjectNotFoundError) throw NotFound();
+    if (error instanceof AudioObjectIntegrityError) {
+      throw new ApiError("audio storage returned an invalid object", 502);
+    }
+    throw new ApiError("audio storage unavailable", 502);
   }
+
+  // Eligibility was audited before storage access; only a fully received and parsed object is
+  // marked served. A hung/partial transfer therefore leaves a durable attempt, never a playback
+  // completion claim.
+  await ctx.db.withTenant(actor.tenantId, async (tx) => {
+    await tx`
+      UPDATE audit_events
+      SET metadata = metadata || ${tx.json({ delivery: "served" })}
+      WHERE id = ${prepared.auditId} AND tenant_id = ${actor.tenantId}`;
+  });
 
   // json! keys, alphabetical.
   return reply.send({
@@ -469,6 +502,140 @@ export async function listScholarApprovals(req, reply, ctx) {
   return reply.send(body);
 }
 
+/**
+ * GET /v1/recitation-sessions/{id}/tajweed-findings — review.rs `list_session_tajweed_findings`.
+ *
+ * This is the learner-owned read, not the tenant-wide staff queue below. Every acoustic row stays
+ * present so the client can report pending review, while the judgement itself is removed from a
+ * withheld learner response. The same staff list authorizes the read and controls redaction; two
+ * lists would eventually disagree in the unsafe direction.
+ */
+export async function listSessionTajweedFindings(req, reply, ctx) {
+  const resolved = await resolveActor(req, ctx);
+  if (resolved.delegate) return proxy(req, reply, ctx.upstream);
+  const { actor } = resolved;
+
+  const staff = ["teacher", "admin", "ops"];
+  const body = await ctx.db.withTenant(actor.tenantId, async (tx) => {
+    const [session] = await tx`
+      SELECT learner_id
+      FROM recitation_sessions
+      WHERE id = ${req.params.id} AND tenant_id = ${actor.tenantId}`;
+    if (!session) throw NotFound();
+
+    // Lookup before ownership is intentional: an unknown/cross-tenant session is 404, while a
+    // different learner's in-tenant session is 403.
+    requireSelfOrAny(actor, session.learner_id, staff);
+    const isStaff = staff.includes(actor.role);
+
+    const rows = await tx`
+      SELECT tf.id, wa.word_id, wa.start_ms, wa.end_ms, tf.rule, tf.severity,
+             tf.confidence::float8 AS confidence, tf.explanation, tf.review_status,
+             tf.source_refs, tf.model_version_id, tf.audit_event_id,
+             tf.evaluation_evidence_id, tf.evaluation_evidence_sha256,
+             tf.model_artifact_sha256, tf.acoustic_dataset_version,
+             tf.acoustic_dataset_manifest_sha256, tf.calibrator_id,
+             tf.calibrator_artifact_sha256, cr.audio_retention,
+             audio.evidence_id AS audio_evidence_id, er.id AS matching_eval_id,
+             er.evidence_payload AS evaluation_evidence_payload
+      FROM tajweed_findings tf
+      JOIN word_alignments wa ON wa.id = tf.alignment_id
+      LEFT JOIN recitation_sessions rs ON rs.id = wa.session_id
+      LEFT JOIN consent_records cr ON cr.id = rs.consent_record_id
+      LEFT JOIN LATERAL (
+        SELECT ac.evidence_id
+          FROM audio_chunks ac
+         WHERE ac.session_id = wa.session_id
+           AND ac.tenant_id = tf.tenant_id
+           AND ac.start_ms < wa.end_ms AND ac.end_ms > wa.start_ms
+         ORDER BY ac.start_ms, ac.id
+         LIMIT 1
+      ) audio ON true
+      LEFT JOIN eval_runs er
+        ON er.tenant_id = tf.tenant_id
+       AND er.model_version_id = tf.model_version_id
+       AND er.evaluation_task = 'acoustic-tajweed'
+       AND er.evidence_kind = 'row-level-computed-evaluation'
+       AND er.evidence_eligibility = 'release-candidate'
+       AND er.release_eligible AND er.passed
+       AND er.evidence_id = tf.evaluation_evidence_id
+       AND er.evidence_payload_sha256 = tf.evaluation_evidence_sha256
+       AND er.model_artifact_sha256 = tf.model_artifact_sha256
+       AND er.dataset_version = tf.acoustic_dataset_version
+       AND er.dataset_manifest_sha256 = tf.acoustic_dataset_manifest_sha256
+       AND er.calibrator_id = tf.calibrator_id
+       AND er.calibrator_artifact_sha256 = tf.calibrator_artifact_sha256
+      WHERE wa.session_id = ${req.params.id}
+        AND wa.tenant_id = ${actor.tenantId}
+        AND tf.analysis_basis = 'acoustic'
+      ORDER BY tf.confidence DESC, tf.id`;
+
+    return rows.map((row) => {
+      const gateInput = storedFindingGateInput(row);
+      const withheld = !clearsLearnerFeedbackGate(gateInput);
+      if (withheld && !isStaff) {
+        return {
+          acousticDatasetManifestSha256: gateInput.acousticDatasetManifestSha256,
+          acousticDatasetVersion: gateInput.acousticDatasetVersion,
+          analysisBasis: "acoustic",
+          audioStatus: gateInput.audioStatus,
+          auditEventId: gateInput.auditEventId,
+          calibrationStatus: gateInput.calibrationStatus,
+          calibratorArtifactSha256: gateInput.calibratorArtifactSha256,
+          calibratorId: gateInput.calibratorId,
+          confidence: f64(0),
+          endMs: gateInput.endMs,
+          evaluationEvidenceId: gateInput.evaluationEvidenceId,
+          evaluationEvidenceSha256: gateInput.evaluationEvidenceSha256,
+          evaluationEvidenceStatus: gateInput.evaluationEvidenceStatus,
+          evidenceId: gateInput.evidenceId,
+          explanation: "",
+          id: row.id ?? "",
+          modelArtifactSha256: gateInput.modelArtifactSha256,
+          modelVersion: gateInput.modelVersion,
+          reviewStatus: gateInput.reviewStatus,
+          rule: "",
+          severity: "",
+          sources: [],
+          startMs: gateInput.startMs,
+          withheld: true,
+          wordId: "",
+        };
+      }
+
+      return {
+        acousticDatasetManifestSha256: gateInput.acousticDatasetManifestSha256,
+        acousticDatasetVersion: gateInput.acousticDatasetVersion,
+        analysisBasis: "acoustic",
+        audioStatus: gateInput.audioStatus,
+        auditEventId: gateInput.auditEventId,
+        calibrationStatus: gateInput.calibrationStatus,
+        calibratorArtifactSha256: gateInput.calibratorArtifactSha256,
+        calibratorId: gateInput.calibratorId,
+        confidence: f64(gateInput.confidence),
+        endMs: gateInput.endMs,
+        evaluationEvidenceId: gateInput.evaluationEvidenceId,
+        evaluationEvidenceSha256: gateInput.evaluationEvidenceSha256,
+        evaluationEvidenceStatus: gateInput.evaluationEvidenceStatus,
+        evidenceId: gateInput.evidenceId,
+        explanation: row.explanation ?? "",
+        id: row.id ?? "",
+        modelArtifactSha256: gateInput.modelArtifactSha256,
+        modelVersion: gateInput.modelVersion,
+        reviewStatus: gateInput.reviewStatus,
+        rule: row.rule ?? "",
+        severity: row.severity ?? "",
+        sources: gateInput.sources,
+        startMs: gateInput.startMs,
+        withheld,
+        wordId: row.word_id ?? "",
+      };
+    });
+  });
+
+  return reply.send(body);
+}
+
 /** GET /v1/tajweed-findings — review.rs:253 */
 export async function listTajweedFindings(req, reply, ctx) {
   const resolved = await resolveActor(req, ctx);
@@ -580,7 +747,7 @@ export async function listTajweedFindings(req, reply, ctx) {
         calibrationStatus: gateInput.calibrationStatus,
         calibratorArtifactSha256: gateInput.calibratorArtifactSha256,
         calibratorId: gateInput.calibratorId,
-        confidence: gateInput.confidence,
+        confidence: f64(gateInput.confidence),
         endMs: gateInput.endMs,
         evaluationEvidenceId: gateInput.evaluationEvidenceId,
         evaluationEvidenceSha256: gateInput.evaluationEvidenceSha256,

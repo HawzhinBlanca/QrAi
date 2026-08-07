@@ -24,7 +24,10 @@ test("the ownership-safe repair command is an explicit operations profile", () =
   assert.deepEqual(repair.profiles, ["operations"]);
   assert.match(repair.environment.DATABASE_URL, /quran_ai_app/);
   assert.match(repair.environment.DATABASE_URL, /APP_DATABASE_PASSWORD/);
+  assert.equal(repair.environment.AUDIO_STORAGE_DRIVER, "${AUDIO_STORAGE_DRIVER:-filesystem}");
   assert.equal(repair.environment.AUDIO_STORAGE_DIR, "/data/audio-storage");
+  assert.equal(repair.environment.AUDIO_STORAGE_S3_BUCKET, "${AUDIO_STORAGE_S3_BUCKET:-}");
+  assert.equal(repair.environment.AUDIO_RECONCILE_TENANT_IDS, "${AUDIO_RECONCILE_TENANT_IDS:-hikmah-pilot-erbil}");
   assert.ok(
     repair.volumes.some((volume) => String(volume).includes("audio_storage:/data/audio-storage:ro")),
   );

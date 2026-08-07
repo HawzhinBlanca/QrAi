@@ -170,16 +170,25 @@ test("a token signed with the WRONG secret is rejected", async () => {
   );
 });
 
-test("a pilot cookie DELEGATES rather than being half-authenticated here", async () => {
-  // 306 lines of session lookup, idle-roll, CSRF and Origin checks are not ported. Delegating to the
-  // implementation that Phase 6 already proved is the fail-SAFE choice; half-porting it would be
-  // exactly the regression this phase exists to avoid.
+test("a no-database compatibility request delegates only when an upstream is explicit", async () => {
+  // DB-backed pilot lookup is local. This vector isolates the reversible compatibility fallback.
   const { delegate, actor } = await resolveActor(
     req({ cookie: "__Host-qrai-pilot=sometoken" }),
-    { jwtSecret: SECRET, allowHeaderAuth: true },
+    { jwtSecret: SECRET, allowHeaderAuth: true, upstream: "http://127.0.0.1:1" },
   );
-  assert.ok(delegate, "a cookie-bearing request must be delegated");
+  assert.ok(delegate, "compatibility must identify the no-database request for delegation");
   assert.equal(actor, undefined);
+});
+
+test("a no-database standalone pilot request fails closed", async () => {
+  await assert.rejects(
+    () => resolveActor(req({ cookie: "__Host-qrai-pilot=sometoken" }), {
+      jwtSecret: SECRET,
+      allowHeaderAuth: true,
+      upstream: null,
+    }),
+    (error) => error instanceof ApiError && error.status === 401,
+  );
 });
 
 test("a Bearer token wins over dev headers when both are present", async () => {

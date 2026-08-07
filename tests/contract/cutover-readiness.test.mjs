@@ -29,33 +29,79 @@ import {
 
 // --- traffic share ---
 
-test("traffic-share is UNMET while the default route set is empty, whatever is portable", () => {
-  const src = `export const PORTABLE = ["GET /a", "POST /b"];\n(process.env.NODE_API_PORTED ?? "").split(",")`;
-  const r = checkTrafficShare(src, 38);
+const nodeCanary = {
+  webUpstream: "node-api:8082",
+  gatewayUpstream: "http://node-api:8082",
+  routeMode: "retained-canary",
+  explicitRouteKeys: "",
+  rustUpstream: "http://platform-api:8080",
+};
+
+test("traffic-share is UNMET while any required route is absent", () => {
+  const r = checkTrafficShare(["GET /a"], ["GET /a", "POST /b"], nodeCanary);
   assert.equal(r.state, UNMET);
-  assert.match(r.detail, /serves 0 of 38/);
-  assert.match(r.detail, /2 portable/, "the portable count must be reported, not the served one");
+  assert.match(r.detail, /registers 1 of 2 required routes/);
+  assert.match(r.detail, /1 missing/);
 });
 
-test("traffic-share notices when the default STOPS being empty", () => {
-  // The failure that matters: someone changes the default and the readiness state must move rather
-  // than keep reporting a comfortable zero.
-  const src = `export const PORTABLE = ["GET /a"];\n(process.env.NODE_API_PORTED ?? "GET /a").split(",")`;
-  const r = checkTrafficShare(src, 38);
-  assert.match(r.detail, /not the empty set/, "a changed default must not be silently reported as 0");
+test("traffic-share flips to MET only on the exact required routes and paired Node topology", () => {
+  const r = checkTrafficShare(["GET /a", "POST /b"], ["GET /a", "POST /b"], nodeCanary);
+  assert.equal(r.state, MET);
+  assert.match(r.detail, /registers 2 of 2 required routes/);
+  assert.match(r.detail, /0 extra/);
+  assert.match(r.detail, /topology is selected/);
+});
+
+test("traffic-share stays UNMET for transition extras or an unpaired gateway", () => {
+  assert.equal(
+    checkTrafficShare(["GET /a", "GET /transition"], ["GET /a"], nodeCanary).state,
+    UNMET,
+  );
+  assert.equal(
+    checkTrafficShare(["GET /a"], ["GET /a"], {
+      ...nodeCanary,
+      gatewayUpstream: "http://platform-api:8080",
+    }).state,
+    UNMET,
+  );
 });
 
 // --- rollback artifact ---
 
-test("rollback-artifact flips to MET when a workflow starts building an image", () => {
+test("rollback-artifact stays UNMET for generic or ephemeral image activity", () => {
   const none = checkRollbackArtifact([{ name: "ci.yml", text: "steps:\n  - run: bash scripts/verify.sh" }]);
   assert.equal(none.state, UNMET);
 
   for (const line of ["docker build .", "docker push ghcr.io/x", "uses: docker/build-push-action@v6"]) {
     const some = checkRollbackArtifact([{ name: "release.yml", text: `steps:\n  - run: ${line}` }]);
-    assert.equal(some.state, MET, `"${line}" should count as a rollback artifact`);
-    assert.match(some.detail, /release\.yml/, "name the workflow, so the claim is checkable");
+    assert.equal(some.state, UNMET, `"${line}" alone is not a rollback artifact`);
   }
+});
+
+test("rollback-artifact flips to MET only for durable publication plus no-build consumption", () => {
+  const workflow = `
+permissions:
+  packages: write
+steps:
+  - uses: docker/login-action@v3
+    with:
+      registry: ghcr.io
+  - run: node scripts/release-images.mjs
+    env:
+      RELEASE_IMAGE_DIGESTS_OUTPUT: /tmp/image-digests.json
+  - uses: actions/upload-artifact@v4
+`;
+  const publisher = 'docker("buildx", "build", "--push", ".")';
+  const overlay = 'build: !reset null\nimage: "${NODE_BACKEND_IMAGE:?repository@sha256 required}"';
+  const deployment = "composeImageEnvironment candidate previous verifyRunningReleaseImages";
+  const result = checkRollbackArtifact(
+    [{ name: "release-image.yml", text: workflow }],
+    publisher,
+    overlay,
+    deployment,
+  );
+  assert.equal(result.state, MET);
+  assert.match(result.detail, /release-image\.yml/);
 });
 
 // --- ADR-0022 ---

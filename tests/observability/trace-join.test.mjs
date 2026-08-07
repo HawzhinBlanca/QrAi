@@ -45,7 +45,7 @@ import {
 } from "../api-parity/lib/harness.mjs";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
-const ML_ENTRY = join(root, "services/ml-inference/server.mjs");
+const ML_ENTRY = join(root, "tests/inference/lib/worker-compatibility-harness.mjs");
 const ML_KEY = "trace-join-ml-key";
 
 let ml;

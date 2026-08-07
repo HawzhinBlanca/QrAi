@@ -1,7 +1,17 @@
 import assert from "node:assert/strict";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import test, { after, before } from "node:test";
 
+import { createInferenceRuntime } from "../../server/src/inference/local.mjs";
+import { createJobRuntime } from "../../server/src/jobs/runtime.mjs";
+import { createJobStore } from "../../server/src/jobs/store.mjs";
+import { createWorkflowHandlers } from "../../server/src/jobs/workflows.mjs";
+import { createDb } from "../../server/src/lib/db.mjs";
+
 import {
+  DATABASE_URL,
   DECLARED_TEST_ACOUSTIC_EVIDENCE,
   TENANT,
   insertDeclaredTestAcousticFinding,
@@ -11,6 +21,10 @@ import {
   startMockUpstream,
   uniqueSuffix,
 } from "./lib/harness.mjs";
+import {
+  createFilesystemAudioObjectStore,
+  deriveAudioObjectKey,
+} from "../../server/src/storage/audio-object-store.mjs";
 
 /**
  * PAR3 — config group: ML_INFERENCE_URL pointed at a mock upstream.
@@ -37,81 +51,153 @@ const declaredPredictionProvenance = () => ({
   evaluationEvidenceSha256: DECLARED_TEST_ACOUSTIC_EVIDENCE.evidenceSha256,
 });
 
-let api;
-let mock;
-
-before(async () => {
-  mock = await startMockUpstream(({ path, body }) => {
-    // integration.rs:1393 — the privacy-delete mock reports erased object keys.
-    if (path === "/v1/privacy/delete") return { status: 200, body: ERASED_KEYS };
-    // The tajweed path echoes AND carries findings, so the same mock serves both the consent
-    // assertions below and the redaction one. Fresh predictions are always ai-suggested; both must
-    // therefore be withheld from learners while remaining intact for staff.
-    if (path === "/v1/tajweed-findings:predict") {
-      return {
-        status: 200,
-        body: {
-          ...body,
-          modelVersion: DECLARED_TEST_ACOUSTIC_EVIDENCE.modelVersion,
-          annotations: [],
-          findings: [
-            {
-              ...declaredPredictionProvenance(),
-              wordId: "1:1:1",
-              rule: "ghunnah",
-              analysisBasis: "acoustic",
-              severity: "practice",
-              confidence: 0.9,
-              explanation: "Apply ghunnah on the noon sakina.",
-              sources: [{ id: "s1", title: "Board", citation: "policy" }],
-              reviewStatus: "ai-suggested",
-            },
-            {
-              ...declaredPredictionProvenance(),
-              wordId: "1:1:2",
-              rule: "madd-tabii",
-              analysisBasis: "acoustic",
-              severity: "practice",
-              confidence: 0.9,
-              explanation: "Hold the natural madd for two counts.",
-              sources: [{ id: "s2", title: "Board", citation: "policy" }],
-              reviewStatus: "ai-suggested",
-            },
-          ],
-        },
-      };
-    }
-    // The response preserves the forwarded body for consent assertions and adds the producer-owned
-    // attribution required at the boundary.
+function respondMl({ path, body }) {
+  if (path === "/v1/privacy/delete") return { status: 200, body: ERASED_KEYS };
+  if (path === "/v1/tajweed-findings:predict") {
     return {
       status: 200,
       body: {
         ...body,
-        modelVersion: "declared-quran-aligner-fixture",
-        modelAttribution: {
-          schemaVersion: 1,
-          primaryComponent: "quran-aligner",
-          components: [
-            {
-              component: "quran-aligner",
-              status: "active",
-              implementationId: "declared-quran-aligner-fixture",
-              artifactDigest: `sha256:${"a".repeat(64)}`,
-              datasetVersion: "declared-fixture",
-              analysisBasis: "quran-constrained",
-              calibratorId: null,
-            },
-          ],
-        },
+        modelVersion: DECLARED_TEST_ACOUSTIC_EVIDENCE.modelVersion,
+        annotations: [],
+        findings: [
+          {
+            ...declaredPredictionProvenance(),
+            wordId: "1:1:1",
+            rule: "ghunnah",
+            analysisBasis: "acoustic",
+            severity: "practice",
+            confidence: 0.9,
+            explanation: "Apply ghunnah on the noon sakina.",
+            sources: [{ id: "s1", title: "Board", citation: "policy" }],
+            reviewStatus: "ai-suggested",
+          },
+          {
+            ...declaredPredictionProvenance(),
+            wordId: "1:1:2",
+            rule: "madd-tabii",
+            analysisBasis: "acoustic",
+            severity: "practice",
+            confidence: 0.9,
+            explanation: "Hold the natural madd for two counts.",
+            sources: [{ id: "s2", title: "Board", citation: "policy" }],
+            reviewStatus: "ai-suggested",
+          },
+        ],
       },
     };
+  }
+  return {
+    status: 200,
+    body: {
+      ...body,
+      modelVersion: "declared-quran-aligner-fixture",
+      modelAttribution: {
+        schemaVersion: 1,
+        primaryComponent: "quran-aligner",
+        components: [
+          {
+            component: "quran-aligner",
+            status: "active",
+            implementationId: "declared-quran-aligner-fixture",
+            artifactDigest: `sha256:${"a".repeat(64)}`,
+            datasetVersion: "declared-fixture",
+            analysisBasis: "quran-constrained",
+            calibratorId: null,
+          },
+        ],
+      },
+    },
+  };
+}
+
+let api;
+let mock;
+let audioStorageDir;
+let audioObjectStore;
+let workerDb;
+let workerLoop;
+let workerRunning = false;
+const ownedJobSubjects = new Set();
+
+before(async () => {
+  audioStorageDir = mkdtempSync(join(tmpdir(), "qrai-ml-proxy-storage-"));
+  audioObjectStore = createFilesystemAudioObjectStore({ rootDir: audioStorageDir });
+  mock = await startMockUpstream(respondMl);
+  const inference = createInferenceRuntime({
+    async predictAlignment(body) {
+      return respondMl({ path: "/v1/alignments:predict", body }).body;
+    },
+    async predictTajweed(body) {
+      return respondMl({ path: "/v1/tajweed-findings:predict", body }).body;
+    },
+    async transcribeSession() {
+      return { reason: "no-finalization-in-this-suite", transcribed: false };
+    },
   });
-  api = await startApi({ env: { ML_INFERENCE_URL: mock.url } });
+  workerDb = createDb(DATABASE_URL);
+  const workerRuntime = createJobRuntime({
+    store: createJobStore({ db: workerDb }),
+    handlers: createWorkflowHandlers({
+      db: workerDb,
+      inference,
+      audioObjectStore,
+      mlInferenceUrl: mock.url,
+      mlApiKey: "smoke-ml-api-key",
+      upstreamTimeoutMs: 1_000,
+    }),
+    workerId: "ml-proxy-parity-worker",
+    leaseMs: 2_000,
+    operationTimeoutMs: 1_500,
+    retryBaseMs: 10,
+    retryMaxMs: 100,
+  });
+  workerRunning = true;
+  workerLoop = (async () => {
+    while (workerRunning) {
+      const subjects = [...ownedJobSubjects];
+      if (subjects.length === 0) {
+        await new Promise((resolve) => setTimeout(resolve, 5));
+        continue;
+      }
+      const jobId = await workerDb.withTenant(TENANT, async (tx) => {
+        const [row] = await tx`
+          SELECT id
+          FROM background_jobs
+          WHERE tenant_id = ${TENANT}
+            AND kind IN ('privacy.export', 'privacy.delete', 'session.evaluate')
+            AND subject_id = ANY(${subjects})
+            AND status IN ('queued', 'retry')
+            AND available_at <= now()
+          ORDER BY priority DESC, created_at, id
+          LIMIT 1`;
+        return row?.id ?? null;
+      });
+      if (jobId === null) {
+        await new Promise((resolve) => setTimeout(resolve, 5));
+      } else {
+        await workerRuntime.runOne(TENANT, { jobId });
+      }
+    }
+  })();
+  api = await startApi({
+    env: { ML_INFERENCE_URL: mock.url, AUDIO_STORAGE_DIR: audioStorageDir },
+  });
 });
 
 after(async () => {
+  let workerFailure = null;
+  workerRunning = false;
+  try {
+    await workerLoop;
+  } catch (error) {
+    workerFailure = error;
+  }
+  await workerDb?.end();
   await api?.stop();
   await mock?.stop();
+  if (audioStorageDir) rmSync(audioStorageDir, { recursive: true, force: true });
+  if (workerFailure) throw workerFailure;
 });
 
 const seedLearners = async (...ids) => {
@@ -121,6 +207,7 @@ const seedLearners = async (...ids) => {
        VALUES ($1, $2, 'Parity Privacy', 'learner', 'ckb')`,
       [id, TENANT],
     );
+    ownedJobSubjects.add(id);
   }
 };
 
@@ -132,7 +219,6 @@ const createSession = async (learnerId) => {
       learnerId,
       quranRef: { surahNumber: 1, ayahStart: 1, ayahEnd: 7, display: "Al-Fatihah 1:1-7" },
       sourceChecksum: "fnv1a32:privacy-scope",
-
       language: "ckb",
       mode: "guided-recite",
       practicePlanId: "fatihah-mastery-v1",
@@ -146,6 +232,7 @@ const createSession = async (learnerId) => {
     },
   });
   assert.equal(created.status, 200, `session setup failed: ${JSON.stringify(created.body)}`);
+  ownedJobSubjects.add(created.body.id);
   return created.body.id;
 };
 
@@ -285,6 +372,27 @@ test("privacy delete erases the target learner and leaves every other learner in
   const targetIds = await seedReviewedFinding(targetSession, "target");
   const otherIds = await seedReviewedFinding(otherSession, "other");
 
+  const nodeChunkId = `privacy-${s}`;
+  const nodeObjectKey = deriveAudioObjectKey({
+    tenantId: TENANT,
+    learnerId: target,
+    sessionId: targetSession,
+    chunkId: nodeChunkId,
+  });
+  if (api.upstreamUrl) {
+    await audioObjectStore.put({
+      tenantId: TENANT,
+      learnerId: target,
+      sessionId: targetSession,
+      chunkId: nodeChunkId,
+      startMs: 0,
+      endMs: 100,
+      sampleRate: 16000,
+      audioRetention: "discard",
+      audioBytes: Buffer.from("private-delete-fixture"),
+    });
+  }
+
   const deleted = await request(api.baseUrl, "/v1/privacy/delete", {
     method: "POST",
     role: "admin",
@@ -292,12 +400,15 @@ test("privacy delete erases the target learner and leaves every other learner in
   });
   assert.equal(deleted.status, 200);
 
-  // The EXACT keys the mock reported, not "some non-empty list": a bug that fabricated a
-  // placeholder list would still pass a non-empty check.
+  // Exact output on both consolidation boundaries: Rust reports its authenticated ML-compatibility
+  // deletion, while the Node target reports the one server-derived key it deleted directly.
+  const expectedAudioKeys = api.upstreamUrl
+    ? [nodeObjectKey]
+    : [...ERASED_KEYS.deletedAudioObjectKeys, ...ERASED_KEYS.deletedMetadataObjectKeys];
   assert.deepEqual(
     deleted.body.audioObjectKeysDeleted,
-    [...ERASED_KEYS.deletedAudioObjectKeys, ...ERASED_KEYS.deletedMetadataObjectKeys],
-    "delete must report the exact erased object keys from the ML service",
+    expectedAudioKeys,
+    "delete must report the exact erased object keys from its active storage boundary",
   );
   assert.deepEqual(
     deleted.body.deletedRecords,

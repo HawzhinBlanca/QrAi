@@ -62,21 +62,21 @@ test("fresh, legacy-0021 upgrade, and legacy-0027 adoption converge exactly", as
   const through0027 = plan.filter(({ id }) => id <= "0027");
   assert.equal(through0021.length, 20);
   assert.equal(through0027.length, 26);
-  assert.equal(plan.length, 32);
+  assert.equal(plan.length, 34);
 
   const freshResult = await migrateDatabase({ connectionString: fresh.connectionString });
-  assert.equal(freshResult.applied, 32);
+  assert.equal(freshResult.applied, 34);
   assert.equal(freshResult.adopted, 0);
 
   await applyLegacy(upgraded.connectionString, through0021);
   const upgradedResult = await migrateDatabase({ connectionString: upgraded.connectionString });
   assert.equal(upgradedResult.adopted, 20);
-  assert.equal(upgradedResult.applied, 12);
+  assert.equal(upgradedResult.applied, 14);
 
   await applyLegacy(adopted.connectionString, through0027);
   const adoptedResult = await migrateDatabase({ connectionString: adopted.connectionString });
   assert.equal(adoptedResult.adopted, 26);
-  assert.equal(adoptedResult.applied, 6);
+  assert.equal(adoptedResult.applied, 8);
 
   const fingerprints = await Promise.all([
     fingerprint(fresh.connectionString),

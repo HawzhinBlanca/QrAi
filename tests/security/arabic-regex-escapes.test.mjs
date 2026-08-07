@@ -12,7 +12,7 @@ import { fileURLToPath } from "node:url";
  * `[` itself — so a human reviewer cannot see what the class contains. In PR #258 a literal class
  * in `forced_align.py` merged two ranges, deleted every Arabic letter, and passed review. It has
  * since been broken twice more, independently: `services/asr-inference/server.py` (ghunnah) and
- * `services/ml-inference/tajweed.js` (five patterns, including a literal RANGE — the #258 shape).
+ * `server/src/inference/tajweed.mjs` (five patterns, including a literal RANGE — the #258 shape).
  *
  * Three instances in two languages is not a series of accidents, it is a missing gate. This is the
  * gate, and it is repo-wide rather than per-file so the fourth instance fails in CI instead of in
@@ -46,13 +46,13 @@ PATTERNS[".mjs"] = PATTERNS[".js"];
 PATTERNS[".ts"] = PATTERNS[".js"];
 PATTERNS[".tsx"] = PATTERNS[".js"];
 
-/** Tracked source files only — never node_modules, never build output. */
+/** Working-tree source files only — tracked or new, never ignored dependencies/build output. */
 function existingSources(files, base = root) {
   return files.filter((file) => existsSync(join(base, file)));
 }
 
 function trackedSources() {
-  const files = execFileSync("git", ["ls-files"], {
+  const files = execFileSync("git", ["ls-files", "--cached", "--others", "--exclude-standard"], {
     cwd: root,
     encoding: "utf8",
     maxBuffer: 32 << 20,

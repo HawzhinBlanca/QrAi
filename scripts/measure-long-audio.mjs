@@ -42,7 +42,7 @@ await new Promise((r) => asr.listen(0, "127.0.0.1", r));
 const storage = mkdtempSync(join(tmpdir(), "longaudio-"));
 process.env.AUDIO_STORAGE_DIR = storage;
 process.env.ASR_SERVICE_URL = `http://127.0.0.1:${asr.address().port}`;
-const { transcribeSession } = await import("../services/ml-inference/server.mjs");
+const { transcribeSession } = await import("../server/src/inference/runtime.mjs");
 
 const SAMPLE_RATE = 16000;
 const CHUNK_MS = 100;

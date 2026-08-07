@@ -8,8 +8,8 @@
  * the real rule engine returns instructional `annotations`, the performance `findings` array is
  * empty, and neither runtime creates a `tajweed_findings` row or a false persistence audit.
  *
- * ── Why the real ml-inference ───────────────────────────────────────────────────────────────────
- * A mock returning empty arrays would prove nothing. The real service must return at least one
+ * ── Why the real worker inference runtime ───────────────────────────────────────────────────────
+ * A mock returning empty arrays would prove nothing. The real runtime must return at least one
  * deterministic annotation for Al-Fatihah 1:1, while still returning zero acoustic findings.
  */
 import assert from "node:assert/strict";
@@ -20,7 +20,15 @@ import { dirname, join } from "node:path";
 import { after, before, test } from "node:test";
 import { fileURLToPath } from "node:url";
 
+import { createInferenceRuntime } from "../../server/src/inference/local.mjs";
+import { createJobRuntime } from "../../server/src/jobs/runtime.mjs";
+import { createJobStore } from "../../server/src/jobs/store.mjs";
+import { createWorkflowHandlers } from "../../server/src/jobs/workflows.mjs";
+import { createDb } from "../../server/src/lib/db.mjs";
+
 import {
+  DATABASE_URL,
+  TENANT,
   queryJson,
   request,
   reservePort,
@@ -30,7 +38,7 @@ import {
 } from "./lib/harness.mjs";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
-const ML_ENTRY = join(root, "services/ml-inference/server.mjs");
+const ML_ENTRY = join(root, "tests/inference/lib/worker-compatibility-harness.mjs");
 const ML_KEY = "tajweed-effects-ml-key";
 
 /** Everything this test needs the shell to answer itself. Anything absent here is proxied to Rust. */
@@ -46,6 +54,10 @@ let storageDir;
 let api;
 let shell;
 let rustUrl;
+let workerDb;
+let workerLoop;
+let workerRunning = false;
+const ownedSessions = new Set();
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -76,9 +88,52 @@ before(async () => {
     } catch {
       // not up yet
     }
-    if (Date.now() > deadline) throw new Error(`ml-inference never came up\n${mlStderr}`);
+    if (Date.now() > deadline) throw new Error(`worker inference ingress never came up\n${mlStderr}`);
     await sleep(50);
   }
+
+  workerDb = createDb(DATABASE_URL);
+  const workerRuntime = createJobRuntime({
+    store: createJobStore({ db: workerDb }),
+    handlers: createWorkflowHandlers({
+      db: workerDb,
+      inference: createInferenceRuntime(),
+      upstreamTimeoutMs: 5_000,
+    }),
+    workerId: "tajweed-effects-parity-worker",
+    leaseMs: 7_000,
+    operationTimeoutMs: 6_000,
+    retryBaseMs: 10,
+    retryMaxMs: 100,
+  });
+  workerRunning = true;
+  workerLoop = (async () => {
+    while (workerRunning) {
+      const sessions = [...ownedSessions];
+      if (sessions.length === 0) {
+        await new Promise((resolve) => setTimeout(resolve, 5));
+        continue;
+      }
+      const jobId = await workerDb.withTenant(TENANT, async (tx) => {
+        const [row] = await tx`
+          SELECT id
+          FROM background_jobs
+          WHERE tenant_id = ${TENANT}
+            AND kind = 'session.evaluate'
+            AND subject_id = ANY(${sessions})
+            AND status IN ('queued', 'retry')
+            AND available_at <= now()
+          ORDER BY priority DESC, created_at, id
+          LIMIT 1`;
+        return row?.id ?? null;
+      });
+      if (jobId === null) {
+        await new Promise((resolve) => setTimeout(resolve, 5));
+      } else {
+        await workerRuntime.runOne(TENANT, { jobId });
+      }
+    }
+  })();
 
   api = await startApi({ env: { ML_INFERENCE_URL: mlUrl, ML_API_KEY: ML_KEY } });
   rustUrl = api.upstreamUrl ?? api.baseUrl;
@@ -89,6 +144,14 @@ before(async () => {
 });
 
 after(async () => {
+  let workerFailure = null;
+  workerRunning = false;
+  try {
+    await workerLoop;
+  } catch (error) {
+    workerFailure = error;
+  }
+  await workerDb?.end();
   await shell?.stop();
   await api?.stop();
   if (ml && ml.exitCode === null) {
@@ -98,6 +161,7 @@ after(async () => {
     if (ml.exitCode === null) ml.kill("SIGKILL");
   }
   if (storageDir) rmSync(storageDir, { recursive: true, force: true });
+  if (workerFailure) throw workerFailure;
 });
 
 /**
@@ -132,6 +196,7 @@ async function seededSession(base) {
   });
   assert.equal(created.status, 200, `session create failed: ${created.text}`);
   const sessionId = created.body.id ?? created.body.sessionId;
+  if (base === shell.baseUrl) ownedSessions.add(sessionId);
 
   const words = await queryJson(
     "SELECT id FROM canonical_words WHERE ayah_id = '1:1' ORDER BY word_index LIMIT 2",
@@ -249,6 +314,7 @@ test("a session with nothing to anchor to records no findings AND no audit claim
     });
     assert.equal(created.status, 200, `${impl}: session create failed: ${created.text}`);
     const sessionId = created.body.id ?? created.body.sessionId;
+    if (base === shell.baseUrl) ownedSessions.add(sessionId);
 
     // Deliberately NO alignments posted.
     const predicted = await request(base, "/v1/ml/tajweed-findings:predict", {

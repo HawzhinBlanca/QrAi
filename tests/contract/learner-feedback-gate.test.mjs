@@ -35,6 +35,21 @@ test("contracts and Node apply the same complete acoustic evidence gate", () => 
   }
 });
 
+test("stored finding policy keeps confidence numeric until HTTP serialization", () => {
+  const source = readFileSync(new URL("../../server/src/routes/review.mjs", import.meta.url), "utf8");
+  const start = source.indexOf("function storedFindingGateInput");
+  const end = source.indexOf("\n}\n", start);
+  assert.ok(start >= 0 && end > start, "storedFindingGateInput must remain inspectable");
+
+  const helper = source.slice(start, end);
+  assert.match(helper, /confidence:\s*Number\(/, "policy input must be an ordinary number");
+  assert.doesNotMatch(
+    helper,
+    /confidence:\s*f64\(/,
+    "RustF64 is a wire wrapper and makes the shared gate's numeric type check fail closed",
+  );
+});
+
 test("each production client/server names every expanded gate term", () => {
   const files = {
     rust: readFileSync(
