@@ -13,8 +13,6 @@ permissions:
 jobs:
   publish:
     runs-on: ubuntu-latest
-    env:
-      RELEASE_IMAGE_DIGESTS_OUTPUT: ${{ runner.temp }}/image-digests.json
     steps:
       - uses: actions/checkout@v4
 
@@ -41,12 +39,14 @@ jobs:
         run: node --test scripts/release-images.test.mjs tests/release/release-artifact-consumption.test.mjs
 
       - name: Publish full-SHA images and write immutable digests
+        env:
+          RELEASE_IMAGE_DIGESTS_OUTPUT: ${{ runner.temp }}/image-digests.json
         run: node scripts/release-images.mjs
 
       - name: Publish the machine-readable digest document
         uses: actions/upload-artifact@v4
         with:
           name: image-digests-${{ github.sha }}
-          path: ${{ env.RELEASE_IMAGE_DIGESTS_OUTPUT }}
+          path: ${{ runner.temp }}/image-digests.json
           if-no-files-found: error
           retention-days: 90

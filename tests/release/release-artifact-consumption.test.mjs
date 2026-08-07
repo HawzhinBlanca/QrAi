@@ -105,6 +105,16 @@ test("release workflow pushes durable GHCR artifacts and publishes machine JSON 
   assert.match(workflow, /docker\/login-action@v\d+/);
   assert.match(workflow, /registry:\s*ghcr\.io/);
   assert.match(workflow, /RELEASE_IMAGE_DIGESTS_OUTPUT/);
+  assert.doesNotMatch(
+    workflow,
+    /^ {6}RELEASE_IMAGE_DIGESTS_OUTPUT:\s*\$\{\{\s*runner\.temp\s*\}\}/m,
+    "runner context is unavailable in job-level env",
+  );
+  assert.match(
+    workflow,
+    /^ {10}RELEASE_IMAGE_DIGESTS_OUTPUT:\s*\$\{\{\s*runner\.temp\s*\}\}\/image-digests\.json/m,
+  );
+  assert.match(workflow, /^ {10}path:\s*\$\{\{\s*runner\.temp\s*\}\}\/image-digests\.json/m);
   assert.match(workflow, /node scripts\/release-images\.mjs/);
   assert.doesNotMatch(workflow, /tee image-digests\.json/);
 
