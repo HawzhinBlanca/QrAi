@@ -1,0 +1,30 @@
+# Consumption-only release overlay. Every application artifact is supplied as
+# an immutable registry reference (repository@sha256:digest); source builds are disabled.
+services:
+  migrations:
+    build: !reset null
+    image: "${MIGRATION_RUNNER_IMAGE:?Set MIGRATION_RUNNER_IMAGE to an immutable repository@sha256 digest}"
+
+  platform-api:
+    build: !reset null
+    image: "${PLATFORM_API_IMAGE:?Set PLATFORM_API_IMAGE to an immutable repository@sha256 digest}"
+
+  node-api:
+    build: !reset null
+    image: "${NODE_BACKEND_IMAGE:?Set NODE_BACKEND_IMAGE to an immutable repository@sha256 digest}"
+
+  job-worker:
+    build: !reset null
+    image: "${NODE_BACKEND_IMAGE:?Set NODE_BACKEND_IMAGE to an immutable repository@sha256 digest}"
+
+  realtime-gateway:
+    build: !reset null
+    image: "${REALTIME_GATEWAY_IMAGE:?Set REALTIME_GATEWAY_IMAGE to an immutable repository@sha256 digest}"
+
+  asr-inference:
+    build: !reset null
+    image: "${ASR_INFERENCE_IMAGE:?Set ASR_INFERENCE_IMAGE to an immutable repository@sha256 digest}"
+
+  web:
+    build: !reset null
+    image: "${WEB_IMAGE:?Set WEB_IMAGE to an immutable repository@sha256 digest}"

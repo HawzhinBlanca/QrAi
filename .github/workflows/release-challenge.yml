@@ -86,10 +86,11 @@ jobs:
         with: { node-version: "22.13.1" }
 
       # `--verify-manifest-only`. A full `--run-release` challenge additionally needs a dedicated,
-      # disposable release database and the environment variables verify.sh --release requires; the
-      # script refuses to fake it (`RELEASE_DATABASE_URL must be set ... intentionally accepted only
-      # through the environment`). Wiring that database is P5.1/P5.7 work with a named owner, so this
-      # job does the half that can be done honestly from a bare runner and says so in its output.
+      # disposable release database plus the external, signed W2.18 candidate/load/monitoring/
+      # controller/remote-CI/owner/security/SRE evidence required by verify.sh --release. The script
+      # refuses to fake either boundary. Wiring those protected artifacts and private attestors is
+      # release-operator work, so this bare runner does the half it can prove and labels the report
+      # `manifest-verified-only`; that status cannot satisfy the W2.18 closure validator.
       - name: Independent challenge
         run: |
           node candidate/scripts/release-challenge.mjs --verify-manifest-only \

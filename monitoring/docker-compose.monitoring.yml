@@ -10,10 +10,19 @@ services:
       - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
       - ./monitoring/alerts.yml:/etc/prometheus/alerts.yml:ro
       - prometheus_data:/prometheus
+    secrets:
+      - source: metrics_token
+        target: metrics_token
     ports:
       - "127.0.0.1:9090:9090"
     depends_on:
       platform-api:
+        condition: service_healthy
+      node-api:
+        condition: service_healthy
+      job-worker:
+        condition: service_healthy
+      realtime-gateway:
         condition: service_healthy
 
   grafana:
@@ -33,3 +42,7 @@ services:
 volumes:
   prometheus_data:
   grafana_data:
+
+secrets:
+  metrics_token:
+    file: "${METRICS_TOKEN_FILE:?set METRICS_TOKEN_FILE to an owner-readable token file}"

@@ -24,6 +24,7 @@ RUN pnpm --filter @quran-ai/web build
 # unprivileged processes can't bind to ports < 1024.
 FROM nginxinc/nginx-unprivileged:alpine
 COPY --from=builder /app/apps/web/dist /usr/share/nginx/html
-COPY apps/web/nginx.conf /etc/nginx/conf.d/default.conf
+COPY --chmod=755 apps/web/validate-api-upstream.sh /docker-entrypoint.d/15-validate-api-upstream.sh
+COPY apps/web/nginx.conf /etc/nginx/templates/default.conf.template
 EXPOSE 8080
 CMD ["nginx", "-g", "daemon off;"]

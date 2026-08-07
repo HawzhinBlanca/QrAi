@@ -1,8 +1,9 @@
 import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { spawn } from "node:child_process";
 import { createServer } from "node:net";
 import { randomUUID } from "node:crypto";
+
+import { startWorkerCompatibilitySmoke } from "./lib/worker-compatibility-smoke.mjs";
 
 const providedUrl = process.env.ML_INFERENCE_SMOKE_URL;
 const artifactRoot = process.env.SMOKE_ARTIFACT_DIR ?? join("out", "smoke", new Date().toISOString().replace(/[:.]/g, "-"));
@@ -10,6 +11,7 @@ const artifactDir = join(artifactRoot, "privacy");
 const smokeTraceId = process.env.SMOKE_TRACE_ID ?? `smoke-trace-${randomUUID()}`;
 const mlApiKey = process.env.ML_API_KEY ?? "smoke-ml-api-key";
 const retainedLearnerId = `learner-retained-${randomUUID()}`;
+const retainedSessionId = `session-retained-${randomUUID()}`;
 const retainedChunkId = `chunk-retained-${randomUUID()}`;
 
 await mkdir(artifactDir, { recursive: true });
@@ -90,7 +92,7 @@ try {
   const retainedAudio = await postJson("/v1/audio-chunks", {
     tenantId: "tenant-smoke",
     learnerId: retainedLearnerId,
-    sessionId: `session-retained-${randomUUID()}`,
+    sessionId: retainedSessionId,
     chunkId: retainedChunkId,
     sampleRate: 16000,
     startMs: 0,
@@ -100,7 +102,7 @@ try {
   });
   assert(retainedAudio.stored === true, "retained audio chunk was not stored");
   assert(
-    retainedAudio.objectKey === `tenant-smoke/${retainedLearnerId}/${retainedChunkId}.bin`,
+    retainedAudio.objectKey === `audio/v1/tenant-smoke/${retainedLearnerId}/${retainedSessionId}/${retainedChunkId}.pcm`,
     `retained audio object key was unexpected: ${JSON.stringify(retainedAudio)}`,
   );
 
@@ -110,10 +112,7 @@ try {
     learnerId: retainedLearnerId,
   });
   assert(retainedExport.audioObjectKeys.length === 1, "retained audio export did not include the audio object");
-  assert(
-    retainedExport.metadataObjectKeys.length === 1,
-    `retained audio export did not include metadata sidecar: ${JSON.stringify(retainedExport)}`,
-  );
+  assert(retainedExport.metadataObjectKeys.length === 0, "v1 metadata must not be a separate privacy object");
 
   const retainedDeletion = await postJson("/v1/privacy/delete", {
     tenantId: "tenant-smoke",
@@ -122,10 +121,7 @@ try {
   });
   assert(retainedDeletion.status === "completed", "retained audio delete job did not complete");
   assert(retainedDeletion.deletedAudioObjectKeys.length === 1, "retained audio delete did not remove audio object");
-  assert(
-    retainedDeletion.deletedMetadataObjectKeys.length === 1,
-    `retained audio delete did not remove metadata sidecar: ${JSON.stringify(retainedDeletion)}`,
-  );
+  assert(retainedDeletion.deletedMetadataObjectKeys.length === 0, "v1 metadata must not be separately erased");
 
   const retainedAfterDelete = await postJson("/v1/privacy/export", {
     tenantId: "tenant-smoke",
@@ -219,28 +215,22 @@ async function postRaw(path, body) {
 async function startMlService() {
   const port = await getFreePort();
   const logPath = join(artifactDir, "service.log");
-  const child = spawn(process.execPath, ["services/ml-inference/server.mjs"], {
-    cwd: process.cwd(),
-    env: {
-      ...process.env,
-      ML_INFERENCE_PORT: String(port),
+  const logs = [];
+  const harness = await startWorkerCompatibilitySmoke({
+    port,
+    mlApiKey,
+    log: (message) => logs.push(`${message}\n`),
+    envOverrides: {
       ML_EXTERNAL_ASR_TENANTS: "tenant-smoke",
       AUDIO_STORAGE_DIR: join(artifactDir, "audio-storage"),
     },
-    stdio: ["ignore", "pipe", "pipe"],
   });
-
-  const logs = [];
-  child.stdout.on("data", (chunk) => logs.push(String(chunk)));
-  child.stderr.on("data", (chunk) => logs.push(String(chunk)));
-
-  const baseUrl = `http://127.0.0.1:${port}`;
-  await waitForHealth(baseUrl);
+  await waitForHealth(harness.baseUrl);
 
   return {
-    baseUrl,
+    baseUrl: harness.baseUrl,
     async stop() {
-      child.kill("SIGTERM");
+      await harness.stop();
       await writeFile(logPath, logs.join(""));
     },
   };

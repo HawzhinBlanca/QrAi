@@ -14,7 +14,7 @@ services:
     ports:
       # Internal-only service: bind to loopback so it is reachable on the host (debugging, psql,
       # migrations) but NOT from other machines. Only platform-api (8080), the realtime gateway
-      # (8081), and the web app are meant to be exposed off-host; postgres/ml/asr stay private.
+      # (8081), and the web app are meant to be exposed off-host; postgres/worker/asr stay private.
       - "127.0.0.1:${POSTGRES_PORT:-5433}:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
@@ -57,6 +57,7 @@ services:
       PLATFORM_API_BIND: "0.0.0.0:8080"
       ML_API_KEY: "${ML_API_KEY:?ML_API_KEY is required}"
       ASR_API_KEY: "${ASR_API_KEY:?ASR_API_KEY is required}"
+      UPSTREAM_TIMEOUT_SECS: "${UPSTREAM_TIMEOUT_SECS:-60}"
       # DEPRECATED single switch — relaxes EVERY control below at once. Still honoured so existing
       # deploys keep working; platform-api warns loudly at boot and REFUSES to start if this is set
       # alongside any per-control variable. See specs/insecure-defaults-split/plan.md §3.
@@ -65,6 +66,7 @@ services:
       ALLOW_INSECURE_SECRETS: "${ALLOW_INSECURE_SECRETS:-}"
       ALLOW_SUPERUSER_DB_ROLE: "${ALLOW_SUPERUSER_DB_ROLE:-}"
       METRICS_DEV_OPEN: "${METRICS_DEV_OPEN:-}"
+      METRICS_TOKEN: "${METRICS_TOKEN:-}"
       # Exact web origin(s), comma-separated (e.g. https://app.example.org). REQUIRED in production
       # (ALLOW_INSECURE_SECRETS unset): platform-api fails closed on boot if this is empty, so the
       # pilot Origin allowlist (auth::require_allowed_origin) and browser CORS are ENFORCED, not
@@ -74,7 +76,7 @@ services:
       # take the pilot down — every route except /health, /ready, /metrics returns 503, so healthchecks
       # and monitoring still see the process up-in-maintenance rather than crashed. Default off.
       MAINTENANCE_MODE: "${MAINTENANCE_MODE:-0}"
-      ML_INFERENCE_URL: "http://ml-inference:8090"
+      ML_INFERENCE_URL: "http://job-worker:8098"
       ASR_INFERENCE_URL: "http://asr-inference:8091"
       # Operational knobs (safe defaults; override per deployment via .env.production):
       # DB pool ceiling for a classroom burst, acquire timeout before a retryable 503, and
@@ -87,6 +89,8 @@ services:
     depends_on:
       migrations:
         condition: service_completed_successfully
+      job-worker:
+        condition: service_healthy
     healthcheck:
       # /ready (not /health) so the container is marked unhealthy when Postgres is unreachable —
       # readiness = "can actually serve", liveness /health only means "process up" (P3.6).
@@ -100,6 +104,7 @@ services:
   # compatibility upstream. W2.4 moves modules into the server package before any traffic cutover.
   node-api:
     restart: unless-stopped
+    image: "qrai/node-backend:${NODE_BACKEND_IMAGE_TAG:-local}"
     build:
       context: .
       dockerfile: server/Dockerfile
@@ -109,27 +114,106 @@ services:
       REALTIME_GATEWAY_TICKET_SECRET: "${REALTIME_GATEWAY_TICKET_SECRET:?REALTIME_GATEWAY_TICKET_SECRET is required in production}"
       ML_API_KEY: "${ML_API_KEY:?ML_API_KEY is required}"
       ASR_API_KEY: "${ASR_API_KEY:?ASR_API_KEY is required}"
+      UPSTREAM_TIMEOUT_SECS: "${UPSTREAM_TIMEOUT_SECS:-60}"
+      SHUTDOWN_GRACE_SECS: "${SHUTDOWN_GRACE_SECS:-8}"
       CORS_ALLOWED_ORIGINS: "${CORS_ALLOWED_ORIGINS:-}"
+      MAINTENANCE_MODE: "${MAINTENANCE_MODE:-0}"
+      DEVICE_IDENTITY_ENABLED: "${DEVICE_IDENTITY_ENABLED:-0}"
+      DISABLE_RATE_LIMIT: "${DISABLE_RATE_LIMIT:-0}"
+      TRUST_PROXY_HEADERS: "${TRUST_PROXY_HEADERS:-0}"
+      TRUST_PROXY_HOPS: "${TRUST_PROXY_HOPS:-}"
       ALLOW_INSECURE_DEFAULTS: "${ALLOW_INSECURE_DEFAULTS:-0}"
       ALLOW_INSECURE_SECRETS: "${ALLOW_INSECURE_SECRETS:-}"
       METRICS_DEV_OPEN: "${METRICS_DEV_OPEN:-}"
       METRICS_TOKEN: "${METRICS_TOKEN:-}"
       NODE_API_BIND: "0.0.0.0:8082"
+      NODE_API_ROUTE_MODE: "explicit-compatibility"
       NODE_API_PORTED: "${NODE_API_PORTED:-GET /health,GET /ready}"
       NODE_API_HEALTHCHECK_URL: "${NODE_API_HEALTHCHECK_URL:-http://127.0.0.1:8082/ready}"
       PLATFORM_API_UPSTREAM: "http://platform-api:8080"
-      ML_INFERENCE_URL: "http://ml-inference:8090"
+      ML_INFERENCE_URL: "http://job-worker:8098"
       ASR_INFERENCE_URL: "http://asr-inference:8091"
+      # Local Compose deliberately shares the filesystem adapter between the Node roles. Production
+      # sets AUDIO_STORAGE_DRIVER=s3 and the S3 variables below; a production-built process refuses
+      # filesystem unless this conspicuous development-only acknowledgement is present.
+      AUDIO_STORAGE_DRIVER: "${AUDIO_STORAGE_DRIVER:-filesystem}"
+      AUDIO_STORAGE_FILESYSTEM_ACKNOWLEDGED_DEV_ONLY: "${AUDIO_STORAGE_FILESYSTEM_ACKNOWLEDGED_DEV_ONLY:-1}"
+      AUDIO_STORAGE_DIR: "/data/audio-storage"
+      AUDIO_STORAGE_S3_BUCKET: "${AUDIO_STORAGE_S3_BUCKET:-}"
+      AUDIO_STORAGE_S3_REGION: "${AUDIO_STORAGE_S3_REGION:-}"
+      AUDIO_STORAGE_S3_ENDPOINT: "${AUDIO_STORAGE_S3_ENDPOINT:-}"
+      AUDIO_STORAGE_S3_FORCE_PATH_STYLE: "${AUDIO_STORAGE_S3_FORCE_PATH_STYLE:-}"
+      AUDIO_STORAGE_S3_EXPECTED_OWNER: "${AUDIO_STORAGE_S3_EXPECTED_OWNER:-}"
+      AUDIO_STORAGE_S3_ENCRYPTION: "${AUDIO_STORAGE_S3_ENCRYPTION:-AES256}"
+      AUDIO_STORAGE_S3_KMS_KEY_ID: "${AUDIO_STORAGE_S3_KMS_KEY_ID:-}"
+    volumes:
+      - audio_storage:/data/audio-storage
     expose:
       - "8082"
     depends_on:
       platform-api:
+        condition: service_healthy
+      job-worker:
         condition: service_healthy
     healthcheck:
       test: ["CMD", "node", "server/src/container-healthcheck.mjs"]
       interval: 10s
       timeout: 5s
       retries: 3
+    # Must remain greater than SHUTDOWN_GRACE_SECS so application cleanup, logs, and exit finish
+    # before the container runtime escalates SIGTERM to SIGKILL.
+    stop_grace_period: "${NODE_API_STOP_GRACE_PERIOD:-10s}"
+
+  # Same package and production image as node-api; a separate command rescues durable work after an
+  # API process crash. It has no public port and never receives a privileged database role.
+  job-worker:
+    restart: unless-stopped
+    image: "qrai/node-backend:${NODE_BACKEND_IMAGE_TAG:-local}"
+    build:
+      context: .
+      dockerfile: server/Dockerfile
+    command: ["node", "server/src/worker.mjs"]
+    environment:
+      DATABASE_URL: "postgresql://quran_ai_app:${APP_DATABASE_PASSWORD}@postgres:5432/quran_ai"
+      ML_API_KEY: "${ML_API_KEY:?ML_API_KEY is required}"
+      ASR_API_KEY: "${ASR_API_KEY:?ASR_API_KEY is required}"
+      ASR_SERVICE_URL: "http://asr-inference:8091"
+      UPSTREAM_TIMEOUT_SECS: "${UPSTREAM_TIMEOUT_SECS:-60}"
+      SHUTDOWN_GRACE_SECS: "${JOB_WORKER_SHUTDOWN_GRACE_SECS:-8}"
+      JOB_WORKER_BIND: "0.0.0.0:8098"
+      JOB_POLL_INTERVAL_MS: "${JOB_POLL_INTERVAL_MS:-1000}"
+      JOB_OPERATION_TIMEOUT_SECS: "${JOB_OPERATION_TIMEOUT_SECS:-60}"
+      JOB_LEASE_SECS: "${JOB_LEASE_SECS:-65}"
+      JOB_RETRY_BASE_MS: "${JOB_RETRY_BASE_MS:-1000}"
+      JOB_RETRY_MAX_MS: "${JOB_RETRY_MAX_MS:-300000}"
+      METRICS_TOKEN: "${METRICS_TOKEN:-}"
+      METRICS_DEV_OPEN: "${METRICS_DEV_OPEN:-}"
+      NODE_API_HEALTHCHECK_URL: "http://127.0.0.1:8098/ready"
+      AUDIO_STORAGE_DRIVER: "${AUDIO_STORAGE_DRIVER:-filesystem}"
+      AUDIO_STORAGE_FILESYSTEM_ACKNOWLEDGED_DEV_ONLY: "${AUDIO_STORAGE_FILESYSTEM_ACKNOWLEDGED_DEV_ONLY:-1}"
+      AUDIO_STORAGE_DIR: "/data/audio-storage"
+      AUDIO_STORAGE_S3_BUCKET: "${AUDIO_STORAGE_S3_BUCKET:-}"
+      AUDIO_STORAGE_S3_REGION: "${AUDIO_STORAGE_S3_REGION:-}"
+      AUDIO_STORAGE_S3_ENDPOINT: "${AUDIO_STORAGE_S3_ENDPOINT:-}"
+      AUDIO_STORAGE_S3_FORCE_PATH_STYLE: "${AUDIO_STORAGE_S3_FORCE_PATH_STYLE:-}"
+      AUDIO_STORAGE_S3_EXPECTED_OWNER: "${AUDIO_STORAGE_S3_EXPECTED_OWNER:-}"
+      AUDIO_STORAGE_S3_ENCRYPTION: "${AUDIO_STORAGE_S3_ENCRYPTION:-AES256}"
+      AUDIO_STORAGE_S3_KMS_KEY_ID: "${AUDIO_STORAGE_S3_KMS_KEY_ID:-}"
+    volumes:
+      - audio_storage:/data/audio-storage
+    expose:
+      - "8098"
+    depends_on:
+      migrations:
+        condition: service_completed_successfully
+      asr-inference:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "node", "server/src/container-healthcheck.mjs"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+    stop_grace_period: "${JOB_WORKER_STOP_GRACE_PERIOD:-10s}"
 
   # === Rust Realtime Gateway ===
   realtime-gateway:
@@ -140,7 +224,7 @@ services:
     environment:
       REALTIME_GATEWAY_BIND: "0.0.0.0:8081"
       REALTIME_GATEWAY_TICKET_SECRET: "${REALTIME_GATEWAY_TICKET_SECRET:?REALTIME_GATEWAY_TICKET_SECRET is required in production}"
-      ML_INFERENCE_URL: "http://ml-inference:8090"
+      ML_INFERENCE_URL: "http://job-worker:8098"
       PLATFORM_API_URL: "http://platform-api:8080"
       GATEWAY_TENANT_ID: "hikmah-pilot-erbil"
       ML_API_KEY: "${ML_API_KEY:?ML_API_KEY is required}"
@@ -150,6 +234,7 @@ services:
       ALLOW_INSECURE_DEFAULTS: "${ALLOW_INSECURE_DEFAULTS:-0}"
       ALLOW_INSECURE_SECRETS: "${ALLOW_INSECURE_SECRETS:-}"
       METRICS_DEV_OPEN: "${METRICS_DEV_OPEN:-}"
+      METRICS_TOKEN: "${METRICS_TOKEN:-}"
       GATEWAY_ALLOW_MISSING_ORIGIN: "${GATEWAY_ALLOW_MISSING_ORIGIN:-}"
       ALLOW_CHAOS_INJECTION: "${ALLOW_CHAOS_INJECTION:-}"
       # The gateway needs the allowlist too — it 403s every upgrade when this is unset in strict mode.
@@ -158,6 +243,8 @@ services:
       - "8081:8081"
     depends_on:
       platform-api:
+        condition: service_healthy
+      job-worker:
         condition: service_healthy
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8081/health"]
@@ -176,41 +263,23 @@ services:
       dockerfile: server/migrations.Dockerfile
     environment:
       DATABASE_URL: "postgresql://quran_ai_app:${APP_DATABASE_PASSWORD}@postgres:5432/quran_ai"
+      AUDIO_STORAGE_DRIVER: "${AUDIO_STORAGE_DRIVER:-filesystem}"
+      AUDIO_STORAGE_FILESYSTEM_ACKNOWLEDGED_DEV_ONLY: "${AUDIO_STORAGE_FILESYSTEM_ACKNOWLEDGED_DEV_ONLY:-1}"
       AUDIO_STORAGE_DIR: "/data/audio-storage"
+      AUDIO_STORAGE_S3_BUCKET: "${AUDIO_STORAGE_S3_BUCKET:-}"
+      AUDIO_STORAGE_S3_REGION: "${AUDIO_STORAGE_S3_REGION:-}"
+      AUDIO_STORAGE_S3_ENDPOINT: "${AUDIO_STORAGE_S3_ENDPOINT:-}"
+      AUDIO_STORAGE_S3_FORCE_PATH_STYLE: "${AUDIO_STORAGE_S3_FORCE_PATH_STYLE:-}"
+      AUDIO_STORAGE_S3_EXPECTED_OWNER: "${AUDIO_STORAGE_S3_EXPECTED_OWNER:-}"
+      AUDIO_STORAGE_S3_ENCRYPTION: "${AUDIO_STORAGE_S3_ENCRYPTION:-AES256}"
+      AUDIO_STORAGE_S3_KMS_KEY_ID: "${AUDIO_STORAGE_S3_KMS_KEY_ID:-}"
+      AUDIO_RECONCILE_TENANT_IDS: "${AUDIO_RECONCILE_TENANT_IDS:-hikmah-pilot-erbil}"
     command: ["node", "server/scripts/repair-audio-index.mjs", "--apply"]
     volumes:
       - audio_storage:/data/audio-storage:ro
     depends_on:
       migrations:
         condition: service_completed_successfully
-
-  # === ML Inference (Node.js) ===
-  ml-inference:
-    restart: unless-stopped
-    build:
-      context: .
-      dockerfile: services/ml-inference/Dockerfile
-    environment:
-      ML_INFERENCE_HOST: "0.0.0.0"
-      ML_INFERENCE_PORT: "8090"
-      ASR_SERVICE_URL: "http://asr-inference:8091"
-      ASR_API_KEY: "${ASR_API_KEY:?ASR_API_KEY is required}"
-      AUDIO_STORAGE_DIR: "/data/audio-storage"
-      ML_API_KEY: "${ML_API_KEY:?ML_API_KEY is required}"
-    ports:
-      # Internal-only: loopback bind. The browser/mobile never hit ML directly — platform-api proxies
-      # it with the server-side x-ml-api-key. Not exposed off-host.
-      - "127.0.0.1:8090:8090"
-    volumes:
-      - audio_storage:/data/audio-storage
-    depends_on:
-      asr-inference:
-        condition: service_healthy
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8090/health"]
-      interval: 10s
-      timeout: 5s
-      retries: 3
 
   # === ASR Inference (Python/Whisper) ===
   asr-inference:
@@ -244,7 +313,7 @@ services:
       ASR_API_KEY: "${ASR_API_KEY:?ASR_API_KEY is required}"
     ports:
       # Internal-only: loopback bind. Reached only server-side via the platform-api ASR proxy
-      # (server-side x-asr-api-key) and ml-inference. Not exposed off-host.
+      # (server-side x-asr-api-key) and the job worker. Not exposed off-host.
       - "127.0.0.1:8091:8091"
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8091/ready"]
@@ -272,17 +341,17 @@ services:
         VITE_REALTIME_GATEWAY_URL: "ws://localhost:8081"
     ports:
       - "5173:8080"
+    environment:
+      # The image entrypoint accepts only this Rust target or the explicit Node canary target.
+      WEB_PLATFORM_API_UPSTREAM: "platform-api:8080"
     depends_on:
       platform-api:
         condition: service_healthy
       realtime-gateway:
         condition: service_healthy
-      ml-inference:
-        condition: service_healthy
     healthcheck:
       # nginx-unprivileged:alpine does not include curl (only the four backend service images do)
-      # — wget is available in Alpine by default. See services/ml-inference/Dockerfile's identical
-      # curl-availability issue for the sibling bug this mirrors on the backend side.
+      # — wget is available in Alpine by default.
       test: ["CMD", "wget", "-q", "--spider", "http://127.0.0.1:8080/"]
       interval: 10s
       timeout: 5s

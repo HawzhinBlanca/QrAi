@@ -7,10 +7,12 @@ import { join } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 
+import { DEPLOYABLE_IMAGE_KEYS } from "./lib/deployable-images.mjs";
+
 const manifestScript = fileURLToPath(new URL("./release-manifest.mjs", import.meta.url));
 const challengeScript = fileURLToPath(new URL("./release-challenge.mjs", import.meta.url));
+const deployableImagesModule = fileURLToPath(new URL("./lib/deployable-images.mjs", import.meta.url));
 const requiredArtifacts = ["plan.md", "spec.md", "research.md", "impact-map.md", "tasks.md"];
-const services = ["platform-api", "node-api", "realtime-gateway", "ml-inference", "asr-inference", "web"];
 
 function git(repo, args) {
   return execFileSync("git", args, { cwd: repo, encoding: "utf8" }).trim();
@@ -56,7 +58,7 @@ function sha256(filePath) {
 
 function writeEvidenceInputs({ evidenceDirectory, candidateSha, traceId, publicKeyPem, completedAt }) {
   const imageDigests = Object.fromEntries(
-    services.map((service, index) => [service, `sha256:${String(index + 1).repeat(64)}`])
+    DEPLOYABLE_IMAGE_KEYS.map((service, index) => [service, `sha256:${String(index + 1).repeat(64)}`])
   );
   const buildSummaryPath = join(evidenceDirectory, "build-summary.json");
   const buildProvenancePath = join(evidenceDirectory, "build-provenance.json");
@@ -248,6 +250,8 @@ function prepareCandidate(t) {
   }
   mkdirSync(join(repo, "scripts"), { recursive: true });
   copyFileSync(manifestScript, join(repo, "scripts", "release-manifest.mjs"));
+  mkdirSync(join(repo, "scripts", "lib"), { recursive: true });
+  copyFileSync(deployableImagesModule, join(repo, "scripts", "lib", "deployable-images.mjs"));
 
   git(repo, ["init", "-q"]);
   git(repo, ["config", "user.name", "Release Evidence Test"]);

@@ -1,56 +1,52 @@
-# AR1 — build immutable, digest-pinned deployable images and keep the previous ones.
-# docs/DECISIONS.md ADR-0022 (Accepted 2026-08-01, option A: local tag retention).
-#
-# This is NOT docker-build.yml. That workflow builds every image to verify the Dockerfiles and the
-# non-root hardening — it produces no stable identifier, records no digest, and retains nothing, so
-# it is not a rollback target. "We can build the image" and "we can go back to the image that was
-# running" are different claims, and only the second one helps during an incident.
-#
-# workflow_dispatch and tags only. Image builds are slow, and running this on every push would add
-# minutes to the loop for an artifact nobody consumes on a feature branch.
+# Publish candidate-bound images to durable GHCR repositories.
 name: release-image
+
 on:
   workflow_dispatch:
-    inputs:
-      keep:
-        description: "How many tagged images to retain per service"
-        required: false
-        default: "3"
   push:
     tags: ["v*"]
 
+permissions:
+  contents: read
+  packages: write
+
 jobs:
-  build:
+  publish:
     runs-on: ubuntu-latest
     env:
-      # Dummy values ONLY to satisfy compose's ${VAR:?required} interpolation at parse time.
-      # `docker compose build` does not inject runtime env into images, so these never ship.
-      JWT_SECRET: "ci-dummy-jwt-secret-at-least-32-characters-long"
-      REALTIME_GATEWAY_TICKET_SECRET: "ci-dummy-ticket-secret-at-least-32-chars"
-      ML_API_KEY: "ci-dummy-ml-key"
-      ASR_API_KEY: "ci-dummy-asr-key"
-      POSTGRES_PASSWORD: "ci-dummy-pg"
-      APP_DATABASE_PASSWORD: "ci-dummy-app-pg"
-      RELEASE_IMAGE_KEEP: ${{ github.event.inputs.keep || '3' }}
+      RELEASE_IMAGE_DIGESTS_OUTPUT: ${{ runner.temp }}/image-digests.json
     steps:
       - uses: actions/checkout@v4
+
       - uses: actions/setup-node@v4
         with:
           node-version: "22"
 
-      # The retention rule is tested WITHOUT a Docker daemon, and it runs FIRST: a bug there deletes
-      # the image you were about to roll back to.
-      - name: Retention rule has teeth
-        run: node --test scripts/release-images.test.mjs
+      - name: Configure the lower-case GHCR namespace
+        shell: bash
+        run: |
+          namespace="${GITHUB_REPOSITORY_OWNER,,}"
+          echo "RELEASE_REGISTRY_NAMESPACE=$namespace" >> "$GITHUB_ENV"
 
-      - name: docker build, tag by SHA, retain the last N
-        run: node scripts/release-images.mjs | tee image-digests.json
+      - uses: docker/setup-buildx-action@v3
 
-      # The digests are the point. release-manifest.mjs's assertImageDigests already demands them;
-      # this is what makes them real instead of a verifier relaxed to match reality.
-      - name: Publish the digest manifest as a build artifact
+      - name: Authenticate to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Verify release image identity
+        run: node --test scripts/release-images.test.mjs tests/release/release-artifact-consumption.test.mjs
+
+      - name: Publish full-SHA images and write immutable digests
+        run: node scripts/release-images.mjs
+
+      - name: Publish the machine-readable digest document
         uses: actions/upload-artifact@v4
         with:
-          name: image-digests
-          path: image-digests.json
+          name: image-digests-${{ github.sha }}
+          path: ${{ env.RELEASE_IMAGE_DIGESTS_OUTPUT }}
+          if-no-files-found: error
           retention-days: 90

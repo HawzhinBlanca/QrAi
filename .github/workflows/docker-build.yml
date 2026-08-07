@@ -9,10 +9,12 @@ on:
       - "services/node-api/**"
       - "server/**"
       - "apps/web/Dockerfile"
+      - "apps/web/nginx*.conf"
+      - "apps/web/validate-api-upstream.sh"
       - "package.json"
       - "pnpm-lock.yaml"
       - "pnpm-workspace.yaml"
-      - "docker-compose.yml"
+      - "docker-compose*.yml"
       - ".dockerignore"
       - ".github/workflows/docker-build.yml"
   push:
@@ -22,10 +24,12 @@ on:
       - "services/node-api/**"
       - "server/**"
       - "apps/web/Dockerfile"
+      - "apps/web/nginx*.conf"
+      - "apps/web/validate-api-upstream.sh"
       - "package.json"
       - "pnpm-lock.yaml"
       - "pnpm-workspace.yaml"
-      - "docker-compose.yml"
+      - "docker-compose*.yml"
       - ".dockerignore"
       - ".github/workflows/docker-build.yml"
 
@@ -55,7 +59,7 @@ jobs:
         run: |
           set -euo pipefail
           fail=0
-          for svc in platform-api node-api realtime-gateway ml-inference asr-inference web; do
+          for svc in platform-api node-api realtime-gateway asr-inference web; do
             uid=$(docker compose run --rm --no-deps --entrypoint sh "$svc" -c 'id -u' | tr -d '\r')
             echo "$svc -> uid $uid"
             if [ "$uid" = "0" ] || [ -z "$uid" ]; then
@@ -73,13 +77,25 @@ jobs:
             test "$NODE_ENV" = "production"
             test ! -e /app/tests
             test ! -e /app/apps
-            test ! -e /app/packages/contracts
+            test -f /app/packages/contracts/route-manifest.json
+            test ! -e /app/packages/contracts/openapi.yaml
             test ! -e /app/packages/quran-data/package.json
             test -f /app/packages/quran-data/src/data/full-quran/provenance-v2.json
             test ! -e /app/services/platform-api
             test ! -e /app/node_modules/typescript
             node --input-type=module -e "await Promise.all([\"@fastify/cors\",\"fastify\",\"jose\",\"pg\",\"postgres\"].map((name) => import(name)))"
           '
+
+      - name: Web upstream selector and rendered nginx config fail closed
+        run: |
+          set -euo pipefail
+          docker compose run --rm --no-deps web nginx -t
+          if docker compose run --rm --no-deps \
+            -e WEB_PLATFORM_API_UPSTREAM=http://node-api:8082 \
+            web nginx -t; then
+            echo "::error::web accepted an unapproved API upstream"
+            exit 1
+          fi
 
       - name: Native Node image healthcheck reaches healthy
         run: |

@@ -3,10 +3,11 @@ import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { isAbsolute, resolve } from "node:path";
 
+import { DEPLOYABLE_IMAGE_KEYS } from "./lib/deployable-images.mjs";
+
 const candidatePattern = /^[a-f0-9]{40}$/;
 const imageDigestPattern = /^sha256:[a-f0-9]{64}$/;
 const releaseTracePattern = /^release-trace-[a-z0-9][a-z0-9-]{15,127}$/;
-const deployableServices = ["platform-api", "node-api", "realtime-gateway", "ml-inference", "asr-inference", "web"];
 
 function fail(message) {
   throw new Error(message);
@@ -53,7 +54,7 @@ function assertImageDigests(imageDigests, required) {
   if (!imageDigests || typeof imageDigests !== "object" || Array.isArray(imageDigests)) {
     fail("imageDigests must be an object.");
   }
-  const requiredServices = required ? deployableServices : Object.keys(imageDigests);
+  const requiredServices = required ? DEPLOYABLE_IMAGE_KEYS : Object.keys(imageDigests);
   for (const service of requiredServices) {
     if (typeof imageDigests[service] !== "string" || !imageDigestPattern.test(imageDigests[service])) {
       fail(`imageDigests.${service} must be a non-empty sha256 digest.`);

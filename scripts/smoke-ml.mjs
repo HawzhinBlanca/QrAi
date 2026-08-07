@@ -9,8 +9,9 @@ import {
   canonicalizeRfc8785,
   verifyModelEvidenceBundle,
 } from "./model-evidence-verifier.mjs";
+import { startWorkerCompatibilitySmoke } from "./lib/worker-compatibility-smoke.mjs";
 
-const fixture = JSON.parse(await readFile("services/ml-inference/fixtures/golden-evals.json", "utf8"));
+const fixture = JSON.parse(await readFile("server/src/inference/fixtures/golden-evals.json", "utf8"));
 const providedUrl = process.env.ML_INFERENCE_SMOKE_URL;
 const artifactRoot = process.env.SMOKE_ARTIFACT_DIR ?? join("out", "smoke", new Date().toISOString().replace(/[:.]/g, "-"));
 const artifactDir = join(artifactRoot, "ml");
@@ -23,13 +24,9 @@ const service = providedUrl ? null : await startMlService();
 const baseUrl = providedUrl ?? service.baseUrl;
 
 try {
-  const health = await getJson("/health");
-  assert(health.ok === true, "ML health did not report ok");
-  assert(health.datasetVersion === fixture.datasetVersion, "ML health did not expose fixture datasetVersion");
-  assert(
-    fixture.cases.every((fixtureCase) => health.goldenCases.includes(fixtureCase.id)),
-    "ML health did not expose all golden fixture cases",
-  );
+  const health = await fetch(`${baseUrl}/health`);
+  assert(health.ok, "worker inference health did not report ok");
+  assert((await health.text()) === "ok", "worker inference health body was unexpected");
 
   const caseSummaries = [];
   for (const fixtureCase of fixture.cases) {
@@ -348,11 +345,13 @@ async function readResponse(response, path) {
 async function startMlService() {
   const port = await getFreePort();
   const logPath = join(artifactDir, "service.log");
-  const child = spawn(process.execPath, ["services/ml-inference/server.mjs"], {
-    cwd: process.cwd(),
-    env: {
-      ...process.env,
-      ML_INFERENCE_PORT: String(port),
+  const logs = [];
+  const harness = await startWorkerCompatibilitySmoke({
+    port,
+    mlApiKey,
+    log: (message) => logs.push(`${message}\n`),
+    envOverrides: {
+      AUDIO_STORAGE_DIR: join(artifactDir, "audio-storage"),
       ML_EXTERNAL_ASR_TENANTS: "tenant-smoke",
       // This smoke asserts deterministic golden-fixture behavior, so run ml in fixture
       // mode (it defaults OFF so learners get real computed alignment).
@@ -363,20 +362,13 @@ async function startMlService() {
       // place it IS intended.
       ML_ACKNOWLEDGE_FIXTURE_OUTPUT: "1",
     },
-    stdio: ["ignore", "pipe", "pipe"],
   });
-
-  const logs = [];
-  child.stdout.on("data", (chunk) => logs.push(String(chunk)));
-  child.stderr.on("data", (chunk) => logs.push(String(chunk)));
-
-  const baseUrl = `http://127.0.0.1:${port}`;
-  await waitForHealth(baseUrl);
+  await waitForHealth(harness.baseUrl);
 
   return {
-    baseUrl,
+    baseUrl: harness.baseUrl,
     async stop() {
-      child.kill("SIGTERM");
+      await harness.stop();
       await writeFile(logPath, logs.join(""));
     },
   };

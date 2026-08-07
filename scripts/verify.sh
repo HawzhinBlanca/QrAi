@@ -61,6 +61,19 @@ if [[ "$RELEASE" == "yes" ]]; then
     RELEASE_ENVIRONMENT_CLASS
     RELEASE_ENVIRONMENT_PROVIDER
     RELEASE_IMAGE_DIGESTS_JSON
+    RELEASE_HTTP_CANARY_CANDIDATE_EVIDENCE
+    RELEASE_HTTP_CANARY_CLASSROOM_LOAD_EVIDENCE
+    RELEASE_HTTP_CANARY_BURST_LOAD_EVIDENCE
+    RELEASE_HTTP_CANARY_SOAK_LOAD_EVIDENCE
+    RELEASE_HTTP_CANARY_OBSERVATION_EVIDENCE
+    RELEASE_HTTP_CANARY_HEALTHY_CONTROLLER_EVIDENCE
+    RELEASE_HTTP_CANARY_ROLLBACK_CONTROLLER_EVIDENCE
+    RELEASE_HTTP_CANARY_REMOTE_CI_EVIDENCE
+    RELEASE_HTTP_CANARY_OWNER_APPROVAL
+    RELEASE_HTTP_CANARY_SECURITY_APPROVAL
+    RELEASE_HTTP_CANARY_SRE_APPROVAL
+    RELEASE_HTTP_CANARY_TRUST_POLICY
+    RELEASE_HTTP_CANARY_CLOSURE_OUTPUT
   )
   for variable in "${required_release_vars[@]}"; do
     if [[ -z "${!variable:-}" ]]; then
@@ -77,6 +90,27 @@ if [[ "$RELEASE" == "yes" ]]; then
   export SMOKE_ENVIRONMENT_CLASS="$RELEASE_ENVIRONMENT_CLASS"
   export SMOKE_ENVIRONMENT_PROVIDER="$RELEASE_ENVIRONMENT_PROVIDER"
   export SMOKE_TEST_ACTOR_CLASS="release-automation"
+  http_canary_release_args=(
+    --candidate-sha "$(git rev-parse HEAD)"
+    --candidate-evidence "$RELEASE_HTTP_CANARY_CANDIDATE_EVIDENCE"
+    --classroom-load-evidence "$RELEASE_HTTP_CANARY_CLASSROOM_LOAD_EVIDENCE"
+    --burst-load-evidence "$RELEASE_HTTP_CANARY_BURST_LOAD_EVIDENCE"
+    --soak-load-evidence "$RELEASE_HTTP_CANARY_SOAK_LOAD_EVIDENCE"
+    --observation-evidence "$RELEASE_HTTP_CANARY_OBSERVATION_EVIDENCE"
+    --healthy-controller-evidence "$RELEASE_HTTP_CANARY_HEALTHY_CONTROLLER_EVIDENCE"
+    --rollback-controller-evidence "$RELEASE_HTTP_CANARY_ROLLBACK_CONTROLLER_EVIDENCE"
+    --remote-ci-evidence "$RELEASE_HTTP_CANARY_REMOTE_CI_EVIDENCE"
+    --owner-approval "$RELEASE_HTTP_CANARY_OWNER_APPROVAL"
+    --security-approval "$RELEASE_HTTP_CANARY_SECURITY_APPROVAL"
+    --sre-approval "$RELEASE_HTTP_CANARY_SRE_APPROVAL"
+    --trust-policy "$RELEASE_HTTP_CANARY_TRUST_POLICY"
+  )
+  if ! node scripts/http-canary-release-evidence.mjs \
+    --validate-only \
+    "${http_canary_release_args[@]}"; then
+    echo "release verification requires valid candidate-bound canary, CI, and human evidence" >&2
+    exit 2
+  fi
   if ! node scripts/release-evidence-summary.mjs \
     --validate-only \
     --test-output "$RELEASE_TEST_SUMMARY" \
@@ -134,8 +168,8 @@ run "typecheck: ts" "pnpm --filter @quran-ai/contracts typecheck && pnpm --filte
 if [[ "$FAST" != "yes" ]]; then
   # --- 3. Test --------------------------------------------------------------
   run "test: ts"                  "pnpm --filter @quran-ai/contracts test && pnpm --filter @quran-ai/quran-data test && pnpm --filter @quran-ai/web test"
-  # Node services (ml-inference, agents) have no pnpm workspace; run their hermetic
-  # node:test suites by explicit path. server.mjs gates its side effects (listen/timers) on
+  # Server inference plus agents use explicit hermetic node:test paths. Runtime entrypoints gate
+  # their side effects (listen/timers) on
   # `isMain`, so server.test.mjs can import it directly; keep explicit paths (a dir glob would
   # still pick up non-test .mjs files).
   # PAR6: tests/api-parity/coverage.test.mjs belongs HERE, not in the DB-gated block below. It only
@@ -148,7 +182,12 @@ if [[ "$FAST" != "yes" ]]; then
   # declares. CI pins `node-version: "22"`, which floats to the newest, so the gate was red on a
   # supported runtime and green on the one that tested it. tests/contract/strip-types.test.mjs pins
   # the flag against the imports so this cannot come back.
-  run "test: node services"       "node --experimental-strip-types --test scripts/fixture-normalize.test.mjs scripts/diff-api-fixtures.test.mjs scripts/fixture-coverage.test.mjs services/ml-inference/alignment.test.mjs services/ml-inference/marks-parity.test.mjs services/ml-inference/tajweed.test.mjs services/ml-inference/golden-regression.test.mjs services/ml-inference/model-attribution.test.mjs services/ml-inference/server.test.mjs services/ml-inference/session-transcript.test.mjs services/ml-inference/acoustic-shadow.test.mjs services/ml-inference/rate-limit.test.mjs services/ml-inference/chunk-overwrite.test.mjs services/ml-inference/storage-driver.test.mjs services/ml-inference/privacy-erasure.test.mjs services/agents/agents.test.mjs scripts/release-manifest.test.mjs scripts/release-build-evidence.test.mjs scripts/release-evidence-summary.test.mjs scripts/smoke-evidence.test.mjs scripts/smoke-database.test.mjs scripts/release-images.test.mjs tests/release/model-evidence.test.mjs tests/release/model-claim-authority.test.mjs tests/inference/asr-readiness.test.mjs tests/inference/asr-candidate-evidence.test.mjs tests/inference/muaalem-candidate-evidence.test.mjs tests/inference/real-audio-spans.test.mjs tests/api-parity/coverage.test.mjs tests/node-api/ticket-vectors.test.mjs tests/node-api/authz.test.mjs tests/node-api/shell.test.mjs tests/node-api/standalone-lifecycle.test.mjs tests/node-api/production-image.test.mjs tests/node-api/module-relocation.test.mjs tests/node-api/routes-table.test.mjs tests/node-api/metrics-render.test.mjs tests/node-api/rust-json.test.mjs tests/node-api/no-secret-logging.test.mjs tests/node-api/boot-guard.test.mjs tests/node-api/nul-byte-is-a-400.test.mjs tests/node-api/readiness-fault.test.mjs tests/contract/coverage.test.mjs tests/contract/openapi-completeness.test.mjs tests/contract/cutover-readiness.test.mjs tests/contract/boundary-references.test.mjs tests/contract/node-backend-decisions.test.mjs tests/contract/flutter-contract.test.mjs tests/contract/enum-parity.test.mjs tests/contract/tajweed-gate-parity.test.mjs tests/contract/learner-feedback-gate.test.mjs tests/contract/tajweed-analysis-basis.test.mjs tests/contract/acoustic-tajweed-boundary.test.mjs tests/contract/no-invented-confidence.test.mjs tests/contract/ml-findings-shape.test.mjs tests/contract/strip-types.test.mjs tests/contract/verify-invocations.test.mjs tests/contract/retired-components.test.mjs tests/contract/store-readiness.test.mjs tests/contract/compose-migrations.test.mjs tests/contract/audio-index-topology.test.mjs tests/migrations/migration-runner.test.mjs tests/migrations/schema-equivalence.test.mjs tests/migrations/restricted-role.test.mjs tests/migrations/eval-evidence-migration.test.mjs scripts/check-apk.test.mjs tests/security/arabic-regex-escapes.test.mjs tests/i18n/registers.test.mjs tests/i18n/locale-parity.test.mjs tests/i18n/drafts.test.mjs tests/security/legacy-insecure-flag.test.mjs"
+  run "test: audio object lifecycle" "node --test tests/e2e/audio-lifecycle.test.mjs"
+  run "test: durable domain workflows" "node --test --test-concurrency=1 tests/e2e/durable-workflows.test.mjs"
+  run "test: durable job security" "node --test tests/security/job-boundary.test.mjs"
+  run "test: device enrollment routes" "node --test --test-concurrency=1 tests/e2e/device-enrollment.test.mjs"
+  run "test: audio retention worker" "node --test tests/inference/audio-retention-worker.test.mjs"
+  run "test: node services"       "node --experimental-strip-types --test scripts/fixture-normalize.test.mjs scripts/diff-api-fixtures.test.mjs scripts/fixture-coverage.test.mjs scripts/load-test.test.mjs tests/inference/alignment.test.mjs tests/inference/marks-parity.test.mjs tests/inference/tajweed.test.mjs tests/inference/golden-regression.test.mjs tests/inference/model-attribution.test.mjs tests/inference/server.test.mjs tests/inference/session-transcript.test.mjs tests/inference/acoustic-shadow.test.mjs tests/inference/rate-limit.test.mjs tests/inference/chunk-overwrite.test.mjs tests/inference/compatibility-ingress.test.mjs tests/inference/storage-driver.test.mjs tests/inference/privacy-erasure.test.mjs services/agents/agents.test.mjs scripts/release-manifest.test.mjs scripts/release-build-evidence.test.mjs scripts/release-evidence-summary.test.mjs scripts/smoke-evidence.test.mjs scripts/smoke-database.test.mjs scripts/release-images.test.mjs tests/release/release-artifact-consumption.test.mjs tests/release/release-deployment-selection.test.mjs tests/release/http-canary-image.test.mjs tests/release/http-canary-controller.test.mjs tests/release/canary-rollback-evidence.test.mjs tests/observability/http-canary-monitoring.test.mjs tests/release/model-evidence.test.mjs tests/release/model-claim-authority.test.mjs tests/inference/asr-readiness.test.mjs tests/inference/asr-candidate-evidence.test.mjs tests/inference/muaalem-candidate-evidence.test.mjs tests/inference/real-audio-spans.test.mjs tests/api-parity/coverage.test.mjs tests/node-api/ticket-vectors.test.mjs tests/node-api/authz.test.mjs tests/node-api/device-sessions.test.mjs tests/node-api/shell.test.mjs tests/node-api/standalone-lifecycle.test.mjs tests/node-api/graceful-shutdown.test.mjs tests/node-api/worker-lifecycle.test.mjs tests/node-api/standalone.test.mjs tests/node-api/middleware-order.test.mjs tests/node-api/production-image.test.mjs tests/node-api/module-relocation.test.mjs tests/node-api/route-registry.test.mjs tests/node-api/db-architecture.test.mjs tests/node-api/metrics-render.test.mjs tests/node-api/rust-json.test.mjs tests/node-api/no-secret-logging.test.mjs tests/node-api/boot-guard.test.mjs tests/node-api/nul-byte-is-a-400.test.mjs tests/node-api/readiness-fault.test.mjs tests/faults/dependency-timeouts.test.mjs tests/contract/coverage.test.mjs tests/contract/openapi-completeness.test.mjs tests/contract/cutover-readiness.test.mjs tests/contract/http-canary-topology.test.mjs tests/e2e/http-canary-effects.test.mjs tests/contract/boundary-references.test.mjs tests/contract/inference-module-boundary.test.mjs tests/contract/inference-compatibility-surface.test.mjs tests/contract/node-backend-decisions.test.mjs tests/contract/flutter-contract.test.mjs tests/contract/enum-parity.test.mjs tests/contract/tajweed-gate-parity.test.mjs tests/contract/learner-feedback-gate.test.mjs tests/contract/tajweed-analysis-basis.test.mjs tests/contract/acoustic-tajweed-boundary.test.mjs tests/contract/no-invented-confidence.test.mjs tests/contract/ml-findings-shape.test.mjs tests/contract/strip-types.test.mjs tests/contract/verify-invocations.test.mjs tests/contract/retired-components.test.mjs tests/contract/store-readiness.test.mjs tests/contract/compose-migrations.test.mjs tests/contract/audio-index-topology.test.mjs tests/migrations/migration-runner.test.mjs tests/migrations/schema-equivalence.test.mjs tests/migrations/restricted-role.test.mjs tests/migrations/eval-evidence-migration.test.mjs tests/migrations/job-outbox-migration.test.mjs tests/migrations/device-identity-migration.test.mjs tests/jobs/durable-jobs.test.mjs tests/jobs/local-inference-worker.test.mjs tests/jobs/api-job-wait.test.mjs tests/jobs/inference-cancellation.test.mjs scripts/check-apk.test.mjs tests/security/arabic-regex-escapes.test.mjs tests/security/node-boundary.test.mjs tests/i18n/registers.test.mjs tests/i18n/locale-parity.test.mjs tests/i18n/drafts.test.mjs tests/security/legacy-insecure-flag.test.mjs"
   # apps/mobile is NOT a pnpm workspace member, so the TS `test: ts` line above never covered it and
   # its consent/auth/audio-format helpers went unguarded (a real audioFormat bug shipped there). The
   # helpers import ONLY node builtins, so this needs no install — just Node's type-stripping to read
@@ -225,12 +264,12 @@ if [[ "$FAST" != "yes" ]]; then
   run "test: gateway websocket (real process)" \
     "cargo build --manifest-path $GW && node --test tests/gateway/ws-hostile-input.test.mjs"
 
-  # Blocker 3 — the learner's audio-retention choice, end to end: real gateway, real ml-inference,
+  # Blocker 3 — the learner's audio-retention choice, end to end: real gateway, real worker ingress,
   # real websocket, and an assertion on the .meta.json actually written to disk. Also needs no
   # database: the choice travels in the signed ticket, which is the point.
   #
   # A pipeline test rather than another unit test, because every unit involved was already correct
-  # when this shipped broken. The gateway simply never put the field in the body, ml-inference's
+  # when this shipped broken. The gateway simply never put the field in the body, the inference runtime's
   # `?? "discard"` filled the hole, and a learner who chose "teacher-review" had their recitation
   # deleted an hour later with nothing logged. Only an assertion on the artifact catches that.
   run "test: audio retention reaches stored audio (real processes)" \
@@ -280,6 +319,8 @@ if [[ "$FAST" != "yes" ]]; then
     # withholding and cross-tenant isolation for the producer document.
     run "test: model provenance inference → DB → restricted readback (live Postgres)" \
       "cargo build --manifest-path $API && node --test --test-concurrency=1 tests/e2e/model-provenance-roundtrip.test.mjs"
+    run "test: learner-owned delayed review history (live Postgres)" \
+      "cargo build --manifest-path $API && node --test --test-concurrency=1 tests/e2e/learner-history.test.mjs"
     run "test: platform-api integration (live Postgres)" "cargo test --manifest-path $API -- --include-ignored"
     # PAR5 — the cross-language API parity suite (specs/api-parity-suite/). Black-box: it starts the
     # real platform-api binary on an ephemeral port per configuration group and asserts over HTTP +
@@ -305,7 +346,7 @@ if [[ "$FAST" != "yes" ]]; then
     # pilot routes simply write enough audit events to surface it several times an hour instead of
     # once a month. A flaky gate is worse than a red one: it teaches everyone to re-run.
     run "test: api parity suite (live Postgres)" \
-      "cargo build --manifest-path $API && node --test --test-concurrency=1 tests/api-parity/lib/harness.test.mjs tests/api-parity/default.test.mjs tests/api-parity/auth-disabled.test.mjs tests/api-parity/cors.test.mjs tests/api-parity/metrics.test.mjs tests/api-parity/ml-proxy.test.mjs tests/api-parity/realtime-ticket.test.mjs tests/api-parity/db-endpoints.test.mjs tests/api-parity/proxy-endpoints.test.mjs tests/api-parity/contract-shapes.test.mjs tests/api-parity/hostile-input.test.mjs tests/api-parity/infra-parity.test.mjs tests/api-parity/quran-parity.test.mjs tests/api-parity/progress-parity.test.mjs tests/api-parity/reports-parity.test.mjs tests/api-parity/auth-token-parity.test.mjs tests/api-parity/pilot-auth-parity.test.mjs tests/api-parity/pilot-routes-parity.test.mjs tests/api-parity/sessions-parity.test.mjs tests/api-parity/session-writes-parity.test.mjs tests/api-parity/review-parity.test.mjs tests/api-parity/ml-asr-proxy-parity.test.mjs tests/api-parity/privacy-parity.test.mjs tests/api-parity/agent-write-parity.test.mjs tests/api-parity/audio-playback-parity.test.mjs tests/api-parity/audio-index-parity.test.mjs tests/api-parity/authz-matrix.test.mjs tests/api-parity/upstream-hang.test.mjs tests/api-parity/upstream-malformed.test.mjs tests/api-parity/effect-parity.test.mjs tests/api-parity/tajweed-persistence-effects.test.mjs tests/observability/trace-join.test.mjs tests/observability/privacy-erasure-journey.test.mjs tests/contract/enum-db-parity.test.mjs tests/node-api/db-tenant.test.mjs"
+      "cargo build --manifest-path $API && node --test --test-concurrency=1 tests/api-parity/lib/harness.test.mjs tests/api-parity/default.test.mjs tests/api-parity/auth-disabled.test.mjs tests/api-parity/cors.test.mjs tests/api-parity/metrics.test.mjs tests/api-parity/ml-proxy.test.mjs tests/api-parity/realtime-ticket.test.mjs tests/api-parity/db-endpoints.test.mjs tests/api-parity/proxy-endpoints.test.mjs tests/api-parity/contract-shapes.test.mjs tests/api-parity/hostile-input.test.mjs tests/api-parity/infra-parity.test.mjs tests/api-parity/quran-parity.test.mjs tests/api-parity/progress-parity.test.mjs tests/api-parity/reports-parity.test.mjs tests/api-parity/auth-token-parity.test.mjs tests/api-parity/pilot-auth-parity.test.mjs tests/api-parity/pilot-routes-parity.test.mjs tests/api-parity/sessions-parity.test.mjs tests/api-parity/session-writes-parity.test.mjs tests/api-parity/session-finalize-parity.test.mjs tests/api-parity/review-parity.test.mjs tests/api-parity/ml-asr-proxy-parity.test.mjs tests/api-parity/privacy-parity.test.mjs tests/api-parity/agent-write-parity.test.mjs tests/api-parity/audio-playback-parity.test.mjs tests/api-parity/audio-index-parity.test.mjs tests/api-parity/authz-matrix.test.mjs tests/api-parity/upstream-hang.test.mjs tests/api-parity/upstream-malformed.test.mjs tests/api-parity/effect-parity.test.mjs tests/api-parity/tajweed-persistence-effects.test.mjs tests/observability/trace-join.test.mjs tests/observability/privacy-erasure-journey.test.mjs tests/contract/enum-db-parity.test.mjs tests/node-api/db-tenant.test.mjs tests/node-api/db-role-guard.test.mjs"
 
     # The SAME black-box suite, run with the Node port serving the routes instead of proxying them.
     #
@@ -315,7 +356,7 @@ if [[ "$FAST" != "yes" ]]; then
     # learner-redaction mirror in services/node-api/routes/ml-proxy.mjs was, until this line, a
     # security control with no gate behind it.
     #
-    # WIDENED to every portable route (was: the two ML proxy routes).
+    # WIDENED to every executable local route (was: the two ML proxy routes).
     #
     # The narrow version proved 2 of 36. The other 34 were ported, merged, and never once compared to
     # the Rust original by any gate — the same shape as the gap this line was added to close, one
@@ -323,18 +364,14 @@ if [[ "$FAST" != "yes" ]]; then
     # NUL byte was a 400 naming the problem in Rust and a bare `500 internal error` in Node, across
     # FOURTEEN surfaces, because the port never mirrored `impl From<sqlx::Error> for ApiError`.
     #
-    # The list is READ FROM `PORTABLE` rather than written here. A hardcoded list is a second place
-    # to remember, and the one that gets forgotten is always the gate — a route added to PORTABLE
-    # would be servable in production while nothing compared it to anything.
-    run "test: api parity THROUGH the Node port (every portable route)" \
-      "PARITY_THROUGH_SHELL=1 NODE_API_PORTED=\"\$(node -e '
-         const s = require(\"fs\").readFileSync(\"server/src/main.mjs\", \"utf8\");
-         const m = /export const PORTABLE = \\[([^\\]]*)\\]/s.exec(s);
-         if (!m) { console.error(\"could not read PORTABLE out of server.mjs\"); process.exit(1); }
-         const keys = [...m[1].matchAll(/\"([^\"]+)\"/g)].map((x) => x[1]);
-         if (keys.length < 30) { console.error(\"PORTABLE parsed to only \" + keys.length + \" routes\"); process.exit(1); }
-         console.log(keys.join(\",\"));
-       ')\" node --test --test-concurrency=1 tests/api-parity/default.test.mjs tests/api-parity/auth-disabled.test.mjs tests/api-parity/cors.test.mjs tests/api-parity/metrics.test.mjs tests/api-parity/ml-proxy.test.mjs tests/api-parity/realtime-ticket.test.mjs tests/api-parity/db-endpoints.test.mjs tests/api-parity/proxy-endpoints.test.mjs tests/api-parity/contract-shapes.test.mjs tests/api-parity/hostile-input.test.mjs tests/api-parity/infra-parity.test.mjs tests/api-parity/quran-parity.test.mjs tests/api-parity/progress-parity.test.mjs tests/api-parity/reports-parity.test.mjs tests/api-parity/auth-token-parity.test.mjs tests/api-parity/pilot-auth-parity.test.mjs tests/api-parity/pilot-routes-parity.test.mjs tests/api-parity/sessions-parity.test.mjs tests/api-parity/session-writes-parity.test.mjs tests/api-parity/review-parity.test.mjs tests/api-parity/ml-asr-proxy-parity.test.mjs tests/api-parity/privacy-parity.test.mjs tests/api-parity/agent-write-parity.test.mjs tests/api-parity/audio-playback-parity.test.mjs tests/api-parity/audio-index-parity.test.mjs tests/api-parity/authz-matrix.test.mjs"
+    # Import the executable projection. Source parsing was a second, format-sensitive route list.
+    run "test: api parity THROUGH the Node port (every executable route)" \
+      "PARITY_THROUGH_SHELL=1 NODE_API_PORTED=\"\$(node --input-type=module -e '
+         import { ROUTES } from \"./server/src/routes/index.mjs\";
+         const defaultKeys = ROUTES.filter((route) => route.ownerGate === undefined).map((route) => route.key);
+         if (defaultKeys.length < 30) { console.error(\"registry has only \" + defaultKeys.length + \" default routes\"); process.exit(1); }
+         console.log(defaultKeys.join(\",\"));
+       ')\" node --test --test-concurrency=1 tests/api-parity/default.test.mjs tests/api-parity/auth-disabled.test.mjs tests/api-parity/cors.test.mjs tests/api-parity/metrics.test.mjs tests/api-parity/ml-proxy.test.mjs tests/api-parity/realtime-ticket.test.mjs tests/api-parity/db-endpoints.test.mjs tests/api-parity/proxy-endpoints.test.mjs tests/api-parity/contract-shapes.test.mjs tests/api-parity/hostile-input.test.mjs tests/api-parity/infra-parity.test.mjs tests/api-parity/quran-parity.test.mjs tests/api-parity/progress-parity.test.mjs tests/api-parity/reports-parity.test.mjs tests/api-parity/auth-token-parity.test.mjs tests/api-parity/pilot-auth-parity.test.mjs tests/api-parity/pilot-routes-parity.test.mjs tests/api-parity/sessions-parity.test.mjs tests/api-parity/session-writes-parity.test.mjs tests/api-parity/session-finalize-parity.test.mjs tests/api-parity/review-parity.test.mjs tests/api-parity/ml-asr-proxy-parity.test.mjs tests/api-parity/privacy-parity.test.mjs tests/api-parity/agent-write-parity.test.mjs tests/api-parity/audio-playback-parity.test.mjs tests/api-parity/audio-index-parity.test.mjs tests/api-parity/authz-matrix.test.mjs"
   else
     say "test: platform-api integration + api parity suite"
     if [[ "$RELEASE" == "yes" ]]; then
@@ -389,6 +426,13 @@ if [[ "$RELEASE" == "yes" ]]; then
     --environment-provider "$RELEASE_ENVIRONMENT_PROVIDER" \
     --smoke-artifact-dir "$RELEASE_SMOKE_ARTIFACT_DIR"; then
     echo "    ✗ failed to write release test evidence" >&2
+    exit 1
+  fi
+  say "write: signed HTTP canary release closure"
+  if ! node scripts/http-canary-release-evidence.mjs \
+    "${http_canary_release_args[@]}" \
+    --output "$RELEASE_HTTP_CANARY_CLOSURE_OUTPUT"; then
+    echo "    ✗ failed to write signed HTTP canary release closure" >&2
     exit 1
   fi
 fi

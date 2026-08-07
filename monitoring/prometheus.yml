@@ -1,4 +1,4 @@
-# Prometheus scrape config for QrAi platform-api (P5.5).
+# Prometheus scrape config for the W2.18 HTTP canary and Rust rollback oracle.
 # Requires Prometheus >= 2.53 for `http_headers` (the /metrics endpoint is token-gated).
 global:
   scrape_interval: 15s
@@ -12,10 +12,36 @@ scrape_configs:
     metrics_path: /metrics
     static_configs:
       - targets: ["platform-api:8080"]
-    # /metrics requires the METRICS_TOKEN as `x-metrics-token` (fail-closed unless
-    # ALLOW_INSECURE_DEFAULTS=1). Prometheus does NOT expand env vars in its config, so the operator
-    # substitutes the real token here (e.g. `envsubst < prometheus.yml` at deploy, or a secret mount).
+    # /metrics requires the METRICS_TOKEN as `x-metrics-token`. The value is read from a Compose
+    # secret file so it is never substituted into this tracked configuration.
     http_headers:
       x-metrics-token:
-        secrets:
-          - "REPLACE_WITH_METRICS_TOKEN"
+        files:
+          - "/run/secrets/metrics_token"
+
+  - job_name: node-api
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["node-api:8082"]
+    http_headers:
+      x-metrics-token:
+        files:
+          - "/run/secrets/metrics_token"
+
+  - job_name: job-worker
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["job-worker:8098"]
+    http_headers:
+      x-metrics-token:
+        files:
+          - "/run/secrets/metrics_token"
+
+  - job_name: realtime-gateway
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["realtime-gateway:8081"]
+    http_headers:
+      x-metrics-token:
+        files:
+          - "/run/secrets/metrics_token"

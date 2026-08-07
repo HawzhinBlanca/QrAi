@@ -2,22 +2,38 @@ import { randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
 import { spawn } from "node:child_process";
 
+import { createHttpCanaryActorAuthorization } from "./lib/http-canary-probe.mjs";
+
 const baseUrl = process.env.PLATFORM_API_SMOKE_URL ?? "http://127.0.0.1:8080";
 const databaseUrl = process.env.DATABASE_URL ?? "postgresql://hawzhin@localhost:5432/quran_ai";
 const realtimeTicketSecret = process.env.REALTIME_GATEWAY_TICKET_SECRET ?? "smoke-secret";
 const smokeTraceId = process.env.SMOKE_TRACE_ID ?? `smoke-trace-${randomUUID()}`;
 const tenant = process.env.SMOKE_TENANT ?? "hikmah-pilot-erbil";
+const smokeJwtSecret = process.env.SMOKE_JWT_SECRET ?? null;
 
 async function request(path, options = {}) {
   const role = options.role ?? "learner";
   const userId = options.userId ?? (role === "learner" ? "learner-1" : role === "teacher" ? "teacher-1" : "admin-1");
+  const requestTenant = options.tenant ?? tenant;
+  const authentication = smokeJwtSecret
+    ? {
+        authorization: await createHttpCanaryActorAuthorization({
+          jwtSecret: smokeJwtSecret,
+          tenantId: requestTenant,
+          userId,
+          role,
+        }),
+      }
+    : {
+        "x-tenant-id": requestTenant,
+        "x-user-id": userId,
+        "x-user-role": role,
+      };
   const response = await fetch(`${baseUrl}${path}`, {
     ...options,
     headers: {
       "content-type": "application/json",
-      "x-tenant-id": options.tenant ?? tenant,
-      "x-user-id": userId,
-      "x-user-role": role,
+      ...authentication,
       "x-trace-id": smokeTraceId,
       ...(options.headers ?? {}),
     },
