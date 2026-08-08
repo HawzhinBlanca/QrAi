@@ -1,6 +1,6 @@
 # W2.17 plan — one server-owned inference/worker boundary
 
-**Status:** APPROVED<br>
+**Status:** COMPLETE; local and exact-candidate remote proof are green<br>
 **Approved-by:** repository owner — explicit continuation goal on 2026-08-07<br>
 **Criteria:** BE-1, BE-4, BE-6 (`spec.md` MLB-1…MLB-9)
 
@@ -75,20 +75,26 @@ tree/image can be removed without breaking today's Rust traffic or W2.18 rollbac
 ## Implementation ledger
 
 - [x] T1 — red ownership guard, module/test relocation, byte/output parity. Local canonical proof:
-  `VERIFY OK` on 2026-08-07; see `../evidence/W2.17-T1-inference-ownership.md`.
+  `VERIFY OK` on 2026-08-07; see `../evidence/W2.17-T1-inference-ownership.md`. Aggregate exact-SHA
+  remote proof is recorded under T5.
 - [x] T2 — local worker inference plus API wait-only durable boundary and cancellation proof. Local
   canonical proof: `VERIFY OK` on 2026-08-07; see
-  `../evidence/W2.17-T2-local-worker-boundary.md`.
+  `../evidence/W2.17-T2-local-worker-boundary.md`. Aggregate exact-SHA remote proof is recorded
+  under T5.
 - [x] T3 — worker compatibility ingress, direct storage/privacy/retention lifecycle and Rust proof.
   Local canonical proof: `VERIFY OK` on 2026-08-07; see
-  `../evidence/W2.17-T3-audio-privacy-lifecycle.md`.
+  `../evidence/W2.17-T3-audio-privacy-lifecycle.md`. Aggregate exact-SHA remote proof is recorded
+  under T5.
 - [x] T4 — one-image Compose/release/smoke migration and old ML tree removal. Local canonical
-  proof: `VERIFY OK` on 2026-08-07; see `../evidence/W2.17-T4-one-image-cutover.md`.
+  proof: `VERIFY OK` on 2026-08-07; see `../evidence/W2.17-T4-one-image-cutover.md`. Aggregate
+  exact-SHA remote proof is recorded under T5.
 - [x] T5 — living docs, operational evidence, and complete local canonical gate. Local canonical
-  proof: `VERIFY OK` on 2026-08-07; see `../evidence/W2.17-T5-operational-closure.md`. Required
-  remote CI remains an umbrella closure condition.
+  proof: `VERIFY OK` on 2026-08-07; see `../evidence/W2.17-T5-operational-closure.md`. The refreshed
+  core and acceptance suites, current canonical gate, and all four required exact-SHA remote checks
+  are green.
 
-The local W2.17 implementation is complete. The W2.17 umbrella remains open until required remote
-CI is green. The generic `scripts/update-ledger.sh T1 ...` command is intentionally not used here
-because it rewrites every unscoped `T1` row under `specs/*/tasks.md`; this feature-local ledger is
-updated only after the exact canonical gate passed.
+The W2.17 engineering boundary is complete. Deployment canary, rollback, load/soak, and human
+promotion evidence remain governed by W2.18 and are not claimed here. The generic
+`scripts/update-ledger.sh T1 ...` command is intentionally not used because it rewrites every
+unscoped `T1` row under `specs/*/tasks.md`; this feature-local ledger was updated only after its
+exact canonical gate passed.
