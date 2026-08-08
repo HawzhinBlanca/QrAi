@@ -1,6 +1,6 @@
 # W2.16 plan — controlled device enrollment
 
-**Status:** APPROVED
+**Status:** COMPLETE; local and exact-candidate remote proof are green
 **Approved-by:** repository owner — explicit “approved” continuation on 2026-08-07
 **Criteria:** BE-2 / IDN-1–IDN-10
 
@@ -65,19 +65,21 @@
 ## Implementation ledger
 
 - [x] T1 — migration 0035, forced RLS/functions/grants, convergence and smoke proof. Local
-  live-Postgres canonical gate: `VERIFY OK` on 2026-08-07; required remote CI remains pending and
-  the W2.16 umbrella therefore remains open.
+  live-Postgres canonical gate: `VERIFY OK` on 2026-08-07; aggregate exact-SHA remote proof is
+  recorded under T5.
 - [x] T2 — opaque device-session domain boundary and `resolveActor` integration. Local
-  live-Postgres canonical gate: `VERIFY OK` on 2026-08-07; required remote CI remains pending and
-  the W2.16 umbrella therefore remains open.
+  live-Postgres canonical gate: `VERIFY OK` on 2026-08-07; aggregate exact-SHA remote proof is
+  recorded under T5.
 - [x] T3 — three owner-gated routes, strict contracts/registry, full enrollment/replay E2E. Local
-  live-Postgres canonical gate: `VERIFY OK` on 2026-08-07; required remote CI remains pending and
-  the W2.16 umbrella therefore remains open.
+  live-Postgres canonical gate: `VERIFY OK` on 2026-08-07; aggregate exact-SHA remote proof is
+  recorded under T5.
 - [x] T4 — audited admin provisioning command plus privacy and secret-redaction closure. Local
-  live-Postgres canonical gate: `VERIFY OK` on 2026-08-07; required remote CI remains pending and
-  the W2.16 umbrella therefore remains open.
+  live-Postgres canonical gate: `VERIFY OK` on 2026-08-07; aggregate exact-SHA remote proof is
+  recorded under T5.
 - [x] T5 — living docs, evidence, Compose activation wiring, and complete local canonical gate.
-  Local live-Postgres canonical gate: `VERIFY OK` on 2026-08-07. Required remote CI remains pending,
-  so W2.16 stays unchecked in the global consolidation ledger.
+  The refreshed device boundary suite, live-Postgres canonical gate, and all four required
+  exact-SHA remote checks are green. Production activation and native/release evidence remain
+  separate later gates and are not claimed here.
 
-Approval recorded above before implementation code or tests are written.
+Approval was recorded above before implementation code or tests were written; completion evidence
+is recorded in `../evidence/W2.16-T5-living-operations.md`.
