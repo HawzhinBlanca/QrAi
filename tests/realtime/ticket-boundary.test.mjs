@@ -50,6 +50,7 @@ function boundary(overrides = {}) {
     allowedOrigins: [ORIGIN],
     allowMissingOrigin: false,
     rateLimitEnabled: true,
+    replayClaim: async () => "fresh",
     nowUnixSeconds: () => NOW_SECONDS,
     ...overrides,
   });
@@ -82,6 +83,12 @@ function appOptions(overrides = {}) {
     allowMissingOrigin: false,
     rateLimitEnabled: true,
     trustedProxyHops: 0,
+    replayAuthority: {
+      claim: async () => "fresh",
+      renderMetrics: () => "",
+      start: () => {},
+      stop: async () => {},
+    },
     admissionNowUnixSeconds: () => NOW_SECONDS,
     logger: false,
     ...overrides,
@@ -172,7 +179,7 @@ async function withListeningApp(options, body) {
   }
 }
 
-test("all six Rust-generated rt_v2 vectors cross the admission boundary byte-identically", () => {
+test("all six Rust-generated rt_v2 vectors cross the admission boundary byte-identically", async () => {
   assert.equal(fixture.vectorCount, 6);
   assert.equal(fixture.vectors.length, 6);
   for (const vector of fixture.vectors) {
@@ -183,9 +190,10 @@ test("all six Rust-generated rt_v2 vectors cross the admission boundary byte-ide
       allowedOrigins: [ORIGIN],
       allowMissingOrigin: false,
       rateLimitEnabled: true,
+      replayClaim: async () => "fresh",
       nowUnixSeconds: () => expiresAt - 1n,
     });
-    const result = admission.admit({
+    const result = await admission.admit({
       sessionId: vector.sessionId,
       ticket: vector.expectedTicket,
       origin: ORIGIN,
@@ -203,7 +211,7 @@ test("all six Rust-generated rt_v2 vectors cross the admission boundary byte-ide
   }
 });
 
-test("the Node boundary executes the exact hostile ticket corpus used by the Rust process sweep", () => {
+test("the Node boundary executes the exact hostile ticket corpus used by the Rust process sweep", async () => {
   const admission = boundary();
   const cases = buildHostileTicketCases({
     validTicket: (overrides) => ticket(overrides),
@@ -230,7 +238,7 @@ test("the Node boundary executes the exact hostile ticket corpus used by the Rus
     "another session",
   ]);
   for (const { name, ticket: hostileTicket } of cases) {
-    const result = admission.admit(acceptedInput({ ticket: hostileTicket }));
+    const result = await admission.admit(acceptedInput({ ticket: hostileTicket }));
     assert.deepEqual(result, {
       accepted: false,
       outcome: "ticket_rejected",
@@ -240,7 +248,7 @@ test("the Node boundary executes the exact hostile ticket corpus used by the Rus
   }
 });
 
-test("signature precedes tenant/lifetime policy and every ticket refusal is one generic class", () => {
+test("signature precedes tenant/lifetime policy and every ticket refusal is one generic class", async () => {
   const admission = boundary();
   const rejected = [
     acceptedInput({ ticket: ticket({}, "another-secret-over-thirty-two-bytes") }),
@@ -249,7 +257,7 @@ test("signature precedes tenant/lifetime policy and every ticket refusal is one 
     acceptedInput({ ticket: ticket({ expiresAtUnixSeconds: NOW_SECONDS + 3_601 }) }),
   ];
   for (const input of rejected) {
-    assert.deepEqual(admission.admit(input), {
+    assert.deepEqual(await admission.admit(input), {
       accepted: false,
       outcome: "ticket_rejected",
       retryAfterSeconds: null,
@@ -257,7 +265,7 @@ test("signature precedes tenant/lifetime policy and every ticket refusal is one 
     });
   }
 
-  const boundaryValue = admission.admit(acceptedInput({
+  const boundaryValue = await admission.admit(acceptedInput({
     ticket: ticket({
       audioRetention: "future-non-empty-retention",
       expiresAtUnixSeconds: NOW_SECONDS + 3_600,
@@ -267,42 +275,44 @@ test("signature precedes tenant/lifetime policy and every ticket refusal is one 
   assert.equal(boundaryValue.claims.audioRetention, "future-non-empty-retention");
 });
 
-test("Origin and native no-Origin policies are separate and exact", () => {
+test("Origin and native no-Origin policies are separate and exact", async () => {
   const strict = boundary();
   for (const origin of [undefined, "", "null", `${ORIGIN}/`, ` ${ORIGIN}`, `${ORIGIN}, https://evil.example`]) {
-    const result = strict.admit(acceptedInput({ origin }));
+    const result = await strict.admit(acceptedInput({ origin }));
     assert.equal(result.accepted, false, JSON.stringify(origin));
     assert.equal(result.outcome, "origin_rejected", JSON.stringify(origin));
     assert.equal(result.statusCode, 403, JSON.stringify(origin));
   }
 
   const native = boundary({ allowMissingOrigin: true });
-  assert.equal(native.admit(acceptedInput({ origin: undefined })).accepted, true);
-  const disallowed = native.admit(acceptedInput({ origin: "https://evil.example" }));
+  assert.equal((await native.admit(acceptedInput({ origin: undefined }))).accepted, true);
+  const disallowed = await native.admit(acceptedInput({ origin: "https://evil.example" }));
   assert.equal(disallowed.accepted, false);
   assert.equal(disallowed.outcome, "origin_rejected");
 });
 
-test("the bounded token bucket admits 200 by default, refills at 50 ms, and reports only fixed outcomes", () => {
+test("the bounded token bucket admits 200 by default, refills at 50 ms, and reports only fixed outcomes", async () => {
   let nowMs = 0;
   const admission = boundary({
     rateLimitOptions: { capacity: 2, refillIntervalMs: 50, now: () => nowMs },
   });
-  assert.equal(admission.admit(acceptedInput()).accepted, true);
-  assert.equal(admission.admit(acceptedInput()).accepted, true);
-  assert.deepEqual(admission.admit(acceptedInput()), {
+  assert.equal((await admission.admit(acceptedInput())).accepted, true);
+  assert.equal((await admission.admit(acceptedInput())).accepted, true);
+  assert.deepEqual(await admission.admit(acceptedInput()), {
     accepted: false,
     outcome: "rate_rejected",
     retryAfterSeconds: 1,
     statusCode: 429,
   });
   nowMs = 50;
-  assert.equal(admission.admit(acceptedInput()).accepted, true);
+  assert.equal((await admission.admit(acceptedInput())).accepted, true);
   assert.deepEqual(REALTIME_ADMISSION_OUTCOMES, Object.freeze([
     "accepted",
     "origin_rejected",
     "ticket_rejected",
     "rate_rejected",
+    "replay_rejected",
+    "replay_unavailable",
   ]));
   const metrics = admission.renderMetrics();
   for (const outcome of REALTIME_ADMISSION_OUTCOMES) {

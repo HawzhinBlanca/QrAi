@@ -181,8 +181,8 @@ gateway remains the compatibility oracle during W3. Rust-generated language-neut
 `audio.ack` fixtures are the shared wire authority; Node does not generate protocol truth. Browser
 upgrades retain the exact Origin allowlist, while native no-Origin admission is an explicit policy
 that never bypasses tenant/session/expiry/retention checks. Replay stores only a SHA-256 nonce hash,
-never a raw ticket. A shared authority must fail closed, and Postgres remains proposed until the
-W3.4 cross-instance benchmark passes. Each session uses a bounded queue and explicit ack semantics;
+never a raw ticket. A shared authority must fail closed; the W3.4 cross-instance benchmark
+selected restricted Postgres for Node. Each session uses a bounded queue and explicit ack semantics;
 ack message text is diagnostic only. W3.1 records this boundary and its fixtures; W3.2 implements
 the independently drainable process lifecycle. Replay, bounded audio, and traffic switch remain
 separately gated.
@@ -192,11 +192,21 @@ separately gated.
 The Node shadow uses exactly pinned `@fastify/websocket` behind Fastify's existing lifecycle. The
 plugin is registered before routes; only the exact session-audio route can upgrade after signature,
 session, tenant, retention, expiry, maximum-lifetime, Origin/native, and bounded peer-rate checks.
-A valid shadow upgrade completes `101`, hands only frozen claims plus nullable trace to the socket
-seam, then closes 1013 without reading, storing, forwarding, or acknowledging audio. Admission
-metrics have four fixed outcomes and no identity labels. There is no host port, proxy target,
-client change, replay claim, or data-plane traffic; Rust remains the only realtime traffic target.
-W3.4 owns replay and W3.5 owns bounded audio.
+A valid shadow upgrade completes `101`, hands only frozen claims without nonce plus nullable trace
+to the socket seam, then closes 1013 without reading, storing, forwarding, or acknowledging audio.
+Admission metrics have six fixed outcomes and no identity labels. There is no host port, proxy
+target, client change, or data-plane traffic; Rust remains the only realtime traffic target. W3.5
+owns bounded audio.
+
+### W3.4 durable replay (ADR-0053)
+
+Before upgrade, the Node realtime role atomically claims the exact signed nonce's lowercase UTF-8
+SHA-256 under tenant/session forced RLS. Postgres database time rechecks expiry and the visible
+session/learner; an existing/absent claim is generic 401 and database failure is bodyless 503 with
+no in-memory fallback. Migration 0036 stores no raw ticket/nonce, preserves the u64 expiry domain,
+cascades with session privacy deletion, and supports bounded ordered `SKIP LOCKED` cleanup. The
+restricted two-pool 512-claim/concurrency-32 profile passed the approved p95 and throughput bars,
+selecting Postgres for Node while leaving the Rust Redis oracle and all traffic routing unchanged.
 
 The implemented W2.16 device-identity boundary is additive migration 0035 plus three Node routes,
 one identity-domain module, and one audited operator command. Invitations and access/refresh

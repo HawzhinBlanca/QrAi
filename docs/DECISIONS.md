@@ -5,6 +5,45 @@ architectural change. Newest first.
 
 ---
 
+## ADR-0053 — Postgres is the Node realtime single-use authority
+
+**Status:** Accepted · **Date:** 2026-08-08 · **Decider:** repository owner through the approved persistent implementation goal
+**Related:** ADR-0051 (realtime contract), ADR-0052 (Node admission), ADR-0050 (one Node package)
+
+### Context
+
+ADR-0051 made Postgres replay protection conditional on a restricted-role cross-instance benchmark.
+The Node shadow now needs one durable decision between valid ticket admission and WebSocket upgrade,
+without persisting the raw ticket/nonce, trusting process memory, or adding Redis/NATS. The existing
+`realtime_session_tickets` table is issuance/audit state keyed by a whole-token digest and is not a
+single-use nonce authority.
+
+### Decision
+
+- Migration 0036 adds forced-RLS `realtime_ticket_replay_claims`, scoped by tenant, session, and the
+  lowercase SHA-256 of the exact signed nonce bytes. It stores no raw credential and cascades with
+  session privacy deletion. `numeric(20,0)` preserves the signed ticket's full u64 expiry domain.
+- Admission performs one restricted `INSERT … SELECT … ON CONFLICT DO NOTHING RETURNING` after
+  Origin/ticket/rate validation and before `101`. The select independently verifies the visible
+  tenant/session/learner and expiry against database time. Conflict or absent scope is generic 401;
+  database error/timeout is bodyless 503. There is no memory fallback.
+- Cleanup deletes at most 1,000 expired rows per pass in deterministic order with
+  `FOR UPDATE SKIP LOCKED`. One unref'd interval owns scheduled cleanup, suppresses overlap, retains
+  rows on failure, and is drained before the database pool closes. Metrics use fixed outcomes only.
+- The approved restricted-role profile—32 warm-ups, 512 durable unique claims, concurrency 32 using
+  two independent production-default pools—passed the p95 `<100 ms` and throughput `>=100/s` bars.
+  Postgres is therefore selected for Node. Rust Redis/in-memory behavior remains the no-traffic
+  compatibility oracle until later parity/canary/rollback gates permit retirement.
+
+### Consequences
+
+Two Node instances and fresh processes cannot accept the same signed session nonce. Accepted socket
+context excludes the nonce, and accepted metrics advance only after durable success. W3.4 adds no
+service, dependency, port, public route, client change, audio handling, or traffic movement. Reverting
+the Node replay call returns the internal shadow to W3.3; the additive table may remain inert.
+
+---
+
 ## ADR-0052 — Node realtime admits one internal shadow route with the Fastify adapter
 
 **Status:** Accepted · **Date:** 2026-08-08 · **Decider:** repository owner through the approved persistent implementation goal
@@ -91,12 +130,13 @@ replay store, queue, or traffic movement. W3.2 owns the process lifecycle; W3.3 
 W3.4 owns durable replay and the Postgres benchmark; W3.5 owns the bounded audio runtime. A failed
 fixture change restores one authority rather than introducing a second copy.
 
-**Implementation note (2026-08-08, W3.2–W3.3):** the existing `server` package/image runs an
+**Implementation note (2026-08-08, W3.2–W3.4):** the existing `server` package/image runs an
 internal `node-realtime` process alongside API and worker. It exposes process liveness, bounded
 deep readiness, private fixed-cardinality metrics, and the exact admitted-but-unavailable shadow
-route defined by ADR-0052. It uses the same restricted Postgres, private object-store, shutdown,
-healthcheck, release, and rollback boundaries. It has no host port or traffic edge; Rust remains
-the only realtime ingress.
+route defined by ADR-0052. ADR-0053's restricted Postgres authority now makes valid tickets
+single-use across instances/processes before upgrade. It uses the same restricted Postgres,
+private object-store, shutdown, healthcheck, release, and rollback boundaries. It has no host port
+or traffic edge; Rust remains the only realtime ingress.
 
 ---
 

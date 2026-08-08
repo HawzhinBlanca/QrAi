@@ -70,9 +70,27 @@ It sends all six Rust-generated tickets and the shared hostile corpus through No
 signature/session/tenant/retention/expiry/lifetime refusals, exact browser/native Origin policy,
 the default 200-burst/50-ms bounded peer bucket, explicit trusted-hop behavior, real `101` on only
 the exact route, and immediate 1013/unavailable close. It also pins strict production config, the
-exact `@fastify/websocket` dependency, four fixed private counters, and absence of raw credentials
-or identity labels. Rust still receives every client connection; W3.4 replay, W3.5 bounded audio,
-and later traffic gates remain unproven.
+exact `@fastify/websocket` dependency, and absence of raw credentials or identity labels. W3.4
+extends the original four fixed counters with two replay outcomes. Rust still
+receives every client connection; W3.5 bounded audio and later traffic gates remain unproven.
+
+W3.4 proves durable single-use replay and runs as one isolated, serial canonical command:
+
+```bash
+MIGRATION_TEST_ADMIN_URL="$ADMIN_URL" \
+  node --test --test-concurrency=1 \
+  tests/migrations/realtime-replay-migration.test.mjs \
+  tests/realtime/replay-protection.test.mjs
+```
+
+The schema proof pins migration 0036's checksum, forced RLS, composite tenant/session ownership,
+u64/hash constraints, tenant isolation, and privacy cascade. The runtime proof races independent
+restricted pools/apps, restarts a real child process, verifies database-time expiry and timeout
+rollback, exact non-normalized UTF-8 hashing, bounded/locked/concurrent cleanup, redacted metrics,
+and 512 persisted claims after 32 warm-ups at concurrency 32. It fails unless p95 is below 100 ms
+and throughput is at least 100 claims/s. Without a CREATEDB-capable admin URL the live cases skip;
+that is not W3.4 completion evidence. Rust traffic, audio queues, acknowledgements, and cutover
+remain outside this gate.
 
 The Node package and standalone boundary have four focused gates:
 

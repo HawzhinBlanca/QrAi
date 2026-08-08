@@ -12,6 +12,7 @@ import {
 } from "../lib/shutdown.mjs";
 import { createAudioObjectStoreFromEnv } from "../storage/audio-object-store.mjs";
 import { createRealtimeAdmission } from "./admission.mjs";
+import { createRealtimeReplayAuthority } from "./replay.mjs";
 
 const READINESS_DEPENDENCIES = Object.freeze([
   "postgres",
@@ -215,7 +216,7 @@ async function httpReady(fetchImpl, url, signal) {
   }
 }
 
-function renderMetrics({ ready, draining, failures, admissionMetrics }) {
+function renderMetrics({ ready, draining, failures, admissionMetrics, replayMetrics }) {
   let output = "# HELP realtime_process_ready Whether every realtime dependency is ready.\n";
   output += "# TYPE realtime_process_ready gauge\n";
   output += `realtime_process_ready ${ready ? 1 : 0}\n`;
@@ -227,7 +228,7 @@ function renderMetrics({ ready, draining, failures, admissionMetrics }) {
   for (const dependency of READINESS_DEPENDENCIES) {
     output += `realtime_readiness_failures_total{dependency="${dependency}"} ${failures[dependency]}\n`;
   }
-  return output + admissionMetrics;
+  return output + admissionMetrics + replayMetrics;
 }
 
 function defaultAdmittedSocket(socket) {
@@ -250,6 +251,7 @@ export function createRealtimeApplication({
   trustedProxyHops,
   rateLimitOptions,
   admissionNowUnixSeconds,
+  replayAuthority = null,
   handleAdmittedSocket = defaultAdmittedSocket,
   fetchImpl = globalThis.fetch,
   logger = false,
@@ -278,12 +280,24 @@ export function createRealtimeApplication({
     throw new TypeError("realtime admitted socket handler must be a function");
   }
 
+  const replay = replayAuthority ?? createRealtimeReplayAuthority({ db, tenantId });
+  if (
+    !replay ||
+    typeof replay.claim !== "function" ||
+    typeof replay.start !== "function" ||
+    typeof replay.stop !== "function" ||
+    typeof replay.renderMetrics !== "function"
+  ) {
+    throw new TypeError("realtime process requires a complete durable replay authority");
+  }
+
   const admission = createRealtimeAdmission({
     ticketSecret,
     tenantId,
     allowedOrigins,
     allowMissingOrigin,
     rateLimitEnabled,
+    replayClaim: (claims) => replay.claim(claims),
     rateLimitOptions,
     nowUnixSeconds: admissionNowUnixSeconds,
   });
@@ -346,16 +360,23 @@ export function createRealtimeApplication({
   app.addHook("onReady", async () => {
     await db.assertRestrictedRole();
     await audioObjectStore.assertReady();
+    await replay.start();
   });
   app.addHook("onClose", async () => {
     draining = true;
     ready = false;
+    const errors = [];
+    try {
+      await replay.stop();
+    } catch (error) {
+      errors.push(error);
+    }
     const results = await Promise.allSettled([
       Promise.resolve().then(() => audioObjectStore.close()),
       Promise.resolve().then(() => db.end()),
     ]);
-    const rejected = results.filter(({ status }) => status === "rejected");
-    if (rejected.length > 0) throw new AggregateError([], "realtime resource close failed");
+    errors.push(...results.filter(({ status }) => status === "rejected").map(({ reason }) => reason));
+    if (errors.length > 0) throw new AggregateError(errors, "realtime resource close failed");
   });
 
   // Fastify processes plugins in registration order. Keep every route in a plugin registered
@@ -379,6 +400,7 @@ export function createRealtimeApplication({
           draining,
           failures,
           admissionMetrics: admission.renderMetrics(),
+          replayMetrics: replay.renderMetrics(),
         }));
     });
 
@@ -392,7 +414,7 @@ export function createRealtimeApplication({
           // apply admission policy to an actual WebSocket handshake; the HTTP surface remains 404.
           if (!request.ws) return;
           const query = request.query ?? {};
-          const result = admission.admit({
+          const result = await admission.admit({
             sessionId: request.params?.sessionId,
             ticket: query.ticket,
             origin: request.headers.origin,

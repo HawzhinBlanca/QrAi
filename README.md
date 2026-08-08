@@ -14,7 +14,8 @@ This repo implements a meaningful, testable vertical slice of the 10/10 platform
 - `services/realtime-gateway` is a Rust/Tokio gateway with ticket-gated WebSocket ingress, bounded backpressure, metrics, and reconnect coverage.
 - `server` is the single Node production package and image. Compose runs it as `node-api`,
   `job-worker`, and the internal no-traffic `node-realtime` process. The realtime role proves strict
-  ticket/Origin/rate admission on one shadow route, then closes 1013 without consuming audio; Rust
+  ticket/Origin/rate admission plus cross-instance Postgres single-use replay on one shadow route,
+  then closes 1013 without consuming audio; Rust
   remains the traffic target. The worker owns durable
   execution, retained-audio lifecycle, Quran-constrained
   alignment, and deterministic Tajweed instruction. A pinned Muaalem v3.2 adapter runs only as

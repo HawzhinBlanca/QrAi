@@ -65,8 +65,8 @@ test("0035 adds constrained forced-RLS device invitation and rotation-generation
   if (!database) return;
 
   const plan = await loadMigrationPlan();
-  assert.equal(plan.at(-1)?.id, "0035");
-  assert.equal(plan.at(-1)?.filename, "0035_device_identity.sql");
+  const deviceMigration = plan.find(({ id }) => id === "0035");
+  assert.equal(deviceMigration?.filename, "0035_device_identity.sql");
   await migrateDatabase({ connectionString: database.connectionString });
 
   const admin = new Client({ connectionString: database.connectionString });

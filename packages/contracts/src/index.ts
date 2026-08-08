@@ -92,6 +92,7 @@ export const CORE_TABLES = [
   "eval_runs",
   "consent_records",
   "realtime_session_tickets",
+  "realtime_ticket_replay_claims",
   "privacy_jobs",
   "alignment_runs",
   "pilot_invitations",

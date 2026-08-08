@@ -159,10 +159,12 @@ docker compose exec -e PROBE_TOKEN="$METRICS_TOKEN" job-worker node -e \
   'fetch("http://127.0.0.1:8098/metrics",{headers:{"x-metrics-token":process.env.PROBE_TOKEN}}).then(async r=>{if(!r.ok)process.exit(1);process.stdout.write(await r.text())})'
 ```
 
-`node-realtime` is the third command of that image. Through W3.3 it remains internal: it publishes
+`node-realtime` is the third command of that image. Through W3.4 it remains internal: it publishes
 no host port and receives no Web/gateway traffic. It admits only the exact session-audio shadow
-route after ticket, tenant, lifetime, Origin/native, and bounded peer-rate checks, then closes 1013
-without reading audio. Its deep readiness checks the restricted database role, private object
+route after ticket, tenant, lifetime, Origin/native, bounded peer-rate, and durable Postgres replay
+checks, then closes 1013 without reading audio. A consumed, unknown, or database-expired claim is
+bodyless 401; a replay-database timeout/outage is bodyless 503 and never upgrades. Its deep
+readiness checks the restricted database role, private object
 store, job worker, and loaded-model ASR within one bound. Supply a strong
 `REALTIME_GATEWAY_TICKET_SECRET`, exact `GATEWAY_TENANT_ID`, and canonical comma-separated
 `CORS_ALLOWED_ORIGINS`; enable missing-Origin or proxy trust only through their explicit bounded
@@ -174,6 +176,13 @@ docker compose exec node-realtime node server/src/container-healthcheck.mjs
 docker compose exec -e PROBE_TOKEN="$METRICS_TOKEN" node-realtime node -e \
   'fetch("http://127.0.0.1:8081/metrics",{headers:{"x-metrics-token":process.env.PROBE_TOKEN}}).then(async r=>{if(!r.ok)process.exit(1);process.stdout.write(await r.text())})'
 ```
+
+Confirm migration 0036 is applied before boot. Investigate any growth in fixed
+`replay_unavailable` admission outcomes or failed replay-cleanup runs; the process deliberately has
+no memory fallback. Never delete live replay rows to repair admission. Resolve database
+availability/locks, then let bounded cleanup remove only database-expired rows. Session/privacy
+deletion cascades its own replay rows. No raw ticket, nonce, learner, session, or tenant should
+appear in logs or metric labels.
 
 `NodeRealtimeShadowUnready` is an investigation warning during this no-traffic phase. Diagnose the
 four closed readiness classes; never expose upstream errors or attach identity labels. W3.9, not

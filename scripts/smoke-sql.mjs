@@ -17,6 +17,7 @@ const tenantTables = [
   "scholar_approvals",
   "agent_runs",
   "realtime_session_tickets",
+  "realtime_ticket_replay_claims",
   "alignment_runs",
   "learner_progress",
   "privacy_jobs",
@@ -36,6 +37,7 @@ const coreSchemaPaths = [
   join("infra", "migrations", "0021_pilot_identity.sql"),
   join("infra", "migrations", "0034_background_jobs.sql"),
   join("infra", "migrations", "0035_device_identity.sql"),
+  join("infra", "migrations", "0036_realtime_ticket_replay.sql"),
 ];
 const sessionMigrationPath = join("infra", "migrations", "0008_session_language.sql");
 const reviewStatusMigrationPaths = [
@@ -49,6 +51,7 @@ const rlsPaths = [
   join("infra", "migrations", "0021_pilot_identity.sql"),
   join("infra", "migrations", "0034_background_jobs.sql"),
   join("infra", "migrations", "0035_device_identity.sql"),
+  join("infra", "migrations", "0036_realtime_ticket_replay.sql"),
 ];
 const coreSchemaRaw = (await Promise.all(coreSchemaPaths.map((path) => readFile(path, "utf8")))).join("\n");
 const sessionMigrationRaw = await readFile(sessionMigrationPath, "utf8");
@@ -231,6 +234,7 @@ function buildLiveSmokeSql() {
     scholar_approvals: 1,
     agent_runs: 1,
     realtime_session_tickets: 1,
+    realtime_ticket_replay_claims: 1,
     alignment_runs: 1,
     learner_progress: 1,
     privacy_jobs: 1,
@@ -316,6 +320,11 @@ insert into consent_records (id, tenant_id, user_id, audio_retention, anonymized
 	) values
 	  ('session-a', 'tenant-a', 'learner-a', '{"surahNumber":1,"ayahStart":1,"ayahEnd":1}', 'checksum-a', 'qrai-smoke-model-v0.3', 'guided-recite', 'plan-a', true, 0, 'teacher-review-required', now(), 0, 'consent-a', '{"externalAsrProcessing":true}', 'audit-a'),
 	  ('session-b', 'tenant-b', 'learner-b', '{"surahNumber":1,"ayahStart":1,"ayahEnd":1}', 'checksum-b', 'qrai-smoke-model-v0.3', 'guided-recite', 'plan-b', true, 0, 'draft', now(), 0, 'consent-b', '{"externalAsrProcessing":true}', 'audit-b');
+
+insert into realtime_ticket_replay_claims
+  (tenant_id, session_id, nonce_hash, expires_at_unix_seconds) values
+  ('tenant-a', 'session-a', repeat('1', 64), floor(extract(epoch from clock_timestamp())) + 300),
+  ('tenant-b', 'session-b', repeat('2', 64), floor(extract(epoch from clock_timestamp())) + 300);
 
 	insert into learner_progress (tenant_id, learner_id, ayah_ref, easiness_factor, interval_days, repetitions, last_quality, next_review_at) values
 	  ('tenant-a', 'learner-a', '1:1', 2.5, 1, 1, 5, now() + interval '1 day'),

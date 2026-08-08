@@ -110,12 +110,19 @@ function dependencySet() {
     if (!state[dependency]) throw new Error(`secret ${dependency}.internal learner-1`);
     return { status: 200, body: { cancel: async () => {} } };
   };
+  const replayAuthority = {
+    claim: async () => "fresh",
+    renderMetrics: () => "",
+    start: () => {},
+    stop: async () => {},
+  };
   return {
     state,
     calls,
     db,
     audioObjectStore,
     fetchImpl,
+    replayAuthority,
     ticketSecret: realtimeSecret,
     tenantId: realtimeTenant,
     allowedOrigins: [realtimeOrigin],
@@ -409,9 +416,16 @@ async function spawnRealtimeFixture() {
     import { installProcessShutdown } from ${JSON.stringify(shutdownModule)};
     const db = { assertRestrictedRole: async () => {}, end: async () => {} };
     const audioObjectStore = { assertReady: async () => {}, close: async () => {} };
+    const replayAuthority = {
+      claim: async () => "fresh",
+      renderMetrics: () => "",
+      start: () => {},
+      stop: async () => {},
+    };
     const app = createRealtimeApplication({
       db,
       audioObjectStore,
+      replayAuthority,
       workerReadyUrl: "http://worker:8098/ready",
       asrReadyUrl: "http://asr:8091/ready",
       readinessTimeoutMs: 50,

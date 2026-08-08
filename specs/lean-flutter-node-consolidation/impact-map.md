@@ -420,7 +420,7 @@ approved Postgres outbox conversion remains W2.9 and must reuse the same persist
 | `validate_origin`, `check_ticket`, `gateway_router_with_rate_limit` | WebSocket upgrade path | Preserve browser Origin policy and explicit native no-Origin policy; verify all ticket claims | hostile-input, replay-across-instances, rate/burst tests |
 | `audio_ws`, `handle_audio_socket` | Web `startGatewayAudioUpload`; Flutter `StreamingRecorder`; audio store/index API | Bounded queues, store/index acknowledgement, loss/orphan telemetry | backpressure, oversized/empty frame, index failure, retention E2E |
 | shared `rt_v2` ticket and `audio.ack` fixtures | `fetchRealtimeTicket`, URL builders, Web/Flutter clients, Rust `shared-ticket` | Keep wire shape language-neutral through cutover | ticket vectors and client compatibility tests |
-| Redis replay behavior in current gateway | ticket single-use path | Proposed Postgres nonce-hash unique record/TTL; raw tickets never stored | cross-instance concurrency and failure-closed load proof before Redis removal |
+| Redis replay behavior in current gateway | ticket single-use path | Implemented Node Postgres nonce-hash unique record/TTL; raw tickets never stored; Rust remains the traffic oracle | restricted cross-instance/process concurrency, timeout rollback, cleanup, and 512-claim benchmark; Redis removal remains later-gated |
 
 Known Web client chain: `fetchRealtimeTicket` and realtime URL builders feed `startGatewayAudioUpload`, which is invoked by `LiveAlignmentCard.handleCaptureToggle` through `PlatformCommand`. Flutter currently constructs `StreamingRecorder` from one ticket; it must accept a fresh-ticket provider for safe reconnect.
 

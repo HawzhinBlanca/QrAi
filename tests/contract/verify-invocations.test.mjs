@@ -47,6 +47,8 @@ const REALTIME_DECISIONS = "tests/contract/realtime-decisions.test.mjs";
 const REALTIME_PROTOCOL_FIXTURES = "tests/realtime/protocol-fixtures.test.mjs";
 const REALTIME_PROCESS_LIFECYCLE = "tests/realtime/process-lifecycle.test.mjs";
 const REALTIME_TICKET_BOUNDARY = "tests/realtime/ticket-boundary.test.mjs";
+const REALTIME_REPLAY_MIGRATION = "tests/migrations/realtime-replay-migration.test.mjs";
+const REALTIME_REPLAY_PROTECTION = "tests/realtime/replay-protection.test.mjs";
 const ACOUSTIC_CANDIDATE_PROOF_TEST = "scripts/acoustic-candidate-proof.test.mjs";
 const ACOUSTIC_CANDIDATE_PROOF_RUNNER = "node scripts/acoustic-candidate-proof.mjs";
 
@@ -451,6 +453,26 @@ test("canonical verification runs the W3.3 realtime admission boundary exactly o
     invocations.filter((line) => line.includes(REALTIME_TICKET_BOUNDARY)).length,
     1,
     `${REALTIME_TICKET_BOUNDARY} must run exactly once in canonical verification`,
+  );
+});
+
+test("canonical verification runs the isolated W3.4 replay proof exactly once", () => {
+  const invocations = activeNodeTestLines(verifySource);
+  for (const target of [REALTIME_REPLAY_MIGRATION, REALTIME_REPLAY_PROTECTION]) {
+    assert.equal(
+      invocations.filter((line) => line.includes(target)).length,
+      1,
+      `${target} must run exactly once in canonical verification`,
+    );
+  }
+  const sharedLines = invocations.filter((line) =>
+    line.includes(REALTIME_REPLAY_MIGRATION) && line.includes(REALTIME_REPLAY_PROTECTION));
+  assert.equal(sharedLines.length, 1, "W3.4 schema/runtime/load proof must run in one isolated command");
+  assert.match(sharedLines[0], /--test-concurrency=1/);
+  assert.deepEqual(
+    (sharedLines[0].match(/[A-Za-z0-9_./-]+\.test\.mjs/g) ?? []).sort(),
+    [REALTIME_REPLAY_MIGRATION, REALTIME_REPLAY_PROTECTION].sort(),
+    "the isolated W3.4 command must contain exactly its schema/runtime proofs",
   );
 });
 

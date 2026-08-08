@@ -67,7 +67,7 @@ async function writePlan(directory, definitions) {
 test("all 26 historical migrations remain pinned before additive migrations", async () => {
   const plan = await loadMigrationPlan();
   const historicalPlan = plan.slice(0, expectedHistoricalChecksums.size);
-  assert.equal(plan.length, 34);
+  assert.equal(plan.length, 35);
   assert.deepEqual(
     historicalPlan.map(({ id }) => id),
     [...expectedHistoricalChecksums.keys()].map((name) => name.slice(0, 4)),
@@ -121,6 +121,11 @@ test("all 26 historical migrations remain pinned before additive migrations", as
         id: "0035",
         filename: "0035_device_identity.sql",
         checksum: "45fac1fcb38c89ffd19a3dd6c916514b63b0eaaa31e51c277609cf609e342aa1",
+      },
+      {
+        id: "0036",
+        filename: "0036_realtime_ticket_replay.sql",
+        checksum: "e3f02f468f54c978f3a6dbdb775811af819df9ec795c283607f86a8f3680a5d2",
       },
     ],
   );

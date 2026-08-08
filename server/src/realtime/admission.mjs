@@ -8,6 +8,8 @@ export const REALTIME_ADMISSION_OUTCOMES = Object.freeze([
   "origin_rejected",
   "ticket_rejected",
   "rate_rejected",
+  "replay_rejected",
+  "replay_unavailable",
 ]);
 
 function refusal(outcome, statusCode, retryAfterSeconds = null) {
@@ -21,6 +23,8 @@ function refusal(outcome, statusCode, retryAfterSeconds = null) {
 
 const ORIGIN_REFUSAL = refusal("origin_rejected", 403);
 const TICKET_REFUSAL = refusal("ticket_rejected", 401);
+const REPLAY_REFUSAL = refusal("replay_rejected", 401);
+const REPLAY_UNAVAILABLE = refusal("replay_unavailable", 503);
 
 function observedUnixSeconds(nowUnixSeconds) {
   const value = nowUnixSeconds();
@@ -41,9 +45,10 @@ function traceValue(value) {
 }
 
 /**
- * Pure W3.3 admission authority. Boot-time secret/origin strength is owned by parseRealtimeConfig;
- * this boundary deliberately accepts Rust's empty-secret golden vector in direct parity tests while
- * the production process can never construct it from an unsafe configuration.
+ * W3.4 admission authority. Boot-time secret/origin strength is owned by parseRealtimeConfig; this
+ * boundary deliberately accepts Rust's empty-secret golden vector in direct parity tests while the
+ * production process can never construct it from an unsafe configuration. Durable replay is an
+ * injected claims-only boundary so admission never forwards the raw ticket into persistence.
  */
 export function createRealtimeAdmission({
   ticketSecret,
@@ -51,6 +56,7 @@ export function createRealtimeAdmission({
   allowedOrigins,
   allowMissingOrigin,
   rateLimitEnabled,
+  replayClaim,
   rateLimitOptions = {},
   nowUnixSeconds = () => Math.floor(Date.now() / 1_000),
 }) {
@@ -74,6 +80,9 @@ export function createRealtimeAdmission({
   if (typeof rateLimitEnabled !== "boolean") {
     throw new TypeError("realtime rate-limit policy must be boolean");
   }
+  if (typeof replayClaim !== "function") {
+    throw new TypeError("realtime admission durable replay claim is required");
+  }
   if (typeof nowUnixSeconds !== "function") {
     throw new TypeError("realtime admission clock must be a function");
   }
@@ -89,7 +98,7 @@ export function createRealtimeAdmission({
     return result;
   }
 
-  function admit({ sessionId, ticket, origin, clientIp, traceId }) {
+  async function admit({ sessionId, ticket, origin, clientIp, traceId }) {
     if (origin === undefined) {
       if (!allowMissingOrigin) return reject(ORIGIN_REFUSAL);
     } else if (typeof origin !== "string" || !originSet.has(origin)) {
@@ -120,11 +129,22 @@ export function createRealtimeAdmission({
       }
     }
 
-    counters.accepted += 1;
     const frozenClaims = Object.freeze({ ...claims });
+    let replayOutcome;
+    try {
+      replayOutcome = await replayClaim(frozenClaims);
+    } catch {
+      return reject(REPLAY_UNAVAILABLE);
+    }
+    if (replayOutcome === "replay") return reject(REPLAY_REFUSAL);
+    if (replayOutcome !== "fresh") return reject(REPLAY_UNAVAILABLE);
+
+    counters.accepted += 1;
+    const socketClaims = { ...frozenClaims };
+    delete socketClaims.nonce;
     return Object.freeze({
       accepted: true,
-      claims: frozenClaims,
+      claims: Object.freeze(socketClaims),
       traceId: traceValue(traceId),
     });
   }

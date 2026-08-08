@@ -87,3 +87,39 @@ test("living docs expose W3.3 as admitted-but-unavailable and document its focus
     "the W3.3 focused gate must be documented exactly once",
   );
 });
+
+test("ADR-0053 records the implemented restricted Postgres replay authority", () => {
+  const decision = adr("0053");
+
+  assert.match(decision, /\*\*Status:\*\* Accepted/);
+  assert.match(decision, /\*\*Decider:\*\* repository owner/i);
+  assert.match(decision, /migration 0036/i);
+  assert.match(decision, /forced-RLS `realtime_ticket_replay_claims`/i);
+  assert.match(decision, /SHA-256 of the exact signed nonce bytes/i);
+  assert.match(decision, /ON CONFLICT DO NOTHING RETURNING/i);
+  assert.match(decision, /database time/i);
+  assert.match(decision, /generic 401/i);
+  assert.match(decision, /bodyless 503/i);
+  assert.match(decision, /no memory fallback/i);
+  assert.match(decision, /p95 `<100 ms`/i);
+  assert.match(decision, /throughput `>=100\/s`/i);
+  assert.match(decision, /Rust Redis\/in-memory behavior remains/i);
+  assert.match(decision, /adds no\s+service, dependency, port, public route/i);
+});
+
+test("living docs expose W3.4 as implemented and document its focused proofs once", () => {
+  assert.match(architecture, /W3\.4 durable replay \(ADR-0053\)/);
+  assert.match(architecture, /atomically claims[^.]*SHA-256/is);
+  assert.match(architecture, /database failure is bodyless 503/i);
+  assert.match(architecture, /leaving the Rust Redis oracle and all traffic routing unchanged/i);
+  for (const target of [
+    "tests/migrations/realtime-replay-migration.test.mjs",
+    "tests/realtime/replay-protection.test.mjs",
+  ]) {
+    assert.equal(
+      testing.split(target).length - 1,
+      1,
+      `${target} must be documented exactly once as a focused W3.4 gate`,
+    );
+  }
+});
