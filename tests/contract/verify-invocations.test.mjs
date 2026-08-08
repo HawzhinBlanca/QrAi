@@ -466,3 +466,18 @@ test("canonical verification guards the W1.10 exact-image harness and release mo
     /if \[\[ "\$RELEASE" == "yes" \]\]; then[\s\S]*node scripts\/acoustic-candidate-proof\.mjs/,
   );
 });
+
+test("the minimum-Node projection still extracts the W1.10 guard from canonical verification", () => {
+  const marker = ciSource.match(/if '([^']+)' in line:/)?.[1];
+  assert.equal(typeof marker, "string", "the node-min workflow must declare its verify.sh line marker");
+
+  const canonicalLine = verifySource.split("\n").find((line) => line.includes(marker));
+  assert.ok(canonicalLine, `the node-min marker ${JSON.stringify(marker)} must match an active verify.sh line`);
+
+  const extracted = canonicalLine.match(/[\w./-]+\.test\.mjs/g) ?? [];
+  assert.equal(
+    extracted.filter((path) => path === ACOUSTIC_CANDIDATE_PROOF_TEST).length,
+    1,
+    `${ACOUSTIC_CANDIDATE_PROOF_TEST} must survive the minimum-Node workflow projection exactly once`,
+  );
+});

@@ -382,7 +382,10 @@ acoustic_tajweed.py,acoustic-candidates.json,Dockerfile,requirements.lock.txt}`;
 `services/ml-inference/server.mjs`; Rust `handlers/ml_proxy.rs::proxy_ml`; Node
 `routes/ml-proxy.mjs::proxyMl`; strict internal fixtures; `docs/{DECISIONS.md,DATA_LICENSES.md,
 architecture/10-10-platform.md,TESTING.md}`; the protected exact-image harness and its
-`scripts/verify.sh --release` invocation; removal of `services/tajweed-neural` only after proof.
+`scripts/verify.sh --release` invocation; the `.github/workflows/ci.yml` minimum-Node projection
+that extracts the ordinary Node suite from that verifier; removal of `services/tajweed-neural`
+only after proof. The projection marker and its extracted acoustic harness test are contract-tested
+so adding the W1.10 guard cannot silently empty the Node 22.13.1 job.
 
 **Criterion-to-test map:** QA-3 → `tests/contract/acoustic-tajweed-boundary.test.mjs`,
 `services/asr-inference/test_acoustic_tajweed.py`, and
