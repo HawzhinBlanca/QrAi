@@ -24,6 +24,8 @@ const DURABLE_JOBS = "tests/jobs/durable-jobs.test.mjs";
 const LOCAL_INFERENCE_WORKER = "tests/jobs/local-inference-worker.test.mjs";
 const COMPATIBILITY_INGRESS = "tests/inference/compatibility-ingress.test.mjs";
 const AUDIO_RETENTION_WORKER = "tests/inference/audio-retention-worker.test.mjs";
+const BOUNDED_WINDOW_SPANS = "tests/inference/bounded-window-spans.test.mjs";
+const FORCED_ALIGN_SPANS = "test_forced_align_spans.py";
 const INFERENCE_COMPATIBILITY_SURFACE = "tests/contract/inference-compatibility-surface.test.mjs";
 const API_JOB_WAIT = "tests/jobs/api-job-wait.test.mjs";
 const INFERENCE_CANCELLATION = "tests/jobs/inference-cancellation.test.mjs";
@@ -97,7 +99,20 @@ test("canonical verification runs the row-authoritative offline evaluator suite 
 test("CI installs the exact Python test prerequisites invoked by canonical verification", () => {
   assert.match(ciSource, /python-version:\s*["']3\.11["']/);
   assert.match(ciSource, /python3 -m pip install --quiet "numpy==2\.4\.6" "pytest==9\.1\.1"/);
+  assert.match(
+    ciSource,
+    /--index-url https:\/\/download\.pytorch\.org\/whl\/cpu "torch==2\.12\.1" "torchaudio==2\.11\.0"/,
+  );
   assert.match(verifySource, /python3 -m pytest -q test_model_attribution\.py test_acoustic_tajweed\.py/);
+});
+
+test("canonical verification runs the forced-aligner producer span suite exactly once", () => {
+  const target = FORCED_ALIGN_SPANS;
+  const activeInvocations = verifySource
+    .split("\n")
+    .filter((line) => !line.trimStart().startsWith("#"))
+    .filter((line) => line.includes(target));
+  assert.equal(activeInvocations.length, 1, `${target} must run exactly once in canonical verification`);
 });
 
 test("canonical verification runs the evaluation-evidence migration suite exactly once", () => {
@@ -170,6 +185,18 @@ test("canonical verification runs the local inference boundary suites exactly on
       `${target} must run exactly once in canonical verification`,
     );
   }
+});
+
+test("canonical verification runs the bounded-window span suite exactly once", () => {
+  // W1.6/QA-2. This suite directly covers `boundedPcmWindows` and `recognizedTokensFrom`, which
+  // compose local model timings onto the absolute session timeline. The Python producer suite is
+  // guarded independently above because it runs in a separate pytest invocation.
+  const invocations = activeNodeTestLines(verifySource);
+  assert.equal(
+    invocations.filter((line) => line.includes(BOUNDED_WINDOW_SPANS)).length,
+    1,
+    `${BOUNDED_WINDOW_SPANS} must run exactly once in canonical verification`,
+  );
 });
 
 test("canonical verification runs the durable domain workflow suite exactly once", () => {

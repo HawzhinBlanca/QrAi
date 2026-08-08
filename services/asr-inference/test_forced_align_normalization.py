@@ -11,6 +11,7 @@ fabricated timings, while docs reported a 64ms alignment MAE that could not have
 The first test below fails loudly on that bug. Every assertion uses \\u escapes for the expected
 value, because literal combining marks are invisible in a diff — which is how the bug survived review.
 """
+import ast
 import re
 import sys
 
@@ -90,6 +91,30 @@ def test_mirror_matches_source():
     """This file's _strip_diacritics must stay behaviourally identical to the real one."""
     assert '.replace("\\u0671", "\\u0627")' in _SRC or 'replace("ٱ", "ا")' in _SRC, \
         "forced_align._strip_diacritics changed shape; update this mirror"
+
+
+def test_alignment_and_merge_share_the_declared_blank_index():
+    """Both CTC operations must use the checkpoint vocabulary's blank index.
+
+    This source-level assertion remains runnable in canonical CI without the heavyweight torch
+    runtime. `test_forced_align_spans.py` supplies the behavioral producer proof when that runtime
+    is available.
+    """
+    tree = ast.parse(_SRC)
+    calls = {
+        node.func.attr: node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and isinstance(node.func.value, ast.Name)
+        and node.func.value.id == "F"
+        and node.func.attr in {"forced_align", "merge_tokens"}
+    }
+    assert set(calls) == {"forced_align", "merge_tokens"}, "expected both CTC operations"
+    for name, call in calls.items():
+        blank = next((kw.value for kw in call.keywords if kw.arg == "blank"), None)
+        assert isinstance(blank, ast.Name) and blank.id == "blank", \
+            f"F.{name} must receive the vocabulary-derived blank index"
 
 
 if __name__ == "__main__":

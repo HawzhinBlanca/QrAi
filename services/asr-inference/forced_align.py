@@ -79,7 +79,16 @@ def align_words(waveform: torch.Tensor, arabic_words: list[str]) -> list[tuple[i
         )
     targets = torch.tensor([tokens], dtype=torch.int32)
     aligned, scores = F.forced_align(emission, targets, blank=blank)
-    token_spans = F.merge_tokens(aligned[0], scores[0])
+    # `blank=blank` on BOTH calls. merge_tokens defaults to blank=0, so omitting it here silently
+    # used a different blank than the alignment that produced `aligned`: whichever symbol sat at
+    # index 0 was stripped as padding, and the real <pad> frames survived as if they were spoken.
+    # token_spans then held more entries than `tokens`, so every token_spans[a:b] slice below
+    # landed on a neighbour's tokens and each word was returned with someone else's timing —
+    # still positive, still ordered, still inside the audio, and still wrong. It worked only
+    # because the default checkpoint puts <pad> at 0; FORCE_ALIGN_MODEL is documented as
+    # swappable, and vocab ordering is the checkpoint author's choice, not ours.
+    # See test_forced_align_spans.py::test_the_blank_index_is_read_from_the_vocab_...
+    token_spans = F.merge_tokens(aligned[0], scores[0], blank=blank)
 
     ratio = waveform.size(1) / emission.size(1) / 16000.0
     out = []

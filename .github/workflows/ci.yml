@@ -109,10 +109,18 @@ jobs:
         with: { node-version: "22", cache: "pnpm" }
       # MIG5: verify.sh runs the asr-inference plain-interpreter suites (eval metrics + the Arabic
       # diacritic regression from PR #258) and two pytest modules. Exact test dependencies only —
-      # no torch and no model download.
+      # no model download.
       - uses: actions/setup-python@v5
         with: { python-version: "3.11" }
       - run: python3 -m pip install --quiet "numpy==2.4.6" "pytest==9.1.1"
+      # W1.6: torch IS now required, for one suite. test_forced_align_spans.py drives torchaudio's
+      # real forced_align/merge_tokens over a hand-built emission tensor to pin the blank index and
+      # the frame->millisecond arithmetic in `align_words` — the sole producer of forced-aligned
+      # spans when native ASR timing is absent. It had no gated test because the only direct caller
+      # exercising it (forced_align_arabic.py) needs the network and a 1.2GB checkpoint.
+      # CPU wheels only: no CUDA, no nvidia-* transitive payload, and still no model download —
+      # the test builds its own emissions. Versions match services/asr-inference/requirements.lock.txt.
+      - run: python3 -m pip install --quiet --index-url https://download.pytorch.org/whl/cpu "torch==2.12.1" "torchaudio==2.11.0"
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy, rustfmt
