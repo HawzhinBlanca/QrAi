@@ -415,6 +415,23 @@ the sifat probability field, so the adapter withholds all sifat numeric scores. 
 remain structural engineering proof—not error detection, a Kurdish-L1 accuracy benchmark, or
 release approval.
 
+`scripts/acoustic-candidate-proof.mjs` is the executable protected proof. It refuses dirty
+candidate-image inputs, reconstructs both WAVs from the checksum-bound PCM source, builds the
+current `acoustic-candidate` target, and drives one non-root container with networking disabled,
+all capabilities dropped, a read-only root filesystem, and only the generated audio directory
+mounted read-only. It compares safe structural summaries with the committed exact-image record and
+writes no audio, canonical text, predicted text, confidence, or learner finding to its evidence.
+The output path must be outside the checkout:
+
+```bash
+node scripts/acoustic-candidate-proof.mjs \
+  --output /absolute/external/evidence/acoustic-candidate-proof.json
+```
+
+`bash scripts/verify.sh --release` invokes this harness exactly once after the full-stack smoke and
+writes its result under `RELEASE_SMOKE_ARTIFACT_DIR`. Ordinary verification runs the harness's
+hermetic contract/refusal tests but deliberately does not download or execute the 2.4 GB model.
+
 The same Python acoustic test loads the production calibrator registry, proves it has no active
 authority, and exercises a temporary approved record against exact scorer-artifact,
 dataset-manifest, evaluation-evidence, artifact-size, and artifact-byte digests. Every mismatched

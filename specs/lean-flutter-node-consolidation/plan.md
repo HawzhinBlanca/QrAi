@@ -381,7 +381,8 @@ integration, and the upstream-default Hafs 4/4/4/4 profile for non-learner-facin
 acoustic_tajweed.py,acoustic-candidates.json,Dockerfile,requirements.lock.txt}`;
 `services/ml-inference/server.mjs`; Rust `handlers/ml_proxy.rs::proxy_ml`; Node
 `routes/ml-proxy.mjs::proxyMl`; strict internal fixtures; `docs/{DECISIONS.md,DATA_LICENSES.md,
-architecture/10-10-platform.md,TESTING.md}`; removal of `services/tajweed-neural` only after proof.
+architecture/10-10-platform.md,TESTING.md}`; the protected exact-image harness and its
+`scripts/verify.sh --release` invocation; removal of `services/tajweed-neural` only after proof.
 
 **Criterion-to-test map:** QA-3 → `tests/contract/acoustic-tajweed-boundary.test.mjs`,
 `services/asr-inference/test_acoustic_tajweed.py`, and

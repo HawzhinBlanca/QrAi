@@ -138,6 +138,7 @@ was previously wrong and how the Node composition boundary is gated directly.
 | `services/tajweed-neural/**` | no production import/caller/Compose service; README and living-doc references | Remove only after selected-adapter proof; retired-component and living-doc tests prevent resurrection |
 | `tests/security/arabic-regex-escapes.test.mjs::trackedSources` | repo-wide Arabic-regex guard callback | Ignore index entries deleted from the working tree so an approved component retirement is scanned as absence, while every remaining tracked source is still checked |
 | ASR Docker/lock and acoustic candidate manifest | Compose ASR service; readiness/image tests; release/SBOM/licence checks | Default-image compatibility, exact candidate-image digest/readiness, clean dependency audit |
+| `scripts/acoustic-candidate-proof.mjs` release harness and `scripts/verify.sh --release` | release verifier, the immutable Muaalem manifest, sample-exact correct/altered vectors, canonical 1:1 word bytes, Docker `acoustic-candidate` target, external release evidence directory | build the current candidate target, run both vectors in one offline/no-source-mount container, validate shadow-only output, record image/runtime/latency/memory evidence, and invoke the harness exactly once only in release mode; guard pure evidence validation and verifier wiring in the ordinary canonical suite |
 
 ## 5. Node HTTP convergence
 

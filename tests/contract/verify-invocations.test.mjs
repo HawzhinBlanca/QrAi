@@ -46,6 +46,8 @@ const HTTP_CANARY_ROLLBACK_EVIDENCE = "tests/release/canary-rollback-evidence.te
 const REALTIME_DECISIONS = "tests/contract/realtime-decisions.test.mjs";
 const REALTIME_PROTOCOL_FIXTURES = "tests/realtime/protocol-fixtures.test.mjs";
 const REALTIME_PROCESS_LIFECYCLE = "tests/realtime/process-lifecycle.test.mjs";
+const ACOUSTIC_CANDIDATE_PROOF_TEST = "scripts/acoustic-candidate-proof.test.mjs";
+const ACOUSTIC_CANDIDATE_PROOF_RUNNER = "node scripts/acoustic-candidate-proof.mjs";
 
 function activeNodeTestLines(source) {
   return source
@@ -439,5 +441,28 @@ test("canonical verification runs the W3.2 realtime process lifecycle exactly on
     invocations.filter((line) => line.includes(REALTIME_PROCESS_LIFECYCLE)).length,
     1,
     `${REALTIME_PROCESS_LIFECYCLE} must run exactly once in canonical verification`,
+  );
+});
+
+test("canonical verification guards the W1.10 exact-image harness and release mode runs it exactly once", () => {
+  const invocations = activeNodeTestLines(verifySource);
+  assert.equal(
+    invocations.filter((line) => line.includes(ACOUSTIC_CANDIDATE_PROOF_TEST)).length,
+    1,
+    `${ACOUSTIC_CANDIDATE_PROOF_TEST} must run exactly once in canonical verification`,
+  );
+
+  const activeRunnerLines = verifySource
+    .split("\n")
+    .filter((line) => !line.trimStart().startsWith("#"))
+    .filter((line) => line.includes(ACOUSTIC_CANDIDATE_PROOF_RUNNER));
+  assert.equal(
+    activeRunnerLines.length,
+    1,
+    `${ACOUSTIC_CANDIDATE_PROOF_RUNNER} must run exactly once in release verification`,
+  );
+  assert.match(
+    verifySource,
+    /if \[\[ "\$RELEASE" == "yes" \]\]; then[\s\S]*node scripts\/acoustic-candidate-proof\.mjs/,
   );
 });
