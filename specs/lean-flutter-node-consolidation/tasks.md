@@ -52,7 +52,7 @@ Implementation starts only after the approval header in `plan.md` is filled. Wor
 ## W3 — Node realtime boundary
 
 - [x] **W3.1** Accept the realtime-process/replay/backpressure ADR and freeze language-neutral `rt_v2`/`audio.ack` fixtures. Proof: ticket fixture parity. Criteria: RT-1.
-- [ ] **W3.2** Add the separate realtime entrypoint/process from the server package with independent readiness, metrics, failure isolation, and drain. Proof: realtime lifecycle/fault-isolation test. Criteria: BE-5, OP-4.
+- [x] **W3.2** Add the separate realtime entrypoint/process from the server package with independent readiness, metrics, failure isolation, and drain. Proof: realtime lifecycle/fault-isolation test. Criteria: BE-5, OP-4.
 - [ ] **W3.3** Port signature, tenant/session/retention/expiry/origin/no-Origin validation and rate limits. Proof: `ticket-boundary.test.mjs`, hostile WebSocket vectors. Criteria: RT-1.
 - [ ] **W3.4** Implement durable single-use nonce-hash replay protection across instances with TTL cleanup and fail-closed behavior; benchmark Postgres before removing Redis. Proof: concurrent cross-instance replay/load/failure test. Criteria: RT-1.
 - [ ] **W3.5** Implement frame/payload/session ceilings, bounded per-session queues, explicit backpressure acknowledgments, sequence ordering, and overload metrics. Proof: `backpressure.test.mjs`, oversized/empty/reorder/100-session tests. Criteria: RT-2.
