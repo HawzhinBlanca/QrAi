@@ -13,12 +13,24 @@ import {
   RLS_PROBE_ROLE,
   TENANT,
   insertDeclaredTestAcousticFinding,
+  purgeSessionsByChecksum,
   queryJson,
   request,
   startApi,
   uniqueSuffix,
   withDb,
 } from "./lib/harness.mjs";
+
+// Run-scoped session checksums, so the teardown at the end of this file deletes exactly this run's
+// rows and nothing else. These suites created sessions and never removed them: measured, the shared
+// staging database had accumulated 64,869 recitation sessions across ~8 fixed checksums, growing by
+// thousands a day. Leaked rows already broke a review-parity assertion and a Rust integration test
+// once in this program (`seedQueued`), and an unbounded corpus is what makes ORDER BY without a
+// unique tiebreaker, row-count deltas, and other suites' bulk teardown intermittently fail.
+// Per-run rather than a shared literal: two agents run this gate against the same Postgres.
+const RUN_CK_PRIVACY = `fnv1a32:privacy-scope-${uniqueSuffix()}`;
+const RUN_CK_CONSENT = `fnv1a32:consent-gate-${uniqueSuffix()}`;
+
 
 /**
  * PAR2 — the 18 incident-class tests that run under the default server configuration.
@@ -132,7 +144,7 @@ const createSession = async (learnerId) => {
     body: {
       learnerId,
       quranRef: FATIHAH_REF,
-      sourceChecksum: "fnv1a32:privacy-scope",
+      sourceChecksum: RUN_CK_PRIVACY,
 
       language: "ckb",
       mode: "guided-recite",
@@ -615,7 +627,7 @@ test("external processing requires BOTH ASR consent and guardian approval, not e
       body: {
         learnerId,
         quranRef: FATIHAH_REF,
-        sourceChecksum: "fnv1a32:consent-gate",
+        sourceChecksum: RUN_CK_CONSENT,
 
         language: "ckb",
         mode: "guided-recite",
@@ -768,4 +780,13 @@ test("a scholar-approved decision at HIGH risk is rejected even with sources", a
     },
   });
   assert.equal(res.status, 400, "high risk must be rejected regardless of sources");
+});
+
+// Registered last: node:test runs `after` hooks in registration order, so this drains the
+// rows once the hooks above have stopped the services still able to write them.
+after(async () => {
+  let left = 0;
+  left += await purgeSessionsByChecksum(RUN_CK_PRIVACY);
+  left += await purgeSessionsByChecksum(RUN_CK_CONSENT);
+  assert.equal(left, 0, `teardown left ${left} session(s) behind`);
 });

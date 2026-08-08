@@ -36,6 +36,7 @@ import assert from "node:assert/strict";
 import { after, before, test } from "node:test";
 
 import {
+  purgeSessionsByChecksum,
   queryJson,
   request,
   startApi,
@@ -43,6 +44,16 @@ import {
   startShell,
   uniqueSuffix,
 } from "./lib/harness.mjs";
+
+// Run-scoped session checksums, so the teardown at the end of this file deletes exactly this run's
+// rows and nothing else. These suites created sessions and never removed them: measured, the shared
+// staging database had accumulated 64,869 recitation sessions across ~8 fixed checksums, growing by
+// thousands a day. Leaked rows already broke a review-parity assertion and a Rust integration test
+// once in this program (`seedQueued`), and an unbounded corpus is what makes ORDER BY without a
+// unique tiebreaker, row-count deltas, and other suites' bulk teardown intermittently fail.
+// Per-run rather than a shared literal: two agents run this gate against the same Postgres.
+const RUN_CK_EFFECTS = `fnv1a32:effects-${uniqueSuffix()}`;
+
 
 /** Every tenant-owned table a request could plausibly write. Reference data is deliberately absent. */
 const TABLES = [
@@ -84,7 +95,7 @@ let words;
 const sessionBody = () => ({
   learnerId: LEARNER,
   quranRef: { surahNumber: 1, ayahStart: 1, ayahEnd: 1, display: "Al-Fatihah 1:1" },
-  sourceChecksum: "fnv1a32:effects",
+  sourceChecksum: RUN_CK_EFFECTS,
 
   language: "ckb",
   mode: "guided-recite",
@@ -338,3 +349,11 @@ for (const c of CASES) {
     );
   });
 }
+
+// Registered last: node:test runs `after` hooks in registration order, so this drains the
+// rows once the hooks above have stopped the services still able to write them.
+after(async () => {
+  let left = 0;
+  left += await purgeSessionsByChecksum(RUN_CK_EFFECTS);
+  assert.equal(left, 0, `teardown left ${left} session(s) behind`);
+});

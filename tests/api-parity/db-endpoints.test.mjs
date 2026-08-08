@@ -7,12 +7,19 @@ import {
   RLS_PROBE_ROLE,
   TENANT,
   insertDeclaredTestAcousticFinding,
+  purgeSessionsByChecksum,
   queryJson,
   request,
   startApi,
   uniqueSuffix,
   withDb,
 } from "./lib/harness.mjs";
+
+// Run-scoped so the teardown at the end of this file removes exactly this run's rows. The fixed
+// `fnv1a32:p32parity` had accumulated 585 sessions in the shared staging database; see
+// purgeSessionsByChecksum in ./lib/harness.mjs for why an unbounded corpus is a correctness problem
+// and not merely untidiness.
+const RUN_CK_P32 = `fnv1a32:p32parity-${uniqueSuffix()}`;
 
 /**
  * C1 — the five database-backed pairs that had NEITHER a fixture nor a parity test.
@@ -323,7 +330,7 @@ test("GET session tajweed-findings: a withheld finding carries no judgement", as
     body: {
       learnerId: "learner-1",
       quranRef: { surahNumber: 1, ayahStart: 1, ayahEnd: 7, display: "Al-Fatihah 1:1-7" },
-      sourceChecksum: "fnv1a32:p32parity",
+      sourceChecksum: RUN_CK_P32,
 
       language: "ckb",
       mode: "guided-recite",
@@ -1024,4 +1031,11 @@ test("a pilot-cookie request actually MOVES the session's idle expiry", async ()
     `idle_expires_at did not move (${before} -> ${after}) — the session is not being kept alive, ` +
       `so an active learner is logged out 8 hours after bootstrap regardless of activity`,
   );
+});
+
+// Registered last: node:test runs `after` hooks in registration order, so this drains the rows once
+// the hooks above have stopped the services still able to write them.
+after(async () => {
+  const left = await purgeSessionsByChecksum(RUN_CK_P32);
+  assert.equal(left, 0, `teardown left ${left} session(s) behind`);
 });

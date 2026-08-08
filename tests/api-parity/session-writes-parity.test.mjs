@@ -14,7 +14,35 @@ import assert from "node:assert/strict";
 import test, { after, before } from "node:test";
 
 import { assertABMutating } from "./lib/ab.mjs";
-import { TENANT, queryJson, request, startApi, startShell } from "./lib/harness.mjs";
+import {
+  TENANT,
+  purgeSessionsByChecksum,
+  queryJson,
+  request,
+  startApi,
+  startShell,
+  uniqueSuffix,
+} from "./lib/harness.mjs";
+
+/**
+ * One checksum per RUN, so the teardown below can delete exactly this run's rows and nothing else.
+ *
+ * This suite used a fixed `"sha256:test"` and never removed what it wrote. Measured: 41 sessions
+ * leaked per run, and 21,699 rows carrying that checksum had accumulated in the shared staging
+ * database — about a third of its 64,869 recitation sessions, growing by thousands a day across
+ * every gate run.
+ *
+ * That is not merely untidy. It is the same failure that `seedQueued` caused earlier in this
+ * program: leaked rows broke a review-parity assertion and a Rust integration test that had
+ * backdated its own fixture. A corpus that grows without bound makes ORDER BY without a unique
+ * tiebreaker non-deterministic, makes row-count deltas noisy, and makes bulk cleanup in other
+ * suites fail on foreign keys pointing at rows nobody owns.
+ *
+ * A per-run value rather than a timestamp window on the shared checksum: two agents run this
+ * repository's gate against the same Postgres, and a window-scoped delete would reap a concurrent
+ * run's rows out from under it.
+ */
+const RUN_CHECKSUM = `sha256:test-${uniqueSuffix()}`;
 
 /**
  * The routes this file is ABOUT, served by the shell rather than proxied to Rust.
@@ -64,12 +92,14 @@ before(async () => {
 after(async () => {
   await shell?.stop();
   await api?.stop();
+  const left = await purgeSessionsByChecksum(RUN_CHECKSUM);
+  assert.equal(left, 0, `teardown left ${left} session(s) behind for ${RUN_CHECKSUM}`);
 });
 
 const sessionBody = (overrides = {}) => ({
   learnerId,
   quranRef: { surahNumber: 1, ayahStart: 1, ayahEnd: 7, display: "Al-Fatihah 1:1-7" },
-  sourceChecksum: "sha256:test",
+  sourceChecksum: RUN_CHECKSUM,
   language: "ar",
   consent: {
     recordingConsent: true,

@@ -15,12 +15,24 @@ import {
   DECLARED_TEST_ACOUSTIC_EVIDENCE,
   TENANT,
   insertDeclaredTestAcousticFinding,
+  purgeSessionsByChecksum,
   queryJson,
   request,
   startApi,
   startMockUpstream,
   uniqueSuffix,
 } from "./lib/harness.mjs";
+
+// Run-scoped session checksums, so the teardown at the end of this file deletes exactly this run's
+// rows and nothing else. These suites created sessions and never removed them: measured, the shared
+// staging database had accumulated 64,869 recitation sessions across ~8 fixed checksums, growing by
+// thousands a day. Leaked rows already broke a review-parity assertion and a Rust integration test
+// once in this program (`seedQueued`), and an unbounded corpus is what makes ORDER BY without a
+// unique tiebreaker, row-count deltas, and other suites' bulk teardown intermittently fail.
+// Per-run rather than a shared literal: two agents run this gate against the same Postgres.
+const RUN_CK_PRIVACY = `fnv1a32:privacy-scope-${uniqueSuffix()}`;
+const RUN_CK_CONSENT_TEST = `fnv1a32:consent-test-${uniqueSuffix()}`;
+
 import {
   createFilesystemAudioObjectStore,
   deriveAudioObjectKey,
@@ -218,7 +230,7 @@ const createSession = async (learnerId) => {
     body: {
       learnerId,
       quranRef: { surahNumber: 1, ayahStart: 1, ayahEnd: 7, display: "Al-Fatihah 1:1-7" },
-      sourceChecksum: "fnv1a32:privacy-scope",
+      sourceChecksum: RUN_CK_PRIVACY,
       language: "ckb",
       mode: "guided-recite",
       practicePlanId: "fatihah-mastery-v1",
@@ -318,7 +330,7 @@ test("STORED session consent overrides whatever the client claims on the analysi
     body: {
       learnerId: "learner-1",
       quranRef: { surahNumber: 1, ayahStart: 1, ayahEnd: 7, display: "Al-Fatihah 1:1-7" },
-      sourceChecksum: "fnv1a32:consent-test",
+      sourceChecksum: RUN_CK_CONSENT_TEST,
 
       language: "ckb",
       mode: "guided-recite",
@@ -534,4 +546,13 @@ test("ML tajweed predict: ops analysing a session get the findings whole", async
   const unreviewed = res.body.findings.find((f) => f.reviewStatus === "ai-suggested");
   assert.equal(unreviewed.rule, "ghunnah", "staff cannot act on what was redacted from them");
   assert.equal(unreviewed.explanation, "Apply ghunnah on the noon sakina.");
+});
+
+// Registered last: node:test runs `after` hooks in registration order, so this drains the
+// rows once the hooks above have stopped the services still able to write them.
+after(async () => {
+  let left = 0;
+  left += await purgeSessionsByChecksum(RUN_CK_PRIVACY);
+  left += await purgeSessionsByChecksum(RUN_CK_CONSENT_TEST);
+  assert.equal(left, 0, `teardown left ${left} session(s) behind`);
 });

@@ -33,7 +33,16 @@ import { readFileSync, readdirSync } from "node:fs";
 import test, { after, before } from "node:test";
 
 import { ROUTES } from "../../server/src/routes/index.mjs";
-import { ROLE_USER_IDS, TENANT, request, startApi, startShell, withDb } from "./lib/harness.mjs";
+import {
+  ROLE_USER_IDS,
+  TENANT,
+  purgeSessionsById,
+  queryJson,
+  request,
+  startApi,
+  startShell,
+  withDb,
+} from "./lib/harness.mjs";
 
 /**
  * Every route this matrix covers, served by the shell rather than proxied.
@@ -96,17 +105,20 @@ before(async () => {
 after(async () => {
   try {
     if (matrixSessionId) {
-      await withDb(async (client) => {
-        const { rows } = await client.query(
-          "SELECT consent_record_id, audit_event_id FROM recitation_sessions WHERE id = $1",
-          [matrixSessionId],
-        );
-        if (rows[0]) {
-          await client.query("DELETE FROM recitation_sessions WHERE id = $1", [matrixSessionId]);
-          await client.query("DELETE FROM consent_records WHERE id = $1", [rows[0].consent_record_id]);
-          await client.query("DELETE FROM audit_events WHERE id = $1", [rows[0].audit_event_id]);
-        }
-      });
+      const [row] = await queryJson(
+        "SELECT audit_event_id FROM recitation_sessions WHERE id = $1",
+        [matrixSessionId],
+      );
+      // Children first. This used to `DELETE FROM recitation_sessions` directly, which raises
+      // `23503 word_alignments_session_id_fkey` whenever the session happened to have alignments —
+      // failing the whole FILE as `hookFailed` rather than one assertion, intermittently. Observed
+      // in a full gate run on 2026-08-08. purgeSessionsById owns the referencing closure so it is
+      // not rediscovered (incorrectly) per suite; it also takes the consent record.
+      const left = await purgeSessionsById(matrixSessionId);
+      assert.equal(left, 0, "the authz matrix session survived teardown");
+      if (row?.audit_event_id) {
+        await queryJson("DELETE FROM audit_events WHERE id = $1", [row.audit_event_id]);
+      }
     }
   } finally {
     await shell?.stop();

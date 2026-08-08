@@ -184,13 +184,36 @@ before(async () => {
   rustUrl = api.upstreamUrl ?? api.baseUrl;
   shell = await startShell({ upstream: rustUrl, env: { ...env, NODE_API_PORTED: PORTED } });
 
+  // Pick a session this suite can actually USE, not merely the newest one in the tenant.
+  //
+  // This query used to be `ORDER BY s.started_at DESC LIMIT 1` with no other constraint, so it took
+  // whatever session happened to be most recent — which, in practice, meant a row leaked by some
+  // other parity suite that never cleaned up. That was invisible while the shared database
+  // accumulated ~1,700 sessions per gate run. The moment those suites began removing their own rows,
+  // the newest survivor turned out to be a session whose passage has no canonical words, and
+  // "tajweed forwarding replaces client references..." failed with `0 !== 3` two hundred lines below
+  // — in a file that had not been touched.
+  //
+  // The dependency was always there; the leak was hiding it. `EXISTS` states the requirement the
+  // suite actually has, so the selection can no longer succeed and then fail later.
   const [row] = await queryJson(
     `SELECT s.id, s.learner_id FROM recitation_sessions s
      JOIN consent_records c ON c.id = s.consent_record_id
-     WHERE s.tenant_id = $1 ORDER BY s.started_at DESC LIMIT 1`,
+     WHERE s.tenant_id = $1
+       AND EXISTS (
+         SELECT 1 FROM canonical_words cw
+           JOIN canonical_ayahs ca ON ca.id = cw.ayah_id
+          WHERE ca.surah_number = (s.quran_ref->>'surahNumber')::int
+            AND ca.ayah_number BETWEEN (s.quran_ref->>'ayahStart')::int
+                                   AND (s.quran_ref->>'ayahEnd')::int
+       )
+     ORDER BY s.started_at DESC LIMIT 1`,
     [TENANT],
   );
-  assert.ok(row, "this suite needs a session with a linked consent record");
+  assert.ok(
+    row,
+    "this suite needs a session with a linked consent record whose passage has canonical words",
+  );
   sessionId = row.id;
   learnerId = row.learner_id;
 });
