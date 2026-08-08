@@ -100,3 +100,39 @@ and exact source inspection. **Target:** W3.1 / RT-1 / approved W0–W7 consolid
   vector produced 27 phonemes and digest
   `1cce8531d8141b8f0cb292e92a331f436f831aa7dede5a1d4b3dbb7485932750`. Both remained
   uncalibrated, withheld all numeric sifat scores, and emitted no learner finding or confidence.
+
+## Third required-CI finding: nginx syntax proof lacked its declared DNS peer
+
+- Candidate `276b386fd4e7be0da3ed61006365660986ad02dc` made `ci/node-min` green, then
+  `docker-build/build` failed after all images, non-root checks, and the clean Node image smoke had
+  passed. The failing command was `docker compose run --rm --no-deps web nginx -t`.
+- The rendered configuration correctly selected the allowlisted `platform-api:8080`, but
+  `--no-deps` deliberately started no `platform-api` container. Docker Compose service names are
+  DNS aliases of running network endpoints, not static declarations, so nginx rejected the config
+  with `host not found in upstream "platform-api"`. This is a test-harness topology defect, not an
+  application config failure and not evidence that the allowlist should be weakened.
+- The smallest truthful proof is ephemeral no-dependency `platform-api` and `realtime-gateway`
+  one-off containers with `--use-aliases`, kept alive only while the web config is checked and
+  removed by one trap. They give nginx both exact production service DNS names without booting
+  either binary, the database, migrations, or workers. The following hostile selector probe must
+  still fail before nginx starts.
+
+## Fourth required-CI finding: complete Flutter evidence and Python test prerequisites
+
+- Candidate `276b386fd4e7be0da3ed61006365660986ad02dc` also reached the Flutter and Python
+  portions of the canonical gate. Flutter analysis found one pre-existing single-line `for` in
+  `tajweed_gate_test.dart`, which is an error under the repository's `--fatal-infos` policy.
+- Six Flutter tests then failed for one shared reason rather than six runtime defects. W1.12 made
+  `TajweedFinding.isLearnerVisible` require a complete, release-trusted acoustic evidence chain,
+  but the `tajweed_panel_test.dart` and `practice_screen_test.dart` builders still create the older
+  minimal finding shape. Their approved findings are therefore correctly withheld. The shared
+  corpus test has the evidence fields but passes its deliberately gate-only `base` directly to the
+  full Dart wire parser without the required presentation fields (`wordId`, `rule`, `severity`, and
+  `explanation`), so its two visible vectors fail closed before the predicate runs.
+- The repair is test-data-only: make those declared fixtures complete acoustic evidence and merge
+  the gate corpus into a valid wire envelope before evaluating it. Production parsing and the
+  learner gate remain unchanged; no fabricated output is presented as a model result.
+- The Python stage invokes `python3 -m pytest` for the attribution and acoustic suites, while CI
+  installs only NumPy. The exact remote failure is `No module named pytest`. CI must install the
+  test runner it directly invokes. Pinning the current Python-3.11-compatible NumPy and pytest
+  releases makes that prerequisite reproducible without adding either package to a runtime image.

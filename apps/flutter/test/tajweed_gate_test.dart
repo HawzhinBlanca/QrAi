@@ -65,8 +65,16 @@ void main() {
     final Map<String, dynamic> corpus = jsonDecode(
       File('../../packages/contracts/fixtures/learner-feedback-gate.json').readAsStringSync(),
     ) as Map<String, dynamic>;
-    final Map<String, dynamic> base =
-        Map<String, dynamic>.from(corpus['base'] as Map<String, dynamic>);
+    final Map<String, dynamic> base = <String, dynamic>{
+      // The shared corpus describes only the language-neutral gate. Dart's full wire parser also
+      // requires these presentation fields, so supply a declared test envelope before applying
+      // each gate vector.
+      'wordId': '1:1:1',
+      'rule': 'ghunnah',
+      'severity': 'practice',
+      'explanation': 'Declared learner-feedback gate fixture.',
+      ...Map<String, dynamic>.from(corpus['base'] as Map<String, dynamic>),
+    };
     final List<dynamic> cases = corpus['cases'] as List<dynamic>;
     expect(cases.length, greaterThanOrEqualTo(24));
     for (final Object? raw in cases) {
@@ -74,10 +82,14 @@ void main() {
       final Map<String, dynamic> input =
           jsonDecode(jsonEncode(base)) as Map<String, dynamic>;
       final Object? patch = vector['patch'];
-      if (patch is Map) input.addAll(Map<String, dynamic>.from(patch));
+      if (patch is Map) {
+        input.addAll(Map<String, dynamic>.from(patch));
+      }
       final Object? remove = vector['remove'];
       if (remove is List) {
-        for (final Object? field in remove) input.remove(field);
+        for (final Object? field in remove) {
+          input.remove(field);
+        }
       }
       bool actual;
       try {

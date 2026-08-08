@@ -114,4 +114,26 @@ test("TLS and Docker CI consume the runtime template and canary surfaces", () =>
   const workflow = read(".github/workflows/docker-build.yml");
   assert.match(workflow, /apps\/web\/nginx/);
   assert.match(workflow, /docker-compose\*\.yml/);
+
+  const selectorStep = workflow.match(
+    /- name: Web upstream selector[\s\S]*?(?=\n\s+- name: Native Node image healthcheck)/,
+  )?.[0];
+  assert.ok(selectorStep, "Docker CI must retain the rendered web config proof");
+  assert.match(
+    selectorStep,
+    /docker compose run -d --no-deps --use-aliases[\s\S]*--entrypoint sleep platform-api/,
+  );
+  assert.match(
+    selectorStep,
+    /docker compose run -d --no-deps --use-aliases[\s\S]*--entrypoint sleep realtime-gateway/,
+  );
+  assert.match(
+    selectorStep,
+    /trap 'docker rm --force "\$platform_cid" "\$gateway_cid"/,
+  );
+  assert.ok(
+    selectorStep.indexOf("--use-aliases") < selectorStep.indexOf("web nginx -t"),
+    "the production service DNS alias must exist before nginx parses its upstream",
+  );
+  assert.match(selectorStep, /WEB_PLATFORM_API_UPSTREAM=http:\/\/node-api:8082/);
 });

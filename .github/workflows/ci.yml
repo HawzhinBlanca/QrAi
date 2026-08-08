@@ -108,10 +108,11 @@ jobs:
       - uses: actions/setup-node@v4
         with: { node-version: "22", cache: "pnpm" }
       # MIG5: verify.sh runs the asr-inference plain-interpreter suites (eval metrics + the Arabic
-      # diacritic regression from PR #258). numpy only — no torch, no model download.
+      # diacritic regression from PR #258) and two pytest modules. Exact test dependencies only —
+      # no torch and no model download.
       - uses: actions/setup-python@v5
         with: { python-version: "3.11" }
-      - run: python3 -m pip install --quiet "numpy>=2"
+      - run: python3 -m pip install --quiet "numpy==2.5.1" "pytest==9.1.1"
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy, rustfmt

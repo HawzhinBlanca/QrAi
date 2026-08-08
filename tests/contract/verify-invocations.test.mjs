@@ -7,6 +7,7 @@ import { fileURLToPath } from "node:url";
 const here = dirname(fileURLToPath(import.meta.url));
 const repo = join(here, "..", "..");
 const verifySource = readFileSync(join(repo, "scripts", "verify.sh"), "utf8");
+const ciSource = readFileSync(join(repo, ".github", "workflows", "ci.yml"), "utf8");
 const mlSmokeSource = readFileSync(join(repo, "scripts", "smoke-ml.mjs"), "utf8");
 const goldenFixture = JSON.parse(
   readFileSync(join(repo, "server", "src", "inference", "fixtures", "golden-evals.json"), "utf8"),
@@ -90,6 +91,12 @@ test("canonical verification runs the row-authoritative offline evaluator suite 
     .filter((line) => !line.trimStart().startsWith("#"))
     .filter((line) => line.includes(command));
   assert.equal(activeInvocations.length, 1, `${command} must run exactly once in canonical verification`);
+});
+
+test("CI installs the exact Python test prerequisites invoked by canonical verification", () => {
+  assert.match(ciSource, /python-version:\s*["']3\.11["']/);
+  assert.match(ciSource, /python3 -m pip install --quiet "numpy==2\.5\.1" "pytest==9\.1\.1"/);
+  assert.match(verifySource, /python3 -m pytest -q test_model_attribution\.py test_acoustic_tajweed\.py/);
 });
 
 test("canonical verification runs the evaluation-evidence migration suite exactly once", () => {

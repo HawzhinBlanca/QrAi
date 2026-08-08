@@ -89,6 +89,14 @@ jobs:
       - name: Web upstream selector and rendered nginx config fail closed
         run: |
           set -euo pipefail
+          # `nginx -t` resolves literal upstream hostnames while parsing. `--no-deps` intentionally
+          # starts no API, so provide only the real Compose DNS alias through an inert one-off
+          # endpoint; otherwise a valid config fails merely because no network peer is registered.
+          platform_cid=$(docker compose run -d --no-deps --use-aliases \
+            --entrypoint sleep platform-api 120)
+          gateway_cid=$(docker compose run -d --no-deps --use-aliases \
+            --entrypoint sleep realtime-gateway 120)
+          trap 'docker rm --force "$platform_cid" "$gateway_cid" >/dev/null 2>&1 || true' EXIT
           docker compose run --rm --no-deps web nginx -t
           if docker compose run --rm --no-deps \
             -e WEB_PLATFORM_API_UPSTREAM=http://node-api:8082 \

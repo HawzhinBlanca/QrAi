@@ -44,7 +44,13 @@ NATS, service mesh, or new runtime dependency is added by this decision or task.
    a hosted-runner tool; and pin the smallest patched same-major dependency without an audit
    suppression. The Muaalem repair specifically replaces platform ffmpeg decode/filter/mux behavior
    with exact sample slicing, mutation, and canonical WAV wrapping from the manifest-bound PCM,
-   then refreshes the exact-image observation for the honestly declared mute interval.
+   then refreshes the exact-image observation for the honestly declared mute interval. Docker
+   config proof must likewise provide the exact allowlisted Compose service DNS alias while keeping
+   dependencies stopped; it may not replace the hostname, start the production stack, or bypass the
+   hostile-selector refusal. Required Flutter repairs are limited to completing declared test
+   evidence and giving the language-neutral gate corpus a valid Dart wire envelope; the production
+   learner predicate may not be weakened. The CI Python setup must pin and install every interpreter
+   dependency that `verify.sh` invokes, including pytest, without changing a runtime image.
 
 ## Exact implementation surface
 
@@ -62,9 +68,11 @@ NATS, service mesh, or new runtime dependency is added by this decision or task.
   `tests/contract/realtime-decisions.test.mjs`, `tests/contract/verify-invocations.test.mjs`, and
   `scripts/verify.sh`. Required-CI proof repairs may also touch the existing Muaalem evidence test,
   its vector/evidence documents, `.github/workflows/ci.yml`, `docs/TESTING.md`,
-  `pnpm-workspace.yaml`, and the generated `pnpm-lock.yaml`; they must not weaken an assertion or
-  add a runtime dependency. Historical text references change only where the moved path would be
-  broken.
+  `.github/workflows/docker-build.yml`, `tests/contract/http-canary-topology.test.mjs`,
+  `apps/flutter/test/tajweed_gate_test.dart`, `apps/flutter/test/tajweed_panel_test.dart`,
+  `apps/flutter/test/practice_screen_test.dart`,
+  `pnpm-workspace.yaml`, and the generated `pnpm-lock.yaml`; they must not weaken an assertion or add
+  a runtime dependency. Historical text references change only where the moved path would be broken.
 
 ## Risks and rollback
 
