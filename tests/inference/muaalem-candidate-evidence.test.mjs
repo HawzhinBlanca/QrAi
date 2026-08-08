@@ -5,6 +5,7 @@ import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
+import { parse as parseYaml } from "yaml";
 
 const ROOT = path.resolve(import.meta.dirname, "../..");
 const VECTOR_PATH = path.join(ROOT, "tests/fixtures/audio/muaalem-shadow-vectors.json");
@@ -27,6 +28,26 @@ function runFfmpeg(args) {
       : result.stderr,
   );
 }
+
+test("every CI job that runs the acoustic vectors provisions ffmpeg first", () => {
+  const workflow = parseYaml(readFileSync(path.join(ROOT, ".github/workflows/ci.yml"), "utf8"));
+  const consumers = [
+    ["node-min", "node --experimental-strip-types --test $files"],
+    ["verify", "bash scripts/verify.sh"],
+  ];
+
+  for (const [jobName, suiteCommand] of consumers) {
+    const steps = workflow.jobs?.[jobName]?.steps;
+    assert.ok(Array.isArray(steps), `${jobName} must remain a CI job`);
+    const suiteIndex = steps.findIndex((step) => String(step.run ?? "").includes(suiteCommand));
+    const ffmpegIndex = steps.findIndex((step) =>
+      /apt-get install[^\n]*--no-install-recommends[^\n]*ffmpeg/.test(String(step.run ?? "")),
+    );
+    assert.notEqual(suiteIndex, -1, `${jobName} must run ${suiteCommand}`);
+    assert.notEqual(ffmpegIndex, -1, `${jobName} must install ffmpeg instead of skipping vectors`);
+    assert.ok(ffmpegIndex < suiteIndex, `${jobName} must install ffmpeg before the vector suite`);
+  }
+});
 
 test("Muaalem structural evidence is immutable, candidate-bound, and benchmark-ineligible", () => {
   const vectors = loadJson(VECTOR_PATH);

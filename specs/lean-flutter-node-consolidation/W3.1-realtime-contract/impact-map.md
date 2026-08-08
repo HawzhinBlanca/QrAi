@@ -14,6 +14,8 @@ Serena is unavailable; callers below were resolved with exact `rg` references an
 | `specs/cutover/boundary.md` fixture citation | `tests/contract/boundary-references.test.mjs` resolves every cited evidence path | replace the moved fixture citation so the security-review package remains checkable | boundary-reference contract |
 | historical fixture references under `specs/node-backend-port` and `specs/migration-completion` | migration researchers and reviewers locating the still-authoritative vectors | update only the moved path and generator instruction; preserve historical decisions | protocol authority/path test + reference search |
 | `server/package.json` lint inputs | `tests/node-api/standalone-lifecycle.test.mjs` exact command pin; server build and canonical `pnpm build` | include `src/realtime/*.mjs` so the new protocol module is syntax-checked outside its direct test; update the exact lifecycle caller | lifecycle + server lint/build + protocol fixture test |
+| `.github/workflows/ci.yml` `node-min` and `verify` jobs | both execute `tests/inference/muaalem-candidate-evidence.test.mjs`; the former extracts the canonical Node list and the latter runs `scripts/verify.sh` | provision `ffmpeg` before either suite so the byte-reproduction gate remains executable on the current Ubuntu runner | Muaalem CI-prerequisite assertion + required remote checks |
+| `pnpm-workspace.yaml` overrides and `pnpm-lock.yaml` | Vite/PostCSS's only Nano ID path; frozen install; required `pnpm audit` gate | pin Nano ID 3 to patched `3.3.17`; do not suppress the high-severity advisory or widen to a new major | `pnpm install --frozen-lockfile` + `pnpm why nanoid` + `pnpm audit` + canonical/remote gates |
 | `docs/DECISIONS.md` ADR-0051 and living architecture/testing | W3.2–W3.9 implementers, operators, W7 retirement | accept one realtime process/replay/backpressure boundary and explicit proof gates | realtime decision guard |
 | `scripts/verify.sh` Node/Rust/Web invocations | local/CI canonical gate | run each new suite exactly once | verify-invocations guard + canonical gate |
 
@@ -21,4 +23,5 @@ Serena is unavailable; callers below were resolved with exact `rg` references an
 
 `server/src/routes/recitation.mjs::createRealtimeTicket`, OpenAPI response shape, Flutter
 `StreamingRecorder`, Redis behavior, Postgres migrations, Compose routing, canonical Quran data,
-audio retention, and learner feedback gates do not change in W3.1.
+audio retention, and learner feedback gates do not change in W3.1. The post-push CI correction
+changes no runtime package dependency or deployable application behavior.

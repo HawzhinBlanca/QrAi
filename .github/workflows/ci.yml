@@ -31,6 +31,13 @@ jobs:
         # Exact, not a range: the point of this job is one specific runtime, the declared floor.
         with: { node-version: "22.13.1", cache: "pnpm" }
       - run: pnpm install --frozen-lockfile
+      # The Muaalem evidence gate derives two byte-pinned PCM vectors. Hosted-runner contents are
+      # not a contract, so provision the executable instead of skipping evidence when an image
+      # revision removes it.
+      - name: Install acoustic fixture dependency
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends ffmpeg
       # The same file list verify.sh runs, read FROM verify.sh rather than copied — a second copy
       # would drift and this job would quietly stop covering the newest tests.
       - name: Node services suite on the minimum supported runtime
@@ -135,6 +142,11 @@ jobs:
 
       # --- Bootstrap ---
       - run: pnpm install --frozen-lockfile
+      # `verify.sh` executes the same byte-pinned Muaalem vector derivation as node-min.
+      - name: Install acoustic fixture dependency
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends ffmpeg
 
       # --- One migration/provision boundary; manifest membership and checksums are runner-enforced. ---
       - name: Migrate and provision restricted database role

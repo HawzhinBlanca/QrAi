@@ -57,3 +57,17 @@ and exact source inspection. **Target:** W3.1 / RT-1 / approved W0–W7 consolid
 - The original coarse master-plan W3.1 paragraph assigned entrypoint, admission, and replay work to
   this slice, while the approved ledger decomposes those into W3.2–W3.4. The master plan now records
   that superseding allocation instead of leaving two active scopes.
+
+## Post-push required-CI evidence
+
+- Required CI for candidate `c503e712df27989d12c36937c3331b762d0cbe1b` exposed two
+  repository-wide prerequisites after local `VERIFY OK`; neither changes the W3.1 wire contract.
+- `ci/node-min` ran the canonical Node file list on the current `ubuntu-latest` image and failed the
+  existing Muaalem byte-reproduction test because `ffmpeg` was absent. `ci/verify` runs the same
+  test through `scripts/verify.sh`, so both jobs are direct consumers. Skipping or weakening the
+  byte assertion would remove evidence; the jobs must provision the declared tool before testing.
+- `ci/verify` failed earlier at the unsuppressed `pnpm audit` gate on
+  `GHSA-2v37-7h3g-55p8` / `CVE-2026-67213`. The only installed path is
+  `vite -> postcss@8.5.24 -> nanoid@3.3.16`; the reviewed advisory marks `<3.3.17` vulnerable and
+  `3.3.17` patched. The smallest correction is an exact same-major workspace override plus a
+  regenerated frozen lockfile, not an audit ignore or an unrelated Vite upgrade.

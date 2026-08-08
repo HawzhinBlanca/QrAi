@@ -44,3 +44,6 @@ overrides:
   # left the root ajv's copy at 4.1.1, so both forms are here: the selectors catch parents nobody has
   # enumerated, this catches the one the advisory actually points at.
   ajv>fast-uri: '>=4.1.2'
+  # GHSA-2v37-7h3g-55p8: postcss pulled vulnerable nanoid 3.3.16 into every Vite/Vitest path.
+  # 3.3.17 is the signed same-major patch; keep pnpm audit strict rather than suppressing it.
+  nanoid@3: '3.3.17'

@@ -37,7 +37,10 @@ NATS, service mesh, or new runtime dependency is added by this decision or task.
    the realtime module to the server package's explicit syntax-check inputs so direct tests are not
    its only build coverage.
 5. Run focused Node/Rust/Web tests, `git diff --check`, then the exact live-stack
-   `bash scripts/verify.sh`. Do not ledger-update without required remote CI.
+   `bash scripts/verify.sh`. Do not ledger-update without required remote CI. If remote CI exposes
+   a missing declared test prerequisite or a newly published dependency advisory, preserve the
+   affected gate: add a red prerequisite assertion, provision the tool for every consuming job,
+   and pin the smallest patched same-major dependency without an audit suppression.
 
 ## Exact implementation surface
 
@@ -53,7 +56,10 @@ NATS, service mesh, or new runtime dependency is added by this decision or task.
   Web ack mocks affected by nullable `trace_id`.
 - Gates: new `tests/realtime/protocol-fixtures.test.mjs`, new
   `tests/contract/realtime-decisions.test.mjs`, `tests/contract/verify-invocations.test.mjs`, and
-  `scripts/verify.sh`. Historical text references change only where the moved path would be broken.
+  `scripts/verify.sh`. Required-CI proof repairs may also touch the existing Muaalem evidence test,
+  `.github/workflows/ci.yml`, `pnpm-workspace.yaml`, and the generated `pnpm-lock.yaml`; they must
+  not weaken an assertion or add a runtime dependency. Historical text references change only
+  where the moved path would be broken.
 
 ## Risks and rollback
 
