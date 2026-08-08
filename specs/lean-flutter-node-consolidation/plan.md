@@ -465,22 +465,67 @@ it does not weaken or remove any requirement.
 
 **Criteria/tests:** RT-1.
 
-### W3.2 Bounded audio pipeline
+### W3.2 Isolated realtime process lifecycle
 
-- Implement per-session bounded queues, maximum frame/payload sizes, backpressure acknowledgments, ordered sequence numbers, and bounded retries.
-- Write audio to object storage and index it transactionally/idempotently through the Node domain layer.
-- Track stored-but-unindexed and accepted-but-lost chunks separately.
+- Add the separate realtime entrypoint from the same `server` package and immutable Node image.
+- Prove process-only liveness, bounded deep readiness, private fixed-cardinality metrics, failure
+  isolation from API/worker, and bounded resource/WebSocket drain.
+- Run it as an internal no-traffic shadow; the Rust gateway remains the only realtime target.
+
+**Criteria/tests:** BE-5, OP-4; `tests/realtime/process-lifecycle.test.mjs`.
+
+### W3.3 Admission and ticket parity
+
+- Port signature, tenant/session/retention/expiry, browser Origin, explicit native no-Origin, and
+  bounded rate admission against the shared fixtures and Rust hostile-input oracle.
+
+**Criteria/tests:** RT-1; `tests/realtime/ticket-boundary.test.mjs`.
+
+### W3.4 Durable replay authority
+
+- Implement nonce-hash-only single-use replay across instances with unique claims, TTL cleanup,
+  fail-closed outage behavior, and a Postgres concurrency/load benchmark before removing Redis.
+
+**Criteria/tests:** RT-1; cross-instance replay/load/failure proof.
+
+### W3.5 Bounded audio runtime
+
+- Implement maximum frame/payload/session ceilings, per-session bounded queues, explicit
+  backpressure acknowledgments, ordered safe sequence numbers, and overload metrics.
 - Keep CPU processing on workers; the socket loop only validates, queues, stores, and acknowledges.
 
-**Criteria/tests:** RT-2, RT-3, RT-4.
+**Criteria/tests:** RT-2; `tests/realtime/backpressure.test.mjs` plus hostile/100-session cases.
 
-### W3.3 Reconnect and fallback
+### W3.6 Storage, indexing, and repair states
 
-- Define reconnect ticket issuance, exponential backoff/jitter, local buffer ceiling, and session finalization fallback.
-- A buffer overflow or exhausted reconnect must stop recording and explain loss; it may not silently drop frames.
-- Port chaos, long-audio, hostile-input, retention, and index-failure tests before enabling Node realtime.
+- Write retained audio through the one object-store boundary and index it idempotently through the
+  Node domain layer.
+- Track stored-but-unindexed, accepted-but-lost, rejected, and repaired chunks separately.
 
-**Criteria/tests:** RT-3.<br>
+**Criteria/tests:** RT-3, RT-4; retention, index-failure, playback, and repair E2E.
+
+### W3.7 Reconnect and fallback
+
+- Define fresh-ticket reconnect, exponential backoff/jitter, local buffer ceiling, and session
+  finalization fallback.
+- A buffer overflow or exhausted reconnect must stop recording and explain loss; it may not silently
+  drop frames.
+
+**Criteria/tests:** RT-3; `tests/e2e/realtime-recovery.test.mjs` plus chaos/long-audio cases.
+
+### W3.8 Production-image parity and load
+
+- Run protocol parity, hostile input, fault, retention, load, and soak against the immutable Node
+  realtime image while Rust remains the oracle.
+
+**Criteria/tests:** RT-1, RT-2, RT-3, RT-4; release-bound realtime evidence.
+
+### W3.9 Independent canary and rollback
+
+- Move realtime traffic independently of Node HTTP, monitor the approved stop conditions, and
+  rehearse endpoint rollback to the preserved Rust gateway.
+
+**Criteria/tests:** OP-3; canary/rollback evidence.<br>
 **Exit for Wave 3:** the Rust gateway remains the oracle until Node passes parity, fault, load, and canary gates.
 
 ## 8. Wave 4 — finish one Kurdish-first Flutter product
