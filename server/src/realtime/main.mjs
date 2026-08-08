@@ -1,6 +1,7 @@
 import { pathToFileURL } from "node:url";
 
-import Fastify from "fastify";
+import websocket from "@fastify/websocket";
+import Fastify, { LogController } from "fastify";
 
 import { createDb } from "../lib/db.mjs";
 import { metricsAccessAllowed } from "../lib/metrics.mjs";
@@ -10,6 +11,7 @@ import {
   shutdownPhases,
 } from "../lib/shutdown.mjs";
 import { createAudioObjectStoreFromEnv } from "../storage/audio-object-store.mjs";
+import { createRealtimeAdmission } from "./admission.mjs";
 
 const READINESS_DEPENDENCIES = Object.freeze([
   "postgres",
@@ -69,8 +71,81 @@ function dependencyReadyUrl(raw, name, fallback) {
   return url.toString();
 }
 
+function strictSwitch(raw, name) {
+  const value = raw ?? "";
+  if (typeof value !== "string" || value.trim() !== value) {
+    throw new TypeError(`${name} must be an explicit boolean switch`);
+  }
+  if (["", "0", "false"].includes(value)) return false;
+  if (["1", "true"].includes(value)) return true;
+  throw new TypeError(`${name} must be 1/true or 0/false/unset`);
+}
+
+function parseAllowedOrigins(raw = "") {
+  if (typeof raw !== "string") throw new TypeError("CORS_ALLOWED_ORIGINS must be a string");
+  if (raw === "") return Object.freeze([]);
+  const origins = raw.split(",");
+  const seen = new Set();
+  for (const origin of origins) {
+    if (origin === "" || origin.trim() !== origin) {
+      throw new TypeError("CORS_ALLOWED_ORIGINS entries must be non-empty canonical Origins");
+    }
+    let parsed;
+    try {
+      parsed = new URL(origin);
+    } catch {
+      throw new TypeError("CORS_ALLOWED_ORIGINS entries must be canonical HTTP Origins");
+    }
+    if (
+      !["http:", "https:"].includes(parsed.protocol) ||
+      parsed.origin !== origin ||
+      parsed.username !== "" ||
+      parsed.password !== "" ||
+      parsed.pathname !== "/" ||
+      parsed.search !== "" ||
+      parsed.hash !== ""
+    ) {
+      throw new TypeError("CORS_ALLOWED_ORIGINS entries must be canonical HTTP Origins");
+    }
+    if (seen.has(origin)) throw new TypeError("CORS_ALLOWED_ORIGINS entries must be unique");
+    seen.add(origin);
+  }
+  return Object.freeze(origins);
+}
+
+function parseTrustedProxyHops(env) {
+  const enabled = strictSwitch(env.TRUST_PROXY_HEADERS, "TRUST_PROXY_HEADERS");
+  const rawHops = env.TRUST_PROXY_HOPS ?? "";
+  if (!enabled) {
+    if (rawHops !== "") throw new TypeError("TRUST_PROXY_HOPS requires TRUST_PROXY_HEADERS=1");
+    return 0;
+  }
+  return whole(rawHops || "1", "TRUST_PROXY_HOPS", 1, 32, 1);
+}
+
+function productionTicketSecret(raw) {
+  const secret = required(raw, "REALTIME_GATEWAY_TICKET_SECRET");
+  if (
+    secret === "smoke-secret" ||
+    secret === "production-secret-change-me" ||
+    secret.length < 32
+  ) {
+    throw new TypeError("REALTIME_GATEWAY_TICKET_SECRET must be a strong non-default value");
+  }
+  return secret;
+}
+
 export function parseRealtimeConfig(env = process.env) {
   const databaseUrl = required(env.DATABASE_URL, "DATABASE_URL");
+  const ticketSecret = productionTicketSecret(env.REALTIME_GATEWAY_TICKET_SECRET);
+  const tenantId = required(env.GATEWAY_TENANT_ID, "GATEWAY_TENANT_ID");
+  const allowedOrigins = parseAllowedOrigins(env.CORS_ALLOWED_ORIGINS ?? "");
+  const allowMissingOrigin = strictSwitch(
+    env.GATEWAY_ALLOW_MISSING_ORIGIN,
+    "GATEWAY_ALLOW_MISSING_ORIGIN",
+  );
+  const rateLimitEnabled = !strictSwitch(env.DISABLE_RATE_LIMIT, "DISABLE_RATE_LIMIT");
+  const trustedProxyHops = parseTrustedProxyHops(env);
   const { host, port } = parseBind(env.NODE_REALTIME_BIND ?? "127.0.0.1:8081");
   const readinessTimeoutMs = whole(
     env.REALTIME_READINESS_TIMEOUT_MS,
@@ -94,13 +169,19 @@ export function parseRealtimeConfig(env = process.env) {
   const metricsDevOpen = ["1", "true"].includes(env.METRICS_DEV_OPEN ?? "");
   return Object.freeze({
     asrReadyUrl,
+    allowedOrigins,
+    allowMissingOrigin,
     databaseUrl,
     host,
     metricsDevOpen,
     metricsToken,
     port,
+    rateLimitEnabled,
     readinessTimeoutMs,
     shutdownGraceMs,
+    tenantId,
+    ticketSecret,
+    trustedProxyHops,
     workerReadyUrl,
   });
 }
@@ -134,7 +215,7 @@ async function httpReady(fetchImpl, url, signal) {
   }
 }
 
-function renderMetrics({ ready, draining, failures }) {
+function renderMetrics({ ready, draining, failures, admissionMetrics }) {
   let output = "# HELP realtime_process_ready Whether every realtime dependency is ready.\n";
   output += "# TYPE realtime_process_ready gauge\n";
   output += `realtime_process_ready ${ready ? 1 : 0}\n`;
@@ -146,7 +227,11 @@ function renderMetrics({ ready, draining, failures }) {
   for (const dependency of READINESS_DEPENDENCIES) {
     output += `realtime_readiness_failures_total{dependency="${dependency}"} ${failures[dependency]}\n`;
   }
-  return output;
+  return output + admissionMetrics;
+}
+
+function defaultAdmittedSocket(socket) {
+  socket.close(1013, "temporarily unavailable");
 }
 
 export function createRealtimeApplication({
@@ -157,6 +242,15 @@ export function createRealtimeApplication({
   readinessTimeoutMs,
   metricsToken = null,
   metricsDevOpen = false,
+  ticketSecret,
+  tenantId,
+  allowedOrigins,
+  allowMissingOrigin,
+  rateLimitEnabled,
+  trustedProxyHops,
+  rateLimitOptions,
+  admissionNowUnixSeconds,
+  handleAdmittedSocket = defaultAdmittedSocket,
   fetchImpl = globalThis.fetch,
   logger = false,
 }) {
@@ -177,12 +271,36 @@ export function createRealtimeApplication({
   if (typeof metricsDevOpen !== "boolean") {
     throw new TypeError("realtime metrics development control must be boolean");
   }
+  if (!Number.isSafeInteger(trustedProxyHops) || trustedProxyHops < 0 || trustedProxyHops > 32) {
+    throw new TypeError("realtime trusted proxy hops must be between 0 and 32");
+  }
+  if (typeof handleAdmittedSocket !== "function") {
+    throw new TypeError("realtime admitted socket handler must be a function");
+  }
+
+  const admission = createRealtimeAdmission({
+    ticketSecret,
+    tenantId,
+    allowedOrigins,
+    allowMissingOrigin,
+    rateLimitEnabled,
+    rateLimitOptions,
+    nowUnixSeconds: admissionNowUnixSeconds,
+  });
 
   const app = Fastify({
     logger,
+    // The ticket is a query credential. Fastify's automatic request line includes the URL, so the
+    // realtime boundary must never enable it even when application/error logging is configured.
+    logController: new LogController({ disableRequestLogging: true }),
     forceCloseConnections: false,
     return503OnClosing: true,
+    trustProxy: trustedProxyHops === 0 ? false : trustedProxyHops,
   });
+  app.register(websocket);
+  // Fastify's default 404 document echoes the requested URL. Keep near-miss credential-bearing
+  // upgrade paths generic and bodyless, just like admission refusals.
+  app.setNotFoundHandler(async (_request, reply) => reply.code(404).send());
   const failures = Object.fromEntries(READINESS_DEPENDENCIES.map((name) => [name, 0]));
   let ready = false;
   let draining = false;
@@ -240,33 +358,61 @@ export function createRealtimeApplication({
     if (rejected.length > 0) throw new AggregateError([], "realtime resource close failed");
   });
 
-  app.get("/health", async (_request, reply) => reply.type("text/plain").send("ok"));
-  app.get("/ready", async (_request, reply) => {
-    const available = await checkReadiness();
-    return reply.code(available ? 200 : 503).type("text/plain").send(
-      available ? "ready" : "not ready",
-    );
-  });
-  app.get("/metrics", async (request, reply) => {
-    if (!metricsAccessAllowed({ metricsToken, metricsDevOpen }, request.headers)) {
-      return reply.code(404).send();
-    }
-    return reply
-      .type("text/plain; version=0.0.4; charset=utf-8")
-      .send(renderMetrics({ ready, draining, failures }));
-  });
+  // Fastify processes plugins in registration order. Keep every route in a plugin registered
+  // after @fastify/websocket so its onRoute hook sees the WebSocket declaration before boot.
+  app.register(async function realtimeRoutes(routes) {
+    routes.get("/health", async (_request, reply) => reply.type("text/plain").send("ok"));
+    routes.get("/ready", async (_request, reply) => {
+      const available = await checkReadiness();
+      return reply.code(available ? 200 : 503).type("text/plain").send(
+        available ? "ready" : "not ready",
+      );
+    });
+    routes.get("/metrics", async (request, reply) => {
+      if (!metricsAccessAllowed({ metricsToken, metricsDevOpen }, request.headers)) {
+        return reply.code(404).send();
+      }
+      return reply
+        .type("text/plain; version=0.0.4; charset=utf-8")
+        .send(renderMetrics({
+          ready,
+          draining,
+          failures,
+          admissionMetrics: admission.renderMetrics(),
+        }));
+    });
 
-  // W3.2 owns no WebSocket admission. Fastify otherwise leaves a raw upgrade socket open, so the
-  // process answers with a fixed HTTP refusal and closes it. W3.3 must replace this listener when
-  // it adds the actual admission boundary.
-  const refuseUpgrade = (_request, socket) => {
-    if (socket.destroyed) return;
-    socket.end(
-      "HTTP/1.1 404 Not Found\r\nConnection: close\r\nContent-Length: 0\r\n\r\n",
+    const admittedContext = Symbol("realtime-admission-context");
+    routes.get(
+      "/v1/recitation-sessions/:sessionId/audio",
+      {
+        websocket: true,
+        preValidation: async (request, reply) => {
+          // The websocket plugin preserves a normal HTTP handler for non-upgrade requests. Only
+          // apply admission policy to an actual WebSocket handshake; the HTTP surface remains 404.
+          if (!request.ws) return;
+          const query = request.query ?? {};
+          const result = admission.admit({
+            sessionId: request.params?.sessionId,
+            ticket: query.ticket,
+            origin: request.headers.origin,
+            clientIp: request.ip,
+            traceId: query.trace_id,
+          });
+          if (!result.accepted) {
+            if (result.retryAfterSeconds !== null) {
+              reply.header("retry-after", String(result.retryAfterSeconds));
+            }
+            return reply.code(result.statusCode).send();
+          }
+          request[admittedContext] = result;
+        },
+      },
+      (socket, request) => {
+        handleAdmittedSocket(socket, request[admittedContext]);
+      },
     );
-  };
-  app.server.on("upgrade", refuseUpgrade);
-  app.addHook("onClose", async () => app.server.removeListener("upgrade", refuseUpgrade));
+  });
 
   return app;
 }

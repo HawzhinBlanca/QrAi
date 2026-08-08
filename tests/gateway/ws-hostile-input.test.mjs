@@ -7,6 +7,7 @@ import test, { after, before } from "node:test";
 import { fileURLToPath } from "node:url";
 
 import { issueRealtimeTicket, newNonce } from "../../server/src/lib/ticket.mjs";
+import { buildHostileTicketCases } from "../realtime/ticket-hostile-cases.mjs";
 
 /**
  * G3 — the committed hostile-input sweep of the realtime gateway's WebSocket surface.
@@ -33,7 +34,6 @@ const SECRET = "gateway-ws-sweep-secret-that-is-long-enough";
 const TENANT = "tenant-ws-sweep";
 const SESSION = "session-ws-sweep";
 const LEARNER = "learner-ws-sweep";
-const NUL = String.fromCharCode(0);
 
 /** Mirrors MAX_CHUNK_BYTES and MAX_WS_FRAME_BYTES in services/realtime-gateway/src/lib.rs. */
 const APP_LIMIT = 2 * 1024 * 1024;
@@ -181,34 +181,17 @@ function connect(ticket, { payload, waitMs = 600, timeoutMs = 8000 } = {}) {
 
 test("a malformed ticket never reaches the upgrade", async () => {
   const now = Math.floor(Date.now() / 1000);
-  const signed = "0".repeat(64);
-  const cases = [
-    ["empty", ""],
-    ["wrong prefix", "hello"],
-    ["too few parts", "rt_v2.a.b"],
-    ["too many parts", `${validTicket()}.extra.parts`],
-    ["100 000 characters", `rt_v2.${"x".repeat(100_000)}`],
-    ["a NUL byte", `rt_v2.a.b.c.true.discard.1.n.${NUL}`],
-    ["negative expiry", `rt_v2.${SESSION}.${TENANT}.${LEARNER}.false.discard.-1.n.${signed}`],
-    ["non-numeric expiry", `rt_v2.${SESSION}.${TENANT}.${LEARNER}.false.discard.abc.n.${signed}`],
-    ["non-boolean consent", `rt_v2.${SESSION}.${TENANT}.${LEARNER}.maybe.discard.${now + 300}.n.${signed}`],
-    ["blank retention", `rt_v2.${SESSION}.${TENANT}.${LEARNER}.false..${now + 300}.n.${signed}`],
-    ["short signature", `rt_v2.${SESSION}.${TENANT}.${LEARNER}.false.discard.${now + 300}.n.ab`],
-    ["non-hex signature", `rt_v2.${SESSION}.${TENANT}.${LEARNER}.false.discard.${now + 300}.n.${"z".repeat(64)}`],
-    // A ticket from a platform-api that has not been upgraded yet. It must be REFUSED, not read one
-    // field out of alignment — which would silently take the EXPIRY as the retention choice.
-    // Every case above carries the current version tag on purpose: leave them at rt_v1 and the
-    // gateway rejects them all on the prefix, so nothing below would actually be tested.
-    ["a pre-retention v1 ticket", `rt_v1.${SESSION}.${TENANT}.${LEARNER}.false.${now + 300}.n.${signed}`],
-    // Validly SIGNED but for another session/tenant — the interesting half, because the signature
-    // passes and only the binding check refuses it.
-    ["another tenant", validTicket({ tenantId: "tenant-somebody-else" })],
-    ["another session", validTicket({ sessionId: "session-somebody-else" })],
-  ];
+  const cases = buildHostileTicketCases({
+    validTicket,
+    sessionId: SESSION,
+    tenantId: TENANT,
+    learnerId: LEARNER,
+    nowUnixSeconds: now,
+  });
   const opened = [];
-  for (const [label, ticket] of cases) {
+  for (const { name, ticket } of cases) {
     const res = await connect(ticket, { timeoutMs: 4000 });
-    if (res.opened) opened.push(label);
+    if (res.opened) opened.push(name);
   }
   assert.deepEqual(opened, [], `these upgraded on a ticket that should have been refused:\n  ${opened.join("\n  ")}`);
 });

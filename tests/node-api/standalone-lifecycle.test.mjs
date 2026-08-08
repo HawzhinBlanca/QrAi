@@ -12,6 +12,7 @@ const appPath = join(repo, "server", "src", "app.mjs");
 const runtimeDependencies = {
   "@aws-sdk/client-s3": "3.1101.0",
   "@fastify/cors": "^11.3.0",
+  "@fastify/websocket": "11.3.0",
   fastify: "^5.11.0",
   jose: "^6.2.5",
   pg: "^8.22.0",

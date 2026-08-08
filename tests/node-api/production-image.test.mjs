@@ -117,6 +117,19 @@ test("Compose adds an internal shadow while Rust remains the only traffic target
   assert.equal(realtime.environment?.NODE_REALTIME_BIND, "0.0.0.0:8081");
   assert.equal(realtime.environment?.NODE_HEALTHCHECK_URL, "http://127.0.0.1:8081/ready");
   assert.equal(realtime.environment?.REALTIME_READINESS_TIMEOUT_MS, "${REALTIME_READINESS_TIMEOUT_MS:-2000}");
+  assert.equal(
+    realtime.environment?.REALTIME_GATEWAY_TICKET_SECRET,
+    "${REALTIME_GATEWAY_TICKET_SECRET:?REALTIME_GATEWAY_TICKET_SECRET is required in production}",
+  );
+  assert.equal(realtime.environment?.GATEWAY_TENANT_ID, "hikmah-pilot-erbil");
+  assert.equal(realtime.environment?.CORS_ALLOWED_ORIGINS, "${CORS_ALLOWED_ORIGINS:-}");
+  assert.equal(
+    realtime.environment?.GATEWAY_ALLOW_MISSING_ORIGIN,
+    "${GATEWAY_ALLOW_MISSING_ORIGIN:-}",
+  );
+  assert.equal(realtime.environment?.DISABLE_RATE_LIMIT, "${DISABLE_RATE_LIMIT:-0}");
+  assert.equal(realtime.environment?.TRUST_PROXY_HEADERS, "${TRUST_PROXY_HEADERS:-0}");
+  assert.equal(realtime.environment?.TRUST_PROXY_HOPS, "${TRUST_PROXY_HOPS:-}");
   assert.equal(realtime.environment?.ML_INFERENCE_URL, "http://job-worker:8098");
   assert.equal(realtime.environment?.ASR_SERVICE_URL, "http://asr-inference:8091");
   assert.equal(realtime.depends_on?.migrations?.condition, "service_completed_successfully");
@@ -137,6 +150,15 @@ test("Compose adds an internal shadow while Rust remains the only traffic target
   assert.equal(compose.services["realtime-gateway"].environment.ML_INFERENCE_URL, "http://job-worker:8098");
   assert.equal(compose.services["realtime-gateway"].environment.PLATFORM_API_URL, "http://platform-api:8080");
   assert.equal(compose.services["realtime-gateway"].depends_on?.["job-worker"]?.condition, "service_healthy");
+
+  const native = parseYaml(read("docker-compose.native.yml"));
+  assert.deepEqual(
+    Object.keys(native.services).sort(),
+    ["node-realtime", "realtime-gateway"],
+    "the native policy must apply only to both realtime admission roles",
+  );
+  assert.equal(native.services["node-realtime"].environment.GATEWAY_ALLOW_MISSING_ORIGIN, "1");
+  assert.equal(native.services["realtime-gateway"].environment.GATEWAY_ALLOW_MISSING_ORIGIN, "1");
 });
 
 test("release, rollback, SBOM, licence, and Docker workflows include the shared Node artifact", () => {

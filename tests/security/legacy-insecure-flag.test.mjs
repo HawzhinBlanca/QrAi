@@ -72,9 +72,9 @@ export function committedDefault(rhs) {
 export function assignedDefaults(source, name) {
   const found = [];
   for (const line of source.split("\n")) {
-    // Anchored on the name followed by `=` or `:` so a mention in prose or a shell `${NAME}`
-    // reference is not mistaken for an assignment.
-    const match = line.match(new RegExp(`(?:^|\\s)${name}\\s*[:=]\\s*(.*)$`));
+    // Assignment lines may be YAML keys or shell assignments/exports. Anchor the entire prefix so
+    // a prose comment containing `NAME=...` cannot inflate a security-control coverage count.
+    const match = line.match(new RegExp(`^\\s*(?:export\\s+)?${name}\\s*[:=]\\s*(.*)$`));
     if (match) found.push({ line: line.trim(), value: committedDefault(match[1]) });
   }
   return found;
@@ -150,6 +150,7 @@ test("assignedDefaults finds assignments and ignores mentions", () => {
     ["1"],
   );
   assert.deepEqual(assignedDefaults("# do not set ALLOW_INSECURE_DEFAULTS in prod", "ALLOW_INSECURE_DEFAULTS"), []);
+  assert.deepEqual(assignedDefaults("# use ALLOW_INSECURE_DEFAULTS=1 only in dev", "ALLOW_INSECURE_DEFAULTS"), []);
   assert.deepEqual(assignedDefaults("echo ${ALLOW_INSECURE_DEFAULTS}", "ALLOW_INSECURE_DEFAULTS"), []);
   // A near-miss name must not match, or the gate reports the wrong variable.
   assert.deepEqual(assignedDefaults("EXTRA_ALLOW_INSECURE_DEFAULTS=1", "ALLOW_INSECURE_DEFAULTS"), []);
@@ -165,7 +166,11 @@ test("the native overlay actually enables the native switch", () => {
   // Without this the overlay is a no-op file and every recitation from apps/flutter 403s, which is
   // precisely the bug it was added to fix. A gate that cannot fail is decorative.
   const found = assignedDefaults(read("docker-compose.native.yml"), "GATEWAY_ALLOW_MISSING_ORIGIN");
-  assert.ok(found.length > 0, "docker-compose.native.yml does not assign GATEWAY_ALLOW_MISSING_ORIGIN at all");
+  assert.equal(
+    found.length,
+    2,
+    "the native switch must cover exactly the deployed Rust and Node realtime roles",
+  );
   assert.deepEqual(
     found.filter((f) => !TRUTHY.has(f.value)),
     [],
@@ -177,7 +182,9 @@ test("the base stack still fails closed on a missing Origin", () => {
   // The base serves the browser app and nothing else, so no legitimate client omits Origin there.
   // If this ever flips to a truthy default, the browser-only deployment silently starts accepting
   // no-Origin WebSocket upgrades and the overlay stops meaning anything.
-  for (const { line, value } of assignedDefaults(read("docker-compose.yml"), "GATEWAY_ALLOW_MISSING_ORIGIN")) {
+  const found = assignedDefaults(read("docker-compose.yml"), "GATEWAY_ALLOW_MISSING_ORIGIN");
+  assert.equal(found.length, 2, "both realtime admission roles must declare the strict base default");
+  for (const { line, value } of found) {
     assert.ok(
       !TRUTHY.has(value),
       `docker-compose.yml enables the native switch by default; it belongs in docker-compose.native.yml:\n  ${line}`,

@@ -5,6 +5,44 @@ architectural change. Newest first.
 
 ---
 
+## ADR-0052 — Node realtime admits one internal shadow route with the Fastify adapter
+
+**Status:** Accepted · **Date:** 2026-08-08 · **Decider:** repository owner through the approved persistent implementation goal
+**Related:** ADR-0051 (realtime contract), ADR-0050 (one Node package), ADR-0022 (reversible release)
+
+### Context
+
+W3.2 established an independently drainable internal Node realtime process, but deliberately
+refused every upgrade. W3.3 needs a real authenticated handshake for ticket/Origin/rate parity
+without creating a second package, hand-written WebSocket stack, public route, replay claim, or
+audio implementation. Node's platform library is a client, not a production WebSocket server.
+
+### Decision
+
+- `@fastify/websocket` 11.3.0 is the one supported server adapter and an exact production
+  dependency of the existing `server` package. Its transitive `ws` version stays frozen by the
+  workspace lockfile; there is no second direct socket package or image.
+- The adapter is registered before all routes. Only the exact session-audio route may upgrade.
+  Admission reuses the established `rt_v2` validator and bounded token bucket, applies exact
+  browser Origin and explicit native no-Origin policies, validates tenant and a maximum 3,600
+  second remaining lifetime, and derives peer identity only through a bounded trusted-hop policy.
+- A valid shadow upgrade receives `101`, passes only frozen claims plus nullable trace to the
+  socket seam, and immediately closes code 1013 as temporarily unavailable. It reads, stores,
+  forwards, and acknowledges no audio. Refusals remain generic HTTP classes and metrics expose
+  only the four fixed admission outcomes.
+- The process remains internal with no host port or public traffic. The Rust gateway remains the
+  traffic target and compatibility oracle. W3.4 owns replay and its Postgres benchmark; W3.5 owns
+  bounded audio, queues, and acknowledgements. Neither is implied by an admitted handshake.
+
+### Consequences
+
+This change proves a real, fail-closed Node admission shadow while leaving clients, public routing,
+stored data, the Rust data plane, and rollback unchanged. Removing the plugin route and dependency
+restores the W3.2 refusal-only shell. Traffic movement still requires the later parity, load,
+canary, rollback, and human release gates.
+
+---
+
 ## ADR-0051 — Realtime keeps one wire contract and gains an isolated Node entrypoint
 
 **Status:** Accepted · **Date:** 2026-08-08 · **Decider:** repository owner through the approved persistent implementation goal
@@ -53,11 +91,12 @@ replay store, queue, or traffic movement. W3.2 owns the process lifecycle; W3.3 
 W3.4 owns durable replay and the Postgres benchmark; W3.5 owns the bounded audio runtime. A failed
 fixture change restores one authority rather than introducing a second copy.
 
-**Implementation note (2026-08-08, W3.2):** the existing `server` package/image now runs an
-internal `node-realtime` process shell alongside API and worker. It exposes only process liveness,
-bounded deep readiness, and private fixed-cardinality metrics, refuses upgrades, and uses the same
-restricted Postgres, private object-store, shutdown, healthcheck, release, and rollback boundaries.
-It has no host port or traffic edge; Rust remains the only realtime ingress.
+**Implementation note (2026-08-08, W3.2–W3.3):** the existing `server` package/image runs an
+internal `node-realtime` process alongside API and worker. It exposes process liveness, bounded
+deep readiness, private fixed-cardinality metrics, and the exact admitted-but-unavailable shadow
+route defined by ADR-0052. It uses the same restricted Postgres, private object-store, shutdown,
+healthcheck, release, and rollback boundaries. It has no host port or traffic edge; Rust remains
+the only realtime ingress.
 
 ---
 

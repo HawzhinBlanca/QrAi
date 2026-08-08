@@ -1,6 +1,6 @@
 # W3.3 specification — realtime admission and ticket parity
 
-**Status:** proposed; implementation requires approval of `plan.md`<br>
+**Status:** approved for implementation under `plan.md`<br>
 **Parent criteria:** RT-1<br>
 **Primary proof:** `tests/realtime/ticket-boundary.test.mjs`
 

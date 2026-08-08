@@ -46,6 +46,7 @@ const HTTP_CANARY_ROLLBACK_EVIDENCE = "tests/release/canary-rollback-evidence.te
 const REALTIME_DECISIONS = "tests/contract/realtime-decisions.test.mjs";
 const REALTIME_PROTOCOL_FIXTURES = "tests/realtime/protocol-fixtures.test.mjs";
 const REALTIME_PROCESS_LIFECYCLE = "tests/realtime/process-lifecycle.test.mjs";
+const REALTIME_TICKET_BOUNDARY = "tests/realtime/ticket-boundary.test.mjs";
 const ACOUSTIC_CANDIDATE_PROOF_TEST = "scripts/acoustic-candidate-proof.test.mjs";
 const ACOUSTIC_CANDIDATE_PROOF_RUNNER = "node scripts/acoustic-candidate-proof.mjs";
 
@@ -441,6 +442,15 @@ test("canonical verification runs the W3.2 realtime process lifecycle exactly on
     invocations.filter((line) => line.includes(REALTIME_PROCESS_LIFECYCLE)).length,
     1,
     `${REALTIME_PROCESS_LIFECYCLE} must run exactly once in canonical verification`,
+  );
+});
+
+test("canonical verification runs the W3.3 realtime admission boundary exactly once", () => {
+  const invocations = activeNodeTestLines(verifySource);
+  assert.equal(
+    invocations.filter((line) => line.includes(REALTIME_TICKET_BOUNDARY)).length,
+    1,
+    `${REALTIME_TICKET_BOUNDARY} must run exactly once in canonical verification`,
   );
 });
 

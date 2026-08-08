@@ -215,8 +215,8 @@ services:
       retries: 3
     stop_grace_period: "${JOB_WORKER_STOP_GRACE_PERIOD:-10s}"
 
-  # Same package and immutable image, isolated event loop. W3.2 is observation-only: this process
-  # exposes health/readiness/metrics but no WebSocket upgrade, host port, or traffic dependency.
+  # Same package and immutable image, isolated event loop. W3.3 admits the exact ticket/origin wire
+  # then closes unavailable; it still has no host port or traffic dependency until later canaries.
   node-realtime:
     restart: unless-stopped
     image: "qrai/node-backend:${NODE_BACKEND_IMAGE_TAG:-local}"
@@ -230,6 +230,13 @@ services:
       NODE_REALTIME_BIND: "0.0.0.0:8081"
       NODE_HEALTHCHECK_URL: "http://127.0.0.1:8081/ready"
       REALTIME_READINESS_TIMEOUT_MS: "${REALTIME_READINESS_TIMEOUT_MS:-2000}"
+      REALTIME_GATEWAY_TICKET_SECRET: "${REALTIME_GATEWAY_TICKET_SECRET:?REALTIME_GATEWAY_TICKET_SECRET is required in production}"
+      GATEWAY_TENANT_ID: "hikmah-pilot-erbil"
+      CORS_ALLOWED_ORIGINS: "${CORS_ALLOWED_ORIGINS:-}"
+      GATEWAY_ALLOW_MISSING_ORIGIN: "${GATEWAY_ALLOW_MISSING_ORIGIN:-}"
+      DISABLE_RATE_LIMIT: "${DISABLE_RATE_LIMIT:-0}"
+      TRUST_PROXY_HEADERS: "${TRUST_PROXY_HEADERS:-0}"
+      TRUST_PROXY_HOPS: "${TRUST_PROXY_HOPS:-}"
       METRICS_TOKEN: "${METRICS_TOKEN:-}"
       METRICS_DEV_OPEN: "${METRICS_DEV_OPEN:-}"
       ML_INFERENCE_URL: "http://job-worker:8098"

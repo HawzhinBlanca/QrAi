@@ -159,10 +159,14 @@ docker compose exec -e PROBE_TOKEN="$METRICS_TOKEN" job-worker node -e \
   'fetch("http://127.0.0.1:8098/metrics",{headers:{"x-metrics-token":process.env.PROBE_TOKEN}}).then(async r=>{if(!r.ok)process.exit(1);process.stdout.write(await r.text())})'
 ```
 
-`node-realtime` is the third command of that image. In W3.2 it is an internal process shell only:
-it publishes no host port, receives no Web/gateway traffic, and refuses every upgrade. Its deep
-readiness checks the restricted database role, private object store, job worker, and loaded-model
-ASR within one bound. Confirm its internal readiness and private metrics without routing traffic:
+`node-realtime` is the third command of that image. Through W3.3 it remains internal: it publishes
+no host port and receives no Web/gateway traffic. It admits only the exact session-audio shadow
+route after ticket, tenant, lifetime, Origin/native, and bounded peer-rate checks, then closes 1013
+without reading audio. Its deep readiness checks the restricted database role, private object
+store, job worker, and loaded-model ASR within one bound. Supply a strong
+`REALTIME_GATEWAY_TICKET_SECRET`, exact `GATEWAY_TENANT_ID`, and canonical comma-separated
+`CORS_ALLOWED_ORIGINS`; enable missing-Origin or proxy trust only through their explicit bounded
+switches. Confirm readiness and private metrics without routing traffic:
 
 ```bash
 docker compose ps node-realtime

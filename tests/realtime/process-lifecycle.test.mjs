@@ -13,6 +13,7 @@ import pg from "pg";
 
 import { migrateDatabase } from "../../server/scripts/migrate.mjs";
 import { provisionApplicationRole } from "../../server/scripts/provision-role.mjs";
+import { issueRealtimeTicket } from "../../server/src/lib/ticket.mjs";
 import { createTestDatabase } from "../migrations/lib/postgres.mjs";
 
 const { Client } = pg;
@@ -21,6 +22,9 @@ const here = dirname(fileURLToPath(import.meta.url));
 const repo = join(here, "..", "..");
 const entrypoint = join(repo, "server", "src", "realtime", "main.mjs");
 const shutdownModule = pathToFileURL(join(repo, "server", "src", "lib", "shutdown.mjs")).href;
+const realtimeSecret = "process-lifecycle-ticket-secret-over-32-bytes";
+const realtimeTenant = "tenant-process-lifecycle";
+const realtimeOrigin = "https://process.example.org";
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 let importSequence = 0;
@@ -106,7 +110,19 @@ function dependencySet() {
     if (!state[dependency]) throw new Error(`secret ${dependency}.internal learner-1`);
     return { status: 200, body: { cancel: async () => {} } };
   };
-  return { state, calls, db, audioObjectStore, fetchImpl };
+  return {
+    state,
+    calls,
+    db,
+    audioObjectStore,
+    fetchImpl,
+    ticketSecret: realtimeSecret,
+    tenantId: realtimeTenant,
+    allowedOrigins: [realtimeOrigin],
+    allowMissingOrigin: false,
+    rateLimitEnabled: true,
+    trustedProxyHops: 0,
+  };
 }
 
 async function withApplication(options, body) {
@@ -143,16 +159,25 @@ test("realtime process configuration is strict, bounded, and role-specific", asy
     REALTIME_READINESS_TIMEOUT_MS: "250",
     SHUTDOWN_GRACE_SECS: "8",
     METRICS_TOKEN: "metrics-token",
+    REALTIME_GATEWAY_TICKET_SECRET: realtimeSecret,
+    GATEWAY_TENANT_ID: realtimeTenant,
+    CORS_ALLOWED_ORIGINS: realtimeOrigin,
   };
   assert.deepEqual(parseRealtimeConfig(base), {
     asrReadyUrl: "http://asr-inference:8091/ready",
+    allowedOrigins: [realtimeOrigin],
+    allowMissingOrigin: false,
     databaseUrl: base.DATABASE_URL,
     host: "127.0.0.1",
     metricsDevOpen: false,
     metricsToken: "metrics-token",
     port: 8081,
+    rateLimitEnabled: true,
     readinessTimeoutMs: 250,
     shutdownGraceMs: 8_000,
+    tenantId: realtimeTenant,
+    ticketSecret: realtimeSecret,
+    trustedProxyHops: 0,
     workerReadyUrl: "http://job-worker:8098/ready",
   });
 
@@ -166,6 +191,10 @@ test("realtime process configuration is strict, bounded, and role-specific", asy
     ["worker URL path", { ...base, ML_INFERENCE_URL: "http://worker:8098/v1" }],
     ["unsupported ASR URL", { ...base, ASR_SERVICE_URL: "file:///tmp/asr" }],
     ["invalid grace", { ...base, SHUTDOWN_GRACE_SECS: "301" }],
+    ["missing ticket secret", { ...base, REALTIME_GATEWAY_TICKET_SECRET: "" }],
+    ["missing tenant", { ...base, GATEWAY_TENANT_ID: "" }],
+    ["invalid Origin", { ...base, CORS_ALLOWED_ORIGINS: `${realtimeOrigin}/path` }],
+    ["inert proxy hops", { ...base, TRUST_PROXY_HOPS: "1" }],
   ]) {
     assert.throws(() => parseRealtimeConfig(env), undefined, name);
   }
@@ -282,10 +311,11 @@ test("a dependency that ignores AbortSignal cannot make readiness exceed its out
   });
 });
 
-test("the process refuses upgrades rather than leaving an unowned socket open", async () => {
+test("the process owns only the authorized audio upgrade and closes the W3.3 shadow unavailable", async () => {
   const source = readFileSync(entrypoint, "utf8");
-  assert.match(source, /\.on\(["']upgrade["'], refuseUpgrade\)/);
-  assert.doesNotMatch(source, /WebSocketServer|handleUpgrade|ticketPayload/);
+  assert.match(source, /@fastify\/websocket/);
+  assert.match(source, /websocket:\s*true/);
+  assert.doesNotMatch(source, /\.on\(["']upgrade["'], refuseUpgrade\)/);
   const dependencies = dependencySet();
   const runtime = await loadRuntime();
   const app = runtime.createRealtimeApplication({
@@ -300,18 +330,42 @@ test("the process refuses upgrades rather than leaving an unowned socket open", 
   await app.listen({ host: "127.0.0.1", port: 0 });
   const port = app.server.address().port;
   try {
+    const signedTicket = issueRealtimeTicket({
+      sessionId: "s1",
+      tenantId: realtimeTenant,
+      learnerId: "learner-process",
+      externalAsrProcessing: false,
+      audioRetention: "discard",
+      expiresAtUnixSeconds: Math.floor(Date.now() / 1000) + 300,
+      nonce: "process-nonce",
+    }, realtimeSecret);
     const socket = createConnection({ host: "127.0.0.1", port });
-    let reply = "";
-    socket.on("data", (chunk) => { reply += chunk.toString(); });
+    let reply = Buffer.alloc(0);
+    let closeCode = null;
+    socket.on("data", (chunk) => {
+      reply = Buffer.concat([reply, chunk]);
+      const headerEnd = reply.indexOf("\r\n\r\n");
+      if (headerEnd < 0) return;
+      const frame = reply.subarray(headerEnd + 4);
+      if (frame.length >= 4 && (frame[0] & 0x0f) === 0x08) {
+        closeCode = frame.readUInt16BE(2);
+        // A raw TCP test client does not implement the WebSocket close handshake. Once the server
+        // proves its 1013 frame, terminate the test peer so app.close is not held for ws's timeout.
+        socket.destroy();
+      }
+    });
     socket.write(
-      "GET /v1/recitation-sessions/s1/audio HTTP/1.1\r\n" +
-      "Host: localhost\r\nConnection: Upgrade\r\nUpgrade: websocket\r\n\r\n",
+      `GET /v1/recitation-sessions/s1/audio?ticket=${encodeURIComponent(signedTicket)} HTTP/1.1\r\n` +
+      "Host: localhost\r\nConnection: Upgrade\r\nUpgrade: websocket\r\n" +
+      "Sec-WebSocket-Key: BwcHBwcHBwcHBwcHBwcHBw==\r\nSec-WebSocket-Version: 13\r\n" +
+      `Origin: ${realtimeOrigin}\r\n\r\n`,
     );
     await Promise.race([
       new Promise((resolve) => socket.once("close", resolve)),
-      sleep(300).then(() => { throw new Error("unowned upgrade socket remained open"); }),
+      sleep(500).then(() => { throw new Error("admitted W3.3 socket remained open"); }),
     ]);
-    assert.match(reply, /^HTTP\/1\.1 404 Not Found/m);
+    assert.match(reply.toString("latin1"), /^HTTP\/1\.1 101 Switching Protocols/m);
+    assert.equal(closeCode, 1013);
   } finally {
     await app.close();
   }
@@ -363,6 +417,12 @@ async function spawnRealtimeFixture() {
       readinessTimeoutMs: 50,
       metricsToken: null,
       metricsDevOpen: true,
+      ticketSecret: ${JSON.stringify(realtimeSecret)},
+      tenantId: ${JSON.stringify(realtimeTenant)},
+      allowedOrigins: [${JSON.stringify(realtimeOrigin)}],
+      allowMissingOrigin: false,
+      rateLimitEnabled: true,
+      trustedProxyHops: 0,
       fetchImpl: async () => ({ status: 200, body: { cancel: async () => {} } }),
       logger: false,
     });
@@ -435,6 +495,9 @@ test("the real realtime entrypoint boots restricted and exits cleanly on SIGTERM
       REALTIME_READINESS_TIMEOUT_MS: "250",
       SHUTDOWN_GRACE_SECS: "2",
       METRICS_DEV_OPEN: "1",
+      REALTIME_GATEWAY_TICKET_SECRET: realtimeSecret,
+      GATEWAY_TENANT_ID: realtimeTenant,
+      CORS_ALLOWED_ORIGINS: realtimeOrigin,
       AUDIO_STORAGE_DRIVER: "filesystem",
       AUDIO_STORAGE_DIR: storageRoot,
     },

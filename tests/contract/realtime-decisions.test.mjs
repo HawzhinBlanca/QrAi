@@ -61,3 +61,29 @@ test("living architecture and testing docs expose the W3.1 boundary and its two 
     );
   }
 });
+
+test("ADR-0052 pins one supported internal WebSocket admission adapter and no traffic claim", () => {
+  const decision = adr("0052");
+
+  assert.match(decision, /\*\*Status:\*\* Accepted/);
+  assert.match(decision, /\*\*Decider:\*\* repository owner/i);
+  assert.match(decision, /`@fastify\/websocket` 11\.3\.0/);
+  assert.match(decision, /register(?:ed|s)? before (?:all )?routes/i);
+  assert.match(decision, /exact session-audio route/i);
+  assert.match(decision, /close(?:s|d)? (?:code )?1013/i);
+  assert.match(decision, /no (?:host port|public traffic)/i);
+  assert.match(decision, /Rust gateway remains the\s+(?:traffic target|compatibility oracle)/i);
+  assert.match(decision, /W3\.4 owns replay/i);
+  assert.match(decision, /W3\.5 owns\s+(?:audio|bounded audio)/i);
+});
+
+test("living docs expose W3.3 as admitted-but-unavailable and document its focused gate once", () => {
+  assert.match(architecture, /W3\.3 realtime admission \(ADR-0052\)/);
+  assert.match(architecture, /valid shadow upgrade[^.]*1013/is);
+  assert.match(architecture, /Rust[^.]*only realtime traffic target/is);
+  assert.equal(
+    testing.split("tests/realtime/ticket-boundary.test.mjs").length - 1,
+    1,
+    "the W3.3 focused gate must be documented exactly once",
+  );
+});

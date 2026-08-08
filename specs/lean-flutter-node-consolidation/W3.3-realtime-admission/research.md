@@ -1,6 +1,6 @@
 # W3.3 research — realtime admission and ticket parity
 
-**Status:** research complete; child plan awaiting approval<br>
+**Status:** research complete; child plan owner-approved<br>
 **Target:** W3.3 / RT-1 / `tests/realtime/ticket-boundary.test.mjs`
 
 ## Current symbols and behavior

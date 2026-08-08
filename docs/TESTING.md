@@ -50,15 +50,29 @@ MIGRATION_TEST_ADMIN_URL="$ADMIN_URL" \
   node --test tests/realtime/process-lifecycle.test.mjs
 ```
 
-Its hermetic cases prove side-effect-free import, strict process configuration, the exact
-`/health`/`/ready`/`/metrics` surface, fail-closed private metrics, bounded dependency faults,
-upgrade refusal, and API/realtime failure isolation. With Postgres reachable, the actual
+Its hermetic cases prove side-effect-free import, strict process configuration, the process
+health/readiness/private-metrics surface, bounded dependency faults, admitted-socket lifecycle,
+and API/realtime failure isolation. With Postgres reachable, the actual
 `server/src/realtime/main.mjs` child boots under a freshly provisioned restricted role, reaches deep
 readiness through real filesystem storage and live worker/ASR probes, then closes cleanly on
 SIGTERM. A skipped live case is not restricted-role entrypoint proof. The production/release and
 monitoring contracts additionally pin the third command to the same immutable Node image, with no
-host port or traffic edge. This gate does not prove WebSocket admission, replay, audio queues, or
+host port or traffic edge. This lifecycle gate alone does not prove replay, audio queues, or
 traffic cutover.
+
+W3.3 proves the real, internal, admitted-but-unavailable Node shadow boundary:
+
+```bash
+node --test tests/realtime/ticket-boundary.test.mjs
+```
+
+It sends all six Rust-generated tickets and the shared hostile corpus through Node, proves generic
+signature/session/tenant/retention/expiry/lifetime refusals, exact browser/native Origin policy,
+the default 200-burst/50-ms bounded peer bucket, explicit trusted-hop behavior, real `101` on only
+the exact route, and immediate 1013/unavailable close. It also pins strict production config, the
+exact `@fastify/websocket` dependency, four fixed private counters, and absence of raw credentials
+or identity labels. Rust still receives every client connection; W3.4 replay, W3.5 bounded audio,
+and later traffic gates remain unproven.
 
 The Node package and standalone boundary have four focused gates:
 
