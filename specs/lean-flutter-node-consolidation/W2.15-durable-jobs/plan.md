@@ -1,6 +1,6 @@
 # W2.15 plan — durable Postgres jobs and outbox effects
 
-**Status:** APPROVED under the owner-approved W0–W7 umbrella plan<br>
+**Status:** COMPLETE; local and exact-candidate remote proof are green<br>
 **Approved-by:** repository owner — explicit “approved” continuation on 2026-08-07<br>
 **Criteria:** BE-4, BE-6
 
@@ -59,19 +59,18 @@
 ## Implementation ledger
 
 - [x] T1 — additive job/outbox schema, forced RLS, indexes, concurrency proof, smoke inventory.
-  Locally verified with live PostgreSQL and the canonical gate on 2026-08-07; remote CI remains
-  required before the umbrella W2.15 ledger may close.
+  Locally verified with live PostgreSQL and the canonical gate on 2026-08-07; aggregate exact-SHA
+  remote proof is recorded under T5.
 - [x] T2 — tenant-scoped enqueue/claim/fence/retry/complete store and bounded runtime.
-  Locally verified with live PostgreSQL and the canonical gate on 2026-08-07; remote CI remains
-  required before the umbrella W2.15 ledger may close.
+  Locally verified with live PostgreSQL and the canonical gate on 2026-08-07; aggregate exact-SHA
+  remote proof is recorded under T5.
 - [x] T3 — durable finalization, session-evaluation, and privacy workflows with unchanged wire bodies.
-  Locally verified with live PostgreSQL and the canonical gate on 2026-08-07; remote CI remains
-  required before the umbrella W2.15 ledger may close.
+  Locally verified with live PostgreSQL and the canonical gate on 2026-08-07; aggregate exact-SHA
+  remote proof is recorded under T5.
 - [x] T4 — same-package worker process, private health/metrics, strict config, graceful drain.
-  Locally verified with live PostgreSQL and the canonical gate on 2026-08-07; remote CI remains
-  required before the umbrella W2.15 ledger may close.
-- [ ] T5 — living docs, operational recovery proof, complete canonical gate, required remote CI.
-  Local implementation is complete: immutable admin/ops dead-letter replay, hostile job-boundary
-  proof, six living-document updates, and the live-Postgres canonical gate returned `VERIFY OK` on
-  2026-08-07. The checkbox remains open because required remote CI is not available in this local
-  workspace; the W2.15 umbrella ledger must not close without it.
+  Locally verified with live PostgreSQL and the canonical gate on 2026-08-07; aggregate exact-SHA
+  remote proof is recorded under T5.
+- [x] T5 — living docs, operational recovery proof, complete canonical gate, required remote CI.
+  Immutable admin/ops dead-letter replay, hostile job-boundary proof, six living-document updates,
+  the live-Postgres canonical gate, and all four required exact-SHA remote checks are green. The
+  evidence preserves the separate, unclaimed deployment/staging recovery obligation.
