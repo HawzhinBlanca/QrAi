@@ -12,6 +12,7 @@ from model_attribution import (
     validate_model_attribution,
 )
 from candidate_evidence import (
+    ARTIFACT_DIGEST_BASES,
     load_candidate_registry,
     resolve_runtime_candidate,
     verify_artifact_file,
@@ -193,3 +194,44 @@ def test_acoustic_scorer_binds_the_selected_model_and_names_the_missing_calibrat
         "reason": "no held-out calibration artifact has been approved",
     }
     validate_model_attribution(attribution)
+
+
+def test_artifact_digest_basis_vocabulary_is_closed(tmp_path):
+    """`artifactDigestBasis` states HOW a digest was established, so it must be a closed vocabulary.
+
+    Every other provenance-and-status field in the registry is checked against a fixed set —
+    `runtime` against `_RUNTIMES`, `licenseReviewStatus` against approved/pending/rejected,
+    `executionStatus` likewise. This one was validated only by `_string`, a TYPE check. That is worse
+    than no check: `candidate_evidence.py` visibly validates the field, so it reads as guarded, while
+    accepting any string at all.
+
+    Measured before this test existed: rewriting a candidate's basis from
+    "verified-upstream-download-url" to "verified-measured-benchmark" — a claim that the digest was
+    confirmed by a benchmark this project has never run, and whose corpus W1.5 records as missing —
+    left every release-evidence, claim-authority, candidate-evidence and attribution suite green.
+
+    That is the fabricated-evaluation-claim shape the whole of QA-7 exists to prevent. A reviewer
+    reading the registry takes this field as a statement of fact about verification, so the strings
+    it may contain must be the ones the project actually knows how to establish.
+    """
+    registry = load_candidate_registry(Path(__file__).with_name("model-candidates.json"))
+
+    # The declared vocabulary must actually cover what is checked in, or the guard would reject the
+    # repository's own registry.
+    for candidate in registry["candidates"]:
+        assert candidate["artifactDigestBasis"] in ARTIFACT_DIGEST_BASES, (
+            f"{candidate['id']} uses an undeclared basis {candidate['artifactDigestBasis']!r}"
+        )
+
+    for invented in (
+        "verified-measured-benchmark",  # a benchmark that has never been run
+        "scholar-approved",             # an approval this file cannot witness
+        "trusted",                      # unfalsifiable
+        "",                             # empty is not a provenance statement
+    ):
+        mutated = json.loads(json.dumps(registry))
+        mutated["candidates"][0]["artifactDigestBasis"] = invented
+        path = tmp_path / "invented-basis.json"
+        path.write_text(json.dumps(mutated), encoding="utf-8")
+        with pytest.raises(ValueError, match="artifactDigestBasis"):
+            load_candidate_registry(path)

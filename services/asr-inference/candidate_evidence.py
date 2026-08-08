@@ -20,6 +20,19 @@ _SHA256 = re.compile(r"^sha256:[a-f0-9]{64}$")
 _COMMIT = re.compile(r"^[a-f0-9]{40}$")
 _ID = re.compile(r"^[a-z0-9][a-z0-9-]*$")
 _RUNTIMES = {"openai-whisper", "huggingface-transformers", "research-adapter"}
+# How a candidate's artifactDigest was established. Closed on purpose, like every other status field
+# below: this one is a statement of FACT about verification that a release reviewer relies on, and it
+# was checked only by `_string` — a type check that accepts any claim at all, including bases for
+# evidence this project does not possess. Measured: rewriting a basis to "verified-measured-benchmark"
+# (a benchmark W1.5 records as blocked for want of a corpus) left every release-evidence,
+# claim-authority and attribution suite green. Add a value here only when the project can actually
+# establish it. See test_model_attribution.py::test_artifact_digest_basis_vocabulary_is_closed.
+ARTIFACT_DIGEST_BASES = {
+    # Digest computed from the bytes served by the candidate's pinned upstream download URL.
+    "verified-upstream-download-url",
+    # Digest read from Git LFS metadata at an immutable commit.
+    "upstream-lfs-sha256-at-immutable-commit",
+}
 _APPROVAL_ROLES = {"product-owner", "quran-scholar", "privacy-legal", "data-steward"}
 _SLICE_DIMENSIONS = ("accent", "age", "device", "noise")
 
@@ -118,7 +131,14 @@ def validate_candidate_registry(value: Any) -> dict[str, Any]:
             _fail(f"candidate {candidate_id} revision must be null for runtime {runtime}")
         _string(candidate.get("artifactFile"), f"candidate {candidate_id} artifactFile")
         _digest(candidate.get("artifactDigest"), f"candidate {candidate_id} artifactDigest")
-        _string(candidate.get("artifactDigestBasis"), f"candidate {candidate_id} artifactDigestBasis")
+        basis = _string(
+            candidate.get("artifactDigestBasis"), f"candidate {candidate_id} artifactDigestBasis"
+        )
+        if basis not in ARTIFACT_DIGEST_BASES:
+            _fail(
+                f"candidate {candidate_id} artifactDigestBasis {basis!r} is not one of the bases this "
+                f"project can establish: {sorted(ARTIFACT_DIGEST_BASES)}"
+            )
         _string(candidate.get("upstreamUrl"), f"candidate {candidate_id} upstreamUrl")
         _string(
             candidate.get("trainingDataDisclosure"),

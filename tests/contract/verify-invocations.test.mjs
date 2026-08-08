@@ -25,6 +25,7 @@ const LOCAL_INFERENCE_WORKER = "tests/jobs/local-inference-worker.test.mjs";
 const COMPATIBILITY_INGRESS = "tests/inference/compatibility-ingress.test.mjs";
 const AUDIO_RETENTION_WORKER = "tests/inference/audio-retention-worker.test.mjs";
 const BOUNDED_WINDOW_SPANS = "tests/inference/bounded-window-spans.test.mjs";
+const CANONICAL_BYTES_ALIGNMENT = "tests/inference/canonical-bytes-through-alignment.test.mjs";
 const FORCED_ALIGN_SPANS = "test_forced_align_spans.py";
 const INFERENCE_COMPATIBILITY_SURFACE = "tests/contract/inference-compatibility-surface.test.mjs";
 const API_JOB_WAIT = "tests/jobs/api-job-wait.test.mjs";
@@ -84,6 +85,71 @@ test("golden regression fixture is mechanically ineligible for authoritative cla
       calibrationEligible: false,
       releaseEligible: false,
     },
+  );
+});
+
+// W1.13's proof clause is "verify guard and fixture-label mutation". The guard above is the label
+// half, and it holds: measured, all seven label mutations (flipping releaseEligible /
+// modelEvaluationEligible / calibrationEligible to true, rewriting evidenceKind or
+// evidenceEligibility, deleting one label, deleting every label) fail it.
+//
+// The other half is the pass BAR. `golden-regression.test.mjs` recomputes F1 for real and asserts it
+// meets `thresholds` — deliberately not committed constants, so the numbers are earned rather than
+// pinned. But the thresholds themselves live in the same fixture, so the bar grades its own exam:
+// measured, setting every threshold to 0 leaves all 61 assertions across the golden regression, the
+// invocation guard, the module-boundary suite and both release-evidence suites green. One edit to
+// one JSON file silently retires the deterministic regression, and AGENTS.md's "never disable a
+// failing test to make CI pass" has nothing to catch it with.
+//
+// So the floor is committed HERE, in the file whose job is that the gate cannot be quietly weakened.
+// Raising a threshold stays a one-line fixture edit. Lowering one now requires editing this test
+// too — a visible, reviewable act rather than a silent one.
+const ENFORCED_THRESHOLD_FLOORS = {
+  // `>=` lower bounds actually read by golden-regression.test.mjs.
+  wordAlignmentF1: 0.9,
+};
+const EXACT_THRESHOLDS = {
+  // Read as an equality: findings without a source are never acceptable, at any count.
+  unsourcedLearnerOutputs: 0,
+};
+// Published in the fixture but read by NOTHING (verified: zero `thresholds.<key>` references across
+// tests/, scripts/ and server/). They are listed rather than quietly tolerated so that this suite
+// states today's real coverage instead of implying five thresholds gate something when two do.
+// Enforcing them belongs to W1.12's reproducible evaluator, not to a fixture that grades itself.
+const DECLARED_UNENFORCED_THRESHOLDS = ["tajweedF1", "falsePositiveRate", "teacherAgreementRate"];
+
+test("the golden regression's pass bar cannot be lowered without editing this test", () => {
+  for (const [key, floor] of Object.entries(ENFORCED_THRESHOLD_FLOORS)) {
+    const actual = goldenFixture.thresholds?.[key];
+    assert.equal(typeof actual, "number", `thresholds.${key} is missing or not a number`);
+    assert.ok(
+      actual >= floor,
+      `thresholds.${key} was lowered from its committed floor ${floor} to ${actual}. That retires ` +
+        `the deterministic regression without failing anything — which is the point of this test.`,
+    );
+  }
+
+  for (const [key, exact] of Object.entries(EXACT_THRESHOLDS)) {
+    assert.equal(goldenFixture.thresholds?.[key], exact, `thresholds.${key} must stay exactly ${exact}`);
+  }
+});
+
+test("every published threshold is either enforced with a floor or declared unenforced", () => {
+  // Adding a threshold to the fixture must be a decision, not a decoration: either it gates
+  // something and gets a committed floor here, or it is named as unenforced. Without this, a new
+  // number can be added, cited as if it were a gate, and never be read by anything.
+  const published = Object.keys(goldenFixture.thresholds ?? {}).sort();
+  const accounted = [
+    ...Object.keys(ENFORCED_THRESHOLD_FLOORS),
+    ...Object.keys(EXACT_THRESHOLDS),
+    ...DECLARED_UNENFORCED_THRESHOLDS,
+  ].sort();
+
+  assert.deepEqual(
+    published,
+    accounted,
+    "a threshold appeared in or vanished from golden-evals.json without being classified here as " +
+      "enforced (with a floor) or explicitly unenforced",
   );
 });
 
@@ -196,6 +262,18 @@ test("canonical verification runs the bounded-window span suite exactly once", (
     invocations.filter((line) => line.includes(BOUNDED_WINDOW_SPANS)).length,
     1,
     `${BOUNDED_WINDOW_SPANS} must run exactly once in canonical verification`,
+  );
+
+  // W1.7. This one guards canonical Quran bytes crossing the alignment engine unaltered. Measured:
+  // normalizing `canonicalText` leaves the alignment engine, marks-parity, golden-regression and
+  // session-transcript suites entirely green, and is caught only by the Node-vs-Rust effect differ
+  // in tests/api-parity/effect-parity.test.mjs. impact-map.md §8.3 retires that Rust oracle and
+  // names "A/B oracle tests" among the casualties, so without this unit-level suite the invariant
+  // loses its last guard on the day the oracle is deleted.
+  assert.equal(
+    invocations.filter((line) => line.includes(CANONICAL_BYTES_ALIGNMENT)).length,
+    1,
+    `${CANONICAL_BYTES_ALIGNMENT} must run exactly once in canonical verification`,
   );
 });
 
