@@ -26,7 +26,7 @@ Implementation starts only after the approval header in `plan.md` is filled. Wor
 - [ ] **W1.10** Select and implement one bounded acoustic learner-error pipeline consuming retained audio and server-derived spans; quarantine energy/F0/signal-presence heuristics from learner authority. Proof: correct-recitation, seeded-error, span-resolution, and refusal cases. Criteria: QA-3.
 - [ ] **W1.11** Calibrate the acoustic score on held-out evidence and extend every server/contract/Flutter learner gate to require review, source, span/evidence id, model/dataset/calibrator identity, confidence, and audit id. Proof: `learner-feedback-gate.test.mjs`, `no-invented-confidence.test.mjs`, Dart gate tests. Criteria: QA-4, QA-5.
 - [ ] **W1.12** Replace copied release metrics with a reproducible offline evaluator bound to immutable candidate/dataset/evaluator digests and signed evidence; mark all fixtures ineligible. Proof: evaluator unit tests and `model-evidence.test.mjs`. Criteria: QA-7.
-- [ ] **W1.13** Add the deterministic golden regression to canonical verification with an explicit non-release claim. Proof: verify guard and fixture-label mutation. Criteria: QA-7.
+- [x] **W1.13** Add the deterministic golden regression to canonical verification with an explicit non-release claim. Proof: verify guard and fixture-label mutation. Criteria: QA-7.
 
 ## W2 — standalone production Node HTTP backend
 
