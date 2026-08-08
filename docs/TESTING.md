@@ -386,8 +386,11 @@ server-owned spans, zero public findings, and no invented confidence. It also re
 correct/muted WAV pair byte-for-byte and checks its benchmark-ineligible evidence record. It does
 not download 2.4 GB weights or claim model accuracy. The retired-component assertion additionally
 keeps the superseded standalone service and its active topology claims out of the lean tree. The
-`ci/node-min` and `ci/verify` jobs explicitly install `ffmpeg` before this gate; hosted-runner image
-contents are not treated as evidence prerequisites and an absent executable never becomes a skip.
+vector test reads the manifest-bound mono 16 kHz PCM fixture, slices and mutes exact integer sample
+ranges, and writes a fixed 44-byte WAV header with Node core only. It deliberately does not decode,
+resample, filter, or mux through hosted-runner ffmpeg: encoder metadata and cross-build PCM rounding
+are not protocol truth. The same byte assertion therefore runs hermetically in `ci/node-min` and
+`ci/verify` without an image-owned executable or skip path.
 The protected proof must explicitly build
 `--target acoustic-candidate`, verify the embedded files, run both declared vectors without a
 source-code mount, and record latency/memory. The pinned upstream decoder can place class ids in

@@ -1,6 +1,6 @@
 # W3.1 research — language-neutral realtime protocol and security decision
 
-**Status:** research only; no runtime or test behavior changed<br>
+**Status:** implementation complete locally; required remote CI repair in progress<br>
 **Method:** Serena is unavailable in this session, so symbol/reference mapping used read-only `rg`
 and exact source inspection. **Target:** W3.1 / RT-1 / approved W0–W7 consolidation plan.
 
@@ -71,3 +71,32 @@ and exact source inspection. **Target:** W3.1 / RT-1 / approved W0–W7 consolid
   `vite -> postcss@8.5.24 -> nanoid@3.3.16`; the reviewed advisory marks `<3.3.17` vulnerable and
   `3.3.17` patched. The smallest correction is an exact same-major workspace override plus a
   regenerated frozen lockfile, not an audit ignore or an unrelated Vite upgrade.
+
+## Second required-CI finding: the acoustic derivation was not portable
+
+- Candidate `cdaa05e9438c7dc98d874d862f2a508ace3201c2` provisioned `ffmpeg`, so the
+  missing-executable test passed. The same `ci/node-min` job then proved that installing an
+  unpinned platform encoder was not sufficient: the Ubuntu output SHA-256 was
+  `645066218a7aa5e60ae22c7a89d41f21054c514c1a215b1417a0a396ba4eb809`, while the committed
+  macOS ffmpeg 8.1 expectation was
+  `fed0dc7bf5910d0e328f7aedc140061299fa159f525f73ddb0d28de5d960660c`.
+- Byte inspection found two independent sources of drift. ffmpeg writes its `Lavf` version into a
+  WAV `LIST/INFO` chunk, and decoder/resampler builds differ by a few PCM bytes. A controlled
+  Ubuntu 24.04 ffmpeg 6.1 run differed from the macOS PCM at four bytes. Therefore neither the
+  hosted image nor an installed executable/version string can be the fixture authority.
+- `tests/fixtures/audio/AlFatihatulKitab.manifest.json` already binds a tracked mono 16 kHz PCM
+  derivative by size and SHA-256. The portable derivation can slice those immutable bytes at exact
+  integer sample boundaries, apply the declared mute at exact integer sample boundaries, and wrap
+  both payloads in a fixed 44-byte PCM WAV header using Node core only. This removes the external
+  test prerequisite and makes the byte assertion stronger, not looser.
+- The audit also found that ffmpeg's timeline-enabled volume filter did not apply the declared
+  `0.500–1.240 s` mute. It muted complete internal frames from sample 8,192 through 20,479
+  (`0.512–1.280 s`). The portable implementation must use the declared half-open interval, samples
+  8,000 through 19,839, and refresh the structural exact-image observation rather than relabel the
+  old model output.
+- The exact pinned image was rerun locally against the proposed canonical WAVs without a source
+  mount. The correct vector retained predicted-phoneme digest
+  `5020dd2aadcea264201d6a937c41b8413d00b49b3bb5f312fc336fd4571cc555`; the corrected altered
+  vector produced 27 phonemes and digest
+  `1cce8531d8141b8f0cb292e92a331f436f831aa7dede5a1d4b3dbb7485932750`. Both remained
+  uncalibrated, withheld all numeric sifat scores, and emitted no learner finding or confidence.

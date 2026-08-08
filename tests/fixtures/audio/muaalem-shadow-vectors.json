@@ -1,6 +1,6 @@
 {
-  "schemaVersion": 1,
-  "id": "muaalem-v3.2-shadow-structural-v1",
+  "schemaVersion": 2,
+  "id": "muaalem-v3.2-shadow-structural-v2",
   "purpose": "Reproducible structural input pair for the private Muaalem acoustic shadow adapter",
   "evidenceEligibility": "integration-fixture-only-not-model-evaluation",
   "releaseEligible": false,
@@ -13,16 +13,23 @@
     "file": "tests/fixtures/audio/AlFatihatulKitab.ogg",
     "manifest": "tests/fixtures/audio/AlFatihatulKitab.manifest.json",
     "sha256": "59a4eef339d3e42aeaf9b77a6423297a0f830e4872783fc0718a64862b02df32",
+    "pcmFile": "tests/fixtures/audio/AlFatihatulKitab.pcm",
+    "pcmByteLength": 2966742,
+    "pcmSha256": "8974589d5633aa9caefea900a2d1b6fbd965fdc1814e8a1b9f3782f16ca4a8ce",
     "license": "CC0-1.0"
   },
   "correct": {
     "id": "correct-recitation",
+    "derivation": "manifest-pcm-sample-slice-canonical-wav-v1",
     "clipStartSeconds": 8.5,
     "durationSeconds": 6.5,
+    "startSample": 136000,
+    "sampleCount": 104000,
     "sampleRate": 16000,
     "channels": 1,
     "codec": "pcm_s16le",
-    "sha256": "fed0dc7bf5910d0e328f7aedc140061299fa159f525f73ddb0d28de5d960660c"
+    "pcmSha256": "bef50ff88309c011819cdd88683f5c5c174bd654cdf1483e454109bc95d82ce6",
+    "sha256": "a2d9f96034caf5b05f2ab8e2db6eb96a98926b2936354a1d09ff8748cf6fb172"
   },
   "altered": {
     "id": "seeded-muted-first-word",
@@ -30,7 +37,10 @@
     "operation": "mute",
     "muteStartSeconds": 0.5,
     "muteEndSeconds": 1.24,
-    "sha256": "149637ec098cdee192fc30e971657f768661e532d2e57d739dfe0df483bbb7cb"
+    "muteStartSample": 8000,
+    "muteEndSampleExclusive": 19840,
+    "pcmSha256": "46f565bf2574fe2f46ba6fb83074c69325358cf67b5fad960134c822c5662b14",
+    "sha256": "1a99050a8313aae8e205b19a5565aee1d9ea348cac889fb0a16ba9fa2867f233"
   },
   "reference": {
     "canonicalBundle": "packages/quran-data/src/data/full-quran/surah-001.json",
@@ -51,7 +61,7 @@
         "calibrationStatus": "uncalibrated",
         "phonemeCount": 30,
         "phonemeScoreCount": 30,
-        "phonemeScoreMin": 0.7319726347923279,
+        "phonemeScoreMin": 0.7319707870483398,
         "phonemeScoreMax": 0.9999927282333374,
         "predictedPhonemesSha256": "5020dd2aadcea264201d6a937c41b8413d00b49b3bb5f312fc336fd4571cc555",
         "sifatGroupCount": 15,
@@ -66,11 +76,11 @@
         "status": "observed",
         "analysisBasis": "acoustic",
         "calibrationStatus": "uncalibrated",
-        "phonemeCount": 26,
-        "phonemeScoreCount": 26,
-        "phonemeScoreMin": 0.5804268717765808,
-        "phonemeScoreMax": 0.9999555349349976,
-        "predictedPhonemesSha256": "7bdac2a203507becbe633a33f59cf7b3cbbb4f941130e31ce75027fbf7ffbb6b",
+        "phonemeCount": 27,
+        "phonemeScoreCount": 27,
+        "phonemeScoreMin": 0.5942543745040894,
+        "phonemeScoreMax": 0.9999582767486572,
+        "predictedPhonemesSha256": "1cce8531d8141b8f0cb292e92a331f436f831aa7dede5a1d4b3dbb7485932750",
         "sifatGroupCount": 13,
         "sifatUnitCount": 130,
         "allSifatScoresWithheld": true,
@@ -84,20 +94,20 @@
       "benchmarkEligible": false,
       "releaseCriteriaSatisfied": false,
       "imageDigest": "sha256:0e43ecfbb2f4e01a18283838e75fcc217dc496d85a13df52584375f0e2f6b2b0",
-      "inputSha256": "fed0dc7bf5910d0e328f7aedc140061299fa159f525f73ddb0d28de5d960660c",
+      "inputSha256": "a2d9f96034caf5b05f2ab8e2db6eb96a98926b2936354a1d09ff8748cf6fb172",
       "runtime": "Docker Desktop Linux/ARM64, CPU float32, one persistent candidate process",
       "cold": {
-        "serverLatencyMs": 4699,
-        "wallLatencyMs": 4722
+        "serverLatencyMs": 5213,
+        "wallLatencyMs": 5219
       },
       "warm": {
-        "serverLatencyMs": 2285,
-        "wallLatencyMs": 2292
+        "serverLatencyMs": 2535,
+        "wallLatencyMs": 2540
       },
       "memory": {
-        "sampleCount": 6,
-        "peakContainerMemoryMiB": 929,
-        "finalContainerMemoryMiB": 927
+        "sampleCount": 5,
+        "peakContainerMemoryMiB": 900.7,
+        "finalContainerMemoryMiB": 900.7
       }
     }
   }
