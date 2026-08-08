@@ -34,6 +34,26 @@ const productionTrustPolicy = JSON.parse(
 
 const digest = `sha256:${"0".repeat(64)}`;
 
+function uncertaintyIntervals(metrics, validReplicateCount) {
+  const pointEstimates = {
+    averagePrecision: metrics.averagePrecision,
+    rocAuc: metrics.rocAuc,
+    precision: metrics.operatingPoint.precision,
+    recall: metrics.operatingPoint.recall,
+    f1: metrics.operatingPoint.f1,
+    falsePositiveRate: metrics.operatingPoint.falsePositiveRate,
+    expectedCalibrationError: metrics.expectedCalibrationError,
+    teacherAgreementRate: metrics.teacherAgreementRate,
+  };
+  return Object.entries(pointEstimates).map(([metric, pointEstimate]) => ({
+    metric,
+    pointEstimate,
+    lower: Math.max(-1, pointEstimate - 0.01),
+    upper: Math.min(1, pointEstimate + 0.01),
+    validReplicateCount,
+  }));
+}
+
 // Declared schema fixture only. These values are not model output and cannot be release evidence.
 function fixtureBundle() {
   const metrics = {
@@ -105,15 +125,7 @@ function fixtureBundle() {
         confidenceLevel: 0.95,
         replicateCount: 2,
         seed: 1,
-        intervals: [
-          {
-            metric: "averagePrecision",
-            pointEstimate: 0.5,
-            lower: 0,
-            upper: 1,
-            validReplicateCount: 2,
-          },
-        ],
+        intervals: uncertaintyIntervals(metrics, 2),
       },
       slices: [
         {
@@ -210,7 +222,7 @@ function releaseCandidateBundle() {
     unsourcedLearnerOutputCount: 0,
   };
   evidence.uncertainty.replicateCount = 10_000;
-  evidence.uncertainty.intervals[0].validReplicateCount = 10_000;
+  evidence.uncertainty.intervals = uncertaintyIntervals(evidence.metrics, 10_000);
   evidence.slices = ["sorani-fixture-slice", "arabic-fixture-slice"].map((sliceId) => ({
     sliceId,
     dimensions: {
@@ -446,6 +458,70 @@ test("a release-class key cannot elevate fixture evidence", () => {
     () => verifyModelEvidenceBundle(bundle, trustPolicy, { requireReleaseTrust: true }),
     /eligibility|release-candidate/i,
   );
+});
+
+test("release trust cannot accept incomplete or contradictory evaluator/calibrator evidence", () => {
+  const schemaFailures = [
+    ["missing metric", (evidence) => evidence.uncertainty.intervals.pop()],
+    [
+      "duplicate metric",
+      (evidence) => {
+        evidence.uncertainty.intervals[7].metric = evidence.uncertainty.intervals[0].metric;
+      },
+    ],
+  ];
+  for (const [name, mutate] of schemaFailures) {
+    const unsigned = releaseCandidateBundle();
+    mutate(unsigned.evidence);
+    const { bundle, trustPolicy } = signedFixture({ trustClass: "release", bundle: unsigned });
+    assert.throws(
+      () => verifyModelEvidenceBundle(bundle, trustPolicy, { requireReleaseTrust: true }),
+      /schema/i,
+      name,
+    );
+  }
+
+  const gateFailures = [
+    [
+      "calibrator dataset authority mismatch",
+      (evidence) => {
+        evidence.calibration.fitDatasetManifestSha256 = `sha256:${"a".repeat(64)}`;
+      },
+    ],
+    [
+      "calibrator split authority mismatch",
+      (evidence) => {
+        evidence.calibration.fitSplitManifestSha256 = `sha256:${"b".repeat(64)}`;
+      },
+    ],
+    [
+      "point estimate mismatch",
+      (evidence) => {
+        evidence.uncertainty.intervals[0].pointEstimate = 0.1;
+      },
+    ],
+    [
+      "inverted interval",
+      (evidence) => {
+        evidence.uncertainty.intervals[0].lower = 0.8;
+        evidence.uncertainty.intervals[0].upper = 0.2;
+      },
+    ],
+    [
+      "impossible valid replicate count",
+      (evidence) => {
+        evidence.uncertainty.intervals[0].validReplicateCount = 10_001;
+      },
+    ],
+  ];
+
+  for (const [name, mutate] of gateFailures) {
+    const unsigned = releaseCandidateBundle();
+    mutate(unsigned.evidence);
+    const { bundle, trustPolicy } = signedFixture({ trustClass: "release", bundle: unsigned });
+    const verification = verifyModelEvidenceBundle(bundle, trustPolicy, { requireReleaseTrust: true });
+    assert.equal(modelEvalPassesReleaseGate(evalRunFromBundle(bundle), verification), false, name);
+  }
 });
 
 test("the release gate requires one verified, release-trusted, database-matching evidence payload", () => {

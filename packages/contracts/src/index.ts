@@ -913,6 +913,68 @@ function metricsClearReleaseGate(value: unknown, task: ModelEvalRun["evaluationT
   );
 }
 
+const RELEASE_UNCERTAINTY_METRICS = [
+  "averagePrecision",
+  "rocAuc",
+  "precision",
+  "recall",
+  "f1",
+  "falsePositiveRate",
+  "expectedCalibrationError",
+  "teacherAgreementRate",
+] as const;
+
+function metricPointEstimate(metricsValue: unknown, metric: string): number | null {
+  const metrics = jsonRecord(metricsValue);
+  const operatingPoint = jsonRecord(metrics?.operatingPoint);
+  const value =
+    metric === "averagePrecision" ||
+    metric === "rocAuc" ||
+    metric === "expectedCalibrationError" ||
+    metric === "teacherAgreementRate"
+      ? metrics?.[metric]
+      : operatingPoint?.[metric];
+  return finiteNumber(value) ? value : null;
+}
+
+function uncertaintyMatchesComputedMetrics(uncertainty: Record<string, unknown>, metrics: unknown): boolean {
+  const intervals = uncertainty.intervals;
+  const replicateCount = uncertainty.replicateCount;
+  if (
+    !Array.isArray(intervals) ||
+    intervals.length !== RELEASE_UNCERTAINTY_METRICS.length ||
+    !Number.isInteger(replicateCount) ||
+    (replicateCount as number) < 10_000
+  ) {
+    return false;
+  }
+
+  const expectedMetrics = new Set<string>(RELEASE_UNCERTAINTY_METRICS);
+  const observedMetrics = new Set<string>();
+  for (const interval of intervals) {
+    const item = jsonRecord(interval);
+    const metric = item?.metric;
+    if (
+      !item ||
+      typeof metric !== "string" ||
+      !expectedMetrics.has(metric) ||
+      observedMetrics.has(metric) ||
+      !finiteNumber(item.pointEstimate) ||
+      !finiteNumber(item.lower) ||
+      !finiteNumber(item.upper) ||
+      item.lower > item.upper ||
+      item.pointEstimate !== metricPointEstimate(metrics, metric) ||
+      !Number.isInteger(item.validReplicateCount) ||
+      (item.validReplicateCount as number) < 10_000 ||
+      (item.validReplicateCount as number) > (replicateCount as number)
+    ) {
+      return false;
+    }
+    observedMetrics.add(metric);
+  }
+  return observedMetrics.size === RELEASE_UNCERTAINTY_METRICS.length;
+}
+
 /**
  * Fail-closed release authority. Every persisted projection must match the exact signed payload;
  * aggregate metrics, fixtures, test signers, or a caller-supplied `passed` flag are never enough.
@@ -991,7 +1053,9 @@ export function modelEvalPassesReleaseGate(
     rawResults.rowManifestSha256 !== evalRun.rawRowManifestSha256 ||
     rawResults.rowResultsSha256 !== evalRun.rawResultsSha256 ||
     calibration.calibratorId !== evalRun.calibratorId ||
-    calibration.artifactSha256 !== evalRun.calibratorArtifactSha256
+    calibration.artifactSha256 !== evalRun.calibratorArtifactSha256 ||
+    calibration.fitDatasetManifestSha256 !== dataset.manifestSha256 ||
+    calibration.fitSplitManifestSha256 !== dataset.splitManifestSha256
   ) {
     return false;
   }
@@ -1014,18 +1078,8 @@ export function modelEvalPassesReleaseGate(
     return false;
   }
 
-  const intervals = uncertainty.intervals;
   if (
-    !Array.isArray(intervals) ||
-    intervals.length === 0 ||
-    intervals.some((interval) => {
-      const item = jsonRecord(interval);
-      return (
-        !item ||
-        !Number.isInteger(item.validReplicateCount) ||
-        (item.validReplicateCount as number) < 10_000
-      );
-    }) ||
+    !uncertaintyMatchesComputedMetrics(uncertainty, evidence.metrics) ||
     slices.length < 2 ||
     slices.some((slice) => {
       const item = jsonRecord(slice);

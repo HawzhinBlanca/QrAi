@@ -458,8 +458,10 @@ node --experimental-strip-types scripts/check-model-eval-claims.mjs --self-test
 ```
 
 The gate requires a verified release-class signature, exact payload/projection identities, a bound
-calibrator, minimum row/reciter/slice counts, reciter-cluster bootstrap uncertainty, source-backed
-acoustic findings, and task-specific metrics. The selector reads all rows rather than the newest;
+calibrator whose fit digests match the signed dataset and split, minimum row/reciter/slice counts,
+exactly one reciter-cluster bootstrap interval matching each of the evaluator's eight metrics,
+source-backed acoustic findings, and task-specific metrics.
+The selector reads all rows rather than the newest;
 fixture/research history is ignored, exact duplicate authorities collapse, and invalid or distinct
 release-labelled identities fail closed. With the committed empty production trust policy, no model
 may claim `eval-passed` or `released`.
