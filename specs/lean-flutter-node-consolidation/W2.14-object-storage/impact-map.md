@@ -14,6 +14,7 @@ Serena is unavailable; these references were mapped with `rg` before edits.
 | `createApplication`/`main.mjs`/shutdown | every Node route and child-process test | Inject/configure store, readiness and bounded close; explicit compatibility fallback |
 | Rust `index_audio_chunk`; gateway `handle_audio_socket` | parity oracle and current realtime path | Match derived-key rule; stop forwarding authoritative `objectKey` |
 | `repair-audio-index.mjs` | package command, operations profile, teacher-audio E2E | Storage-neutral reconciliation; legacy filesystem support; dry-run/apply and inverse orphans |
+| raw sidecar pollers in `tests/e2e/teacher-audio-index.test.mjs::waitForStoredChunk` and `tests/gateway/audio-retention-e2e.test.mjs::storedMeta` | real gateway → worker storage/index/repair proof; canonical live and hermetic process gates | Exact-SHA CI closure correction: a `wx` destination name can become visible before `writeFile` has emitted the complete JSON line. Treat a missing final newline as an in-flight publication and retry; still fail immediately on malformed newline-terminated JSON so corruption is never hidden |
 | OpenAPI/internal contracts | route completeness, parity, gateway | `objectKey` no longer required/authoritative; response shape unchanged |
 | Docker/Compose/backup/data docs | local stack, images, operators | Explicit driver/config, private S3 production contract, filesystem local/test boundary |
 | Canonical verification | `scripts/verify.sh`, invocation guard | Register lifecycle test exactly once and keep live DB skip explicit |

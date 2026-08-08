@@ -18,6 +18,7 @@ import { fileURLToPath } from "node:url";
 
 import { issueRealtimeTicket, newNonce } from "../../server/src/lib/ticket.mjs";
 import { repairAudioIndex } from "../../server/scripts/repair-audio-index.mjs";
+import { parseCompleteStoredMetadata } from "./lib/stored-metadata.mjs";
 import {
   DATABASE_URL,
   ROLE_USER_IDS,
@@ -232,7 +233,12 @@ async function waitForStoredChunk(session) {
       const metadata = readdirSync(dir).find(
         (name) => name.endsWith(".pcm.meta.json"),
       );
-      if (metadata) return JSON.parse(readFileSync(join(dir, metadata), "utf8"));
+      if (metadata) {
+        const parsed = parseCompleteStoredMetadata(
+          readFileSync(join(dir, metadata), "utf8"),
+        );
+        if (parsed !== null) return parsed;
+      }
     }
     await new Promise((resolve) => setTimeout(resolve, 100));
   }

@@ -13,6 +13,7 @@ import {
   createS3AudioObjectStore,
   deriveAudioObjectKey,
 } from "../../server/src/storage/audio-object-store.mjs";
+import { parseCompleteStoredMetadata } from "./lib/stored-metadata.mjs";
 
 const IDENTITY = {
   tenantId: "tenant-a",
@@ -28,6 +29,15 @@ const RETAINED = {
   endMs: 500,
 };
 const AUDIO = Buffer.from("private-child-recitation");
+
+test("sidecar polling waits for the complete JSON-line publication marker", () => {
+  assert.equal(parseCompleteStoredMetadata(""), null);
+  assert.equal(parseCompleteStoredMetadata('{"chunkId":"chunk-a"}'), null);
+  assert.deepEqual(parseCompleteStoredMetadata('{"chunkId":"chunk-a"}\n'), {
+    chunkId: "chunk-a",
+  });
+  assert.throws(() => parseCompleteStoredMetadata("not-json\n"), SyntaxError);
+});
 
 function preconditionFailed() {
   const error = new Error("precondition failed");

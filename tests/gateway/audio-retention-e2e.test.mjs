@@ -8,6 +8,7 @@ import test, { after, before } from "node:test";
 import { fileURLToPath } from "node:url";
 
 import { issueRealtimeTicket, newNonce } from "../../server/src/lib/ticket.mjs";
+import { parseCompleteStoredMetadata } from "../e2e/lib/stored-metadata.mjs";
 import { startWorkerCompatibilityIngress } from "./lib/worker-ingress-harness.mjs";
 
 /**
@@ -152,7 +153,12 @@ async function storedMeta(sessionId) {
   for (let i = 0; i < 100; i += 1) {
     if (existsSync(dir)) {
       const metas = readdirSync(dir).filter((file) => file.endsWith(".pcm.meta.json"));
-      if (metas.length > 0) return JSON.parse(readFileSync(join(dir, metas[0]), "utf8"));
+      if (metas.length > 0) {
+        const parsed = parseCompleteStoredMetadata(
+          readFileSync(join(dir, metas[0]), "utf8"),
+        );
+        if (parsed !== null) return parsed;
+      }
     }
     await new Promise((r) => setTimeout(r, 100));
   }
