@@ -166,6 +166,19 @@ implemented below. The explicit HTTP canary topology is also implemented, but pr
 infrastructure provisioning, native secure storage, and attestation remain target constraints rather
 than current-state claims.
 
+### Target realtime boundary (ADR-0051)
+
+The same `server` package will expose a separate realtime process so socket admission and bounded
+audio queues can fail, drain, and scale independently of API and worker event loops. The Rust
+gateway remains the compatibility oracle during W3. Rust-generated language-neutral `rt_v2` and
+`audio.ack` fixtures are the shared wire authority; Node does not generate protocol truth. Browser
+upgrades retain the exact Origin allowlist, while native no-Origin admission is an explicit policy
+that never bypasses tenant/session/expiry/retention checks. Replay stores only a SHA-256 nonce hash,
+never a raw ticket. A shared authority must fail closed, and Postgres remains proposed until the
+W3.4 cross-instance benchmark passes. Each session uses a bounded queue and explicit ack semantics;
+ack message text is diagnostic only. W3.1 records this boundary and its fixtures without adding a
+listener, migration, queue, or traffic switch.
+
 The implemented W2.16 device-identity boundary is additive migration 0035 plus three Node routes,
 one identity-domain module, and one audited operator command. Invitations and access/refresh
 credentials are independent 256-bit opaque values whose raw bytes never enter Postgres; only

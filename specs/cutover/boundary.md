@@ -137,7 +137,7 @@ the **unchanged** Rust gateway accepts.
 
 - Proven by: `specs/node-backend-port/evidence/n5-gateway-accepts-node-ticket.txt` — a live WebSocket
   handshake, plus rejection of a tampered signature and a swapped tenant.
-- Pinned by: `specs/node-backend-port/fixtures/ticket-vectors.json`, asserted in **both** languages.
+- Pinned by: `packages/contracts/fixtures/realtime/rt-v2-ticket-vectors.json`, asserted in **both** languages.
 
 **A reviewer should note how this was found.** The first Node implementation of this route was
 written before its coverage existed and was wrong four ways — it let **teacher and scholar mint a

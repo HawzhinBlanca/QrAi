@@ -35,7 +35,7 @@ test("server is an ESM workspace with an explicit production dependency boundary
   assert.equal(manifest.exports?.["."], "./src/app.mjs");
   assert.equal(
     manifest.scripts?.lint,
-    "node --check src/app.mjs src/main.mjs src/worker.mjs src/container-healthcheck.mjs src/identity/*.mjs src/inference/*.mjs src/jobs/*.mjs src/lib/*.mjs src/routes/*.mjs src/storage/*.mjs scripts/provision-device-enrollment.mjs scripts/requeue-dead-job.mjs",
+    "node --check src/app.mjs src/main.mjs src/worker.mjs src/container-healthcheck.mjs src/identity/*.mjs src/inference/*.mjs src/jobs/*.mjs src/lib/*.mjs src/realtime/*.mjs src/routes/*.mjs src/storage/*.mjs scripts/provision-device-enrollment.mjs scripts/requeue-dead-job.mjs",
   );
   assert.equal(manifest.scripts?.typecheck, "tsc --project tsconfig.json");
   assert.equal(manifest.scripts?.build, "pnpm run lint && pnpm run typecheck");

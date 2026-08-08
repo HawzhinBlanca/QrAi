@@ -10,8 +10,8 @@
  *   ticket  = "rt_v2.{payload}.{lowercase hex HMAC-SHA256(secret, payload)}"
  *
  * `String(bool)` is "true"/"false", identical to Rust's `Display for bool` — which is why this port
- * is possible at all. Pinned by specs/node-backend-port/fixtures/ticket-vectors.json, asserted in
- * BOTH languages.
+ * is possible at all. Pinned by packages/contracts/fixtures/realtime/rt-v2-ticket-vectors.json,
+ * asserted in BOTH languages.
  */
 import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 
@@ -69,12 +69,15 @@ export function ticketPayload({
   }
   // Rust takes u64. A float, a negative, or anything past Number.MAX_SAFE_INTEGER would render
   // differently (or in exponent notation) and produce a ticket Rust cannot parse.
-  if (
+  const invalidBigInt =
+    typeof expiresAtUnixSeconds === "bigint" &&
+    (expiresAtUnixSeconds < 0n || expiresAtUnixSeconds > U64_MAX);
+  const invalidNumber =
     typeof expiresAtUnixSeconds !== "bigint" &&
-    (!Number.isSafeInteger(expiresAtUnixSeconds) || expiresAtUnixSeconds < 0)
-  ) {
+    (!Number.isSafeInteger(expiresAtUnixSeconds) || expiresAtUnixSeconds < 0);
+  if (invalidBigInt || invalidNumber) {
     throw new TypeError(
-      `realtime ticket: expiresAtUnixSeconds must be a non-negative safe integer or a BigInt, ` +
+      `realtime ticket: expiresAtUnixSeconds must be a non-negative safe integer or unsigned-64-bit BigInt, ` +
         `got ${JSON.stringify(String(expiresAtUnixSeconds))}`,
     );
   }

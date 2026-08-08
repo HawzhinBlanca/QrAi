@@ -5,6 +5,56 @@ architectural change. Newest first.
 
 ---
 
+## ADR-0051 — Realtime keeps one wire contract and gains an isolated Node entrypoint
+
+**Status:** Accepted · **Date:** 2026-08-08 · **Decider:** repository owner through the approved persistent implementation goal
+**Related:** ADR-0050 (one Node package), ADR-0040 (migration boundary), ADR-0022 (reversible release)
+
+### Context
+
+The Rust gateway currently owns WebSocket admission, replay checks, bounded audio ingress, and
+`audio.ack`. The Node API already issues byte-compatible `rt_v2` tickets, but the shared ticket
+vectors live under a transitional port spec and no language-neutral fixture pins acknowledgments.
+Writing a Node socket before freezing those boundaries would allow two implementations to agree in
+tests while disagreeing on the deployed wire or on which failures are security decisions.
+
+ADR-0050 selected one modular Node codebase with separate process roles. It also said Postgres owns
+durable realtime replay state. This ADR qualifies that realtime clause: Postgres is the proposed
+authority, not an implemented fact, until the W3.4 concurrency and load benchmark proves it meets
+the admission budget. Device credential replay state remains Postgres-owned and is unaffected.
+
+### Decision
+
+- The same `server` package gains a separate realtime process and entrypoint. It must be
+  independently deployable, drainable, observable, and failure-isolated from API and worker event
+  loops. The Rust gateway remains the compatibility oracle until parity, load, canary, and rollback
+  evidence permits retirement.
+- The deployed wire stays unchanged. `rt_v2` tickets and `audio.ack` documents live in one
+  language-neutral fixture root under `packages/contracts`. Rust remains the fixture generator and
+  oracle. The raw ticket is never stored or persisted. Valid tickets preserve exact field order,
+  UTF-8 HMAC bytes, boolean text, retention, unsigned-64-bit expiry, and lowercase signature.
+- Replay identity is a SHA-256 nonce hash scoped to the signed claims. Postgres with a unique claim
+  and TTL cleanup is the proposed shared replay authority, subject to the W3.4 benchmark. A
+  configured shared authority fails closed when unavailable. The existing Rust Redis/in-memory path
+  remains only as the compatibility oracle during that benchmark; this decision does not add Redis,
+  NATS, a service mesh, or another runtime dependency.
+- Browser upgrades require the exact configured Origin allowlist. A native client's no-Origin
+  request is a separate, explicit deployment policy; it is never inferred from browser behavior and
+  does not relax tenant, session, expiry, retention, signature, replay, or admission checks.
+- Each session has a bounded per-session queue with explicit `audio.ack` responses. Consumers branch
+  only on `kind` and `accepted`. `message` is non-empty diagnostic prose, not a semantic enum;
+  `trace_id` is always present as a non-empty string or null. Sequence values must cross the JSON
+  boundary as non-negative safe integers.
+
+### Consequences
+
+W3.1 freezes decision and fixture truth only. It adds no WebSocket listener, database migration,
+replay store, queue, or traffic movement. W3.2 owns the process lifecycle; W3.3 owns admission;
+W3.4 owns durable replay and the Postgres benchmark; W3.5 owns the bounded audio runtime. A failed
+fixture change restores one authority rather than introducing a second copy.
+
+---
+
 ## ADR-0050 — One modular Node backend owns runtime, deadlines, storage, and production identity
 
 **Status:** Accepted · **Date:** 2026-08-07 · **Decider:** repository owner through the approved consolidation plan

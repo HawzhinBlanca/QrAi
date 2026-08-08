@@ -1,6 +1,6 @@
 # W3.1 specification — realtime decision and language-neutral wire fixtures
 
-**Status:** proposed; implementation blocked until `plan.md` is approved<br>
+**Status:** approved; implementation proceeds under the approved `plan.md`<br>
 **Parent:** approved lean Flutter + Node consolidation / W3.1 / RT-1
 
 ## Objective
@@ -20,7 +20,7 @@ Rust oracle and Node consumers prove the same fixtures before a Node WebSocket p
   and lowercase signature SHALL match every Rust-generated language-neutral vector. Tests:
   `tests/realtime/protocol-fixtures.test.mjs`; Rust `ticket_vectors` tests.
 - **RTC-3:** WHEN an `audio.ack` document is serialized or parsed, THE object SHALL preserve the
-  exact kind and snake-case fields, non-empty identities, non-negative integer sequence, boolean
+  exact kind and snake-case fields, non-empty identities, non-negative safe-integer sequence, boolean
   acceptance, nullable trace id, and non-empty diagnostic message; clients SHALL NOT branch on
   message prose. Tests: `tests/realtime/protocol-fixtures.test.mjs`; Rust ack-vector test; Web
   `liveRecitation.test.ts`.

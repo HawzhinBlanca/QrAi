@@ -1,7 +1,7 @@
 # W3.1 plan — realtime decision and language-neutral wire fixtures
 
-**Status:** PLAN READY — awaiting human approval<br>
-**Approved-by:**<br>
+**Status:** APPROVED — implementation proceeds one task at a time<br>
+**Approved-by:** Repository owner — explicitly approved by this persistent implementation goal.<br>
 **Criteria:** `spec.md` RTC-1…RTC-5; parent RT-1
 
 ## Decision
@@ -27,11 +27,15 @@ NATS, service mesh, or new runtime dependency is added by this decision or task.
    Postgres benchmark gate, bounded queues, and diagnostic-only ack prose.
 3. Move `ticket-vectors.json` with no regenerated ticket value. Update the Node reader, both Rust
    readers, the Rust generator, source comments, and surviving historical references to the single
-   new path. Delete the old file; never leave two fixture authorities.
+   new path. Delete the old file; never leave two fixture authorities. The RTC-2 red test also
+   requires the Node minter to refuse negative and above-`u64` BigInt expiries that Rust cannot
+   parse; this preserves all valid wire bytes and corrects issue parity rather than changing wire.
 4. Add Rust-generated `audio-ack-vectors.json`, a committed ignored generator, and a Rust assertion
    that serializes `AudioIngressAck` against it. Add `server/src/realtime/protocol.mjs` as a small
    strict ack construction/validation boundary; do not add a socket or duplicate ticket crypto.
-   Exercise the Web parser against the same fixture and make `trace_id` explicit and nullable.
+   Exercise the Web parser against the same fixture and make `trace_id` explicit and nullable. Add
+   the realtime module to the server package's explicit syntax-check inputs so direct tests are not
+   its only build coverage.
 5. Run focused Node/Rust/Web tests, `git diff --check`, then the exact live-stack
    `bash scripts/verify.sh`. Do not ledger-update without required remote CI.
 
@@ -43,7 +47,8 @@ NATS, service mesh, or new runtime dependency is added by this decision or task.
   `packages/contracts/fixtures/realtime/audio-ack-vectors.json`.
 - Rust oracle: `services/shared-ticket/src/lib.rs`, its `tests/regenerate_vectors.rs`, and
   `services/realtime-gateway/src/lib.rs` plus one ignored ack generator.
-- Node/Web: `server/src/lib/ticket.mjs`, new `server/src/realtime/protocol.mjs`,
+- Node/Web: `server/package.json`, `server/src/lib/ticket.mjs`, new
+  `server/src/realtime/protocol.mjs`,
   `tests/node-api/ticket-vectors.test.mjs`, `apps/web/src/lib/liveRecitation.{ts,test.ts}` and exact
   Web ack mocks affected by nullable `trace_id`.
 - Gates: new `tests/realtime/protocol-fixtures.test.mjs`, new
@@ -61,5 +66,5 @@ NATS, service mesh, or new runtime dependency is added by this decision or task.
 - W3.1 creates no deployable behavior, so rollback is source-only. Rust gateway remains production
   owner and the Node HTTP canary is unaffected.
 
-**HUMAN GATE:** Fill `Approved-by:` above. No test, fixture, ADR, runtime, or gate file may change
-until this exact W3.1 plan is approved.
+**APPROVAL RECORDED:** The repository owner approved this exact W3.1 plan through the persistent
+implementation goal recorded above. Implementation remains bound to the sequence and proof gates.

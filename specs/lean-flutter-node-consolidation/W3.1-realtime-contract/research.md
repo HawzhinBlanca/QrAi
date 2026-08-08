@@ -10,6 +10,9 @@ and exact source inspection. **Target:** W3.1 / RT-1 / approved W0–W7 consolid
   verifyRealtimeTicket,validateRealtimeTicket,newNonce}` is the Node issuer/validator. Its wire is
   `rt_v2` plus seven dot-delimited payload fields and lowercase HMAC-SHA256; expiry is a `BigInt`
   because Rust accepts the full unsigned-64-bit range.
+- Pre-implementation red testing found that the Node issuer accepted negative and above-`u64`
+  `BigInt` expiries, minting signed tickets the Rust validator can never parse. RTC-2 therefore
+  requires a mint-time domain guard while preserving every valid wire byte and oracle vector.
 - `services/shared-ticket/src/lib.rs::{TICKET_VERSION,RealtimeTicketClaims,TicketError,
   issue_realtime_ticket,validate_realtime_ticket}` is the Rust oracle used by both Rust services.
   `services/shared-ticket/tests/regenerate_vectors.rs` is the Rust-only fixture generator.
@@ -51,3 +54,6 @@ and exact source inspection. **Target:** W3.1 / RT-1 / approved W0–W7 consolid
   examples. Flutter ack/reconnect work belongs to W4.11, not this contract-only task.
 - W3.1 may accept the ADR and freeze fixtures only. Node process, Postgres replay table, upgrade
   handling, backpressure, and traffic movement belong to W3.2–W3.9 and need their own red tests.
+- The original coarse master-plan W3.1 paragraph assigned entrypoint, admission, and replay work to
+  this slice, while the approved ledger decomposes those into W3.2–W3.4. The master plan now records
+  that superseding allocation instead of leaving two active scopes.

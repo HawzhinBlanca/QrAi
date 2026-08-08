@@ -452,6 +452,12 @@ proof, the canonical gate, and required CI are green.
 
 ### W3.1 Protocol and security parity
 
+**Approved decomposition (2026-08-08):** the owner-approved W3.1 child plan and the master ledger
+split this original coarse slice across W3.1–W3.4. W3.1 accepts the decision and freezes the shared
+ticket/ack fixtures only. The realtime entrypoint is W3.2, admission checks are W3.3, and durable
+replay plus its Postgres benchmark are W3.4. This allocation supersedes the bullet grouping below;
+it does not weaken or remove any requirement.
+
 - Move the ticket wire contract into language-neutral fixtures and a Node realtime module.
 - Implement WebSocket upgrade, origin/no-Origin native policy, tenant/session binding, expiration, retention claims, and single-use replay protection.
 - Store consumed nonce hashes durably in Postgres with a unique constraint and TTL cleanup; never store raw tickets.

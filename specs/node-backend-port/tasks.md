@@ -11,7 +11,7 @@ primitives + two routes. See [`plan.md`](plan.md) §4 and [`research.md`](resear
 
 ## N1 — Cross-language ticket vectors, before any Node code mints one
 
-`specs/node-backend-port/fixtures/ticket-vectors.json` — 6 vectors asserted by **both** a Rust module
+`packages/contracts/fixtures/realtime/rt-v2-ticket-vectors.json` — 6 vectors asserted by **both** a Rust module
 in `shared-ticket` and `tests/node-api/ticket-vectors.test.mjs`.
 
 Generated **from Rust**, never from the port: vectors derived from a port pin the port's behaviour,

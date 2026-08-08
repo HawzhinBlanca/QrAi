@@ -158,7 +158,7 @@ method the remaining 36 routes need, applied per route.
 | `scripts/diff-api-fixtures.mjs` + `capture-api-fixtures.mjs` | byte-level A/B, already used to prove the shell indistinguishable |
 | `specs/api-golden-fixtures/fixtures/platform-api.json` | 26 committed real responses |
 | `packages/contracts/openapi.yaml` | 38 operations, 35 with validated schemas |
-| `specs/node-backend-port/fixtures/ticket-vectors.json` | 6 cross-language vectors, asserted in **both** Rust and Node |
+| `packages/contracts/fixtures/realtime/rt-v2-ticket-vectors.json` | 6 cross-language vectors, asserted in **both** Rust and Node |
 | `scripts/verify-parity-teeth.sh` | proves the parity suite fails when it should |
 | `tests/node-api/db-tenant.test.mjs` (8) | the fail-open stale-tenant case |
 

@@ -1478,12 +1478,50 @@ mod tests {
     use std::collections::HashMap;
 
     use super::{
-        AudioChunk, GatewayError, GatewayMetrics, GatewayServerConfig, GatewayServerState,
-        MAX_CHUNK_BYTES, MAX_TICKET_LIFETIME_SECONDS, RealtimeGateway, TicketCheckOutcome,
-        TicketDedup, TicketError, check_ticket, chunk_forward_body, evict_expired, gateway_router,
-        gateway_router_with_rate_limit, issue_realtime_ticket, metrics_access_allowed,
-        render_prometheus, ticket_hash, unix_now_seconds, validate_realtime_ticket,
+        AudioChunk, AudioIngressAck, GatewayError, GatewayMetrics, GatewayServerConfig,
+        GatewayServerState, MAX_CHUNK_BYTES, MAX_TICKET_LIFETIME_SECONDS, RealtimeGateway,
+        TicketCheckOutcome, TicketDedup, TicketError, check_ticket, chunk_forward_body,
+        evict_expired, gateway_router, gateway_router_with_rate_limit, issue_realtime_ticket,
+        metrics_access_allowed, render_prometheus, serialize_ack, ticket_hash, unix_now_seconds,
+        validate_realtime_ticket,
     };
+
+    #[test]
+    fn rust_audio_ack_serialization_matches_every_committed_vector() {
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../packages/contracts/fixtures/realtime/audio-ack-vectors.json"
+        );
+        let raw = std::fs::read_to_string(path)
+            .unwrap_or_else(|error| panic!("cannot read audio ack vectors at {path}: {error}"));
+        let fixture: serde_json::Value =
+            serde_json::from_str(&raw).expect("audio ack vectors must be valid JSON");
+        let vectors = fixture["vectors"]
+            .as_array()
+            .expect("audio ack vectors must be an array");
+        assert_eq!(fixture["vectorCount"].as_u64(), Some(vectors.len() as u64));
+        assert_eq!(vectors.len(), 3, "the Rust oracle commits three ack paths");
+
+        for vector in vectors {
+            let expected = &vector["ack"];
+            assert_eq!(expected["kind"].as_str(), Some("audio.ack"));
+            let ack = AudioIngressAck {
+                kind: "audio.ack",
+                session_id: expected["session_id"]
+                    .as_str()
+                    .expect("session_id")
+                    .to_owned(),
+                chunk_id: expected["chunk_id"].as_str().expect("chunk_id").to_owned(),
+                sequence: expected["sequence"].as_u64().expect("sequence"),
+                accepted: expected["accepted"].as_bool().expect("accepted"),
+                trace_id: expected["trace_id"].as_str().map(ToOwned::to_owned),
+                message: expected["message"].as_str().expect("message").to_owned(),
+            };
+            let actual: serde_json::Value = serde_json::from_str(&serialize_ack(ack))
+                .expect("serialized audio ack must be valid JSON");
+            assert_eq!(actual, *expected, "ack vector '{}' drifted", vector["name"]);
+        }
+    }
 
     fn metrics_headers(token: Option<&str>) -> axum::http::HeaderMap {
         let mut h = axum::http::HeaderMap::new();

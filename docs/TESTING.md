@@ -29,6 +29,20 @@ This is decision proof only. It requires ADR-0050, the matching living-architect
 canonical invocation. It does not prove that the standalone package, S3 adapter, deadlines, rate
 limits, enrollment, or process lifecycle have been implemented; each has a later behavioral gate.
 
+W3.1 freezes the realtime architecture and Rust-generated wire truth with two hermetic gates:
+
+```bash
+node --test tests/contract/realtime-decisions.test.mjs
+node --test tests/realtime/protocol-fixtures.test.mjs
+```
+
+The decision gate pins the isolated same-package process, Origin/native policy, benchmark-gated
+Postgres nonce-hash proposal, fail-closed shared replay, bounded queues, and diagnostic-only ack
+message. The fixture gate proves the single contracts-owned location, unchanged six-ticket oracle,
+strict Node ack boundary, and accepted/rejected plus trace/null Rust vectors. Rust shared-ticket and
+gateway tests and the Web parser independently consume the same documents. These gates do not
+prove a listener, database replay implementation, load result, or traffic cutover.
+
 The Node package and standalone boundary have four focused gates:
 
 ```bash

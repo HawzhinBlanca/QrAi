@@ -13,7 +13,7 @@ Under option **B** the file list is the same shape; only the number of ported ro
 | `services/node-api/lib/db.mjs` | `sql.begin`-scoped tenant transactions (§2.2) | N3 |
 | `server/src/lib/authz.mjs` | `requireSelfOrAny`, fail-closed on degenerate input (§2.3) | N3 |
 | `server/src/lib/ticket.mjs` | HMAC minting; the only Node code that may produce `rt_v1.…` | N5 |
-| `specs/node-backend-port/fixtures/ticket-vectors.json` | cross-language golden vectors | N1 |
+| `packages/contracts/fixtures/realtime/rt-v2-ticket-vectors.json` | cross-language golden vectors | N1 |
 | `specs/node-backend-port/evidence/` | N5's live-gateway run, N6's report | N5, N6 |
 
 `services/node-api` is a **new service directory**, not a pnpm workspace member — same choice as

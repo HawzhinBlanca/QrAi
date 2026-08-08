@@ -1,3 +1,5 @@
+import { readFileSync } from "node:fs";
+
 import { describe, expect, it } from "vitest";
 import {
   buildRealtimeAudioUrl,
@@ -10,6 +12,12 @@ import {
 } from "./liveRecitation";
 
 const SESSION_ID = "session-test-1";
+const ackFixture = JSON.parse(
+  readFileSync(
+    new URL("../../../../packages/contracts/fixtures/realtime/audio-ack-vectors.json", import.meta.url),
+    "utf8",
+  ),
+) as { vectors: Array<{ name: string; ack: Record<string, unknown> }> };
 
 class FakeWebSocket {
   static OPEN = 1;
@@ -146,10 +154,28 @@ describe("live recitation audio helpers", () => {
           chunk_id: "chunk-1",
           sequence: 0,
           accepted: true,
+          trace_id: null,
           message: "accepted",
         }),
       ),
     ).toMatchObject({ accepted: true, chunk_id: "chunk-1" });
+    for (const vector of ackFixture.vectors) {
+      expect(parseGatewayAudioAck(JSON.stringify(vector.ack)), vector.name).toEqual(vector.ack);
+    }
+    const valid = ackFixture.vectors[0].ack;
+    for (const invalid of [
+      { ...valid, session_id: "" },
+      { ...valid, chunk_id: " " },
+      { ...valid, sequence: -1 },
+      { ...valid, sequence: 0.5 },
+      { ...valid, sequence: Number.MAX_SAFE_INTEGER + 1 },
+      { ...valid, trace_id: undefined },
+      { ...valid, trace_id: "" },
+      { ...valid, message: "" },
+      { ...valid, extra: true },
+    ]) {
+      expect(parseGatewayAudioAck(JSON.stringify(invalid))).toBeNull();
+    }
     expect(parseGatewayAudioAck(JSON.stringify({ kind: "wrong" }))).toBeNull();
     expect(parseGatewayAudioAck("not json")).toBeNull();
   });
@@ -199,6 +225,7 @@ describe("live recitation audio helpers", () => {
         chunk_id: chunk.id,
         sequence: 0,
         accepted: true,
+        trace_id: null,
         message: "accepted",
       }),
     } as MessageEvent<string>);

@@ -39,6 +39,8 @@ const HTTP_CANARY_LOAD = "scripts/load-test.test.mjs";
 const HTTP_CANARY_MONITORING = "tests/observability/http-canary-monitoring.test.mjs";
 const HTTP_CANARY_CONTROLLER = "tests/release/http-canary-controller.test.mjs";
 const HTTP_CANARY_ROLLBACK_EVIDENCE = "tests/release/canary-rollback-evidence.test.mjs";
+const REALTIME_DECISIONS = "tests/contract/realtime-decisions.test.mjs";
+const REALTIME_PROTOCOL_FIXTURES = "tests/realtime/protocol-fixtures.test.mjs";
 
 function activeNodeTestLines(source) {
   return source
@@ -299,6 +301,17 @@ test("canonical verification runs every HTTP canary topology, proof, load, monit
     HTTP_CANARY_CONTROLLER,
     HTTP_CANARY_ROLLBACK_EVIDENCE,
   ]) {
+    assert.equal(
+      invocations.filter((line) => line.includes(target)).length,
+      1,
+      `${target} must run exactly once in canonical verification`,
+    );
+  }
+});
+
+test("canonical verification runs both W3.1 realtime contract gates exactly once", () => {
+  const invocations = activeNodeTestLines(verifySource);
+  for (const target of [REALTIME_DECISIONS, REALTIME_PROTOCOL_FIXTURES]) {
     assert.equal(
       invocations.filter((line) => line.includes(target)).length,
       1,

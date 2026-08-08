@@ -48,8 +48,19 @@ export interface GatewayAudioAck {
   chunk_id: string;
   sequence: number;
   accepted: boolean;
+  trace_id: string | null;
   message: string;
 }
+
+const GATEWAY_AUDIO_ACK_FIELDS = new Set<keyof GatewayAudioAck>([
+  "kind",
+  "session_id",
+  "chunk_id",
+  "sequence",
+  "accepted",
+  "trace_id",
+  "message",
+]);
 
 export interface GatewayUploader {
   sendChunk: (chunk: BrowserAudioChunk) => boolean;
@@ -134,19 +145,34 @@ export function getConfiguredRealtimeAudioUrl(sessionId: string): string {
 
 export function parseGatewayAudioAck(payload: string): GatewayAudioAck | null {
   try {
-    const parsed = JSON.parse(payload) as Partial<GatewayAudioAck>;
+    const parsed = JSON.parse(payload) as Partial<GatewayAudioAck> & Record<string, unknown>;
+    const keys = Object.keys(parsed);
     if (
+      keys.length !== GATEWAY_AUDIO_ACK_FIELDS.size ||
+      !keys.every((key) => GATEWAY_AUDIO_ACK_FIELDS.has(key as keyof GatewayAudioAck)) ||
       parsed.kind !== "audio.ack" ||
-      typeof parsed.session_id !== "string" ||
-      typeof parsed.chunk_id !== "string" ||
+      typeof parsed.session_id !== "string" || parsed.session_id.trim() === "" ||
+      typeof parsed.chunk_id !== "string" || parsed.chunk_id.trim() === "" ||
       typeof parsed.sequence !== "number" ||
+      !Number.isSafeInteger(parsed.sequence) ||
+      parsed.sequence < 0 ||
       typeof parsed.accepted !== "boolean" ||
-      typeof parsed.message !== "string"
+      (parsed.trace_id !== null &&
+        (typeof parsed.trace_id !== "string" || parsed.trace_id.trim() === "")) ||
+      typeof parsed.message !== "string" || parsed.message.trim() === ""
     ) {
       return null;
     }
 
-    return parsed as GatewayAudioAck;
+    return {
+      kind: parsed.kind,
+      session_id: parsed.session_id,
+      chunk_id: parsed.chunk_id,
+      sequence: parsed.sequence,
+      accepted: parsed.accepted,
+      trace_id: parsed.trace_id,
+      message: parsed.message,
+    };
   } catch {
     return null;
   }

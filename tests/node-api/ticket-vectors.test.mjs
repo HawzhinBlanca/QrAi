@@ -13,8 +13,8 @@ import {
 } from "../../server/src/lib/ticket.mjs";
 
 /**
- * N1 — the Node half of the cross-language ticket vectors.
- * specs/node-backend-port/plan.md §5
+ * The Node half of the language-neutral realtime ticket vectors.
+ * specs/lean-flutter-node-consolidation/W3.1-realtime-contract/plan.md
  *
  * The same file is asserted by `services/shared-ticket/src/lib.rs`'s `ticket_vectors` module. Both
  * halves agreeing is what lets a Node platform-api mint tickets the UNCHANGED Rust gateway accepts,
@@ -25,7 +25,7 @@ import {
 
 const here = dirname(fileURLToPath(import.meta.url));
 const fixture = JSON.parse(
-  readFileSync(join(here, "../../specs/node-backend-port/fixtures/ticket-vectors.json"), "utf8"),
+  readFileSync(join(here, "../../packages/contracts/fixtures/realtime/rt-v2-ticket-vectors.json"), "utf8"),
 );
 
 test("Node reproduces every committed vector byte-for-byte", () => {
@@ -43,6 +43,7 @@ test("the vector count is pinned", () => {
   // A truncated or partially-written file would otherwise silently reduce coverage to zero while
   // both language suites still reported green.
   assert.equal(fixture.vectorCount, fixture.vectors.length);
+  assert.equal(fixture.vectors.length, 6, "the Rust oracle commits exactly six divergence vectors");
 });
 
 test("the committed vectors cover the cases most likely to diverge across languages", () => {
@@ -120,7 +121,15 @@ test("a truthy non-boolean consent flag is REFUSED", () => {
 });
 
 test("a non-integer or negative expiry is REFUSED", () => {
-  for (const bad of [1.5, -1, Number.MAX_SAFE_INTEGER + 2, "2000", NaN]) {
+  for (const bad of [
+    1.5,
+    -1,
+    -1n,
+    18_446_744_073_709_551_616n,
+    Number.MAX_SAFE_INTEGER + 2,
+    "2000",
+    NaN,
+  ]) {
     assert.throws(
       () => issueRealtimeTicket({ ...validFields(), expiresAtUnixSeconds: bad }, "secret"),
       TypeError,
