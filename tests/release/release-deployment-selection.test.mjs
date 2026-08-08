@@ -99,8 +99,8 @@ test("running-image proof fails closed on missing, stopped, substituted, or cont
   );
 
   const evidence = verifyRunningReleaseImages({ selection: value, slot: "candidate", observations });
-  assert.equal(evidence.length, 7);
-  assert.equal(evidence.filter(({ reference }) => reference === environment.NODE_BACKEND_IMAGE).length, 2);
+  assert.equal(evidence.length, 8);
+  assert.equal(evidence.filter(({ reference }) => reference === environment.NODE_BACKEND_IMAGE).length, 3);
 
   for (const [mutation, pattern] of [
     [(copy) => { delete copy.web; }, /missing running image observation.*web/],
@@ -114,13 +114,14 @@ test("running-image proof fails closed on missing, stopped, substituted, or cont
   }
 });
 
-test("application rollback proof verifies six services and deliberately excludes the migration runner", () => {
+test("application rollback proof verifies seven services and deliberately excludes the migration runner", () => {
   const value = selection();
   const environment = composeImageEnvironment(value, "previous");
   const references = {
     "platform-api": environment.PLATFORM_API_IMAGE,
     "node-api": environment.NODE_BACKEND_IMAGE,
     "job-worker": environment.NODE_BACKEND_IMAGE,
+    "node-realtime": environment.NODE_BACKEND_IMAGE,
     "realtime-gateway": environment.REALTIME_GATEWAY_IMAGE,
     "asr-inference": environment.ASR_INFERENCE_IMAGE,
     web: environment.WEB_IMAGE,
@@ -142,7 +143,7 @@ test("application rollback proof verifies six services and deliberately excludes
     slot: "previous",
     observations,
   });
-  assert.equal(evidence.length, 6);
+  assert.equal(evidence.length, 7);
   assert.ok(evidence.every(({ service }) => service !== "migrations"));
   assert.throws(
     () => verifyRunningReleaseImages({ selection: value, slot: "previous", observations }),

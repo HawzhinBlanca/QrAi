@@ -53,6 +53,12 @@ replay store, queue, or traffic movement. W3.2 owns the process lifecycle; W3.3 
 W3.4 owns durable replay and the Postgres benchmark; W3.5 owns the bounded audio runtime. A failed
 fixture change restores one authority rather than introducing a second copy.
 
+**Implementation note (2026-08-08, W3.2):** the existing `server` package/image now runs an
+internal `node-realtime` process shell alongside API and worker. It exposes only process liveness,
+bounded deep readiness, and private fixed-cardinality metrics, refuses upgrades, and uses the same
+restricted Postgres, private object-store, shutdown, healthcheck, release, and rollback boundaries.
+It has no host port or traffic edge; Rust remains the only realtime ingress.
+
 ---
 
 ## ADR-0050 — One modular Node backend owns runtime, deadlines, storage, and production identity
@@ -216,7 +222,9 @@ Local live-Postgres proof does not substitute for required remote CI and staging
 **Implementation note (2026-08-07, W2.17):** alignment, instructional Tajweed, transcript assembly,
 acoustic-shadow observation, retained-audio handling, and privacy inference now live under
 `server/src/inference`; the former standalone ML source tree, Compose service, and OCI image are
-removed. `node-api` and `job-worker` are different commands of the exact same production image.
+removed. At W2.17, `node-api` and `job-worker` became different commands of the exact same
+production image; W3.2 later adds `node-realtime` as a third command of that image without moving
+traffic.
 The API never executes durable work inline: it enqueues and waits, while the worker is the sole
 owner of first attempts, retries, and crash recovery. The worker injects one exact object-store
 instance into both workflow and inference paths, preventing adapter drift.
@@ -1608,15 +1616,16 @@ concerns.
 The accepted design is now a **durable registry**:
 - CI publishes every deployable artifact to GHCR under the full candidate Git SHA and records the
   registry-reported `sha256` digest in strict machine-readable JSON;
-- `node-api` and `job-worker` share one `node-backend` artifact identity because they execute the
-  same production image, while the migration runner remains a separate least-privileged artifact;
+- `node-api`, `job-worker`, and `node-realtime` share one `node-backend` artifact identity because
+  they execute the same production image, while the migration runner remains a separate
+  least-privileged artifact;
 - `docker-compose.release.yml` disables source-build fallback and requires exact
   `repository@sha256:digest` references for every released application service;
 - `scripts/release-deployment.mjs` preserves one explicit candidate/previous selection, renders
   either slot into the release overlay, and fails image verification when any running container is
   stopped, substituted, or backed by content other than the selected registry digest;
 - rollback selects a previously retained digest. `scripts/http-canary-controller.mjs` reverses Web
-  and realtime indexing together, then restores and verifies the six previous application images;
+  and realtime indexing together, then restores and verifies the seven previous application images;
   it deliberately excludes the one-shot database image because schema rollback is not an
   application incident action. Registry retention/deletion is an explicit remote policy and is
   never simulated by pruning ephemeral runner-local tags.
@@ -1625,9 +1634,9 @@ The accepted design is now a **durable registry**:
 or rollback rehearsal must use the release overlay and observed image digests; rebuilding an old
 commit does not satisfy the rollback gate.
 
-**Implementation note (2026-08-08, W2.18 T5 gate):** controller artifacts now distinguish a
+**Implementation note (2026-08-08, W2.18 T5 gate; W3.2 service-count amendment):** controller artifacts now distinguish a
 healthy observation, a deliberate rollback drill, and an incident, and offline verification
-requires the rollback to expose six restored images, one stored effect, zero duplicates, and passed
+requires the rollback to expose seven restored images, one stored effect, zero duplicates, and passed
 privacy cleanup. Release mode validates a fresh signed monitoring observation, the exact successful
 remote check inventory, and independent role-bound release-owner/security/SRE Ed25519 approvals
 over the exact candidate/load/controller artifacts. The validator writes a closure only after the

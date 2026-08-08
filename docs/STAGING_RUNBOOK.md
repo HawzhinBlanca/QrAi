@@ -159,16 +159,32 @@ docker compose exec -e PROBE_TOKEN="$METRICS_TOKEN" job-worker node -e \
   'fetch("http://127.0.0.1:8098/metrics",{headers:{"x-metrics-token":process.env.PROBE_TOKEN}}).then(async r=>{if(!r.ok)process.exit(1);process.stdout.write(await r.text())})'
 ```
 
-Confirm that the deployment has one Node artifact rather than two drifting service images:
+`node-realtime` is the third command of that image. In W3.2 it is an internal process shell only:
+it publishes no host port, receives no Web/gateway traffic, and refuses every upgrade. Its deep
+readiness checks the restricted database role, private object store, job worker, and loaded-model
+ASR within one bound. Confirm its internal readiness and private metrics without routing traffic:
 
 ```bash
-test "$(docker compose images --quiet node-api job-worker | sort -u | wc -l | tr -d ' ')" = 1
+docker compose ps node-realtime
+docker compose exec node-realtime node server/src/container-healthcheck.mjs
+docker compose exec -e PROBE_TOKEN="$METRICS_TOKEN" node-realtime node -e \
+  'fetch("http://127.0.0.1:8081/metrics",{headers:{"x-metrics-token":process.env.PROBE_TOKEN}}).then(async r=>{if(!r.ok)process.exit(1);process.stdout.write(await r.text())})'
+```
+
+`NodeRealtimeShadowUnready` is an investigation warning during this no-traffic phase. Diagnose the
+four closed readiness classes; never expose upstream errors or attach identity labels. W3.9, not
+this shadow, owns traffic movement.
+
+Confirm that the deployment has one Node artifact rather than three drifting service images:
+
+```bash
+test "$(docker compose images --quiet node-api job-worker node-realtime | sort -u | wc -l | tr -d ' ')" = 1
 ! docker compose config --services | grep -qx ml-inference
 node scripts/smoke-ml.mjs
 node scripts/smoke-privacy.mjs
 ```
 
-The first command requires `node-api` and `job-worker` to resolve to the same image id. The second
+The first command requires all three Node roles to resolve to the same image id. The second
 proves the retired standalone ML service did not return through an overlay. The smokes exercise the
 worker's private compatibility and shared storage/privacy paths; they are operational checks, not
 model-quality or public-traffic-cutover evidence.
@@ -262,8 +278,9 @@ The additive rows become inert while existing JWT/pilot flows remain unchanged. 
 migration 0035 or delete rows during rollback. Re-enable only after the owner and incident owner
 approve a new bounded canary.
 
-The current Node API has no WebSocket route. Its raw-socket fallback bounds unexpected upgrades,
-but protocol close frames belong to the W3 Node realtime entrypoint and are not yet claimed.
+The Node API has no WebSocket route, and the W3.2 Node realtime process shell deliberately refuses
+upgrades. Its shared raw-socket fallback bounds unexpected upgrades; protocol close frames belong
+to W3.3 admission and are not yet claimed.
 
 ## Kill-switch — graceful maintenance mode (P5.5)
 
@@ -442,9 +459,9 @@ so a real incident cannot later be relabeled as the release rehearsal.
 
 A healthy observation exits only as `awaiting-human-promotion`; it performs no deployment mutation
 and grants no approval. Any stop signal first recreates Web and realtime gateway together on the
-Rust target using cached candidate images, then deploys the six cached previous application images
+Rust target using cached candidate images, then deploys the seven cached previous application images
 with `--pull never`. It never runs an old database image or rolls schema/data backward. Verification
-waits at most 60 seconds for all six containers, checks their exact previous digests, sends one
+waits at most 60 seconds for all seven containers, checks their exact previous digests, sends one
 synthetic progress write, proves exactly one stored effect, and privacy-deletes the synthetic
 learner. The controller artifact exposes all three offline-verifiable claims: `storedEffects: 1`,
 `duplicateEffects: 0`, and `privacyCleanup: passed`. Rollback-complete exits nonzero so automation cannot mistake a rejected candidate for a

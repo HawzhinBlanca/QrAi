@@ -77,11 +77,15 @@
 - `services/shared-ticket`: Rust — HMAC realtime-ticket issuance/validation shared by
   `platform-api` (issuer) and `realtime-gateway` (validator), so the signing logic lives in one
   place.
-- `server` / Compose `node-api` + `job-worker`: the single production Node package and image. The image
-  is built from the frozen server workspace production graph on digest-pinned Node 22.13.1, runs as
+- `server` / Compose `node-api` + `job-worker` + `node-realtime`: the single production Node package
+  and image. The image is built from the frozen server workspace production graph on digest-pinned
+  Node 22.13.1, runs as
   the non-root `node` user, publishes no host port, and uses native bounded healthchecks. `node-api`
   owns request admission and synchronous compatibility responses; `job-worker` owns durable job
-  execution, retained-audio writes/retention, and the server-local inference runtime. Its key-gated,
+  execution, retained-audio writes/retention, and the server-local inference runtime;
+  `node-realtime` is an internal, independently drainable process shell with liveness, bounded deep
+  readiness, and private fixed-cardinality metrics. It accepts no upgrade and receives no traffic.
+  The worker's key-gated,
   rate-limited private listener on port 8098 exists only for the measured Rust/gateway compatibility
   consumers and exposes a closed route allowlist.
 
@@ -168,16 +172,19 @@ than current-state claims.
 
 ### Target realtime boundary (ADR-0051)
 
-The same `server` package will expose a separate realtime process so socket admission and bounded
-audio queues can fail, drain, and scale independently of API and worker event loops. The Rust
+The same `server` package now exposes a separate realtime process shell so its lifecycle can fail,
+drain, and scale independently of API and worker event loops. It exposes only `/health`, `/ready`,
+and private `/metrics`, refuses upgrades, and is an internal no-traffic shadow. Future socket
+admission and bounded audio queues remain W3.3–W3.5 work. The Rust
 gateway remains the compatibility oracle during W3. Rust-generated language-neutral `rt_v2` and
 `audio.ack` fixtures are the shared wire authority; Node does not generate protocol truth. Browser
 upgrades retain the exact Origin allowlist, while native no-Origin admission is an explicit policy
 that never bypasses tenant/session/expiry/retention checks. Replay stores only a SHA-256 nonce hash,
 never a raw ticket. A shared authority must fail closed, and Postgres remains proposed until the
 W3.4 cross-instance benchmark passes. Each session uses a bounded queue and explicit ack semantics;
-ack message text is diagnostic only. W3.1 records this boundary and its fixtures without adding a
-listener, migration, queue, or traffic switch.
+ack message text is diagnostic only. W3.1 records this boundary and its fixtures; W3.2 implements
+only the independently drainable process lifecycle, without a listener, migration, queue, or
+traffic switch.
 
 The implemented W2.16 device-identity boundary is additive migration 0035 plus three Node routes,
 one identity-domain module, and one audited operator command. Invitations and access/refresh
@@ -227,8 +234,9 @@ controller and a hard deadline exits non-zero. Fastify is explicitly configured 
 connections at close because pinned 5.11's native branch otherwise calls `closeAllConnections` for
 its documented idle setting. Node 22 owns idle reaping, while the controller owns forced closure.
 The image sends SIGTERM and Compose's default ten-second stop window exceeds the app's eight-second
-budget. The current API exposes no WebSocket route; W3 must add protocol close frames to the future
-realtime entrypoint, while this raw-socket fallback prevents an upgrade from hanging deployment.
+budget. The API exposes no WebSocket route, and the W3.2 realtime process deliberately refuses
+upgrades; W3.3 must add protocol close frames when it adds admission. The shared raw-socket fallback
+prevents an unexpected upgrade from hanging deployment in either process.
 
 The implemented W2.14 storage boundary uses one async interface injected into the Node API and
 worker-owned inference runtime. Production requires an explicit private S3-compatible bucket;
@@ -263,8 +271,9 @@ create one audited successor, preserving replay lineage instead of resetting a f
 evaluation writer or signing authority exists in this boundary.
 
 The implemented W2.17 cutover moved alignment, Tajweed, transcript, acoustic-shadow, retained-audio,
-and privacy inference handlers into `server/src/inference`. `node-api` and `job-worker` are two
-commands of the exact same OCI image; Compose, release inventories, smoke tests, and Docker CI pin
+and privacy inference handlers into `server/src/inference`. `node-api`, `job-worker`, and
+`node-realtime` are three commands of the exact same OCI image; Compose, release inventories, smoke
+tests, and Docker CI pin
 that single image identity. The worker injects the exact same object-store instance into inference
 and durable workflow execution, so write/read/retention/privacy behavior cannot drift between
 process-local adapters. A private key gate, closed route allowlist, rate admission, body limits, and
@@ -280,17 +289,18 @@ retirement-transition operations during this window. Mutable retained requests a
 Node; they are never duplicated to Rust for comparison. Removing the canary overlay restores the
 base Rust targets. Immutable candidate/previous images are selected separately through
 `docker-compose.release.yml`. The actual-image proof runner consumes that preserved selection,
-inspects all seven running container image IDs plus the live Web/gateway/Node environment, uses
+inspects all eight running container image IDs plus the live Web/gateway/Node environment, uses
 short-lived JWT actors, and labels responses only in canary mode so every retained request can prove
 Node ownership. It exercises hostile/effect/privacy/tenant/audio behavior, deliberately removes the
 Rust oracle, requires all 39 retained operations to remain local and all four transition operations
 to fail at the compatibility boundary, then restores Rust in a failure-safe path. Its write-once,
-24-hour evidence is proof input, never promotion authority. Prometheus now separates Node, worker,
-Rust, and gateway signals without identity labels; the k6 runner has closed classroom, burst, and
-soak profiles bound to candidate image and topology identities. The one-shot stop controller
+24-hour evidence is proof input, never promotion authority. Prometheus now separates Node API,
+worker, Node realtime shadow, Rust, and gateway signals without identity labels; the k6 runner has
+closed classroom, burst, and soak profiles bound to candidate image and topology identities. The
+one-shot stop controller
 consumes the closed metrics/trust observation, never auto-promotes, and on any stop signal first
-returns Web plus gateway indexing to Rust, then restores exactly the six previous application
-digests without rerunning an old database image. It requires all six containers healthy and proves
+returns Web plus gateway indexing to Rust, then restores exactly the seven previous application
+services without rerunning an old database image. It requires all seven containers healthy and proves
 one request produced one stored effect before privacy-cleaning the synthetic learner. Controller
 evidence distinguishes ordinary observation, deliberate drill, and incident runs. The release-mode
 closure validator binds a protected signed monitoring observation and exact signed remote-CI checks

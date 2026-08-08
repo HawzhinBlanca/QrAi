@@ -43,6 +43,23 @@ strict Node ack boundary, and accepted/rejected plus trace/null Rust vectors. Ru
 gateway tests and the Web parser independently consume the same documents. These gates do not
 prove a listener, database replay implementation, load result, or traffic cutover.
 
+W3.2 proves the isolated Node realtime process shell with one focused gate:
+
+```bash
+MIGRATION_TEST_ADMIN_URL="$ADMIN_URL" \
+  node --test tests/realtime/process-lifecycle.test.mjs
+```
+
+Its hermetic cases prove side-effect-free import, strict process configuration, the exact
+`/health`/`/ready`/`/metrics` surface, fail-closed private metrics, bounded dependency faults,
+upgrade refusal, and API/realtime failure isolation. With Postgres reachable, the actual
+`server/src/realtime/main.mjs` child boots under a freshly provisioned restricted role, reaches deep
+readiness through real filesystem storage and live worker/ASR probes, then closes cleanly on
+SIGTERM. A skipped live case is not restricted-role entrypoint proof. The production/release and
+monitoring contracts additionally pin the third command to the same immutable Node image, with no
+host port or traffic edge. This gate does not prove WebSocket admission, replay, audio queues, or
+traffic cutover.
+
 The Node package and standalone boundary have four focused gates:
 
 ```bash
@@ -230,15 +247,15 @@ for Web plus gateway indexing. The effect suite boots the real Node compatibilit
 health and mutable privacy requests stay local, while transition/Rust-only requests proxy exactly
 once. A retained mutable request never reaches Rust. A proof-only owner header is enabled only by
 `retained-canary` mode and absent from normal API
-responses. The image contract requires exact candidate/previous digests, seven inspected container
+responses. The image contract requires exact candidate/previous digests, eight inspected container
 identities, the rendered and running topology, the 39/4 route inventories, hostile/effect/privacy/
 tenant/audio stages, a deliberate Rust-unavailable proof, guaranteed restoration, clean source,
 write-once output, and 24-hour expiry. `scripts/http-canary-image.mjs` executes that proof against an
 already-running immutable candidate stack and refuses a source-process or fixture substitute. The
 load contract requires passed classroom, burst, and 30-minute soak artifacts with identical
-candidate source, Node image, and topology identities. Monitoring tests pin four private scrapes,
+candidate source, Node image, and topology identities. Monitoring tests pin five private scrapes,
 low-cardinality alert thresholds, and dashboard queries. Controller tests prove healthy input has
-no mutation or promotion authority, every stop signal reverses traffic then restores six previous
+no mutation or promotion authority, every stop signal reverses traffic then restores seven previous
 application images, old database images are excluded, failure evidence is prefix-closed, and the
 rollback effect/cleanup probe requires one stored effect, zero duplicates, and verified privacy
 cleanup. `canary-rollback-evidence.test.mjs` also proves the release validator accepts only a fresh,

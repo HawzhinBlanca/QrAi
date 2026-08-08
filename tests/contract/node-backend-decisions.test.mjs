@@ -111,11 +111,15 @@ test("W2.17 one-image inference ownership is reflected across operational living
 
   assert.match(decisions, /Implementation note \(2026-08-07, W2\.17\)/);
   assert.match(decisions, /server\/src\/inference/);
-  assert.match(decisions, /exact same production image/i);
+  assert.match(decisions, /exact same\s+production image/i);
   assert.match(decisions, /API never executes durable work inline/i);
 
   assert.match(architecture, /implemented W2\.17 cutover/i);
-  assert.match(architecture, /node-api` and `job-worker` are two\s+commands of the exact same OCI image/i);
+  assert.match(
+    architecture,
+    /node-api`, `job-worker`, and\s+`node-realtime` are three commands of the exact same OCI image/i,
+  );
+  assert.match(architecture, /internal no-traffic shadow/i);
   assert.doesNotMatch(architecture, /^- `services\/ml-inference`/m);
 
   assert.match(testing, /W2\.17 server-owned inference and one-image consolidation/i);

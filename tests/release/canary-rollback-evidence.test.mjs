@@ -60,6 +60,7 @@ function candidateEvidence(selection) {
     "platform-api": environment.PLATFORM_API_IMAGE,
     "node-api": environment.NODE_BACKEND_IMAGE,
     "job-worker": environment.NODE_BACKEND_IMAGE,
+    "node-realtime": environment.NODE_BACKEND_IMAGE,
     migrations: environment.MIGRATION_RUNNER_IMAGE,
     "realtime-gateway": environment.REALTIME_GATEWAY_IMAGE,
     "asr-inference": environment.ASR_INFERENCE_IMAGE,
@@ -245,7 +246,7 @@ async function releaseDocuments() {
     deployPrevious: async () => operationResult("e"),
     verifyPrevious: async () => ({
       ...operationResult("f"),
-      applicationImagesVerified: 6,
+      applicationImagesVerified: 7,
       storedEffects: 1,
       duplicateEffects: 0,
       privacyCleanup: "passed",

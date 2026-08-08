@@ -45,6 +45,7 @@ export function installProcessShutdown(
     processRef = process,
     log = (message) => processRef.stderr.write(`${message}\n`),
     signals = ["SIGINT", "SIGTERM"],
+    role = "node api",
   } = {},
 ) {
   assertGraceMs(graceMs);
@@ -59,6 +60,9 @@ export function installProcessShutdown(
     throw new TypeError("installProcessShutdown requires a process-like object");
   }
   if (typeof log !== "function") throw new TypeError("shutdown log must be a function");
+  if (typeof role !== "string" || !/^[a-z][a-z0-9-]*(?: [a-z0-9-]+)*$/.test(role)) {
+    throw new TypeError("shutdown role must be a fixed lower-case process label");
+  }
   if (!Array.isArray(signals) || signals.length === 0) {
     throw new TypeError("shutdown signals must be a non-empty array");
   }
@@ -112,7 +116,7 @@ export function installProcessShutdown(
   function forceConnections(reason) {
     if (!forceLogged) {
       forceLogged = true;
-      log(`node api shutdown force-closing connections reason=${reason}`);
+      log(`${role} shutdown force-closing connections reason=${reason}`);
     }
     // app.close() is always started before this function, matching Node's documented ordering and
     // avoiding a new-connection race between closeAllConnections() and server.close().
@@ -137,11 +141,11 @@ export function installProcessShutdown(
       return shutdownPromise;
     }
 
-    log(`node api shutdown started reason=${reason} grace_ms=${graceMs}`);
+    log(`${role} shutdown started reason=${reason} grace_ms=${graceMs}`);
     closingStarted = true;
     hardTimer = setTimeout(() => {
       forceConnections("hard-deadline");
-      log("node api shutdown hard deadline exceeded");
+      log(`${role} shutdown hard deadline exceeded`);
       processRef.exit(1);
     }, graceMs);
     forceTimer = setTimeout(() => forceConnections("grace-reserve"), phases.forceAfterMs);
@@ -155,15 +159,15 @@ export function installProcessShutdown(
           if (!activeRequests.has(socket) && !upgradedSockets.has(socket)) socket.end();
         }
         await closing;
-        log("node api shutdown resources closed");
+        log(`${role} shutdown resources closed`);
         clearTimers();
         processRef.exitCode = requestedExitCode;
-        log(`node api shutdown complete exit_code=${requestedExitCode}`);
+        log(`${role} shutdown complete exit_code=${requestedExitCode}`);
       } catch {
         requestedExitCode = 1;
         processRef.exitCode = 1;
         forceConnections("close-failure");
-        log("node api shutdown resource close failed");
+        log(`${role} shutdown resource close failed`);
         // Keep the referenced hard timer: it guarantees exit if the failed close left a handle.
       }
     })();

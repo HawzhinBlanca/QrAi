@@ -42,6 +42,7 @@ const HTTP_CANARY_CONTROLLER = "tests/release/http-canary-controller.test.mjs";
 const HTTP_CANARY_ROLLBACK_EVIDENCE = "tests/release/canary-rollback-evidence.test.mjs";
 const REALTIME_DECISIONS = "tests/contract/realtime-decisions.test.mjs";
 const REALTIME_PROTOCOL_FIXTURES = "tests/realtime/protocol-fixtures.test.mjs";
+const REALTIME_PROCESS_LIFECYCLE = "tests/realtime/process-lifecycle.test.mjs";
 
 function activeNodeTestLines(source) {
   return source
@@ -325,4 +326,13 @@ test("canonical verification runs both W3.1 realtime contract gates exactly once
       `${target} must run exactly once in canonical verification`,
     );
   }
+});
+
+test("canonical verification runs the W3.2 realtime process lifecycle exactly once", () => {
+  const invocations = activeNodeTestLines(verifySource);
+  assert.equal(
+    invocations.filter((line) => line.includes(REALTIME_PROCESS_LIFECYCLE)).length,
+    1,
+    `${REALTIME_PROCESS_LIFECYCLE} must run exactly once in canonical verification`,
+  );
 });

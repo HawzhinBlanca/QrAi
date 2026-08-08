@@ -1,6 +1,6 @@
 # W3.2 research — isolated Node realtime process lifecycle
 
-**Status:** research complete; implementation not started<br>
+**Status:** research complete; implementation in verification<br>
 **Method:** Serena is unavailable in this session, so definitions and references were mapped with
 read-only `rg` and exact source inspection.<br>
 **Scope:** W3.2 / RTP-1…RTP-6 / parent BE-5 and OP-4.
@@ -41,6 +41,8 @@ read-only `rg` and exact source inspection.<br>
   worker.
 
 ## Current realtime and deployment state
+
+The bullets in this section are the pre-implementation baseline captured during research.
 
 - `server/src/realtime/protocol.mjs` owns only strict `audio.ack` construction/parsing. It imports no
   listener or crypto, exactly as W3.1 required. There is no Node realtime entrypoint today.

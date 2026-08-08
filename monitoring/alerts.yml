@@ -19,6 +19,13 @@ groups:
         annotations:
           summary: "Candidate durable worker is unreachable"
 
+      - alert: NodeRealtimeShadowUnready
+        expr: up{job="node-realtime"} == 0 or realtime_process_ready{job="node-realtime"} == 0
+        for: 1m
+        labels: { severity: warning, action: investigate }
+        annotations:
+          summary: "Node realtime shadow process is unreachable or unready"
+
       - alert: RustOracleDown
         expr: up{job="platform-api"} == 0
         for: 1m

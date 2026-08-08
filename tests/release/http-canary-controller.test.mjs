@@ -69,7 +69,7 @@ function context({ failDeploy = false } = {}) {
       calls.push("verifyPrevious");
       return {
         ...operationResult("c"),
-        applicationImagesVerified: 6,
+        applicationImagesVerified: 7,
         storedEffects: 1,
         duplicateEffects: 0,
         privacyCleanup: "passed",
@@ -132,7 +132,7 @@ test("a failed rollback stays failed evidence and never proceeds past the failed
       const forged = structuredClone(error.evidence);
       forged.rollback.verification = {
         ...operationResult("c"),
-        applicationImagesVerified: 6,
+        applicationImagesVerified: 7,
         storedEffects: 1,
         duplicateEffects: 0,
         privacyCleanup: "passed",
@@ -155,13 +155,14 @@ test("release rollback proof distinguishes a deliberate drill from a real incide
   assert.equal((await runHttpCanaryController(args)).runClass, "deliberate-drill");
 });
 
-test("the operator plan reverses Web and gateway together, restores six apps, and never rolls back migrations", () => {
+test("the operator plan reverses Web and gateway together, restores seven apps, and never rolls back migrations", () => {
   const plan = httpCanaryControllerCommandPlan({ projectName: "qrai-canary" });
   assert.deepEqual(plan.reverseTraffic.slice(-3), ["node-api", "realtime-gateway", "web"]);
-  assert.deepEqual(plan.deployPrevious.slice(-6), [
+  assert.deepEqual(plan.deployPrevious.slice(-7), [
     "platform-api",
     "node-api",
     "job-worker",
+    "node-realtime",
     "realtime-gateway",
     "asr-inference",
     "web",

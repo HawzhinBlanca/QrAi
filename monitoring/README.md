@@ -1,8 +1,9 @@
 # HTTP canary monitoring
 
-This stack scrapes the Node API, durable worker, Rust compatibility API, and realtime gateway. Its
-alerts are machine stop signals for W2.18; live receiver validation and SRE sign-off remain external
-release gates.
+This stack scrapes the Node API, durable worker, internal Node realtime shadow, Rust compatibility
+API, and realtime gateway. W2.18 traffic alerts are machine stop signals; the W3.2 realtime shadow
+alert is an investigation warning because that process receives no traffic. Live receiver
+validation and SRE sign-off remain external release gates.
 
 ## Run without placing a secret in the repository
 
@@ -23,12 +24,13 @@ datasource. The dashboard separates Node HTTP rate/error/latency/fallback, worke
 state, component readiness, and stored-but-unindexed audio. It contains no tenant, learner, user,
 session, or trace labels.
 
-## Stop policy
+## Signal policy
 
 | Alert | Immutable stop condition |
 |---|---|
 | `NodeCanaryDown` | Node readiness is lost |
 | `JobWorkerDown` | durable worker readiness is lost |
+| `NodeRealtimeShadowUnready` | the no-traffic Node realtime process is unreachable or not deeply ready; investigate, do not infer a traffic outage |
 | `RustOracleDown` | transition/rollback oracle readiness is lost |
 | `NodeCanaryHighErrorRate` | Node 5xx share exceeds 1% for 5 minutes |
 | `NodeCanaryHighLatency` | Node global p95 exceeds 1000 ms for 5 minutes |

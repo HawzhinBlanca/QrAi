@@ -41,19 +41,20 @@ test("the Node image is digest-locked, multi-stage, production-only, and non-roo
     dockerfile,
     /COPY --chown=node:node packages\/contracts\/route-manifest\.json \.\/packages\/contracts\/route-manifest\.json/,
   );
-  assert.match(dockerfile, /^EXPOSE 8082 8098$/m);
+  assert.match(dockerfile, /^EXPOSE 8081 8082 8098$/m);
   assert.doesNotMatch(dockerfile, /apt-get|apk add|curl|wget/);
   assert.doesNotMatch(dockerfile, /services\/node-api/, "the production image must not copy the retired tree");
   assert.doesNotMatch(dockerfile, /COPY (?:tests\/|apps\/|packages\/\s|services\/platform-api)/);
 });
 
-test("the retired ML service source is absent and both Node roles use one image", () => {
+test("the retired ML service source is absent and all three Node roles use one image", () => {
   for (const name of ["Dockerfile", "README.md", "server.mjs"]) {
     assert.equal(existsSync(join(repo, "services/ml-inference", name)), false, `${name} still deploys old ML`);
   }
   const compose = parseYaml(read("docker-compose.yml"));
   assert.equal(compose.services?.["node-api"]?.build?.dockerfile, "server/Dockerfile");
   assert.equal(compose.services?.["job-worker"]?.build?.dockerfile, "server/Dockerfile");
+  assert.equal(compose.services?.["node-realtime"]?.build?.dockerfile, "server/Dockerfile");
   assert.equal(compose.services?.["ml-inference"], undefined);
 });
 
@@ -73,6 +74,8 @@ test("Compose adds an internal shadow while Rust remains the only traffic target
     "controlled device identity must be explicitly owner-enabled and default off",
   );
   assert.equal(nodeApi.environment?.SHUTDOWN_GRACE_SECS, "${SHUTDOWN_GRACE_SECS:-8}");
+  assert.equal(nodeApi.environment?.NODE_HEALTHCHECK_URL, "http://127.0.0.1:8082/ready");
+  assert.equal(nodeApi.environment?.NODE_API_HEALTHCHECK_URL, undefined);
   assert.equal(nodeApi.environment?.AUDIO_STORAGE_DRIVER, "${AUDIO_STORAGE_DRIVER:-filesystem}");
   assert.equal(nodeApi.environment?.AUDIO_STORAGE_S3_BUCKET, "${AUDIO_STORAGE_S3_BUCKET:-}");
   assert.ok(nodeApi.volumes.includes("audio_storage:/data/audio-storage"));
@@ -93,7 +96,8 @@ test("Compose adds an internal shadow while Rust remains the only traffic target
   assert.equal(worker.ports, undefined, "the worker must not publish a host port");
   assert.match(worker.environment?.DATABASE_URL, /quran_ai_app/);
   assert.equal(worker.environment?.JOB_WORKER_BIND, "0.0.0.0:8098");
-  assert.equal(worker.environment?.NODE_API_HEALTHCHECK_URL, "http://127.0.0.1:8098/ready");
+  assert.equal(worker.environment?.NODE_HEALTHCHECK_URL, "http://127.0.0.1:8098/ready");
+  assert.equal(worker.environment?.NODE_API_HEALTHCHECK_URL, undefined);
   assert.equal(worker.depends_on?.migrations?.condition, "service_completed_successfully");
   assert.equal(worker.depends_on?.["asr-inference"]?.condition, "service_healthy");
   assert.equal(worker.depends_on?.["ml-inference"], undefined);
@@ -102,9 +106,31 @@ test("Compose adds an internal shadow while Rust remains the only traffic target
   assert.ok(worker.volumes.includes("audio_storage:/data/audio-storage"));
   assert.equal(worker.stop_grace_period, "${JOB_WORKER_STOP_GRACE_PERIOD:-10s}");
 
+  const realtime = compose.services?.["node-realtime"];
+  assert.ok(realtime, "same-package realtime shadow is required");
+  assert.equal(realtime.build?.dockerfile, "server/Dockerfile");
+  assert.equal(realtime.image, nodeApi.image, "API, worker, and realtime must execute one tagged image");
+  assert.deepEqual(realtime.command, ["node", "server/src/realtime/main.mjs"]);
+  assert.deepEqual(realtime.expose, ["8081"]);
+  assert.equal(realtime.ports, undefined, "the realtime shadow must not publish a host port");
+  assert.match(realtime.environment?.DATABASE_URL, /quran_ai_app/);
+  assert.equal(realtime.environment?.NODE_REALTIME_BIND, "0.0.0.0:8081");
+  assert.equal(realtime.environment?.NODE_HEALTHCHECK_URL, "http://127.0.0.1:8081/ready");
+  assert.equal(realtime.environment?.REALTIME_READINESS_TIMEOUT_MS, "${REALTIME_READINESS_TIMEOUT_MS:-2000}");
+  assert.equal(realtime.environment?.ML_INFERENCE_URL, "http://job-worker:8098");
+  assert.equal(realtime.environment?.ASR_SERVICE_URL, "http://asr-inference:8091");
+  assert.equal(realtime.depends_on?.migrations?.condition, "service_completed_successfully");
+  assert.equal(realtime.depends_on?.["job-worker"]?.condition, "service_healthy");
+  assert.equal(realtime.depends_on?.["asr-inference"]?.condition, "service_healthy");
+  assert.equal(realtime.depends_on?.["platform-api"], undefined);
+  assert.ok(realtime.volumes.includes("audio_storage:/data/audio-storage"));
+  assert.equal(realtime.stop_grace_period, "${NODE_REALTIME_STOP_GRACE_PERIOD:-10s}");
+  assert.deepEqual(realtime.healthcheck?.test, ["CMD", "node", "server/src/container-healthcheck.mjs"]);
+
   assert.equal(compose.services.web.depends_on?.["platform-api"]?.condition, "service_healthy");
   assert.equal(compose.services.web.environment?.WEB_PLATFORM_API_UPSTREAM, "platform-api:8080");
   assert.equal(compose.services.web.depends_on?.["node-api"], undefined);
+  assert.equal(compose.services.web.depends_on?.["node-realtime"], undefined);
   assert.equal(compose.services.web.depends_on?.["ml-inference"], undefined);
   assert.equal(compose.services["platform-api"].environment.ML_INFERENCE_URL, "http://job-worker:8098");
   assert.equal(nodeApi.environment.ML_INFERENCE_URL, "http://job-worker:8098");
@@ -124,7 +150,7 @@ test("release, rollback, SBOM, licence, and Docker workflows include the shared 
   ]);
   assert.deepEqual(
     DEPLOYABLE_IMAGES.find(({ key }) => key === "node-backend")?.composeServices,
-    ["node-api", "job-worker"],
+    ["node-api", "job-worker", "node-realtime"],
   );
 
   for (const path of [

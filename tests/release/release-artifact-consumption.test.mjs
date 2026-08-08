@@ -15,7 +15,7 @@ const read = (path) => readFileSync(path, "utf8");
 const sha = "0123456789abcdef0123456789abcdef01234567";
 const digest = `sha256:${"a".repeat(64)}`;
 
-test("one inventory owns every release image and maps both Node roles to one backend artifact", () => {
+test("one inventory owns every release image and maps all three Node roles to one backend artifact", () => {
   assert.deepEqual(DEPLOYABLE_IMAGES, [
     {
       key: "platform-api",
@@ -25,7 +25,7 @@ test("one inventory owns every release image and maps both Node roles to one bac
     },
     {
       key: "node-backend",
-      composeServices: ["node-api", "job-worker"],
+      composeServices: ["node-api", "job-worker", "node-realtime"],
       context: ".",
       dockerfile: "server/Dockerfile",
     },
@@ -136,8 +136,12 @@ test("release Compose consumes exact image references, shares Node, and has no s
   ]) {
     assert.match(release, new RegExp(`\\$\\{${variable}:\\?`), `${variable} must be required`);
   }
-  assert.equal((release.match(/image:\s*"\$\{NODE_BACKEND_IMAGE:\?/g) ?? []).length, 2);
-  assert.equal((release.match(/build:\s*!reset null/g) ?? []).length, DEPLOYABLE_IMAGES.length + 1);
+  assert.equal((release.match(/image:\s*"\$\{NODE_BACKEND_IMAGE:\?/g) ?? []).length, 3);
+  const releaseServiceCount = DEPLOYABLE_IMAGES.reduce(
+    (count, { composeServices }) => count + composeServices.length,
+    0,
+  );
+  assert.equal((release.match(/build:\s*!reset null/g) ?? []).length, releaseServiceCount);
   assert.doesNotMatch(release, /:latest\b|:-local|dockerfile:/);
 });
 

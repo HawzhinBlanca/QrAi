@@ -15,11 +15,12 @@ const monitoringCompose = readFileSync("monitoring/docker-compose.monitoring.yml
 const appCompose = readFileSync("docker-compose.yml", "utf8");
 const dashboard = JSON.parse(readFileSync("monitoring/grafana-dashboard.json", "utf8"));
 
-test("Prometheus scrapes Node, worker, Rust, and gateway with the private metrics token", () => {
+test("Prometheus scrapes all Node roles, Rust, and gateway with the private metrics token", () => {
   const jobs = Object.fromEntries(prometheus.scrape_configs.map((job) => [job.job_name, job]));
   assert.deepEqual(Object.keys(jobs).sort(), [
     "job-worker",
     "node-api",
+    "node-realtime",
     "platform-api",
     "realtime-gateway",
   ]);
@@ -30,6 +31,7 @@ test("Prometheus scrapes Node, worker, Rust, and gateway with the private metric
     "platform-api": ["platform-api:8080"],
     "node-api": ["node-api:8082"],
     "job-worker": ["job-worker:8098"],
+    "node-realtime": ["node-realtime:8081"],
     "realtime-gateway": ["realtime-gateway:8081"],
   });
   for (const job of Object.values(jobs)) {
@@ -58,6 +60,7 @@ test("canary alerts cover readiness, errors, fallback, jobs, and lost audio with
     "DurableJobRetries",
     "DurableJobDeadLetter",
     "StoredAudioUnindexed",
+    "NodeRealtimeShadowUnready",
   ]) {
     assert.ok(names.has(required), `${required} alert is missing`);
   }
@@ -99,6 +102,7 @@ test("the automatic stop vocabulary includes every non-Prometheus trust invarian
   });
   assert.match(monitoringCompose, /node-api:[\s\S]*condition:\s*service_healthy/);
   assert.match(monitoringCompose, /job-worker:[\s\S]*condition:\s*service_healthy/);
+  assert.match(monitoringCompose, /node-realtime:[\s\S]*condition:\s*service_healthy/);
   assert.match(monitoringCompose, /realtime-gateway:[\s\S]*condition:\s*service_healthy/);
 });
 

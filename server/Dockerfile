@@ -23,7 +23,7 @@ FROM ${NODE_IMAGE} AS runtime
 ENV NODE_ENV=production
 WORKDIR /app
 LABEL org.opencontainers.image.title="Quran AI Node Backend" \
-      org.opencontainers.image.description="Node API and inference worker roles for the Flutter/Node consolidation" \
+      org.opencontainers.image.description="Node API, realtime, and inference worker roles for the Flutter/Node consolidation" \
       org.opencontainers.image.source="https://github.com/hawzhin/QrAi"
 
 # `/out` contains only declared production dependencies. Put them at the application root so the
@@ -42,7 +42,7 @@ COPY --chown=node:node services/asr-inference/acoustic-candidates.json ./service
 RUN mkdir -p /data/audio-storage && chown node:node /data/audio-storage
 
 USER node
-EXPOSE 8082 8098
+EXPOSE 8081 8082 8098
 HEALTHCHECK --interval=10s --timeout=5s --retries=3 CMD ["node", "server/src/container-healthcheck.mjs"]
 STOPSIGNAL SIGTERM
 CMD ["node", "server/src/main.mjs"]

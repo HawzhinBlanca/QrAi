@@ -68,6 +68,7 @@ export function httpCanaryControllerCommandPlan({ projectName }) {
       "platform-api",
       "node-api",
       "job-worker",
+      "node-realtime",
       "realtime-gateway",
       "asr-inference",
       "web",
@@ -195,8 +196,8 @@ function validateVerification(value) {
   );
   assertDigest(value.commandSha256, "rollback verification.commandSha256");
   assertDigest(value.outputSha256, "rollback verification.outputSha256");
-  if (value.applicationImagesVerified !== 6) {
-    throw new TypeError("rollback verification must prove six previous application images");
+  if (value.applicationImagesVerified !== 7) {
+    throw new TypeError("rollback verification must prove seven previous application images");
   }
   if (value.storedEffects !== 1) {
     throw new TypeError("rollback verification must prove exactly one stored effect");

@@ -70,7 +70,9 @@ function assertImages(images, selection) {
     JSON.stringify(images.map(({ service }) => service).sort()) !==
       JSON.stringify([...expectedServices].sort())
   ) {
-    throw new TypeError("running image evidence must contain exactly the seven release services");
+    throw new TypeError(
+      `running image evidence must contain exactly the ${expectedServices.length} release services`,
+    );
   }
   const idsByReference = new Map();
   for (const image of images) {

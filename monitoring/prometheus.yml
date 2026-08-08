@@ -37,6 +37,15 @@ scrape_configs:
         files:
           - "/run/secrets/metrics_token"
 
+  - job_name: node-realtime
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["node-realtime:8081"]
+    http_headers:
+      x-metrics-token:
+        files:
+          - "/run/secrets/metrics_token"
+
   - job_name: realtime-gateway
     metrics_path: /metrics
     static_configs:

@@ -12,8 +12,9 @@ This repo implements a meaningful, testable vertical slice of the 10/10 platform
 - `packages/quran-data` owns immutable, checksum-validated Quran and translation import bundles plus SQL seed generation.
 - `services/platform-api` is a Rust/Axum + SQLx/Postgres tenant-scoped API for recitation, progress, reviews, approvals, privacy, audit events, pilot sessions, and realtime tickets. Its tenant-owned data paths use Postgres RLS.
 - `services/realtime-gateway` is a Rust/Tokio gateway with ticket-gated WebSocket ingress, bounded backpressure, metrics, and reconnect coverage.
-- `server` is the single Node production package and image. Compose runs it as `node-api` and
-  `job-worker`; the worker owns durable execution, retained-audio lifecycle, Quran-constrained
+- `server` is the single Node production package and image. Compose runs it as `node-api`,
+  `job-worker`, and the internal no-traffic `node-realtime` process shell; the worker owns durable
+  execution, retained-audio lifecycle, Quran-constrained
   alignment, and deterministic Tajweed instruction. A pinned Muaalem v3.2 adapter runs only as
   private, uncalibrated shadow evaluation on retained audio and server-derived spans; it returns no
   learner findings until calibration, evaluation, scholar, licence, and review gates pass.
@@ -30,7 +31,7 @@ It is **not release-ready**: candidate-bound model evaluation, independent secur
 - Web: React 19, Vite 8, TypeScript 6, Tailwind CSS 4, Lucide, Motion, Recharts, Vitest.
 - Contracts: TypeScript, Vitest.
 - Realtime foundation: Rust 1.96, Tokio, bounded `mpsc` channels.
-- Backend: one modular Node 22 package/image for API and worker roles, retained Rust compatibility
+- Backend: one modular Node 22 package/image for API, worker, and realtime roles, retained Rust compatibility
   oracles, Python/FastAPI ASR, Postgres RLS, and private S3-compatible object storage. The lean
   boundary deliberately adds neither Redis nor NATS.
 
@@ -68,7 +69,7 @@ MIGRATION_DATABASE_URL="postgresql://admin@localhost:5432/quran_ai" \
 APP_DATABASE_PASSWORD="<strong-runtime-password>" pnpm db:provision
 ```
 
-Compose, CI, staging recreation, restore, and release use these same two Node entry points. The
+Compose, CI, staging recreation, restore, and release use these same three Node entry points. The
 application itself must use the resulting `quran_ai_app` credential, never the migration URL.
 
 The transitional gateway must set `PLATFORM_API_URL` so a stored retained chunk becomes a durable

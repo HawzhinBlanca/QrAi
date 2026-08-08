@@ -17,6 +17,10 @@ services:
     build: !reset null
     image: "${NODE_BACKEND_IMAGE:?Set NODE_BACKEND_IMAGE to an immutable repository@sha256 digest}"
 
+  node-realtime:
+    build: !reset null
+    image: "${NODE_BACKEND_IMAGE:?Set NODE_BACKEND_IMAGE to an immutable repository@sha256 digest}"
+
   realtime-gateway:
     build: !reset null
     image: "${REALTIME_GATEWAY_IMAGE:?Set REALTIME_GATEWAY_IMAGE to an immutable repository@sha256 digest}"

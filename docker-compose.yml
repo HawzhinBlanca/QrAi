@@ -129,7 +129,7 @@ services:
       NODE_API_BIND: "0.0.0.0:8082"
       NODE_API_ROUTE_MODE: "explicit-compatibility"
       NODE_API_PORTED: "${NODE_API_PORTED:-GET /health,GET /ready}"
-      NODE_API_HEALTHCHECK_URL: "${NODE_API_HEALTHCHECK_URL:-http://127.0.0.1:8082/ready}"
+      NODE_HEALTHCHECK_URL: "http://127.0.0.1:8082/ready"
       PLATFORM_API_UPSTREAM: "http://platform-api:8080"
       ML_INFERENCE_URL: "http://job-worker:8098"
       ASR_INFERENCE_URL: "http://asr-inference:8091"
@@ -188,7 +188,7 @@ services:
       JOB_RETRY_MAX_MS: "${JOB_RETRY_MAX_MS:-300000}"
       METRICS_TOKEN: "${METRICS_TOKEN:-}"
       METRICS_DEV_OPEN: "${METRICS_DEV_OPEN:-}"
-      NODE_API_HEALTHCHECK_URL: "http://127.0.0.1:8098/ready"
+      NODE_HEALTHCHECK_URL: "http://127.0.0.1:8098/ready"
       AUDIO_STORAGE_DRIVER: "${AUDIO_STORAGE_DRIVER:-filesystem}"
       AUDIO_STORAGE_FILESYSTEM_ACKNOWLEDGED_DEV_ONLY: "${AUDIO_STORAGE_FILESYSTEM_ACKNOWLEDGED_DEV_ONLY:-1}"
       AUDIO_STORAGE_DIR: "/data/audio-storage"
@@ -214,6 +214,53 @@ services:
       timeout: 5s
       retries: 3
     stop_grace_period: "${JOB_WORKER_STOP_GRACE_PERIOD:-10s}"
+
+  # Same package and immutable image, isolated event loop. W3.2 is observation-only: this process
+  # exposes health/readiness/metrics but no WebSocket upgrade, host port, or traffic dependency.
+  node-realtime:
+    restart: unless-stopped
+    image: "qrai/node-backend:${NODE_BACKEND_IMAGE_TAG:-local}"
+    build:
+      context: .
+      dockerfile: server/Dockerfile
+    command: ["node", "server/src/realtime/main.mjs"]
+    environment:
+      DATABASE_URL: "postgresql://quran_ai_app:${APP_DATABASE_PASSWORD}@postgres:5432/quran_ai"
+      SHUTDOWN_GRACE_SECS: "${NODE_REALTIME_SHUTDOWN_GRACE_SECS:-8}"
+      NODE_REALTIME_BIND: "0.0.0.0:8081"
+      NODE_HEALTHCHECK_URL: "http://127.0.0.1:8081/ready"
+      REALTIME_READINESS_TIMEOUT_MS: "${REALTIME_READINESS_TIMEOUT_MS:-2000}"
+      METRICS_TOKEN: "${METRICS_TOKEN:-}"
+      METRICS_DEV_OPEN: "${METRICS_DEV_OPEN:-}"
+      ML_INFERENCE_URL: "http://job-worker:8098"
+      ASR_SERVICE_URL: "http://asr-inference:8091"
+      AUDIO_STORAGE_DRIVER: "${AUDIO_STORAGE_DRIVER:-filesystem}"
+      AUDIO_STORAGE_FILESYSTEM_ACKNOWLEDGED_DEV_ONLY: "${AUDIO_STORAGE_FILESYSTEM_ACKNOWLEDGED_DEV_ONLY:-1}"
+      AUDIO_STORAGE_DIR: "/data/audio-storage"
+      AUDIO_STORAGE_S3_BUCKET: "${AUDIO_STORAGE_S3_BUCKET:-}"
+      AUDIO_STORAGE_S3_REGION: "${AUDIO_STORAGE_S3_REGION:-}"
+      AUDIO_STORAGE_S3_ENDPOINT: "${AUDIO_STORAGE_S3_ENDPOINT:-}"
+      AUDIO_STORAGE_S3_FORCE_PATH_STYLE: "${AUDIO_STORAGE_S3_FORCE_PATH_STYLE:-}"
+      AUDIO_STORAGE_S3_EXPECTED_OWNER: "${AUDIO_STORAGE_S3_EXPECTED_OWNER:-}"
+      AUDIO_STORAGE_S3_ENCRYPTION: "${AUDIO_STORAGE_S3_ENCRYPTION:-AES256}"
+      AUDIO_STORAGE_S3_KMS_KEY_ID: "${AUDIO_STORAGE_S3_KMS_KEY_ID:-}"
+    volumes:
+      - audio_storage:/data/audio-storage
+    expose:
+      - "8081"
+    depends_on:
+      migrations:
+        condition: service_completed_successfully
+      job-worker:
+        condition: service_healthy
+      asr-inference:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "node", "server/src/container-healthcheck.mjs"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+    stop_grace_period: "${NODE_REALTIME_STOP_GRACE_PERIOD:-10s}"
 
   # === Rust Realtime Gateway ===
   realtime-gateway:

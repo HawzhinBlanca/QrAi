@@ -11,6 +11,7 @@ const privacySource = source("server/src/routes/privacy.mjs");
 const reviewSource = source("server/src/routes/review.mjs");
 const mainSource = source("server/src/main.mjs");
 const workerSource = source("server/src/worker.mjs");
+const realtimeSource = source("server/src/realtime/main.mjs");
 const ingressSource = source("server/src/inference/compatibility-ingress.mjs");
 const gatewayRetentionSource = source("tests/gateway/audio-retention-e2e.test.mjs");
 const gatewayIndexFailureSource = source("tests/gateway/index-failure-e2e.test.mjs");
@@ -28,8 +29,12 @@ test("teacher playback has no transitional inference HTTP fallback", () => {
   assert.doesNotMatch(reviewSource, /fetchWithDeadline|ctx\.mlInferenceUrl|audio-objects:read/);
 });
 
-test("both production processes construct and inject the same storage boundary", () => {
-  for (const [name, processSource] of [["node-api", mainSource], ["job-worker", workerSource]]) {
+test("all three Node process roles construct and inject the same storage boundary", () => {
+  for (const [name, processSource] of [
+    ["node-api", mainSource],
+    ["job-worker", workerSource],
+    ["node-realtime", realtimeSource],
+  ]) {
     assert.match(processSource, /createAudioObjectStoreFromEnv\(/, `${name} does not construct storage`);
     assert.match(processSource, /audioObjectStore,/, `${name} does not inject storage`);
   }

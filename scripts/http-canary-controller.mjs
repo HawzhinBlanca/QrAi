@@ -161,6 +161,7 @@ async function waitForApplicationContainers(compose, environment, attempts = 120
     "platform-api",
     "node-api",
     "job-worker",
+    "node-realtime",
     "realtime-gateway",
     "asr-inference",
     "web",
@@ -306,7 +307,7 @@ async function main() {
             runningEvidence.slot !== "previous" ||
             runningEvidence.scope !== "application" ||
             !Array.isArray(runningEvidence.images) ||
-            runningEvidence.images.length !== 6
+            runningEvidence.images.length !== 7
           ) {
             fail("previous application image evidence does not match the preserved selection");
           }

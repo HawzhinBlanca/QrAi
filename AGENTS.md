@@ -11,7 +11,8 @@ scholar/source approval, and model-evaluation proof gates. Polyglot pnpm monorep
   when the SDK is installed and always runs its Node contract boundary.
 - **Rust** (1.96, cargo): `services/realtime-gateway`, `services/platform-api`
   (Axum; integration tests need live Postgres).
-- **Services**: the `server` image runs `node-api` + `job-worker` (including inference), while
+- **Services**: the `server` image runs `node-api` + `job-worker` (including inference) + the
+  internal no-traffic `node-realtime` process shell, while
   `services/asr-inference` (Python) remains isolated and `services/agents` remains transitional.
   Driven via `docker compose` + `scripts/smoke-*.mjs`.
 

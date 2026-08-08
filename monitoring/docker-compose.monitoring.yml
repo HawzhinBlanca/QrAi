@@ -22,6 +22,8 @@ services:
         condition: service_healthy
       job-worker:
         condition: service_healthy
+      node-realtime:
+        condition: service_healthy
       realtime-gateway:
         condition: service_healthy
 

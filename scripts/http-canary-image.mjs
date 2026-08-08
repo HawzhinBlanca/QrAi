@@ -129,6 +129,7 @@ function validateRenderedTopology(rendered, candidateEnvironment) {
     "platform-api": candidateEnvironment.PLATFORM_API_IMAGE,
     "node-api": candidateEnvironment.NODE_BACKEND_IMAGE,
     "job-worker": candidateEnvironment.NODE_BACKEND_IMAGE,
+    "node-realtime": candidateEnvironment.NODE_BACKEND_IMAGE,
     "realtime-gateway": candidateEnvironment.REALTIME_GATEWAY_IMAGE,
     "asr-inference": candidateEnvironment.ASR_INFERENCE_IMAGE,
     web: candidateEnvironment.WEB_IMAGE,

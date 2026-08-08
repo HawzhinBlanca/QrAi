@@ -111,7 +111,7 @@ jobs:
           cid=$(docker compose run -d --no-deps \
             -e ALLOW_INSECURE_DEFAULTS=1 \
             -e NODE_API_PORTED='GET /health' \
-            -e NODE_API_HEALTHCHECK_URL=http://127.0.0.1:8082/health \
+            -e NODE_HEALTHCHECK_URL=http://127.0.0.1:8082/health \
             -e PLATFORM_API_UPSTREAM=http://127.0.0.1:1 \
             node-api)
           trap 'docker rm --force "$cid" >/dev/null 2>&1 || true' EXIT

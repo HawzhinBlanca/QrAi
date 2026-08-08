@@ -53,6 +53,7 @@ function runningImages(value = selection()) {
     "platform-api": env.PLATFORM_API_IMAGE,
     "node-api": env.NODE_BACKEND_IMAGE,
     "job-worker": env.NODE_BACKEND_IMAGE,
+    "node-realtime": env.NODE_BACKEND_IMAGE,
     migrations: env.MIGRATION_RUNNER_IMAGE,
     "realtime-gateway": env.REALTIME_GATEWAY_IMAGE,
     "asr-inference": env.ASR_INFERENCE_IMAGE,
@@ -211,7 +212,7 @@ test("accepted evidence binds source, two immutable selections, topology, routes
   assert.equal(evidence.sourceSha, candidateSha);
   assert.equal(evidence.selection.previous.sourceSha, previousSha);
   assert.equal(evidence.routeKeys.length, 39);
-  assert.equal(evidence.images.length, 7);
+  assert.equal(evidence.images.length, 8);
   assert.equal(evidence.stages.length, REQUIRED_HTTP_CANARY_IMAGE_STAGES.length);
   assert.equal(evidence.executionMode, "immutable-compose-images");
   assert.deepEqual(

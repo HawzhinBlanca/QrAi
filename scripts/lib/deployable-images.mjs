@@ -11,7 +11,7 @@ export const DEPLOYABLE_IMAGES = [
   },
   {
     key: "node-backend",
-    composeServices: ["node-api", "job-worker"],
+    composeServices: ["node-api", "job-worker", "node-realtime"],
     context: ".",
     dockerfile: "server/Dockerfile",
   },

@@ -29,7 +29,9 @@ Metrics expose only fixed process/dependency classes. The Rust gateway remains t
 3. Implement `server/src/realtime/main.mjs` as one side-effect-free composition/entrypoint module.
    Use Fastify already in the production graph, strict whole-number/address/URL parsing, bounded
    dependency checks, three routes only, and fixed-cardinality process metrics. Do not register an
-   upgrade handler or import W3.3+ behavior.
+   accepting/WebSocket upgrade handler or import W3.3+ behavior. A fixed 404-and-close refusal
+   listener is required because red raw-socket proof showed Fastify otherwise leaves the upgrade
+   unowned and open.
 4. Extend `installProcessShutdown` only with a fixed validated role label while preserving “node
    api” as the default. Install it before listen; use one grace budget for probe cancellation,
    force/hard exit, object-store close, and database close. Preserve all W2.13 tests.
@@ -53,7 +55,9 @@ Metrics expose only fixed process/dependency classes. The Rust gateway remains t
 
 - New runtime: `server/src/realtime/main.mjs`.
 - Shared runtime edits: `server/src/lib/shutdown.mjs`,
-  `server/src/container-healthcheck.mjs`, `server/package.json`, `server/Dockerfile`.
+  `server/src/container-healthcheck.mjs`, `server/Dockerfile`. `server/package.json` is audited but
+  unchanged because its existing `src/realtime/*.mjs` lint/build surface already includes the new
+  entrypoint and no dependency or script is required.
 - Topology/release/monitoring: `docker-compose.yml`, `docker-compose.release.yml`,
   `.github/workflows/docker-build.yml`, `scripts/lib/deployable-images.mjs`, affected immutable
   image/canary/rollback controllers, and `monitoring/{prometheus.yml,
