@@ -7,6 +7,7 @@ import test from "node:test";
 
 import * as sortMod from "../../server/src/lib/json.mjs";
 import { f64, formatF32, formatF64, stringifyRust } from "../../server/src/lib/json.mjs";
+import { listSessionAlignments } from "../../server/src/routes/sessions.mjs";
 
 test("a whole-number f64 keeps its .0 — the divergence that started this", () => {
   assert.equal(stringifyRust({ accuracy: f64(100) }), '{"accuracy":100.0}');
@@ -132,6 +133,84 @@ test("scalars, null and Dates pass through untouched", () => {
   assert.equal(sortKeysDeep(7), 7);
   const d = new Date(0);
   assert.equal(sortKeysDeep(d), d, "a driver Date is an object but not a JSON map");
+});
+
+test("alignment JSONB is recursively ordered like Rust before reply serialization", async () => {
+  const storedAttribution = {
+    schemaVersion: "model-attribution-v1",
+    primaryComponent: "alignment",
+    components: [
+      {
+        status: "active",
+        component: "alignment",
+        calibratorId: null,
+        analysisBasis: "acoustic",
+        artifactDigest: "sha256:fixture",
+        datasetVersion: "dataset-v1",
+        implementationId: "alignment-v1",
+      },
+    ],
+  };
+  const row = {
+    audit_event_id: "audit-1",
+    text_uthmani: "verbatim-canonical-bytes",
+    confidence: 0.9,
+    dataset_version: "dataset-v1",
+    end_ms: 200,
+    evidence_ids: ["evidence-1"],
+    heard_text: "heard",
+    model_attribution: storedAttribution,
+    model_version_id: "alignment-v1",
+    start_ms: 100,
+    status: "matched",
+    transcript_source: "server-derived",
+    word_id: "word-1",
+  };
+  let sent;
+  const req = {
+    headers: {
+      "x-tenant-id": "tenant-1",
+      "x-user-id": "teacher-1",
+      "x-user-role": "teacher",
+    },
+    params: { id: "session-1" },
+  };
+  const reply = {
+    send(body) {
+      sent = body;
+      return body;
+    },
+  };
+  const ctx = {
+    allowHeaderAuth: true,
+    jwtSecret: "unused-in-header-auth",
+    db: {
+      async withTenant(tenantId, query) {
+        assert.equal(tenantId, "tenant-1");
+        return query(() => [row]);
+      },
+    },
+  };
+
+  await listSessionAlignments(req, reply, ctx);
+
+  assert.deepEqual(Object.keys(sent[0].modelAttribution), [
+    "components",
+    "primaryComponent",
+    "schemaVersion",
+  ]);
+  assert.deepEqual(Object.keys(sent[0].modelAttribution.components[0]), [
+    "analysisBasis",
+    "artifactDigest",
+    "calibratorId",
+    "component",
+    "datasetVersion",
+    "implementationId",
+    "status",
+  ]);
+  assert.deepEqual(storedAttribution.components.map((component) => component.component), [
+    "alignment",
+  ]);
 });
 
 // ── f32: the narrowing serde does that JavaScript has no type for (N11) ────────────────────────

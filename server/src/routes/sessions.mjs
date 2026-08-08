@@ -359,7 +359,7 @@ export async function listSessionAlignments(req, reply, ctx) {
       endMs: Number(r.end_ms ?? 0),
       evidenceIds: Array.isArray(r.evidence_ids) ? r.evidence_ids : [],
       heardText: r.heard_text ?? "",
-      modelAttribution: r.model_attribution ?? null,
+      modelAttribution: sortKeysDeep(r.model_attribution ?? null),
       modelVersion: r.model_version_id ?? "",
       startMs: Number(r.start_ms ?? 0),
       status: r.status ?? "",
