@@ -134,5 +134,8 @@ and exact source inspection. **Target:** W3.1 / RT-1 / approved W0–W7 consolid
   learner gate remain unchanged; no fabricated output is presented as a model result.
 - The Python stage invokes `python3 -m pytest` for the attribution and acoustic suites, while CI
   installs only NumPy. The exact remote failure is `No module named pytest`. CI must install the
-  test runner it directly invokes. Pinning the current Python-3.11-compatible NumPy and pytest
-  releases makes that prerequisite reproducible without adding either package to a runtime image.
+  test runner it directly invokes. Candidate `f1d2f375996774f75aeef5478cfebacbd9ef5f51`
+  additionally proved that NumPy `2.5.1`, although newest overall, requires Python 3.12; the newest
+  release compatible with the intentionally pinned Python 3.11 toolchain is `2.4.6`. Pinning that
+  version and Python-3.11-compatible pytest `9.1.1` makes the prerequisite reproducible without
+  adding either package to a runtime image.

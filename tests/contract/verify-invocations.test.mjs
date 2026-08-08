@@ -95,7 +95,7 @@ test("canonical verification runs the row-authoritative offline evaluator suite 
 
 test("CI installs the exact Python test prerequisites invoked by canonical verification", () => {
   assert.match(ciSource, /python-version:\s*["']3\.11["']/);
-  assert.match(ciSource, /python3 -m pip install --quiet "numpy==2\.5\.1" "pytest==9\.1\.1"/);
+  assert.match(ciSource, /python3 -m pip install --quiet "numpy==2\.4\.6" "pytest==9\.1\.1"/);
   assert.match(verifySource, /python3 -m pytest -q test_model_attribution\.py test_acoustic_tajweed\.py/);
 });
 
