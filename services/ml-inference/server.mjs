@@ -649,6 +649,7 @@ async function predictAlignment(requestBody) {
   const auditEventId = appendAudit(tenantId, "ml.alignment.predicted", sessionId, {
     modelVersion: MODEL_VERSION,
     traceId,
+    learnerId: requestBody.learnerId,
     confidence,
     wordCount,
     recognizedCount,
@@ -751,6 +752,7 @@ async function predictTajweed(requestBody) {
   const auditEventId = appendAudit(tenantId, "ml.tajweed.predicted", sessionId, {
     modelVersion: MODEL_VERSION,
     traceId,
+    learnerId: requestBody.learnerId,
     findingCount: findings.length,
   });
   findings = findings.map((f) => ({ ...f, auditEventId }));
@@ -1118,6 +1120,7 @@ async function storeAudioChunk(requestBody) {
     });
     appendAudit(tenantId, "audio.chunk.overwrite-refused", chunkId, {
       sessionId,
+      learnerId,
       traceId: extractTraceId(requestBody),
       conflict,
     });
@@ -1137,6 +1140,7 @@ async function storeAudioChunk(requestBody) {
 
   appendAudit(tenantId, "audio.chunk.stored", chunkId, {
     sessionId,
+    learnerId,
     traceId: extractTraceId(requestBody),
     audioSize: metadata.audioSize,
   });
