@@ -10,6 +10,7 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
+import { parse as parseYaml } from "yaml";
 
 import { DEPLOYABLE_IMAGE_KEYS } from "../../scripts/lib/deployable-images.mjs";
 import {
@@ -25,6 +26,12 @@ import {
   composeImageEnvironment,
   createReleaseDeploymentSelection,
 } from "../../scripts/lib/release-deployment.mjs";
+import {
+  createRealtimeProofPreflight,
+  parseRealtimeProofPort,
+  validateRealtimeProofRenderedTopology,
+} from "../../scripts/lib/realtime-image-probe.mjs";
+import { parseRealtimeImageProofArguments } from "../../scripts/realtime-image-proof.mjs";
 
 const MiB = 1024 * 1024;
 const candidateSha = "0123456789abcdef0123456789abcdef01234567";
@@ -254,6 +261,55 @@ function validInput() {
   };
 }
 
+function renderedProofTopology(value = selection(), nodePort = 18_081) {
+  const environment = composeImageEnvironment(value, "candidate");
+  const storage = {
+    AUDIO_STORAGE_DRIVER: "s3",
+    AUDIO_STORAGE_FILESYSTEM_ACKNOWLEDGED_DEV_ONLY: "0",
+    AUDIO_STORAGE_S3_BUCKET: "qrai-production-private-audio",
+    AUDIO_STORAGE_S3_REGION: "eu-central-1",
+    AUDIO_STORAGE_S3_EXPECTED_OWNER: "123456789012",
+    AUDIO_STORAGE_S3_ENCRYPTION: "AES256",
+  };
+  return {
+    services: {
+      "node-api": {
+        image: environment.NODE_BACKEND_IMAGE,
+        environment: { ...storage },
+      },
+      "job-worker": {
+        image: environment.NODE_BACKEND_IMAGE,
+        environment: { ...storage },
+      },
+      "node-realtime": {
+        image: environment.NODE_BACKEND_IMAGE,
+        environment: { ...storage },
+        ports: [{
+          mode: "ingress",
+          target: 8081,
+          published: String(nodePort),
+          protocol: "tcp",
+          host_ip: "127.0.0.1",
+        }],
+      },
+      "realtime-gateway": {
+        image: environment.REALTIME_GATEWAY_IMAGE,
+        ports: [{
+          mode: "ingress",
+          target: 8081,
+          published: "8081",
+          protocol: "tcp",
+        }],
+      },
+      web: {
+        depends_on: {
+          "realtime-gateway": { condition: "service_healthy" },
+        },
+      },
+    },
+  };
+}
+
 test("passed evidence binds the candidate, immutable non-root images, topology, storage, stages, and bars", () => {
   const evidence = createRealtimeImageEvidence(validInput());
   assert.equal(evidence.schemaVersion, "qrai-realtime-image-evidence/v1");
@@ -397,6 +453,136 @@ test("the command plan uses immutable release images, loopback proof topology, a
   assert.match(rendered, /down.*--remove-orphans/);
   assert.doesNotMatch(rendered, /cargo run|pnpm.*dev|server\/src\/realtime\/main\.mjs|--build|docker build/);
   assert.throws(() => realtimeImageCommandPlan({ projectName: "../../unsafe" }), /projectName/);
+});
+
+test("the proof overlay exposes only Node realtime on a configurable loopback and forces production S3", () => {
+  const overlay = parseYaml(readFileSync("docker-compose.realtime-proof.yml", "utf8"));
+  assert.deepEqual(
+    overlay.services?.["node-realtime"]?.ports,
+    ["127.0.0.1:${REALTIME_PROOF_NODE_PORT:-18081}:8081"],
+  );
+  assert.equal(overlay.services?.["realtime-gateway"], undefined);
+
+  for (const service of ["node-api", "job-worker", "node-realtime"]) {
+    const config = overlay.services?.[service];
+    assert.equal(config?.build, undefined);
+    assert.equal(config?.image, undefined);
+    assert.equal(config?.environment?.AUDIO_STORAGE_DRIVER, "s3");
+    assert.equal(config?.environment?.AUDIO_STORAGE_FILESYSTEM_ACKNOWLEDGED_DEV_ONLY, "0");
+    assert.equal(
+      config?.environment?.AUDIO_STORAGE_S3_BUCKET,
+      "${AUDIO_STORAGE_S3_BUCKET:?AUDIO_STORAGE_S3_BUCKET is required for realtime release proof}",
+    );
+    assert.equal(
+      config?.environment?.AUDIO_STORAGE_S3_EXPECTED_OWNER,
+      "${AUDIO_STORAGE_S3_EXPECTED_OWNER:?AUDIO_STORAGE_S3_EXPECTED_OWNER is required for realtime release proof}",
+    );
+  }
+});
+
+test("rendered proof preflight binds exact images, topology, storage, and clean candidate source", () => {
+  const value = selection();
+  const rendered = renderedProofTopology(value);
+  const validated = validateRealtimeProofRenderedTopology({
+    rendered,
+    selection: value,
+    nodePort: 18_081,
+  });
+  assert.deepEqual(validated.topology, {
+    nodeRealtimeLoopback: "127.0.0.1:18081",
+    rustPublicPort: 8081,
+    publicRealtimeOwner: "rust",
+    nodeTrafficSharePercent: 0,
+  });
+  assert.deepEqual(validated.storageConfiguration, {
+    driver: "s3",
+    requiredBucketClass: "production-private",
+    encryption: "AES256",
+    expectedOwnerConfigured: true,
+    filesystemFallback: false,
+  });
+
+  const preflight = createRealtimeProofPreflight({
+    sourceState: { headSha: candidateSha, clean: true },
+    selection: value,
+    rendered,
+    nodePort: 18_081,
+  });
+  assert.equal(preflight.sourceState.headSha, candidateSha);
+  assert.deepEqual(preflight.topology, validated.topology);
+
+  const cases = [
+    [(copy) => { copy.services["node-realtime"].ports[0].host_ip = "0.0.0.0"; }, /loopback/i],
+    [(copy) => { copy.services["node-realtime"].ports[0].published = "8081"; }, /Node.*port|8081/i],
+    [(copy) => { copy.services["realtime-gateway"].ports[0].published = "18081"; }, /Rust.*8081/i],
+    [(copy) => { copy.services["node-realtime"].image = "qrai/node-backend:mutable"; }, /selected.*image/i],
+    [(copy) => { copy.services["node-api"].build = { context: "." }; }, /source build/i],
+    [(copy) => { copy.services["job-worker"].environment.AUDIO_STORAGE_DRIVER = "filesystem"; }, /production S3/i],
+    [(copy) => { copy.services["node-realtime"].environment.AUDIO_STORAGE_S3_EXPECTED_OWNER = ""; }, /expected owner/i],
+    [(copy) => { copy.services["node-api"].environment.AUDIO_STORAGE_S3_BUCKET = "another-bucket"; }, /same production S3/i],
+    [(copy) => { copy.services["node-realtime"].ports.push(copy.services["node-realtime"].ports[0]); }, /exactly one/i],
+  ];
+  for (const [mutate, pattern] of cases) {
+    const copy = structuredClone(rendered);
+    mutate(copy);
+    assert.throws(
+      () => validateRealtimeProofRenderedTopology({ rendered: copy, selection: value, nodePort: 18_081 }),
+      pattern,
+    );
+  }
+  assert.throws(
+    () => createRealtimeProofPreflight({
+      sourceState: { headSha: candidateSha, clean: false },
+      selection: value,
+      rendered,
+      nodePort: 18_081,
+    }),
+    /clean/i,
+  );
+  assert.throws(
+    () => createRealtimeProofPreflight({
+      sourceState: { headSha: previousSha, clean: true },
+      selection: value,
+      rendered,
+      nodePort: 18_081,
+    }),
+    /candidate SHA/i,
+  );
+});
+
+test("proof CLI arguments reject unsafe paths, ports, projects, actors, acknowledgements, and extra flags", () => {
+  assert.equal(parseRealtimeProofPort("18081"), 18_081);
+  const valid = [
+    "preflight",
+    "--selection", "/tmp/release-selection.json",
+    "--project-name", "qrai-realtime-proof",
+    "--provider", "release-staging",
+    "--actor-class", "release-operator",
+    "--node-port", "18081",
+    "--acknowledge-staging-isolated", "yes",
+  ];
+  assert.deepEqual(parseRealtimeImageProofArguments(valid), {
+    command: "preflight",
+    selectionPath: "/tmp/release-selection.json",
+    projectName: "qrai-realtime-proof",
+    provider: "release-staging",
+    actorClass: "release-operator",
+    nodePort: 18_081,
+  });
+
+  const cases = [
+    [[...valid, "--skip-soak", "yes"], /unknown|exact/i],
+    [[...valid, "--provider", "other"], /duplicate/i],
+    [[...valid.slice(0, 2), "relative.json", ...valid.slice(3)], /absolute/i],
+    [[...valid.slice(0, 4), "../../unsafe", ...valid.slice(5)], /project/i],
+    [[...valid.slice(0, 10), "8081", ...valid.slice(11)], /8081|proof port/i],
+    [[...valid.slice(0, 12), "no"], /acknowledge/i],
+    [[...valid.slice(0, 6), "bad provider", ...valid.slice(7)], /provider/i],
+    [[...valid.slice(0, 8), "developer", ...valid.slice(9)], /actor/i],
+  ];
+  for (const [argv, pattern] of cases) {
+    assert.throws(() => parseRealtimeImageProofArguments(argv), pattern);
+  }
 });
 
 test("evidence output is external, owner-only, atomic, and write-once", (t) => {

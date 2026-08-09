@@ -1,0 +1,32 @@
+# Proof-only release overlay. It makes the immutable Node realtime candidate reachable from the
+# staging host on loopback while the Rust gateway remains the sole public owner of port 8081.
+# This file is never auto-loaded and must be combined with docker-compose.release.yml.
+services:
+  node-api:
+    environment:
+      AUDIO_STORAGE_DRIVER: "s3"
+      AUDIO_STORAGE_FILESYSTEM_ACKNOWLEDGED_DEV_ONLY: "0"
+      AUDIO_STORAGE_S3_BUCKET: "${AUDIO_STORAGE_S3_BUCKET:?AUDIO_STORAGE_S3_BUCKET is required for realtime release proof}"
+      AUDIO_STORAGE_S3_REGION: "${AUDIO_STORAGE_S3_REGION:?AUDIO_STORAGE_S3_REGION is required for realtime release proof}"
+      AUDIO_STORAGE_S3_EXPECTED_OWNER: "${AUDIO_STORAGE_S3_EXPECTED_OWNER:?AUDIO_STORAGE_S3_EXPECTED_OWNER is required for realtime release proof}"
+      AUDIO_STORAGE_S3_ENCRYPTION: "${AUDIO_STORAGE_S3_ENCRYPTION:-AES256}"
+
+  job-worker:
+    environment:
+      AUDIO_STORAGE_DRIVER: "s3"
+      AUDIO_STORAGE_FILESYSTEM_ACKNOWLEDGED_DEV_ONLY: "0"
+      AUDIO_STORAGE_S3_BUCKET: "${AUDIO_STORAGE_S3_BUCKET:?AUDIO_STORAGE_S3_BUCKET is required for realtime release proof}"
+      AUDIO_STORAGE_S3_REGION: "${AUDIO_STORAGE_S3_REGION:?AUDIO_STORAGE_S3_REGION is required for realtime release proof}"
+      AUDIO_STORAGE_S3_EXPECTED_OWNER: "${AUDIO_STORAGE_S3_EXPECTED_OWNER:?AUDIO_STORAGE_S3_EXPECTED_OWNER is required for realtime release proof}"
+      AUDIO_STORAGE_S3_ENCRYPTION: "${AUDIO_STORAGE_S3_ENCRYPTION:-AES256}"
+
+  node-realtime:
+    environment:
+      AUDIO_STORAGE_DRIVER: "s3"
+      AUDIO_STORAGE_FILESYSTEM_ACKNOWLEDGED_DEV_ONLY: "0"
+      AUDIO_STORAGE_S3_BUCKET: "${AUDIO_STORAGE_S3_BUCKET:?AUDIO_STORAGE_S3_BUCKET is required for realtime release proof}"
+      AUDIO_STORAGE_S3_REGION: "${AUDIO_STORAGE_S3_REGION:?AUDIO_STORAGE_S3_REGION is required for realtime release proof}"
+      AUDIO_STORAGE_S3_EXPECTED_OWNER: "${AUDIO_STORAGE_S3_EXPECTED_OWNER:?AUDIO_STORAGE_S3_EXPECTED_OWNER is required for realtime release proof}"
+      AUDIO_STORAGE_S3_ENCRYPTION: "${AUDIO_STORAGE_S3_ENCRYPTION:-AES256}"
+    ports:
+      - "127.0.0.1:${REALTIME_PROOF_NODE_PORT:-18081}:8081"
