@@ -1,5 +1,8 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 import test from "node:test";
+import { fileURLToPath } from "node:url";
 
 import {
   MET,
@@ -24,7 +27,9 @@ import {
  * identical to a correct one until something moves. That is exactly how Phase 7's route parser
  * silently missed five chained registrations for a whole phase.
  *
- * Hermetic: synthetic inputs, no filesystem, no service.
+ * Hermetic: synthetic inputs, no filesystem, no service — with one deliberate exception at the
+ * bottom, the ADR-number uniqueness invariant, which can only be asserted against the real
+ * docs/DECISIONS.md because the whole point is that the real file must not contain a collision.
  */
 
 // --- traffic share ---
@@ -156,4 +161,45 @@ test("response-schemas-validated counts x-unvalidated operations and flips only 
   assert.equal(some.state, UNMET);
   assert.match(some.detail, /1 of 2 operations/);
   assert.equal(checkSchemaValidation(doc(false)).state, MET);
+});
+
+// --- ADR numbering ---
+
+test("an ADR number lookup resolves to the FIRST section, which is why numbers must be unique", () => {
+  // Synthetic, and the reason the real-file check below exists. checkAdr0022 (and any future
+  // by-number reader) does `split("## ADR-00NN")[1]`, so when a number appears twice the SECOND
+  // decision is unreachable and the first answers in its name — silently, with no error anywhere.
+  const collided = [
+    "## ADR-0022 — first one\n\n**Status:** Accepted\n",
+    "## ADR-0022 — second one\n\n**Status:** Superseded\n",
+  ].join("\n");
+  assert.equal(checkAdr0022(collided).state, MET, "the FIRST section answered, not the second");
+
+  const swapped = [
+    "## ADR-0022 — second one\n\n**Status:** Superseded\n",
+    "## ADR-0022 — first one\n\n**Status:** Accepted\n",
+  ].join("\n");
+  assert.equal(
+    checkAdr0022(swapped).state,
+    UNMET,
+    "same two sections, opposite order, opposite verdict — order alone decides",
+  );
+});
+
+test("every ADR number in docs/DECISIONS.md is unique", () => {
+  // Reads the real file on purpose: the invariant IS about the real file. ADR-0019 was held by two
+  // different decisions (pilot invitations, and locale capability gates) until the latter was
+  // renumbered to ADR-0038.
+  const src = readFileSync(
+    join(dirname(fileURLToPath(import.meta.url)), "..", "..", "docs/DECISIONS.md"),
+    "utf8",
+  );
+  const numbers = (src.match(/^## ADR-\d+/gm) ?? []).map((h) => h.replace("## ADR-", ""));
+  const seen = new Set();
+  const duplicated = numbers.filter((n) => (seen.has(n) ? true : (seen.add(n), false)));
+  assert.deepEqual(
+    [...new Set(duplicated)],
+    [],
+    "two ADRs share a number; a by-number reader would silently resolve to whichever is first",
+  );
 });
