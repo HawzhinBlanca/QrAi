@@ -897,7 +897,19 @@ async function deletePrivacy(requestBody) {
     status: "completed",
     deletedAudioObjectKeys,
     deletedMetadataObjectKeys,
-    tombstonedDerivedRecords: true,
+    // A real post-condition, not a constant. This was hardcoded `true`, and the only thing
+    // checking it (scripts/smoke-privacy.mjs) asserted that constant equalled true — an assertion
+    // that could not fail, in the smoke whose own deletion reports ZERO removed keys. Now it says
+    // something this service can actually answer: nothing of this learner's is left on its disk.
+    //
+    // It is a genuine check, not a restatement: deleteAudioObjects only unlinks `.bin` and
+    // `.meta.json`, and its rmdir is swallowed by a try/catch, so any other file written into the
+    // learner's directory would survive erasure and leave the directory behind — which this now
+    // reports as false instead of cheerfully claiming true.
+    //
+    // Scope: alignments and tajweed findings are platform-api's rows in Postgres, erased by its own
+    // privacy cascade. ml-inference never held them, so it never spoke for them.
+    tombstonedDerivedRecords: !existsSync(join(AUDIO_STORAGE_DIR, tenantId, learnerId)),
     completedAt: new Date().toISOString(),
   };
   deletionJobs.set(job.id, job);
