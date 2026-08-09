@@ -54,6 +54,7 @@ const REALTIME_AUDIO_OUTCOMES_MIGRATION = "tests/migrations/realtime-audio-outco
 const REALTIME_STORAGE_INDEX = "tests/realtime/storage-index.test.mjs";
 const REALTIME_RECOVERY_MIGRATION = "tests/migrations/realtime-recovery-migration.test.mjs";
 const REALTIME_RECOVERY = "tests/e2e/realtime-recovery.test.mjs";
+const REALTIME_IMAGE_EVIDENCE = "tests/release/realtime-image-evidence.test.mjs";
 const ACOUSTIC_CANDIDATE_PROOF_TEST = "scripts/acoustic-candidate-proof.test.mjs";
 const ACOUSTIC_CANDIDATE_PROOF_RUNNER = "node scripts/acoustic-candidate-proof.mjs";
 
@@ -531,6 +532,18 @@ test("canonical verification runs the isolated W3.7 recovery proof exactly once"
     [REALTIME_RECOVERY_MIGRATION, REALTIME_RECOVERY].sort(),
     "the isolated W3.7 command must contain exactly its schema/recovery proofs",
   );
+});
+
+test("canonical verification runs the hermetic W3.8 image-evidence contract exactly once", () => {
+  const invocations = activeNodeTestLines(verifySource);
+  const matching = invocations.filter((line) => line.includes(REALTIME_IMAGE_EVIDENCE));
+  assert.equal(
+    matching.length,
+    1,
+    `${REALTIME_IMAGE_EVIDENCE} must run exactly once in canonical verification`,
+  );
+  assert.match(matching[0], /test: node services/);
+  assert.doesNotMatch(matching[0], /--test-concurrency=1/);
 });
 
 test("canonical verification guards the W1.10 exact-image harness and release mode runs it exactly once", () => {
