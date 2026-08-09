@@ -1276,7 +1276,9 @@ paths:
 
         **The client does not supply the transcript.** Whoever supplies the recognised words decides
         what the learner is recorded as having said, so it is fetched server-to-server from the
-        service that holds the audio. The caller only names the session.
+        service that holds the audio. The caller names the session; only the owning learner may
+        attach a closed, count-only recovery report, while authorized staff may still finalize with
+        the legacy empty body. No caller can supply audio, words, transcript, tenant, or learner.
 
         **Consent is read from the database, never from the request.** A learner who declined
         external-ASR processing gets `finalized: false` with a reason and NO stored alignment —
@@ -1284,6 +1286,43 @@ paths:
 
         Ownership-scoped: `require_self_or_any(learner_id, [Teacher, Admin, Ops])`.
       parameters: [{ name: id, in: path, required: true, schema: { type: string } }]
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              properties:
+                recoveryReport:
+                  type: object
+                  additionalProperties: false
+                  required:
+                    - version
+                    - state
+                    - capturedChunks
+                    - acknowledgedChunks
+                    - droppedChunks
+                    - uncertainChunks
+                    - stopReason
+                  properties:
+                    version: { type: integer, enum: [1] }
+                    state: { type: string, enum: [complete, degraded] }
+                    capturedChunks: { type: integer, minimum: 0, maximum: 2147483647 }
+                    acknowledgedChunks: { type: integer, minimum: 0, maximum: 2147483647 }
+                    droppedChunks: { type: integer, minimum: 0, maximum: 2147483647 }
+                    uncertainChunks: { type: integer, minimum: 0, maximum: 2147483647 }
+                    stopReason:
+                      type: string
+                      enum:
+                        - completed
+                        - retry-exhausted
+                        - buffer-overflow
+                        - ack-ambiguous
+                        - ack-invalid
+                        - rejected-exhausted
+                        - drain-timeout
+                        - device-failure
       responses:
         '200':
           description: |
@@ -1293,7 +1332,15 @@ paths:
             application/json:
               schema:
                 type: object
-                required: [sessionId, finalized, reason, persisted]
+                required:
+                  - sessionId
+                  - finalized
+                  - reason
+                  - persisted
+                  - recordingStatus
+                  - clientDroppedChunkCount
+                  - clientUncertainChunkCount
+                  - serverLostChunkCount
                 properties:
                   sessionId: { type: string, minLength: 1 }
                   finalized: { type: boolean }
@@ -1304,6 +1351,22 @@ paths:
                     type: integer
                     minimum: 0
                     description: Interior chunk gaps detected during transcript assembly; zero when complete.
+                  recordingStatus:
+                    type: string
+                    enum: [complete, incomplete, unverified]
+                    description: Capture integrity, independent from whether alignment work finalized.
+                  clientDroppedChunkCount:
+                    type: integer
+                    minimum: 0
+                    description: Frames the reporting client knows were never accepted.
+                  clientUncertainChunkCount:
+                    type: integer
+                    minimum: 0
+                    description: Sent v1 frames with no acknowledgement; never replayed.
+                  serverLostChunkCount:
+                    type: integer
+                    minimum: 0
+                    description: Server-observed distinct missing chunks; never summed with client counts.
                   auditEventId: { type: string }
         '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }

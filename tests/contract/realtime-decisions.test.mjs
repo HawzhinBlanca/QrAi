@@ -166,3 +166,42 @@ test("ADR-0051/0052 and living docs expose W3.6 durable outcomes without a playb
     );
   }
 });
+
+test("ADR-0051/0052 and living docs expose honest W3.7 recovery without an end-to-end claim", () => {
+  for (const decision of [adr("0051"), adr("0052")]) {
+    assert.match(decision, /W3\.7 implementation note/i);
+    assert.match(decision, /fresh (?:API-issued )?(?:single-use )?ticket/i);
+    assert.match(decision, /125-frame\/2 MiB|125 frames\/2 MiB/i);
+    assert.match(
+      decision,
+      /safe reconnect only when no sent\s+frame is ambiguous|never replays ambiguous/is,
+    );
+    assert.match(decision, /migration\s+0038/i);
+    assert.match(
+      decision,
+      /only the owning learner may submit|only the owning learner may submit or retry/i,
+    );
+    assert.match(decision, /staff[^.]*legacy\s+empty-?\s*body/i);
+    assert.match(
+      decision,
+      /(?:client[^.]*server|server[^.]*client)[^.]*separat|separat[^.]*client[^.]*server/is,
+    );
+    assert.match(decision, /Flutter W4\.11/i);
+    assert.match(decision, /Rust[^.]*public(?: realtime traffic| target)/is);
+  }
+
+  assert.match(architecture, /W3\.7 realtime recovery and honest fallback/i);
+  assert.match(architecture, /sent\/no-ack disconnect is uncertain[^.]*never replayed/is);
+  assert.match(architecture, /legacy client with\s+no report is `unverified`/i);
+  assert.match(architecture, /real API\/WebSocket\/Postgres proof[^.]*Flutter\s+W4\.11/is);
+  for (const target of [
+    "tests/migrations/realtime-recovery-migration.test.mjs",
+    "tests/e2e/realtime-recovery.test.mjs",
+  ]) {
+    assert.equal(
+      testing.split(target).length - 1,
+      1,
+      `${target} must be documented exactly once as a focused W3.7 gate`,
+    );
+  }
+});

@@ -97,8 +97,21 @@ closes the socket and has a fixed outcome; finalization unions unrepaired accept
 inference gaps. Repair revalidates object metadata against current tenant state and atomically
 creates the index plus repaired provenance. A remotely committed conditional write discovered
 after a timeout may therefore repair an initially accepted-lost chunk. Playback never consults the
-diagnostic table. Rust remains the traffic target; W3.7 recovery and later image/canary gates remain
-open.
+diagnostic table. At the W3.6 milestone Rust remained the traffic target and recovery plus later
+image/canary gates were still open.
+
+**W3.7 implementation note (2026-08-09):** the v1 raw-binary/seven-field acknowledgement wire
+remains unchanged and therefore cannot prove whether a sent frame without an acknowledgement was
+stored. The approved recovery policy keeps one frame in flight, buffers at most 125 frames/2 MiB,
+uses an API-issued fresh single-use ticket per attempt with bounded equal jitter, and resets retry
+state only after an accepted acknowledgement. A disconnect with a sent frame, invalid
+acknowledgement, exhaustion, overflow, or device failure stops capture and finalizes one immutable
+closed recovery report; it never replays ambiguous audio or silently drops it. Migration 0038 adds
+that optional report to the existing forced-RLS session row. Authentication precedes report parsing;
+only the owning learner may submit client-capture truth, while authorized staff retain legacy
+empty-body finalization. Finalization exposes alignment result and recording integrity separately and
+never fabricates a combined loss total from client and server counts. This is a Node reference contract
+for Flutter W4.11, not a new product client or a traffic move; Rust remains the public target.
 
 ---
 
@@ -173,6 +186,18 @@ sole playback authority. Store/index failure closes the socket, finalization pre
 unrepaired accepted losses, and the dry-run-first repair command atomically indexes and marks a
 verified retained object repaired. Rust still receives all public realtime traffic; recovery,
 format, image, canary, and rollback gates remain open.
+
+**W3.7 implementation note (2026-08-09):** recovery on the unchanged v1 wire is deliberately
+fail-closed. One in-flight frame and a 125-frame/2 MiB FIFO permit safe reconnect only when no sent
+frame is ambiguous. Every connection attempt obtains a fresh API-issued ticket; equal-jitter retry
+is capped at six attempts and 15 seconds. Ambiguity and terminal faults stop capture, classify every
+captured frame as acknowledged/dropped/uncertain, and submit one exact immutable report. Migration
+0038 stores that privacy-safe summary on the forced-RLS session row. Authentication runs first and
+only the owning learner may submit or retry client-capture truth; authorized staff may still finalize
+with the legacy empty body. API responses keep client loss and server accepted-loss separate. The
+executable reference controller and real Node WebSocket/API proof freeze behavior for Flutter W4.11.
+They do not add a service, dependency, public route, protocol version, React investment, or traffic
+edge.
 
 ---
 

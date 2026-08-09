@@ -40,6 +40,7 @@ const coreSchemaPaths = [
   join("infra", "migrations", "0035_device_identity.sql"),
   join("infra", "migrations", "0036_realtime_ticket_replay.sql"),
   join("infra", "migrations", "0037_realtime_audio_chunk_outcomes.sql"),
+  join("infra", "migrations", "0038_realtime_recovery_report.sql"),
 ];
 const sessionMigrationPath = join("infra", "migrations", "0008_session_language.sql");
 const reviewStatusMigrationPaths = [

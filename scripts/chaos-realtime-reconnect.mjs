@@ -1,142 +1,178 @@
 #!/usr/bin/env node
 /**
- * T13 proof #1 — scripted chaos run.
+ * Manual W3.7 candidate chaos probe.
  *
- * Drives a REAL audio session against a REAL gateway that is configured to drop the socket
- * mid-stream, and asserts the session still completes. This is the fault injection T13 requires
- * ("build the fault-injection first, then the fix") — without it, "reconnect works" is a claim, not
- * a result.
+ * Unlike the retired T13 script, this probe never mints a ticket locally and never equates
+ * WebSocket `send()` with delivery. It obtains every single-use ticket from the platform API,
+ * drives the frozen recovery controller, submits the exact recovery report to finalization, and
+ * succeeds only when every captured chunk is acknowledged or explicitly accounted as dropped or
+ * uncertain. By default any degraded recording fails the command.
  *
- * It exercises the same contract the browser client does — a FRESH single-use ticket per connect,
- * equal-jitter backoff, buffer-and-flush — but in Node, so it needs no browser and can run headless.
+ * Required:
+ *   CHAOS_SESSION_ID      existing learner-owned recitation session
+ *   CHAOS_AUTHORIZATION   e.g. "Bearer ..." (preferred), or the three dev actor variables below
+ *   PLATFORM_URL          defaults to http://127.0.0.1:8083
+ *   GATEWAY_URL           defaults to ws://127.0.0.1:8081
  *
- * Usage (gateway must run with dev mode + chaos armed):
- *   ALLOW_INSECURE_DEFAULTS=1 \
- *   REALTIME_GATEWAY_TICKET_SECRET=chaos-secret \
- *   REALTIME_CHAOS_DROP_AFTER_CHUNKS=3 REALTIME_CHAOS_MAX_DROPS=2 \
- *   cargo run --manifest-path services/realtime-gateway/Cargo.toml
- *
- *   REALTIME_GATEWAY_TICKET_SECRET=chaos-secret node scripts/chaos-realtime-reconnect.mjs
- *
- * Exits non-zero unless the session survived the drops and delivered every chunk.
+ * Development-only actor fallback:
+ *   CHAOS_TENANT_ID, CHAOS_USER_ID, CHAOS_ROLE
  */
-import { issueRealtimeTicket } from "../server/src/lib/ticket.mjs";
+import { fileURLToPath } from "node:url";
 
-const GATEWAY = process.env.GATEWAY_URL ?? "ws://127.0.0.1:8081";
-const SECRET = process.env.REALTIME_GATEWAY_TICKET_SECRET ?? "chaos-secret";
-const TENANT = process.env.GATEWAY_TENANT_ID ?? "hikmah-pilot-erbil";
-const SESSION = `chaos-session-${Date.now()}`;
-const TOTAL_CHUNKS = 12;
-const EXPECTED_DROPS = Number(process.env.REALTIME_CHAOS_MAX_DROPS ?? 2);
+import { createRealtimeRecoveryController } from "./lib/realtime-recovery-client.mjs";
 
-/**
- * Mint a ticket the gateway will accept, so this script needs only the gateway + the shared secret
- * — no database, no platform-api.
- *
- * Uses node-api's minter rather than a local copy of the format. This function used to hand-roll the
- * HMAC string, which made it a third independent transcription of a wire format pinned by
- * cross-language vectors — and it silently rotted the moment the format changed.
- */
-function issueTicket(sessionId, nonce) {
-  return issueRealtimeTicket(
-    {
-      sessionId,
-      tenantId: TENANT,
-      learnerId: "learner-1",
-      externalAsrProcessing: false,
-      audioRetention: "discard",
-      expiresAtUnixSeconds: Math.floor(Date.now() / 1000) + 300,
-      nonce,
-    },
-    SECRET,
+const PLATFORM = (process.env.PLATFORM_URL ?? "http://127.0.0.1:8083").replace(/\/$/, "");
+const GATEWAY = (process.env.GATEWAY_URL ?? "ws://127.0.0.1:8081").replace(/\/$/, "");
+const SESSION = process.env.CHAOS_SESSION_ID;
+const TOTAL_CHUNKS = Number(process.env.CHAOS_TOTAL_CHUNKS ?? 12);
+const CHUNK_INTERVAL_MS = Number(process.env.CHAOS_CHUNK_INTERVAL_MS ?? 30);
+const ALLOW_DEGRADED = process.env.CHAOS_ALLOW_DEGRADED === "true";
+
+const log = (message) => console.log(`[recovery-chaos] ${new Date().toISOString()} ${message}`);
+
+function positiveWhole(value, name, maximum) {
+  if (!Number.isSafeInteger(value) || value <= 0 || value > maximum) {
+    throw new TypeError(`${name} must be a positive integer no greater than ${maximum}`);
+  }
+  return value;
+}
+
+function actorHeaders() {
+  const authorization = process.env.CHAOS_AUTHORIZATION;
+  if (typeof authorization === "string" && authorization.trim() !== "") {
+    return { authorization };
+  }
+  const tenantId = process.env.CHAOS_TENANT_ID;
+  const userId = process.env.CHAOS_USER_ID;
+  const role = process.env.CHAOS_ROLE;
+  if (![tenantId, userId, role].every((value) => typeof value === "string" && value !== "")) {
+    throw new TypeError(
+      "CHAOS_AUTHORIZATION or CHAOS_TENANT_ID/CHAOS_USER_ID/CHAOS_ROLE is required",
+    );
+  }
+  return { "x-tenant-id": tenantId, "x-user-id": userId, "x-role": role };
+}
+
+async function jsonRequest(path, { body, headers }) {
+  const response = await fetch(`${PLATFORM}${path}`, {
+    method: "POST",
+    headers: { ...headers, "content-type": "application/json" },
+    body: JSON.stringify(body),
+    signal: AbortSignal.timeout(10_000),
+  });
+  const parsed = await response.json().catch(() => null);
+  if (!response.ok || parsed === null || typeof parsed !== "object") {
+    throw new Error(`platform request failed with status ${response.status}`);
+  }
+  return parsed;
+}
+
+function websocketBoundary(url, handlers) {
+  const ws = new WebSocket(url);
+  ws.binaryType = "arraybuffer";
+  ws.onopen = handlers.onOpen;
+  ws.onmessage = (event) => handlers.onMessage(
+    typeof event.data === "string" ? event.data : Buffer.from(event.data).toString("utf8"),
   );
+  ws.onclose = handlers.onClose;
+  ws.onerror = handlers.onError;
+  return {
+    send: (bytes) => ws.send(bytes),
+    close: () => ws.close(),
+  };
 }
 
-const log = (msg) => console.log(`[chaos] ${new Date().toISOString()} ${msg}`);
-
-/** Equal jitter — mirrors apps/web/src/lib/reconnect.ts planReconnect(). */
-function planReconnect(attempt, { baseDelayMs = 500, maxDelayMs = 15000, maxAttempts = 6 } = {}) {
-  if (attempt > maxAttempts) return { action: "give-up" };
-  const exponential = Math.min(baseDelayMs * 2 ** (attempt - 1), maxDelayMs);
-  const half = exponential / 2;
-  return { action: "retry", delayMs: Math.round(half + half * Math.random()) };
-}
-
-async function main() {
-  let sent = 0;
-  let acked = 0;
-  let drops = 0;
-  let attempt = 0;
+export async function runRealtimeRecoveryChaos({
+  sessionId = SESSION,
+  totalChunks = TOTAL_CHUNKS,
+  intervalMs = CHUNK_INTERVAL_MS,
+  allowDegraded = ALLOW_DEGRADED,
+} = {}) {
+  if (typeof sessionId !== "string" || sessionId.trim() === "") {
+    throw new TypeError("CHAOS_SESSION_ID is required");
+  }
+  positiveWhole(totalChunks, "CHAOS_TOTAL_CHUNKS", 100_000);
+  positiveWhole(intervalMs, "CHAOS_CHUNK_INTERVAL_MS", 60_000);
+  const headers = actorHeaders();
   let ticketsIssued = 0;
+  let captureTimer = null;
+  let captured = 0;
+  let report = null;
+  let finalization = null;
 
-  while (sent < TOTAL_CHUNKS) {
-    const nonce = `nonce-${++ticketsIssued}`;
-    const ticket = issueTicket(SESSION, nonce);
-    const url = `${GATEWAY}/v1/recitation-sessions/${encodeURIComponent(SESSION)}/audio?ticket=${encodeURIComponent(ticket)}`;
-    log(`connect attempt ${attempt + 1} with FRESH ticket #${ticketsIssued} (single-use)`);
+  const controller = createRealtimeRecoveryController({
+    sessionId,
+    getUrl: async () => {
+      const ticket = await jsonRequest("/v1/realtime-session-tickets", {
+        headers,
+        body: { sessionId, requestedSampleRates: [16_000] },
+      });
+      if (typeof ticket.token !== "string" || ticket.token === "") {
+        throw new Error("platform ticket response omitted the token");
+      }
+      ticketsIssued += 1;
+      return `${GATEWAY}/v1/recitation-sessions/${encodeURIComponent(sessionId)}/audio` +
+        `?ticket=${encodeURIComponent(ticket.token)}`;
+    },
+    openSocket: websocketBoundary,
+    stopCapture: async () => {
+      if (captureTimer !== null) clearInterval(captureTimer);
+      captureTimer = null;
+    },
+    finalize: async (recoveryReport) => {
+      report = recoveryReport;
+      finalization = await jsonRequest(
+        `/v1/recitation-sessions/${encodeURIComponent(sessionId)}/finalize`,
+        { headers, body: { recoveryReport } },
+      );
+    },
+    onStateChange: (state) => log(`state=${state}`),
+    onError: (reason) => log(`outcome=${reason}`),
+  });
 
-    const closed = await new Promise((resolve) => {
-      const ws = new WebSocket(url);
-      let closedCleanly = false;
-
-      ws.onopen = () => {
-        attempt = 0; // healthy connection resets the ladder
-        log(`connected — resuming at chunk ${sent + 1}/${TOTAL_CHUNKS}`);
-        const pump = () => {
-          if (sent >= TOTAL_CHUNKS) {
-            closedCleanly = true;
-            ws.close();
-            return;
-          }
-          if (ws.readyState !== WebSocket.OPEN) return; // dropped mid-pump; onclose drives the retry
-          ws.send(new Uint8Array([1, 2, 3, 4]));
-          sent += 1;
-          setTimeout(pump, 30);
-        };
-        pump();
-      };
-
-      ws.onmessage = (event) => {
-        const ack = JSON.parse(String(event.data));
-        if (ack.accepted) acked += 1;
-      };
-
-      ws.onclose = () => resolve({ closedCleanly });
-      ws.onerror = () => {};
-    });
-
-    if (closed.closedCleanly) break;
-
-    drops += 1;
-    log(`DROPPED by chaos after ${sent} chunks (drop #${drops})`);
-    attempt += 1;
-    const decision = planReconnect(attempt);
-    if (decision.action === "give-up") {
-      log("gave up — would degrade to batch");
-      process.exit(1);
+  await controller.start();
+  captureTimer = setInterval(() => {
+    if (captured >= totalChunks) {
+      clearInterval(captureTimer);
+      captureTimer = null;
+      void controller.stop();
+      return;
     }
-    log(`backoff ${decision.delayMs}ms before re-ticketing (attempt ${attempt})`);
-    await new Promise((r) => setTimeout(r, decision.delayMs));
-  }
+    // Declared deterministic PCM fixture bytes, not model or learner audio.
+    controller.capture(Buffer.alloc(15_360, captured % 251));
+    captured += 1;
+  }, intervalMs);
+  captureTimer.unref?.();
 
-  log(`RESULT sent=${sent}/${TOTAL_CHUNKS} acked=${acked} drops=${drops} tickets=${ticketsIssued}`);
-
-  if (drops < EXPECTED_DROPS) {
-    log(`FAIL: expected >=${EXPECTED_DROPS} chaos drops; is the gateway running with chaos armed?`);
-    process.exit(1);
+  await controller.done;
+  if (report === null || finalization === null) throw new Error("recovery finalization did not run");
+  const accounted = report.acknowledgedChunks + report.droppedChunks + report.uncertainChunks;
+  if (accounted !== report.capturedChunks || report.capturedChunks !== captured) {
+    throw new Error(
+      `capture accounting failed: captured=${captured} report=${report.capturedChunks} accounted=${accounted}`,
+    );
   }
-  if (sent < TOTAL_CHUNKS) {
-    log("FAIL: session did not complete");
-    process.exit(1);
+  if (!allowDegraded && report.state !== "complete") {
+    throw new Error(
+      `recording degraded: reason=${report.stopReason} dropped=${report.droppedChunks} ` +
+        `uncertain=${report.uncertainChunks}`,
+    );
   }
-  if (ticketsIssued < drops + 1) {
-    log("FAIL: reconnect reused a ticket (tickets are single-use)");
-    process.exit(1);
+  if (finalization.recordingStatus !== (report.state === "complete" ? "complete" : "incomplete")) {
+    throw new Error("platform finalization did not preserve the recovery integrity state");
   }
-  log(`PASS: session survived ${drops} forced drop(s) and delivered all ${TOTAL_CHUNKS} chunks, each reconnect re-ticketed.`);
+  log(
+    `PASS state=${report.state} captured=${report.capturedChunks} ` +
+      `acknowledged=${report.acknowledgedChunks} dropped=${report.droppedChunks} ` +
+      `uncertain=${report.uncertainChunks} tickets=${ticketsIssued}`,
+  );
+  return { report, finalization, ticketsIssued };
 }
 
-main().catch((error) => {
-  log(`ERROR ${error?.message ?? error}`);
-  process.exit(1);
-});
+const isMain = process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1];
+if (isMain) {
+  runRealtimeRecoveryChaos().catch((error) => {
+    log(`FAIL ${error instanceof Error ? error.message : "unknown failure"}`);
+    process.exitCode = 1;
+  });
+}

@@ -80,7 +80,6 @@ const ticketCallerPaths = [
   ["tests", "node-api", "ticket-vectors.test.mjs"],
   ["tests", "api-parity", "audio-index-parity.test.mjs"],
   ["scripts", "smoke-gateway.mjs"],
-  ["scripts", "chaos-realtime-reconnect.mjs"],
 ];
 const ticketReferencePaths = [
   ["specs", "gateway-ws-sweep", "research.md"],
@@ -298,6 +297,15 @@ test("every ticket caller and implementation citation uses the new owner", () =>
     assert.match(source, /server\/src\/lib\/ticket\.mjs/, `${parts.join("/")} must cite the new owner`);
     assert.doesNotMatch(source, /services\/node-api\/lib\/ticket\.mjs/);
   }
+});
+
+test("the recovery chaos probe obtains tickets from the API instead of importing ticket authority", () => {
+  const source = readFileSync(join(repo, "scripts", "chaos-realtime-reconnect.mjs"), "utf8");
+
+  assert.match(source, /\/v1\/realtime-session-tickets/);
+  assert.doesNotMatch(source, /server\/src\/lib\/ticket\.mjs/);
+  assert.doesNotMatch(source, /services\/node-api\/lib\/ticket\.mjs/);
+  assert.doesNotMatch(source, /issueRealtimeTicket|REALTIME_GATEWAY_TICKET_SECRET/);
 });
 
 test("the authorization authority has one owner under the server package", async () => {

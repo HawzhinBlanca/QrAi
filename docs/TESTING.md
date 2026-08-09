@@ -124,6 +124,27 @@ and the teacher-audio E2E separately prove current-retention checks, audited pla
 dry-run/apply repair, durable repaired provenance, and idempotent rerun. A skipped CREATEDB-backed
 case is not W3.6 completion evidence.
 
+W3.7 runs its migration and recovery proof together in one isolated serial command:
+
+```bash
+MIGRATION_TEST_ADMIN_URL="$ADMIN_URL" \
+  node --test --test-concurrency=1 \
+  tests/migrations/realtime-recovery-migration.test.mjs \
+  tests/e2e/realtime-recovery.test.mjs
+```
+
+The pure cases pin fresh-ticket equal jitter, one in-flight frame, the 125-frame/2 MiB FIFO,
+rejection retry, terminal ambiguity, exact accounting, stale-callback safety, finalize-once races,
+and a simulated ten-minute stream with one retained frame. The live case creates a disposable
+database and restricted role, mints tickets through the real Node API, claims them durably, sends
+audio through a real Node WebSocket, forces a clean drop, reconnects with a distinct ticket, and
+reads the immutable report back through the durable finalizer. Migration 0038's checksum,
+constraints, immutability, RLS, and tenant isolation are proved separately; finalization parity
+proves authentication-before-shape, owner-only report submission, staff legacy finalization, and
+the compatible legacy Rust response. A skipped live case is not W3.7 completion evidence.
+This gate proves a reference contract, not Flutter completion, codec/rate correctness, image soak,
+or traffic readiness.
+
 The Node package and standalone boundary have four focused gates:
 
 ```bash

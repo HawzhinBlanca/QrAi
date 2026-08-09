@@ -18,6 +18,12 @@ import {
   requireProducerAttribution,
 } from "../lib/model-attribution.mjs";
 import { proxy } from "../lib/proxy.mjs";
+import {
+  recoveryReportFromSessionRow,
+  recoveryReportsEqual,
+  recoveryResponseFields,
+  validateRecoveryReportBody,
+} from "../realtime/recovery-report.mjs";
 
 /** types.rs:9 — mirrors packages/contracts SUPPORTED_LANGUAGE_CODES exactly. */
 const SUPPORTED_LANGUAGES = ["ar", "ckb", "en", "tr", "ur", "id", "ms", "fr", "de"];
@@ -403,14 +409,45 @@ const nonEmptyString = (value) => typeof value === "string" && value.length > 0;
 
 const snapshotHash = (value) => createHash("sha256").update(JSON.stringify(value)).digest("hex");
 
-async function authorizeFinalization(ctx, actor, sessionId) {
+async function authorizeFinalization(ctx, actor, sessionId, requestedRecoveryReport) {
   return ctx.db.withTenant(actor.tenantId, async (tx) => {
     const [session] = await tx`
-      SELECT learner_id, model_version_id, consent_record_id
+      SELECT learner_id, model_version_id, consent_record_id,
+             capture_report_version, capture_report_state, capture_total_chunks,
+             capture_acknowledged_chunks, capture_dropped_chunks,
+             capture_uncertain_chunks, capture_stop_reason
       FROM recitation_sessions
-      WHERE id = ${sessionId} AND tenant_id = ${actor.tenantId}`;
+      WHERE id = ${sessionId} AND tenant_id = ${actor.tenantId}
+      FOR UPDATE`;
     if (!session) throw NotFound();
     requireSelfOrAny(actor, session.learner_id, ["teacher", "admin", "ops"]);
+
+    let storedRecoveryReport = recoveryReportFromSessionRow(session);
+    if (requestedRecoveryReport !== null) {
+      // This is client-capture truth, not staff review authority. Staff may still run legacy
+      // finalization, but only the owning learner may create or retry a recovery report.
+      requireSelfOrAny(actor, session.learner_id, []);
+      if (
+        storedRecoveryReport !== null &&
+        !recoveryReportsEqual(storedRecoveryReport, requestedRecoveryReport)
+      ) {
+        throw new ApiError("recovery report conflicts with the first accepted report", 409);
+      }
+      if (storedRecoveryReport === null) {
+        await tx`
+          UPDATE recitation_sessions
+          SET capture_report_version = ${requestedRecoveryReport.version},
+              capture_report_state = ${requestedRecoveryReport.state},
+              capture_total_chunks = ${requestedRecoveryReport.capturedChunks},
+              capture_acknowledged_chunks = ${requestedRecoveryReport.acknowledgedChunks},
+              capture_dropped_chunks = ${requestedRecoveryReport.droppedChunks},
+              capture_uncertain_chunks = ${requestedRecoveryReport.uncertainChunks},
+              capture_stop_reason = ${requestedRecoveryReport.stopReason},
+              capture_reported_at = clock_timestamp()
+          WHERE id = ${sessionId} AND tenant_id = ${actor.tenantId}`;
+        storedRecoveryReport = requestedRecoveryReport;
+      }
+    }
 
     // Include the current evidence state. Concurrent identical calls deduplicate, while an explicit
     // later re-finalization after alignments changed remains a new immutable input generation.
@@ -429,15 +466,33 @@ async function authorizeFinalization(ctx, actor, sessionId) {
         consentRecordId: session.consent_record_id,
         modelVersionId: session.model_version_id,
       },
+      recoveryReport: storedRecoveryReport,
       chunks,
       alignments,
     });
   });
 }
 
-const completedWithoutEffect = (response) => ({
-  result: { response },
-  commit: async () => undefined,
+async function currentServerLostChunkCount(tx, tenantId, sessionId) {
+  const [row] = await tx`
+    SELECT lost_chunk_count
+    FROM recitation_sessions
+    WHERE tenant_id = ${tenantId} AND id = ${sessionId}`;
+  if (!row) throw NotFound();
+  return Number(row.lost_chunk_count);
+}
+
+const completedWithoutEffect = ({ response, recoveryReport, tenantId, sessionId }) => ({
+  result: {},
+  commit: async (tx) => {
+    const serverLostChunkCount = await currentServerLostChunkCount(tx, tenantId, sessionId);
+    return {
+      response: {
+        ...response,
+        ...recoveryResponseFields(recoveryReport, serverLostChunkCount),
+      },
+    };
+  },
 });
 
 /** Prepare repeatable external finalization work; the returned commit owns every DB effect. */
@@ -457,6 +512,9 @@ export async function prepareSessionFinalization({
   const session = await ctx.db.withTenant(actor.tenantId, async (tx) => {
     const [row] = await tx`
       SELECT s.learner_id, s.quran_ref, s.model_version_id, s.consent_snapshot,
+             s.capture_report_version, s.capture_report_state, s.capture_total_chunks,
+             s.capture_acknowledged_chunks, s.capture_dropped_chunks,
+             s.capture_uncertain_chunks, s.capture_stop_reason,
              c.guardian_approved, c.external_asr_processing
       FROM recitation_sessions s
       JOIN consent_records c ON c.id = s.consent_record_id
@@ -464,6 +522,7 @@ export async function prepareSessionFinalization({
     if (!row) throw NotFound();
     return row;
   });
+  const recoveryReport = recoveryReportFromSessionRow(session);
 
   const consent = {
     externalAsrProcessing: session.external_asr_processing,
@@ -477,12 +536,15 @@ export async function prepareSessionFinalization({
   }, deadline);
 
   if (transcript?.transcribed !== true) {
-    return completedWithoutEffect(
-      refusal(
+    return completedWithoutEffect({
+      response: refusal(
         sessionId,
         typeof transcript?.reason === "string" ? transcript.reason : "unknown",
       ),
-    );
+      recoveryReport,
+      tenantId: actor.tenantId,
+      sessionId,
+    });
   }
   if (transcript?.transcriptSource !== "server-derived") {
     console.error("ML transcript omitted its server-derived source label");
@@ -492,7 +554,12 @@ export async function prepareSessionFinalization({
 
   const recognizedTokens = transcript?.recognizedTokens;
   if (!Array.isArray(recognizedTokens) || recognizedTokens.length === 0) {
-    return completedWithoutEffect(refusal(sessionId, "invalid-recognized-spans"));
+    return completedWithoutEffect({
+      response: refusal(sessionId, "invalid-recognized-spans"),
+      recoveryReport,
+      tenantId: actor.tenantId,
+      sessionId,
+    });
   }
 
   const alignment = await ctx.inference.predictAlignment({
@@ -505,21 +572,29 @@ export async function prepareSessionFinalization({
   }, deadline);
 
   if (alignment?.finalizable !== true) {
-    return completedWithoutEffect(
-      refusal(
+    return completedWithoutEffect({
+      response: refusal(
         sessionId,
         typeof alignment?.nonFinalizedReason === "string"
           ? alignment.nonFinalizedReason
           : "invalid-recognized-spans",
       ),
-    );
+      recoveryReport,
+      tenantId: actor.tenantId,
+      sessionId,
+    });
   }
   requireProducerAttribution(alignment, "quran-aligner", "ML");
   requireExactAttributionExtension(transcript, alignment, "quran-aligner", "ML");
 
   if (alignment.modelVersion !== session.model_version_id) {
     console.warn("finalization refused because the session and producer models disagree");
-    return completedWithoutEffect(refusal(sessionId, "model-version-mismatch"));
+    return completedWithoutEffect({
+      response: refusal(sessionId, "model-version-mismatch"),
+      recoveryReport,
+      tenantId: actor.tenantId,
+      sessionId,
+    });
   }
   if (
     !nonEmptyString(alignment.datasetVersion) ||
@@ -560,9 +635,15 @@ export async function prepareSessionFinalization({
     }
   }
   if (invalidOutput || alignments.length === 0) {
-    return completedWithoutEffect(
-      refusal(sessionId, invalidOutput ? "invalid-alignment-output" : "no-persistable-alignments"),
-    );
+    return completedWithoutEffect({
+      response: refusal(
+        sessionId,
+        invalidOutput ? "invalid-alignment-output" : "no-persistable-alignments",
+      ),
+      recoveryReport,
+      tenantId: actor.tenantId,
+      sessionId,
+    });
   }
 
   // Preflight every destructive-writer condition before the fenced transaction. Canonical word
@@ -577,7 +658,12 @@ export async function prepareSessionFinalization({
     );
   });
   if (!persistable) {
-    return completedWithoutEffect(refusal(sessionId, "invalid-alignment-output"));
+    return completedWithoutEffect({
+      response: refusal(sessionId, "invalid-alignment-output"),
+      recoveryReport,
+      tenantId: actor.tenantId,
+      sessionId,
+    });
   }
 
   const provenance = {
@@ -640,6 +726,7 @@ export async function prepareSessionFinalization({
         chunkCount: Number.isInteger(transcript.chunkCount) ? transcript.chunkCount : 0,
         finalized: true,
         lostChunkCount,
+        ...recoveryResponseFields(recoveryReport, lostChunkCount),
         persisted: persisted.persisted,
         reason: "consent-granted",
         sessionId,
@@ -650,11 +737,24 @@ export async function prepareSessionFinalization({
 
 /** POST /v1/recitation-sessions/{id}/finalize — recitation.rs:1183 */
 export async function finalizeSession(req, reply, ctx) {
+  // Preserve the established authorization-before-shape boundary: an anonymous caller must not
+  // learn whether a recovery document is syntactically valid.
   const resolved = await resolveActor(req, ctx);
-  if (resolved.delegate) return proxy(req, reply, ctx.upstream);
+  let recoveryReport;
+  try {
+    recoveryReport = validateRecoveryReportBody(req.body);
+  } catch (error) {
+    throw new RejectionError(error instanceof Error ? error.message : "invalid recovery report", 400);
+  }
+  if (resolved.delegate) {
+    if (recoveryReport !== null) {
+      throw new ApiError("recovery reporting is unavailable on the legacy upstream", 503);
+    }
+    return proxy(req, reply, ctx.upstream);
+  }
   const { actor } = resolved;
   const sessionId = req.params.id;
-  const inputVersion = await authorizeFinalization(ctx, actor, sessionId);
+  const inputVersion = await authorizeFinalization(ctx, actor, sessionId, recoveryReport);
   const job = await ctx.jobStore.enqueue({
     tenantId: actor.tenantId,
     kind: "session.finalize",

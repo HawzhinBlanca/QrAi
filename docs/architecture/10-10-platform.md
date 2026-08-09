@@ -85,7 +85,8 @@
   execution, retained-audio writes/retention, and the server-local inference runtime;
   `node-realtime` is an internal, independently drainable process with liveness, bounded deep
   readiness, private fixed-cardinality metrics, W3.3 ticket/Origin/rate admission, W3.4 durable
-  replay, and the W3.6 bounded storage/index outcome runtime on the exact session-audio route. The
+  replay, the W3.6 bounded storage/index outcome runtime, and the W3.7 recovery reference contract
+  on the exact session-audio route. The
   process receives no traffic and Rust remains the only realtime traffic target.
   The worker's key-gated,
   rate-limited private listener on port 8098 exists only for the measured Rust/gateway compatibility
@@ -185,8 +186,9 @@ that never bypasses tenant/session/expiry/retention checks. Replay stores only a
 never a raw ticket. A shared authority must fail closed; the W3.4 cross-instance benchmark
 selected restricted Postgres for Node. Each session uses a bounded queue and explicit ack semantics;
 ack message text is diagnostic only. W3.1 records this boundary and its fixtures; W3.2 implements
-the independently drainable process lifecycle. Replay, bounded audio, and durable outcome/index
-repair are implemented below; recovery, image parity, and traffic switch remain separately gated.
+the independently drainable process lifecycle. Replay, bounded audio, durable outcome/index repair,
+and the recovery reference contract are implemented below; the product-client port, image parity,
+and traffic switch remain separately gated.
 
 ### W3.3 realtime admission (ADR-0052)
 
@@ -224,7 +226,8 @@ separate fixed-cardinality metrics. Shutdown drains for a derived maximum of fou
 uncooperative work, clears accounting, then closes replay/storage/database resources.
 
 This is still a no-traffic shadow. The following W3.6 section owns durable
-stored/unindexed/lost/repair state; reconnect recovery belongs to W3.7/W4.11, and the raw wire cannot
+stored/unindexed/lost/repair state; the recovery contract belongs to W3.7 and its product port to
+W4.11, and the raw wire cannot
 describe the browser WebM/MP4
 codec or negotiated 24/48 kHz rates. That browser WebM/MP4 mismatch remains a cutover blocker;
 Rust stays the public traffic target.
@@ -243,8 +246,32 @@ inference gaps without double counting.
 The repair command uses the same tenant transaction and current consent authority. Dry-run remains
 the default; apply creates the index and closes repair provenance atomically, including the case
 where a timed-out conditional object write committed remotely. Playback never reads the diagnostic
-table. W3.6 adds no client, public route, service, package, port, or traffic movement; W3.7 recovery,
-browser codec/rate negotiation, production-image parity, and canary evidence remain blockers.
+table. W3.6 adds no client, public route, service, package, port, or traffic movement; the following
+W3.7 boundary owns recovery truth while browser codec/rate negotiation, production-image parity,
+and canary evidence remain blockers.
+
+### W3.7 realtime recovery and honest fallback (ADR-0051/0052)
+
+The unchanged v1 wire has no client frame idempotency key. The recovery contract therefore permits
+reconnect only when no sent frame awaits an acknowledgement: it retains a FIFO under both 125
+frames and 2 MiB, sends one frame at a time, obtains a fresh API-issued single-use ticket on every
+attempt, and uses equal jitter from 500 ms through a 15-second cap for at most six retries. An
+accepted acknowledgement retires exactly the matching frame and resets the incident. Rejection
+retries the same frame without advancing sequence. A sent/no-ack disconnect is uncertain and is
+never replayed; ambiguity, invalid acknowledgement, exhaustion, overflow, or device failure stops
+capture and finalizes once.
+
+Migration 0038 stores the first closed recovery report on the existing forced-RLS session row:
+version/state, captured/acknowledged/dropped/uncertain counts, fixed stop reason, and database report
+time. Authentication precedes report parsing, and only the owning learner may create or retry this
+client-capture truth; authorized staff retain legacy empty-body finalization. Exact retry is
+idempotent and conflicting replacement is refused. Finalization reports alignment work through
+`finalized` and recording integrity through `recordingStatus`; client dropped/uncertain and server
+accepted-lost counts remain separate because v1 has no shared chunk identity. A legacy client with
+no report is `unverified`, never complete. The executable Node
+reference controller and real API/WebSocket/Postgres proof are conformance authority for Flutter
+W4.11, not a second production client. Rust still receives all public realtime traffic; W3.8 image
+and format evidence, W3.9 canary/rollback, and the Flutter port remain required.
 
 The implemented W2.16 device-identity boundary is additive migration 0035 plus three Node routes,
 one identity-domain module, and one audited operator command. Invitations and access/refresh

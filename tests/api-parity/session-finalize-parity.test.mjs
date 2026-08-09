@@ -340,6 +340,22 @@ test("Node and Rust persist the same server-derived run and word evidence", asyn
     assert.equal(response.body.finalized, true);
     assert.equal(response.body.persisted, 2);
     assert.equal(response.body.lostChunkCount, 0);
+    if (implementation === "node") {
+      assert.deepEqual(
+        {
+          recordingStatus: response.body.recordingStatus,
+          clientDroppedChunkCount: response.body.clientDroppedChunkCount,
+          clientUncertainChunkCount: response.body.clientUncertainChunkCount,
+          serverLostChunkCount: response.body.serverLostChunkCount,
+        },
+        {
+          recordingStatus: "unverified",
+          clientDroppedChunkCount: 0,
+          clientUncertainChunkCount: 0,
+          serverLostChunkCount: 0,
+        },
+      );
+    }
     const inferenceCalls = implementation === "node"
       ? workerInference.calls
       : mock.received;
@@ -364,8 +380,15 @@ test("Node and Rust persist the same server-derived run and word evidence", asyn
     assert.deepEqual(rows.map((row) => row.heard_text), ["بسم", "الله"]);
     assert.deepEqual(rows[0].evidence_ids, ["declared-finalize-happy"]);
     assert.deepEqual(rows[0].model_attribution, alignmentAttribution(modelFor({ sessionId })));
+    const {
+      recordingStatus: _recordingStatus,
+      clientDroppedChunkCount: _clientDropped,
+      clientUncertainChunkCount: _clientUncertain,
+      serverLostChunkCount: _serverLost,
+      ...legacyBody
+    } = response.body;
     outcomes.push({
-      body: { ...response.body, auditEventId: "<audit>", sessionId: "<session>" },
+      body: { ...legacyBody, auditEventId: "<audit>", sessionId: "<session>" },
       rows: rows.map(({ alignment_run_id: _run, ...row }) => row),
     });
   }
@@ -387,9 +410,13 @@ test("no consent or no transcript is a normal refusal and stores nothing", async
     );
     assert.equal(response.status, 200, `${label}: ${response.text}`);
     assert.deepEqual(response.body, {
+      clientDroppedChunkCount: 0,
+      clientUncertainChunkCount: 0,
       finalized: false,
       persisted: 0,
       reason: "consent-revoked-or-insufficient",
+      recordingStatus: "unverified",
+      serverLostChunkCount: 0,
       sessionId,
     });
     const [count] = await queryJson(
@@ -475,11 +502,188 @@ test("missing chunks are surfaced and stored without relabelling finalization as
   assert.equal(response.status, 200, response.text);
   assert.equal(response.body.finalized, true);
   assert.equal(response.body.lostChunkCount, 2);
+  assert.equal(response.body.recordingStatus, "incomplete");
+  assert.equal(response.body.serverLostChunkCount, 2);
   const [session] = await queryJson(
     "SELECT lost_chunk_count FROM recitation_sessions WHERE id = $1",
     [sessionId],
   );
   assert.equal(session.lost_chunk_count, 2);
+});
+
+test("the first client recovery report is immutable and recording integrity stays source-separated", async () => {
+  mode = "gap";
+  const sessionId = await createSession(shell.baseUrl);
+  const recoveryReport = {
+    version: 1,
+    state: "degraded",
+    capturedChunks: 5,
+    acknowledgedChunks: 3,
+    droppedChunks: 1,
+    uncertainChunks: 1,
+    stopReason: "ack-ambiguous",
+  };
+  const response = await request(
+    shell.baseUrl,
+    `/v1/recitation-sessions/${sessionId}/finalize`,
+    { method: "POST", role: "learner", userId: learnerId, body: { recoveryReport } },
+  );
+  assert.equal(response.status, 200, response.text);
+  assert.deepEqual(
+    {
+      finalized: response.body.finalized,
+      recordingStatus: response.body.recordingStatus,
+      clientDroppedChunkCount: response.body.clientDroppedChunkCount,
+      clientUncertainChunkCount: response.body.clientUncertainChunkCount,
+      serverLostChunkCount: response.body.serverLostChunkCount,
+      fabricatedTotal: response.body.totalLostChunkCount,
+    },
+    {
+      finalized: true,
+      recordingStatus: "incomplete",
+      clientDroppedChunkCount: 1,
+      clientUncertainChunkCount: 1,
+      serverLostChunkCount: 2,
+      fabricatedTotal: undefined,
+    },
+  );
+  const [stored] = await queryJson(
+    `SELECT capture_report_version, capture_report_state, capture_total_chunks,
+            capture_acknowledged_chunks, capture_dropped_chunks,
+            capture_uncertain_chunks, capture_stop_reason,
+            capture_reported_at IS NOT NULL AS reported
+       FROM recitation_sessions WHERE id = $1`,
+    [sessionId],
+  );
+  assert.deepEqual(stored, {
+    capture_report_version: 1,
+    capture_report_state: "degraded",
+    capture_total_chunks: 5,
+    capture_acknowledged_chunks: 3,
+    capture_dropped_chunks: 1,
+    capture_uncertain_chunks: 1,
+    capture_stop_reason: "ack-ambiguous",
+    reported: true,
+  });
+
+  const exactRetry = await request(
+    shell.baseUrl,
+    `/v1/recitation-sessions/${sessionId}/finalize`,
+    { method: "POST", role: "learner", userId: learnerId, body: { recoveryReport } },
+  );
+  assert.equal(exactRetry.status, 200, exactRetry.text);
+  assert.equal(exactRetry.body.recordingStatus, "incomplete");
+
+  const conflicting = await request(
+    shell.baseUrl,
+    `/v1/recitation-sessions/${sessionId}/finalize`,
+    {
+      method: "POST",
+      role: "learner",
+      userId: learnerId,
+      body: {
+        recoveryReport: {
+          ...recoveryReport,
+          state: "complete",
+          acknowledgedChunks: 5,
+          droppedChunks: 0,
+          uncertainChunks: 0,
+          stopReason: "completed",
+        },
+      },
+    },
+  );
+  assert.equal(conflicting.status, 409, conflicting.text);
+  const [unchanged] = await queryJson(
+    `SELECT capture_report_state, capture_dropped_chunks, capture_uncertain_chunks
+       FROM recitation_sessions WHERE id = $1`,
+    [sessionId],
+  );
+  assert.deepEqual(unchanged, {
+    capture_report_state: "degraded",
+    capture_dropped_chunks: 1,
+    capture_uncertain_chunks: 1,
+  });
+});
+
+test("hostile recovery report expansion is rejected before durable finalization work", async () => {
+  mode = "happy";
+  const sessionId = await createSession(shell.baseUrl);
+  for (const body of [
+    { extra: true },
+    {
+      recoveryReport: {
+        version: 1,
+        state: "complete",
+        capturedChunks: 1,
+        acknowledgedChunks: 1,
+        droppedChunks: 0,
+        uncertainChunks: 0,
+        stopReason: "completed",
+        tenantId: TENANT,
+      },
+    },
+  ]) {
+    const response = await request(
+      shell.baseUrl,
+      `/v1/recitation-sessions/${sessionId}/finalize`,
+      { method: "POST", role: "learner", userId: learnerId, body },
+    );
+    assert.equal(response.status, 400, response.text);
+  }
+  const [state] = await queryJson(
+    `SELECT capture_report_version,
+            (SELECT count(*)::int FROM background_jobs
+              WHERE subject_id = $1 AND kind = 'session.finalize') AS jobs
+       FROM recitation_sessions WHERE id = $1`,
+    [sessionId],
+  );
+  assert.deepEqual(state, { capture_report_version: null, jobs: 0 });
+});
+
+test("recovery reports require authentication and the owning learner even when staff may finalize", async () => {
+  mode = "happy";
+  const sessionId = await createSession(shell.baseUrl);
+  const recoveryReport = {
+    version: 1,
+    state: "complete",
+    capturedChunks: 1,
+    acknowledgedChunks: 1,
+    droppedChunks: 0,
+    uncertainChunks: 0,
+    stopReason: "completed",
+  };
+
+  const anonymous = await request(
+    shell.baseUrl,
+    `/v1/recitation-sessions/${sessionId}/finalize`,
+    { method: "POST", body: { extra: true } },
+  );
+  assert.equal(anonymous.status, 401, anonymous.text);
+
+  const staffReport = await request(
+    shell.baseUrl,
+    `/v1/recitation-sessions/${sessionId}/finalize`,
+    { method: "POST", role: "teacher", body: { recoveryReport } },
+  );
+  assert.equal(staffReport.status, 403, staffReport.text);
+
+  const [state] = await queryJson(
+    `SELECT capture_report_version,
+            (SELECT count(*)::int FROM background_jobs
+              WHERE subject_id = $1 AND kind = 'session.finalize') AS jobs
+       FROM recitation_sessions WHERE id = $1`,
+    [sessionId],
+  );
+  assert.deepEqual(state, { capture_report_version: null, jobs: 0 });
+
+  const staffLegacy = await request(
+    shell.baseUrl,
+    `/v1/recitation-sessions/${sessionId}/finalize`,
+    { method: "POST", role: "teacher", body: {} },
+  );
+  assert.equal(staffLegacy.status, 200, staffLegacy.text);
+  assert.equal(staffLegacy.body.recordingStatus, "unverified");
 });
 
 test("finalization unions inference gaps with unrepaired realtime losses without double counting", async () => {

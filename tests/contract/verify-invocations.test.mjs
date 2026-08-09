@@ -52,6 +52,8 @@ const REALTIME_REPLAY_PROTECTION = "tests/realtime/replay-protection.test.mjs";
 const REALTIME_BACKPRESSURE = "tests/realtime/backpressure.test.mjs";
 const REALTIME_AUDIO_OUTCOMES_MIGRATION = "tests/migrations/realtime-audio-outcomes-migration.test.mjs";
 const REALTIME_STORAGE_INDEX = "tests/realtime/storage-index.test.mjs";
+const REALTIME_RECOVERY_MIGRATION = "tests/migrations/realtime-recovery-migration.test.mjs";
+const REALTIME_RECOVERY = "tests/e2e/realtime-recovery.test.mjs";
 const ACOUSTIC_CANDIDATE_PROOF_TEST = "scripts/acoustic-candidate-proof.test.mjs";
 const ACOUSTIC_CANDIDATE_PROOF_RUNNER = "node scripts/acoustic-candidate-proof.mjs";
 
@@ -508,6 +510,26 @@ test("canonical verification runs the isolated W3.6 storage/index proof exactly 
     (sharedLines[0].match(/[A-Za-z0-9_./-]+\.test\.mjs/g) ?? []).sort(),
     [REALTIME_AUDIO_OUTCOMES_MIGRATION, REALTIME_STORAGE_INDEX].sort(),
     "the isolated W3.6 command must contain exactly its schema/runtime proofs",
+  );
+});
+
+test("canonical verification runs the isolated W3.7 recovery proof exactly once", () => {
+  const invocations = activeNodeTestLines(verifySource);
+  for (const target of [REALTIME_RECOVERY_MIGRATION, REALTIME_RECOVERY]) {
+    assert.equal(
+      invocations.filter((line) => line.includes(target)).length,
+      1,
+      `${target} must run exactly once in canonical verification`,
+    );
+  }
+  const sharedLines = invocations.filter((line) =>
+    line.includes(REALTIME_RECOVERY_MIGRATION) && line.includes(REALTIME_RECOVERY));
+  assert.equal(sharedLines.length, 1, "W3.7 schema/recovery proof must run in one isolated command");
+  assert.match(sharedLines[0], /--test-concurrency=1/);
+  assert.deepEqual(
+    (sharedLines[0].match(/[A-Za-z0-9_./-]+\.test\.mjs/g) ?? []).sort(),
+    [REALTIME_RECOVERY_MIGRATION, REALTIME_RECOVERY].sort(),
+    "the isolated W3.7 command must contain exactly its schema/recovery proofs",
   );
 });
 

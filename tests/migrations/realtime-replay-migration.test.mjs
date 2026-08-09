@@ -81,7 +81,7 @@ test("0036 adds one checksum-locked forced-RLS nonce replay authority", async (t
   if (!database) return;
 
   const plan = await loadMigrationPlan();
-  assert.equal(plan.length, 36);
+  assert.equal(plan.length, 37);
   const replayMigration = plan.find(({ id }) => id === "0036");
   assert.deepEqual(
     { id: replayMigration?.id, filename: replayMigration?.filename },

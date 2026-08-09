@@ -501,6 +501,17 @@ tenant learner/retention authority and atomically creates the index plus repaire
 Playback still reads only `audio_chunks`; Rust and every public traffic target remain unchanged.
 Full caller, privacy, migration, and proof detail is in `W3.6-storage-index-outcomes/impact-map.md`.
 
+## 8.9 W3.7 realtime recovery delta
+
+W3.7 adds a language-neutral policy fixture and one dependency-injected Node reference controller,
+not a product client. It obtains a fresh API ticket for every attempt, holds one in-flight frame,
+retains at most 125 frames/2 MiB, and stops with exact acknowledged/dropped/uncertain accounting
+when v1 becomes ambiguous. Migration 0038 stores the first closed report on the existing forced-RLS
+session row. Finalization binds that report into its durable input and returns alignment status,
+client capture loss, and server accepted-loss as separate truths. Rust, Flutter, Web, the realtime
+wire/runtime, public route set, packages, services, and traffic targets remain unchanged. Full
+caller, privacy, migration, and proof detail is in `W3.7-realtime-recovery/impact-map.md`.
+
 ## 9. Test and documentation impact by wave
 
 | Wave | Minimum changed proof surfaces | Living docs/ADRs |

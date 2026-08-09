@@ -22,6 +22,7 @@
 | **Device enrollment invitations and sessions** | Postgres `device_enrollment_invitations`, `device_sessions` | Tenant/user, creator, audit, expiry, status, and generation lineage plus hash-only invitation, access, and refresh credentials. Raw 256-bit credentials are returned only at provisioning/exchange/refresh and never stored or exported. The routes are implemented but default off until owner activation. |
 | **Realtime replay claims** | Postgres `realtime_ticket_replay_claims` | Tenant/session, expiry, claim time, and lowercase SHA-256 of the exact signed nonce. Raw tickets/nonces are never stored. Rows are forced-RLS tenant data and cascade when the owning recitation session is erased. |
 | **Realtime delivery diagnostics** | Postgres `realtime_audio_chunk_outcomes` | Tenant/session/chunk identity, immutable span/rate, a closed accepted-lost or stored-unindexed reason, first-observed time, and nullable repair time. It stores no audio, credential, caller object key, trace, exception, or learner display field; forced RLS and session cascade apply. `audio_chunks`, not this table, controls playback. |
+| **Capture recovery report** | Nullable columns on Postgres `recitation_sessions` | One immutable version/state, captured/acknowledged/dropped/uncertain counts, closed stop reason, and database report time. It stores no audio, transcript, credential, tenant/learner claim, URL, or free-text diagnostic. NULL means a legacy unverified client; client counts remain separate from server `lost_chunk_count` because v1 has no shared chunk id. Existing session RLS and privacy deletion apply. |
 
 ## 2. Who can access it (isolation)
 
@@ -56,6 +57,8 @@
   expiry. Bounded cleanup removes expired rows; subject/session deletion cascades them immediately.
 - **Realtime delivery diagnostics** do not auto-expire. They remain diagnostic/recovery evidence
   until the session is erased or a later owner/DPO-approved DB retention policy is implemented.
+- **Capture recovery reports** follow their owning recitation session. They do not auto-expire or
+  permit replacement after first acceptance; session/privacy deletion removes them with the row.
 
 ## 4. Data-subject rights (already implemented)
 

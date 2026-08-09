@@ -519,6 +519,13 @@ forced-RLS. Public realtime traffic remains on Rust; W3.7 owns client recovery.
 
 ### W3.7 Reconnect and fallback
 
+**Implemented boundary (2026-08-09):** the unchanged v1 wire uses one in-flight frame, a
+125-frame/2 MiB FIFO, fresh ticket per attempt, bounded equal jitter, and terminal ambiguity rather
+than unsafe replay. Migration 0038 stores one immutable privacy-safe report on the forced-RLS
+session; finalization separates alignment success, client capture loss, and server accepted loss.
+The executable Node reference freezes Flutter W4.11 behavior. Rust remains the public target and
+W3.8/W3.9 still own production-image evidence and traffic movement.
+
 - Define fresh-ticket reconnect, exponential backoff/jitter, local buffer ceiling, and session
   finalization fallback.
 - A buffer overflow or exhausted reconnect must stop recording and explain loss; it may not silently

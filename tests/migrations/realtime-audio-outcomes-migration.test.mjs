@@ -79,9 +79,10 @@ async function insertOutcome(client, identity, overrides = {}) {
 
 test("0037 adds one checksum-locked forced-RLS realtime audio diagnostic authority", async (t) => {
   const plan = await loadMigrationPlan();
-  assert.equal(plan.length, 36);
+  assert.equal(plan.length, 37);
+  const outcomeMigration = plan.find(({ id }) => id === "0037");
   assert.deepEqual(
-    { id: plan.at(-1)?.id, filename: plan.at(-1)?.filename, checksum: plan.at(-1)?.checksum },
+    { id: outcomeMigration?.id, filename: outcomeMigration?.filename, checksum: outcomeMigration?.checksum },
     {
       id: "0037",
       filename: "0037_realtime_audio_chunk_outcomes.sql",
