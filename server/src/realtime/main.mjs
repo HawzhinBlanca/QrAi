@@ -12,6 +12,7 @@ import {
 } from "../lib/shutdown.mjs";
 import { createAudioObjectStoreFromEnv } from "../storage/audio-object-store.mjs";
 import { createRealtimeAdmission } from "./admission.mjs";
+import { AUDIO_LIMITS, createRealtimeAudioRuntime } from "./audio.mjs";
 import { createRealtimeReplayAuthority } from "./replay.mjs";
 
 const READINESS_DEPENDENCIES = Object.freeze([
@@ -198,7 +199,8 @@ function assertDependencies({ db, audioObjectStore, fetchImpl }) {
   if (
     !audioObjectStore ||
     typeof audioObjectStore.assertReady !== "function" ||
-    typeof audioObjectStore.close !== "function"
+    typeof audioObjectStore.close !== "function" ||
+    typeof audioObjectStore.put !== "function"
   ) {
     throw new TypeError("realtime process requires the private audio object-store boundary");
   }
@@ -216,7 +218,14 @@ async function httpReady(fetchImpl, url, signal) {
   }
 }
 
-function renderMetrics({ ready, draining, failures, admissionMetrics, replayMetrics }) {
+function renderMetrics({
+  ready,
+  draining,
+  failures,
+  admissionMetrics,
+  audioMetrics,
+  replayMetrics,
+}) {
   let output = "# HELP realtime_process_ready Whether every realtime dependency is ready.\n";
   output += "# TYPE realtime_process_ready gauge\n";
   output += `realtime_process_ready ${ready ? 1 : 0}\n`;
@@ -228,11 +237,7 @@ function renderMetrics({ ready, draining, failures, admissionMetrics, replayMetr
   for (const dependency of READINESS_DEPENDENCIES) {
     output += `realtime_readiness_failures_total{dependency="${dependency}"} ${failures[dependency]}\n`;
   }
-  return output + admissionMetrics + replayMetrics;
-}
-
-function defaultAdmittedSocket(socket) {
-  socket.close(1013, "temporarily unavailable");
+  return output + admissionMetrics + replayMetrics + audioMetrics;
 }
 
 export function createRealtimeApplication({
@@ -241,6 +246,7 @@ export function createRealtimeApplication({
   workerReadyUrl,
   asrReadyUrl,
   readinessTimeoutMs,
+  shutdownGraceMs,
   metricsToken = null,
   metricsDevOpen = false,
   ticketSecret,
@@ -252,7 +258,7 @@ export function createRealtimeApplication({
   rateLimitOptions,
   admissionNowUnixSeconds,
   replayAuthority = null,
-  handleAdmittedSocket = defaultAdmittedSocket,
+  handleAdmittedSocket = null,
   fetchImpl = globalThis.fetch,
   logger = false,
 }) {
@@ -276,8 +282,8 @@ export function createRealtimeApplication({
   if (!Number.isSafeInteger(trustedProxyHops) || trustedProxyHops < 0 || trustedProxyHops > 32) {
     throw new TypeError("realtime trusted proxy hops must be between 0 and 32");
   }
-  if (typeof handleAdmittedSocket !== "function") {
-    throw new TypeError("realtime admitted socket handler must be a function");
+  if (handleAdmittedSocket !== null && typeof handleAdmittedSocket !== "function") {
+    throw new TypeError("realtime admitted socket handler must be null or a function");
   }
 
   const replay = replayAuthority ?? createRealtimeReplayAuthority({ db, tenantId });
@@ -301,6 +307,8 @@ export function createRealtimeApplication({
     rateLimitOptions,
     nowUnixSeconds: admissionNowUnixSeconds,
   });
+  const audio = createRealtimeAudioRuntime({ audioObjectStore, shutdownGraceMs });
+  const admittedSocketHandler = handleAdmittedSocket ?? audio.handleSocket;
 
   const app = Fastify({
     logger,
@@ -311,7 +319,41 @@ export function createRealtimeApplication({
     return503OnClosing: true,
     trustProxy: trustedProxyHops === 0 ? false : trustedProxyHops,
   });
-  app.register(websocket);
+  app.register(websocket, {
+    options: { maxPayload: AUDIO_LIMITS.maxTransportBytes },
+    errorHandler(_error, socket) {
+      try {
+        socket.close(1011, "internal error");
+      } catch {
+        socket.terminate?.();
+      }
+    },
+    preClose: async function audioPreClose() {
+      const errors = [];
+      try {
+        await audio.stop();
+      } catch (error) {
+        errors.push(error);
+      }
+      const server = this.websocketServer;
+      for (const client of server.clients ?? []) {
+        try {
+          client.terminate();
+        } catch {
+          // The runtime already released this peer; server.close below remains authoritative.
+        }
+      }
+      await new Promise((resolve) => {
+        server.close((error) => {
+          if (error) errors.push(error);
+          resolve();
+        });
+      });
+      if (errors.length > 0) {
+        throw new AggregateError(errors, "realtime websocket close failed");
+      }
+    },
+  });
   // Fastify's default 404 document echoes the requested URL. Keep near-miss credential-bearing
   // upgrade paths generic and bodyless, just like admission refusals.
   app.setNotFoundHandler(async (_request, reply) => reply.code(404).send());
@@ -367,6 +409,11 @@ export function createRealtimeApplication({
     ready = false;
     const errors = [];
     try {
+      await audio.stop();
+    } catch (error) {
+      errors.push(error);
+    }
+    try {
       await replay.stop();
     } catch (error) {
       errors.push(error);
@@ -400,6 +447,7 @@ export function createRealtimeApplication({
           draining,
           failures,
           admissionMetrics: admission.renderMetrics(),
+          audioMetrics: audio.renderMetrics(),
           replayMetrics: replay.renderMetrics(),
         }));
     });
@@ -431,7 +479,15 @@ export function createRealtimeApplication({
         },
       },
       (socket, request) => {
-        handleAdmittedSocket(socket, request[admittedContext]);
+        try {
+          admittedSocketHandler(socket, request[admittedContext]);
+        } catch {
+          try {
+            socket.close(1011, "internal error");
+          } catch {
+            socket.terminate?.();
+          }
+        }
       },
     );
   });

@@ -49,6 +49,7 @@ const REALTIME_PROCESS_LIFECYCLE = "tests/realtime/process-lifecycle.test.mjs";
 const REALTIME_TICKET_BOUNDARY = "tests/realtime/ticket-boundary.test.mjs";
 const REALTIME_REPLAY_MIGRATION = "tests/migrations/realtime-replay-migration.test.mjs";
 const REALTIME_REPLAY_PROTECTION = "tests/realtime/replay-protection.test.mjs";
+const REALTIME_BACKPRESSURE = "tests/realtime/backpressure.test.mjs";
 const ACOUSTIC_CANDIDATE_PROOF_TEST = "scripts/acoustic-candidate-proof.test.mjs";
 const ACOUSTIC_CANDIDATE_PROOF_RUNNER = "node scripts/acoustic-candidate-proof.mjs";
 
@@ -474,6 +475,18 @@ test("canonical verification runs the isolated W3.4 replay proof exactly once", 
     [REALTIME_REPLAY_MIGRATION, REALTIME_REPLAY_PROTECTION].sort(),
     "the isolated W3.4 command must contain exactly its schema/runtime proofs",
   );
+});
+
+test("canonical verification runs the hermetic W3.5 bounded-audio proof exactly once", () => {
+  const invocations = activeNodeTestLines(verifySource);
+  const matching = invocations.filter((line) => line.includes(REALTIME_BACKPRESSURE));
+  assert.equal(
+    matching.length,
+    1,
+    `${REALTIME_BACKPRESSURE} must run exactly once in canonical verification`,
+  );
+  assert.match(matching[0], /test: node services/);
+  assert.doesNotMatch(matching[0], /--test-concurrency=1/);
 });
 
 test("canonical verification guards the W1.10 exact-image harness and release mode runs it exactly once", () => {

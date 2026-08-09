@@ -60,7 +60,7 @@ monitoring contracts additionally pin the third command to the same immutable No
 host port or traffic edge. This lifecycle gate alone does not prove replay, audio queues, or
 traffic cutover.
 
-W3.3 proves the real, internal, admitted-but-unavailable Node shadow boundary:
+W3.3 historically proves the real, internal Node admission boundary:
 
 ```bash
 node --test tests/realtime/ticket-boundary.test.mjs
@@ -69,10 +69,10 @@ node --test tests/realtime/ticket-boundary.test.mjs
 It sends all six Rust-generated tickets and the shared hostile corpus through Node, proves generic
 signature/session/tenant/retention/expiry/lifetime refusals, exact browser/native Origin policy,
 the default 200-burst/50-ms bounded peer bucket, explicit trusted-hop behavior, real `101` on only
-the exact route, and immediate 1013/unavailable close. It also pins strict production config, the
+the exact route, and the milestone's explicit 1013/unavailable test seam. It also pins strict production config, the
 exact `@fastify/websocket` dependency, and absence of raw credentials or identity labels. W3.4
-extends the original four fixed counters with two replay outcomes. Rust still
-receives every client connection; W3.5 bounded audio and later traffic gates remain unproven.
+extends the original four fixed counters with two replay outcomes. Rust still receives every client
+connection; current bounded-audio behavior is proven separately below.
 
 W3.4 proves durable single-use replay and runs as one isolated, serial canonical command:
 
@@ -91,6 +91,20 @@ and 512 persisted claims after 32 warm-ups at concurrency 32. It fails unless p9
 and throughput is at least 100 claims/s. Without a CREATEDB-capable admin URL the live cases skip;
 that is not W3.4 completion evidence. Rust traffic, audio queues, acknowledgements, and cutover
 remain outside this gate.
+
+W3.5 proves the hermetic bounded runtime and the real Fastify handler:
+
+```bash
+node --test tests/realtime/backpressure.test.mjs
+```
+
+It pins the 2 MiB application/2 MiB + 64 KiB transport boundary, per-session/global retained
+budgets, 100-session ceiling, FIFO sequence/reconnect behavior, strict acknowledgement wire,
+claims-derived object-store metadata, two-second abort, fixed/redacted metrics, and pre-close
+resource order. Its measured plugin profile opens 100 sessions, sends 4 KiB each, requires every
+correct ack below p95 250 ms, refuses session 101, and returns all gauges to zero. It does not claim
+stored/indexed completion, browser codec correctness, client loss recovery, image parity, or public
+traffic readiness.
 
 The Node package and standalone boundary have four focused gates:
 

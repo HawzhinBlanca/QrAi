@@ -83,6 +83,7 @@ function dependencySet() {
     dbClose: 0,
     dbReady: 0,
     storeClose: 0,
+    storePut: 0,
     storeReady: 0,
   };
   const db = {
@@ -102,6 +103,10 @@ function dependencySet() {
     },
     async close() {
       calls.storeClose += 1;
+    },
+    async put() {
+      calls.storePut += 1;
+      return { created: true };
     },
   };
   const fetchImpl = async (url, { signal } = {}) => {
@@ -129,6 +134,7 @@ function dependencySet() {
     allowMissingOrigin: false,
     rateLimitEnabled: true,
     trustedProxyHops: 0,
+    shutdownGraceMs: 1_000,
   };
 }
 
@@ -246,7 +252,15 @@ test("the process exposes only health, deep readiness, and private fixed-cardina
         new RegExp(`realtime_readiness_failures_total\\{dependency="${dependency}"\\} 0`),
       );
     }
-    assert.doesNotMatch(metrics.body, /tenant|learner|session|chunk|trace|secret|internal/i);
+    for (const secret of [
+      realtimeTenant,
+      "learner-1",
+      "s3://private-bucket",
+      "secret",
+      "internal",
+    ]) {
+      assert.equal(metrics.body.includes(secret), false, `metrics leaked ${secret}`);
+    }
 
     for (const request of [
       { method: "GET", url: "/" },
@@ -318,9 +332,13 @@ test("a dependency that ignores AbortSignal cannot make readiness exceed its out
   });
 });
 
-test("the process owns only the authorized audio upgrade and closes the W3.3 shadow unavailable", async () => {
+test("the process owns only the authorized audio upgrade through the bounded W3.5 runtime", async () => {
   const source = readFileSync(entrypoint, "utf8");
   assert.match(source, /@fastify\/websocket/);
+  assert.match(source, /createRealtimeAudioRuntime/);
+  assert.match(source, /maxPayload:\s*AUDIO_LIMITS\.maxTransportBytes/);
+  assert.match(source, /preClose:\s*async function audioPreClose/);
+  assert.match(source, /errorHandler\(_error, socket\)/);
   assert.match(source, /websocket:\s*true/);
   assert.doesNotMatch(source, /\.on\(["']upgrade["'], refuseUpgrade\)/);
   const dependencies = dependencySet();
@@ -356,9 +374,6 @@ test("the process owns only the authorized audio upgrade and closes the W3.3 sha
       const frame = reply.subarray(headerEnd + 4);
       if (frame.length >= 4 && (frame[0] & 0x0f) === 0x08) {
         closeCode = frame.readUInt16BE(2);
-        // A raw TCP test client does not implement the WebSocket close handshake. Once the server
-        // proves its 1013 frame, terminate the test peer so app.close is not held for ws's timeout.
-        socket.destroy();
       }
     });
     socket.write(
@@ -367,12 +382,18 @@ test("the process owns only the authorized audio upgrade and closes the W3.3 sha
       "Sec-WebSocket-Key: BwcHBwcHBwcHBwcHBwcHBw==\r\nSec-WebSocket-Version: 13\r\n" +
       `Origin: ${realtimeOrigin}\r\n\r\n`,
     );
-    await Promise.race([
-      new Promise((resolve) => socket.once("close", resolve)),
-      sleep(500).then(() => { throw new Error("admitted W3.3 socket remained open"); }),
-    ]);
+    await waitUntil(() => reply.includes(Buffer.from("101 Switching Protocols")), {
+      timeoutMs: 500,
+      message: "admitted W3.5 socket did not upgrade",
+    });
+    await sleep(50);
     assert.match(reply.toString("latin1"), /^HTTP\/1\.1 101 Switching Protocols/m);
-    assert.equal(closeCode, 1013);
+    assert.equal(closeCode, null, "the bounded runtime must not close an idle admitted socket");
+    assert.equal(socket.destroyed, false);
+    const closed = new Promise((resolve) => socket.once("close", resolve));
+    socket.destroy();
+    await closed;
+    assert.equal(dependencies.calls.storePut, 0);
   } finally {
     await app.close();
   }
@@ -415,7 +436,11 @@ async function spawnRealtimeFixture() {
     import { createRealtimeApplication } from ${JSON.stringify(pathToFileURL(entrypoint).href)};
     import { installProcessShutdown } from ${JSON.stringify(shutdownModule)};
     const db = { assertRestrictedRole: async () => {}, end: async () => {} };
-    const audioObjectStore = { assertReady: async () => {}, close: async () => {} };
+    const audioObjectStore = {
+      assertReady: async () => {},
+      close: async () => {},
+      put: async () => ({ created: true }),
+    };
     const replayAuthority = {
       claim: async () => "fresh",
       renderMetrics: () => "",
@@ -429,6 +454,7 @@ async function spawnRealtimeFixture() {
       workerReadyUrl: "http://worker:8098/ready",
       asrReadyUrl: "http://asr:8091/ready",
       readinessTimeoutMs: 50,
+      shutdownGraceMs: 1000,
       metricsToken: null,
       metricsDevOpen: true,
       ticketSecret: ${JSON.stringify(realtimeSecret)},

@@ -67,10 +67,15 @@ function fakeReplayAuthority(claim) {
 function appOptions({ db, replayAuthority, useDefaultReplay = false, handleAdmittedSocket } = {}) {
   const options = {
     db: db ?? { assertRestrictedRole: async () => {}, end: async () => {} },
-    audioObjectStore: { assertReady: async () => {}, close: async () => {} },
+    audioObjectStore: {
+      assertReady: async () => {},
+      close: async () => {},
+      put: async () => ({ created: true }),
+    },
     workerReadyUrl: "http://worker:8098/ready",
     asrReadyUrl: "http://asr:8091/ready",
     readinessTimeoutMs: 250,
+    shutdownGraceMs: 8_000,
     metricsToken: null,
     metricsDevOpen: true,
     ticketSecret: SECRET,

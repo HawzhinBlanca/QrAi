@@ -70,10 +70,15 @@ function acceptedInput(overrides = {}) {
 function appOptions(overrides = {}) {
   return {
     db: { assertRestrictedRole: async () => {}, end: async () => {} },
-    audioObjectStore: { assertReady: async () => {}, close: async () => {} },
+    audioObjectStore: {
+      assertReady: async () => {},
+      close: async () => {},
+      put: async () => ({ created: true }),
+    },
     workerReadyUrl: "http://worker:8098/ready",
     asrReadyUrl: "http://asr:8091/ready",
     readinessTimeoutMs: 100,
+    shutdownGraceMs: 8_000,
     metricsToken: null,
     metricsDevOpen: true,
     fetchImpl: async () => ({ status: 200, body: { cancel: async () => {} } }),
@@ -90,6 +95,9 @@ function appOptions(overrides = {}) {
       stop: async () => {},
     },
     admissionNowUnixSeconds: () => NOW_SECONDS,
+    handleAdmittedSocket(socket) {
+      socket.close(1013, "test fixture complete");
+    },
     logger: false,
     ...overrides,
   };
@@ -358,7 +366,7 @@ test("configuration refuses weak secrets, malformed origins, inert proxy setting
   }
 });
 
-test("only the exact authorized route upgrades, then the W3.3 default seam closes unavailable", async () => {
+test("only the exact authorized route upgrades before the explicit admission-only fixture closes", async () => {
   await withListeningApp(appOptions(), async (_app, port) => {
     const validPath = `/v1/recitation-sessions/${SESSION}/audio?ticket=${encodeURIComponent(ticket())}&trace_id=trace-real`;
     for (const [name, attempt, expectedStatus] of [

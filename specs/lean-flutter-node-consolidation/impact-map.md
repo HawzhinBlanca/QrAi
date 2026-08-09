@@ -479,6 +479,17 @@ creation, and index repair. The current Rust gateway/API remain migration caller
 stop authoring object keys and preserve parity while the final Node realtime path is not yet active.
 Full symbol/caller detail and proof obligations are in `W2.14-object-storage/impact-map.md`.
 
+## 8.7 W3.5 bounded realtime audio delta
+
+W3.5 adds one dependency-free runtime inside the existing `server` package. The exact Node
+session-audio route keeps W3.3 admission and W3.4 durable replay before upgrade, then applies fixed
+transport/application, session, queue, byte, acknowledgement-buffer, and cursor ceilings. One FIFO
+consumer per session attempts the existing create-only object-store boundary; `accepted=true` is
+enqueue-only and W3.6 owns durable stored/unindexed/lost/repair truth. The private metrics surface
+adds only fixed session/ingress/store outcomes plus active/retained gauges. No package, image,
+service, port, schema, client, Rust, or traffic target changes. Full caller and proof detail is in
+`W3.5-bounded-audio/impact-map.md`.
+
 ## 9. Test and documentation impact by wave
 
 | Wave | Minimum changed proof surfaces | Living docs/ADRs |

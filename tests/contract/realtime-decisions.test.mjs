@@ -79,7 +79,7 @@ test("ADR-0052 pins one supported internal WebSocket admission adapter and no tr
 
 test("living docs expose W3.3 as admitted-but-unavailable and document its focused gate once", () => {
   assert.match(architecture, /W3\.3 realtime admission \(ADR-0052\)/);
-  assert.match(architecture, /valid shadow upgrade[^.]*1013/is);
+  assert.match(architecture, /W3\.3 milestone[^.]*1013/is);
   assert.match(architecture, /Rust[^.]*only realtime traffic target/is);
   assert.equal(
     testing.split("tests/realtime/ticket-boundary.test.mjs").length - 1,
@@ -122,4 +122,24 @@ test("living docs expose W3.4 as implemented and document its focused proofs onc
       `${target} must be documented exactly once as a focused W3.4 gate`,
     );
   }
+});
+
+test("ADR-0051/0052 and living docs expose the implemented bounded W3.5 runtime without a traffic claim", () => {
+  const contractDecision = adr("0051");
+  const admissionDecision = adr("0052");
+  for (const decision of [contractDecision, admissionDecision]) {
+    assert.match(decision, /W3\.5 implementation note/i);
+    assert.match(decision, /2 MiB \+ 64 KiB transport/i);
+    assert.match(decision, /100\s+active\/draining sessions/i);
+    assert.match(decision, /accepted=true[^.]*enqueued[^.]*not stored/is);
+    assert.match(decision, /Rust[^.]*traffic target/is);
+  }
+  assert.match(architecture, /W3\.5 bounded audio runtime \(ADR-0051\/0052\)/);
+  assert.match(architecture, /8 chunks[^.]*4 MiB[^.]*64 MiB[^.]*100 active\/draining sessions/is);
+  assert.match(architecture, /browser WebM\/MP4[^.]*cutover blocker/is);
+  assert.equal(
+    testing.split("tests/realtime/backpressure.test.mjs").length - 1,
+    1,
+    "the W3.5 focused gate must be documented exactly once",
+  );
 });

@@ -80,6 +80,14 @@ stored data, the Rust data plane, and rollback unchanged. Removing the plugin ro
 restores the W3.2 refusal-only shell. Traffic movement still requires the later parity, load,
 canary, rollback, and human release gates.
 
+**W3.5 implementation note (2026-08-09):** the historical W3.3 default above remains the admission
+proof and an explicit test seam, but the production default now runs one bounded audio runtime. It
+accepts at most 2 MiB of application bytes behind a 2 MiB + 64 KiB transport ceiling, retains at
+most 8 chunks/4 MiB per session and 64 MiB process-wide, and permits 100 active/draining sessions.
+`accepted=true` means enqueued, not stored; create-only object-store success/failure is a separate
+fixed metric outcome. Rust remains the traffic target while W3.6 durable outcome/index repair,
+W3.7 client recovery, codec/rate negotiation, image parity, and canary evidence remain open.
+
 ---
 
 ## ADR-0051 — Realtime keeps one wire contract and gains an isolated Node entrypoint
@@ -137,6 +145,13 @@ route defined by ADR-0052. ADR-0053's restricted Postgres authority now makes va
 single-use across instances/processes before upgrade. It uses the same restricted Postgres,
 private object-store, shutdown, healthcheck, release, and rollback boundaries. It has no host port
 or traffic edge; Rust remains the only realtime ingress.
+
+**W3.5 implementation note (2026-08-09):** the same process now enforces a 2 MiB application and
+2 MiB + 64 KiB transport boundary, 8 chunks/4 MiB per session, 64 MiB process-wide, and 100
+active/draining sessions. `accepted=true` means enqueued, not stored; a bounded FIFO writes through
+the existing create-only object-store interface and reports storage separately. Shutdown drains or
+aborts before resource close. Rust remains the traffic target until recovery, durable outcome,
+format, image, canary, and rollback gates pass.
 
 ---
 

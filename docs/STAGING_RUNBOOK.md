@@ -159,10 +159,11 @@ docker compose exec -e PROBE_TOKEN="$METRICS_TOKEN" job-worker node -e \
   'fetch("http://127.0.0.1:8098/metrics",{headers:{"x-metrics-token":process.env.PROBE_TOKEN}}).then(async r=>{if(!r.ok)process.exit(1);process.stdout.write(await r.text())})'
 ```
 
-`node-realtime` is the third command of that image. Through W3.4 it remains internal: it publishes
+`node-realtime` is the third command of that image. Through W3.5 it remains internal: it publishes
 no host port and receives no Web/gateway traffic. It admits only the exact session-audio shadow
 route after ticket, tenant, lifetime, Origin/native, bounded peer-rate, and durable Postgres replay
-checks, then closes 1013 without reading audio. A consumed, unknown, or database-expired claim is
+checks, then applies the fixed 2 MiB application/2 MiB + 64 KiB transport limit, 8-chunk/4 MiB
+per-session, 64 MiB process, and 100-session ceilings. A consumed, unknown, or database-expired claim is
 bodyless 401; a replay-database timeout/outage is bodyless 503 and never upgrades. Its deep
 readiness checks the restricted database role, private object
 store, job worker, and loaded-model ASR within one bound. Supply a strong
@@ -183,6 +184,11 @@ no memory fallback. Never delete live replay rows to repair admission. Resolve d
 availability/locks, then let bounded cleanup remove only database-expired rows. Session/privacy
 deletion cascades its own replay rows. No raw ticket, nonce, learner, session, or tenant should
 appear in logs or metric labels.
+
+Alert on sustained `backpressure`, `slow_consumer`, `failed`, or `aborted` audio outcomes and on
+retained gauges that do not return to zero after peers close. `accepted=true` means enqueued, not
+stored or indexed. Do not route traffic to this shadow until W3.6 outcome/repair, W3.7 recovery,
+browser codec/rate, production-image, canary, and rollback gates pass.
 
 `NodeRealtimeShadowUnready` is an investigation warning during this no-traffic phase. Diagnose the
 four closed readiness classes; never expose upstream errors or attach identity labels. W3.9, not
@@ -291,9 +297,9 @@ The additive rows become inert while existing JWT/pilot flows remain unchanged. 
 migration 0035 or delete rows during rollback. Re-enable only after the owner and incident owner
 approve a new bounded canary.
 
-The Node API has no WebSocket route, and the W3.2 Node realtime process shell deliberately refuses
-upgrades. Its shared raw-socket fallback bounds unexpected upgrades; protocol close frames belong
-to W3.3 admission and are not yet claimed.
+The Node API has no WebSocket route. The separate Node realtime process owns only the exact
+authenticated session-audio upgrade and now runs the bounded W3.5 shadow handler; it still has no
+host/public traffic edge. Its shared raw-socket fallback bounds every unexpected upgrade.
 
 ## Kill-switch — graceful maintenance mode (P5.5)
 

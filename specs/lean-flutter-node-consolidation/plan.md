@@ -494,6 +494,10 @@ it does not weaken or remove any requirement.
 
 ### W3.5 Bounded audio runtime
 
+**Implemented boundary (2026-08-09):** W3.5 owns bounded ingress through the existing create-only
+object-store attempt. `accepted=true` is enqueue-only; durable stored/unindexed/lost/repair truth
+remains W3.6. Rust remains the public target.
+
 - Implement maximum frame/payload/session ceilings, per-session bounded queues, explicit
   backpressure acknowledgments, ordered safe sequence numbers, and overload metrics.
 - Keep CPU processing on workers; the socket loop only validates, queues, stores, and acknowledges.
@@ -502,8 +506,8 @@ it does not weaken or remove any requirement.
 
 ### W3.6 Storage, indexing, and repair states
 
-- Write retained audio through the one object-store boundary and index it idempotently through the
-  Node domain layer.
+- Consume W3.5 object-store outcomes and index retained audio idempotently through the Node domain
+  layer without introducing a second writer.
 - Track stored-but-unindexed, accepted-but-lost, rejected, and repaired chunks separately.
 
 **Criteria/tests:** RT-3, RT-4; retention, index-failure, playback, and repair E2E.

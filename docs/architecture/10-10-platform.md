@@ -84,9 +84,9 @@
   owns request admission and synchronous compatibility responses; `job-worker` owns durable job
   execution, retained-audio writes/retention, and the server-local inference runtime;
   `node-realtime` is an internal, independently drainable process with liveness, bounded deep
-  readiness, private fixed-cardinality metrics, and W3.3 ticket/Origin/rate admission on the exact
-  session-audio route. A valid shadow upgrade closes 1013/unavailable without consuming audio. The
-  process receives no traffic and Rust remains the only realtime traffic target.
+  readiness, private fixed-cardinality metrics, W3.3 ticket/Origin/rate admission, W3.4 durable
+  replay, and the W3.5 bounded audio runtime on the exact session-audio route. The process receives
+  no traffic and Rust remains the only realtime traffic target.
   The worker's key-gated,
   rate-limited private listener on port 8098 exists only for the measured Rust/gateway compatibility
   consumers and exposes a closed route allowlist.
@@ -176,7 +176,8 @@ than current-state claims.
 
 The same `server` package exposes a separate realtime process so its lifecycle can fail, drain, and
 scale independently of API and worker event loops. It exposes `/health`, `/ready`, private
-`/metrics`, and the W3.3 exact admitted-but-unavailable route as an internal no-traffic shadow. The Rust
+`/metrics`, and the exact admitted route with W3.4 replay and W3.5 bounded audio. It is an
+internal no-traffic shadow. The Rust
 gateway remains the compatibility oracle during W3. Rust-generated language-neutral `rt_v2` and
 `audio.ack` fixtures are the shared wire authority; Node does not generate protocol truth. Browser
 upgrades retain the exact Origin allowlist, while native no-Origin admission is an explicit policy
@@ -184,8 +185,8 @@ that never bypasses tenant/session/expiry/retention checks. Replay stores only a
 never a raw ticket. A shared authority must fail closed; the W3.4 cross-instance benchmark
 selected restricted Postgres for Node. Each session uses a bounded queue and explicit ack semantics;
 ack message text is diagnostic only. W3.1 records this boundary and its fixtures; W3.2 implements
-the independently drainable process lifecycle. Replay, bounded audio, and traffic switch remain
-separately gated.
+the independently drainable process lifecycle. Replay and bounded audio are implemented below;
+durable outcome/index repair, recovery, image parity, and traffic switch remain separately gated.
 
 ### W3.3 realtime admission (ADR-0052)
 
@@ -193,7 +194,9 @@ The Node shadow uses exactly pinned `@fastify/websocket` behind Fastify's existi
 plugin is registered before routes; only the exact session-audio route can upgrade after signature,
 session, tenant, retention, expiry, maximum-lifetime, Origin/native, and bounded peer-rate checks.
 A valid shadow upgrade completes `101`, hands only frozen claims without nonce plus nullable trace
-to the socket seam, then closes 1013 without reading, storing, forwarding, or acknowledging audio.
+to the socket seam, then—at the W3.3 milestone—closed 1013 without reading, storing, forwarding, or
+acknowledging audio. W3.5 replaces only that production default; the explicit admission-only test
+seam preserves the historical proof.
 Admission metrics have six fixed outcomes and no identity labels. There is no host port, proxy
 target, client change, or data-plane traffic; Rust remains the only realtime traffic target. W3.5
 owns bounded audio.
@@ -207,6 +210,23 @@ no in-memory fallback. Migration 0036 stores no raw ticket/nonce, preserves the 
 cascades with session privacy deletion, and supports bounded ordered `SKIP LOCKED` cleanup. The
 restricted two-pool 512-claim/concurrency-32 profile passed the approved p95 and throughput bars,
 selecting Postgres for Node while leaving the Rust Redis oracle and all traffic routing unchanged.
+
+### W3.5 bounded audio runtime (ADR-0051/0052)
+
+After admission and the durable replay claim, the Node shadow accepts binary application messages
+up to 2 MiB behind a 2 MiB + 64 KiB transport ceiling. It retains at most 8 chunks and 4 MiB per
+session, 64 MiB process-wide, and 100 active/draining sessions; outbound acknowledgement buffering
+is capped at 64 KiB. Empty/oversized/backpressured messages do not consume sequence, text is ignored
+for Rust parity, and same-process reconnect cursors are limited to 1,024 entries for six hours.
+`accepted=true` means enqueued, not stored. One FIFO consumer per session attempts the existing
+create-only object-store boundary with a two-second abort signal; store and ingress outcomes remain
+separate fixed-cardinality metrics. Shutdown drains for a derived maximum of four seconds, aborts
+uncooperative work, clears accounting, then closes replay/storage/database resources.
+
+This is still a no-traffic shadow. Durable stored/unindexed/lost/repair state belongs to W3.6,
+reconnect recovery belongs to W3.7/W4.11, and the raw wire cannot describe the browser WebM/MP4
+codec or negotiated 24/48 kHz rates. That browser WebM/MP4 mismatch remains a cutover blocker;
+Rust stays the public traffic target.
 
 The implemented W2.16 device-identity boundary is additive migration 0035 plus three Node routes,
 one identity-domain module, and one audited operator command. Invitations and access/refresh
@@ -256,8 +276,8 @@ controller and a hard deadline exits non-zero. Fastify is explicitly configured 
 connections at close because pinned 5.11's native branch otherwise calls `closeAllConnections` for
 its documented idle setting. Node 22 owns idle reaping, while the controller owns forced closure.
 The image sends SIGTERM and Compose's default ten-second stop window exceeds the app's eight-second
-budget. The API exposes no WebSocket route. The W3.3 realtime process admits only its exact
-authenticated shadow route and closes it 1013/unavailable; every other upgrade remains unavailable.
+budget. The API exposes no WebSocket route. The W3.5 realtime process admits only its exact
+authenticated shadow route and runs the bounded audio handler; every other upgrade remains unavailable.
 The shared shutdown controller prevents an admitted or unexpected socket from hanging deployment.
 
 The implemented W2.14 storage boundary uses one async interface injected into the Node API and
