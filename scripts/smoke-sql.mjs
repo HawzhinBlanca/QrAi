@@ -18,6 +18,7 @@ const tenantTables = [
   "agent_runs",
   "realtime_session_tickets",
   "realtime_ticket_replay_claims",
+  "realtime_audio_chunk_outcomes",
   "alignment_runs",
   "learner_progress",
   "privacy_jobs",
@@ -38,6 +39,7 @@ const coreSchemaPaths = [
   join("infra", "migrations", "0034_background_jobs.sql"),
   join("infra", "migrations", "0035_device_identity.sql"),
   join("infra", "migrations", "0036_realtime_ticket_replay.sql"),
+  join("infra", "migrations", "0037_realtime_audio_chunk_outcomes.sql"),
 ];
 const sessionMigrationPath = join("infra", "migrations", "0008_session_language.sql");
 const reviewStatusMigrationPaths = [
@@ -52,6 +54,7 @@ const rlsPaths = [
   join("infra", "migrations", "0034_background_jobs.sql"),
   join("infra", "migrations", "0035_device_identity.sql"),
   join("infra", "migrations", "0036_realtime_ticket_replay.sql"),
+  join("infra", "migrations", "0037_realtime_audio_chunk_outcomes.sql"),
 ];
 const coreSchemaRaw = (await Promise.all(coreSchemaPaths.map((path) => readFile(path, "utf8")))).join("\n");
 const sessionMigrationRaw = await readFile(sessionMigrationPath, "utf8");
@@ -235,6 +238,7 @@ function buildLiveSmokeSql() {
     agent_runs: 1,
     realtime_session_tickets: 1,
     realtime_ticket_replay_claims: 1,
+    realtime_audio_chunk_outcomes: 1,
     alignment_runs: 1,
     learner_progress: 1,
     privacy_jobs: 1,
@@ -337,6 +341,12 @@ insert into realtime_session_tickets (id, tenant_id, session_id, learner_id, tok
 insert into audio_chunks (id, tenant_id, session_id, evidence_id, start_ms, end_ms, sample_rate, status, object_key, audit_event_id) values
   ('chunk-a', 'tenant-a', 'session-a', 'evidence-a', 0, 100, 16000, 'queued', 'tenant-a/audio.wav', 'audit-a'),
   ('chunk-b', 'tenant-b', 'session-b', 'evidence-b', 0, 100, 16000, 'queued', 'tenant-b/audio.wav', 'audit-b');
+
+insert into realtime_audio_chunk_outcomes
+  (tenant_id, session_id, chunk_id, start_ms, end_ms, sample_rate,
+   initial_outcome, reason_code, repaired_at) values
+  ('tenant-a', 'session-a', 'chunk-a', 0, 100, 16000, 'stored-unindexed', 'index-failed', now()),
+  ('tenant-b', 'session-b', 'chunk-b', 0, 100, 16000, 'stored-unindexed', 'index-failed', now());
 
 insert into word_alignments (id, tenant_id, session_id, word_id, heard_text, start_ms, end_ms, confidence, status, model_version_id, audit_event_id) values
   ('alignment-a', 'tenant-a', 'session-a', '1:1:1', 'bism', 0, 100, 0.95, 'matched', 'qrai-smoke-model-v0.3', 'audit-a'),

@@ -13,6 +13,7 @@ import {
 import { createAudioObjectStoreFromEnv } from "../storage/audio-object-store.mjs";
 import { createRealtimeAdmission } from "./admission.mjs";
 import { AUDIO_LIMITS, createRealtimeAudioRuntime } from "./audio.mjs";
+import { createRealtimeAudioOutcomeAuthority } from "./outcomes.mjs";
 import { createRealtimeReplayAuthority } from "./replay.mjs";
 
 const READINESS_DEPENDENCIES = Object.freeze([
@@ -258,6 +259,7 @@ export function createRealtimeApplication({
   rateLimitOptions,
   admissionNowUnixSeconds,
   replayAuthority = null,
+  audioOutcomeAuthority = null,
   handleAdmittedSocket = null,
   fetchImpl = globalThis.fetch,
   logger = false,
@@ -307,7 +309,12 @@ export function createRealtimeApplication({
     rateLimitOptions,
     nowUnixSeconds: admissionNowUnixSeconds,
   });
-  const audio = createRealtimeAudioRuntime({ audioObjectStore, shutdownGraceMs });
+  const outcomes = audioOutcomeAuthority ?? createRealtimeAudioOutcomeAuthority({ db });
+  const audio = createRealtimeAudioRuntime({
+    audioObjectStore,
+    audioOutcomeAuthority: outcomes,
+    shutdownGraceMs,
+  });
   const admittedSocketHandler = handleAdmittedSocket ?? audio.handleSocket;
 
   const app = Fastify({

@@ -588,9 +588,11 @@ export async function prepareSessionFinalization({
     modelAttribution: alignment.modelAttribution,
     modelVersion: alignment.modelVersion,
   };
-  const lostChunkCount = Array.isArray(transcript.missingChunkIds)
-    ? transcript.missingChunkIds.length
-    : 0;
+  const transcriptMissingChunkIds = new Set(
+    Array.isArray(transcript.missingChunkIds)
+      ? transcript.missingChunkIds.filter(nonEmptyString)
+      : [],
+  );
 
   return {
     commit: async (tx) => {
@@ -614,14 +616,24 @@ export async function prepareSessionFinalization({
         });
       }
 
+      const realtimeLosses = await tx`
+        SELECT chunk_id
+        FROM realtime_audio_chunk_outcomes
+        WHERE tenant_id = ${actor.tenantId}
+          AND session_id = ${sessionId}
+          AND initial_outcome = 'accepted-lost'
+          AND repaired_at IS NULL`;
+      const missingChunkIds = new Set(transcriptMissingChunkIds);
+      for (const row of realtimeLosses) missingChunkIds.add(row.chunk_id);
+      const lostChunkCount = missingChunkIds.size;
       if (lostChunkCount > 0) {
         console.warn(
           "session finalized with chunks accepted upstream but never stored; transcript is incomplete",
         );
-        await tx`
-          UPDATE recitation_sessions SET lost_chunk_count = ${lostChunkCount}
-          WHERE id = ${sessionId} AND tenant_id = ${actor.tenantId}`;
       }
+      await tx`
+        UPDATE recitation_sessions SET lost_chunk_count = ${lostChunkCount}
+        WHERE id = ${sessionId} AND tenant_id = ${actor.tenantId}`;
 
       return { response: {
         auditEventId: persisted.auditEventId,

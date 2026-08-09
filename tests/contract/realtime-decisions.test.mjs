@@ -143,3 +143,26 @@ test("ADR-0051/0052 and living docs expose the implemented bounded W3.5 runtime 
     "the W3.5 focused gate must be documented exactly once",
   );
 });
+
+test("ADR-0051/0052 and living docs expose W3.6 durable outcomes without a playback or traffic fork", () => {
+  for (const decision of [adr("0051"), adr("0052")]) {
+    assert.match(decision, /W3\.6 implementation note/i);
+    assert.match(decision, /migration 0037/i);
+    assert.match(decision, /accepted-lost/i);
+    assert.match(decision, /(?:audio_chunks[^.]*sole playback|sole playback[^.]*audio_chunks)/i);
+    assert.match(decision, /Rust[^.]*traffic/i);
+  }
+  assert.match(architecture, /W3\.6 durable storage\/index outcomes/i);
+  assert.match(architecture, /Finalization unions unrepaired accepted losses/i);
+  assert.match(architecture, /Playback never reads the diagnostic\s+table/i);
+  for (const target of [
+    "tests/migrations/realtime-audio-outcomes-migration.test.mjs",
+    "tests/realtime/storage-index.test.mjs",
+  ]) {
+    assert.equal(
+      testing.split(target).length - 1,
+      1,
+      `${target} must be documented exactly once as a focused W3.6 gate`,
+    );
+  }
+});

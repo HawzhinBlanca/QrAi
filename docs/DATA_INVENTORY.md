@@ -21,6 +21,7 @@
 | **Durable workflow records** | Postgres `background_jobs` | Tenant/actor/subject identifiers, kind/state/fixed error code, bounded control manifest, and bounded response record for finalization, Tajweed evaluation, or privacy. The validator refuses raw audio, transcripts, credentials, and dependency addresses. A privacy manifest may contain server-derived learner record and private object keys; it never contains object bytes. |
 | **Device enrollment invitations and sessions** | Postgres `device_enrollment_invitations`, `device_sessions` | Tenant/user, creator, audit, expiry, status, and generation lineage plus hash-only invitation, access, and refresh credentials. Raw 256-bit credentials are returned only at provisioning/exchange/refresh and never stored or exported. The routes are implemented but default off until owner activation. |
 | **Realtime replay claims** | Postgres `realtime_ticket_replay_claims` | Tenant/session, expiry, claim time, and lowercase SHA-256 of the exact signed nonce. Raw tickets/nonces are never stored. Rows are forced-RLS tenant data and cascade when the owning recitation session is erased. |
+| **Realtime delivery diagnostics** | Postgres `realtime_audio_chunk_outcomes` | Tenant/session/chunk identity, immutable span/rate, a closed accepted-lost or stored-unindexed reason, first-observed time, and nullable repair time. It stores no audio, credential, caller object key, trace, exception, or learner display field; forced RLS and session cascade apply. `audio_chunks`, not this table, controls playback. |
 
 ## 2. Who can access it (isolation)
 
@@ -53,6 +54,8 @@
   subject deletion or a later owner/DPO-approved database retention policy.
 - **Realtime replay claims** authorize only once and become cleanup-eligible at database-time
   expiry. Bounded cleanup removes expired rows; subject/session deletion cascades them immediately.
+- **Realtime delivery diagnostics** do not auto-expire. They remain diagnostic/recovery evidence
+  until the session is erased or a later owner/DPO-approved DB retention policy is implemented.
 
 ## 4. Data-subject rights (already implemented)
 
@@ -61,7 +64,7 @@
   injected private store, verifies that the learner prefix is empty, and runs the fenced
   tenant-scoped database transaction that records the privacy receipt, completes the job, and cascades
   teacher_reviews → tajweed_findings → word_alignments → audio_chunks/alignment_runs → tickets →
-  sessions → consent records → device sessions/invitations → pilot sessions/invitations →
+  sessions (which cascade replay and realtime-delivery diagnostics) → consent records → device sessions/invitations → pilot sessions/invitations →
   structured learner-linked `agent_runs`.
   A storage failure leaves a retryable intent and no completed cascade—no "success while audio
   survives". A crash after storage deletion repeats the idempotent erase and commits the captured

@@ -121,6 +121,11 @@ function dependencySet() {
     start: () => {},
     stop: async () => {},
   };
+  const audioOutcomeAuthority = {
+    stored: async ({ identity }) => identity.audioRetention === "discard" ? "discarded" : "indexed",
+    lost: async () => "accepted_lost",
+    lostMany: async () => "accepted_lost",
+  };
   return {
     state,
     calls,
@@ -128,6 +133,7 @@ function dependencySet() {
     audioObjectStore,
     fetchImpl,
     replayAuthority,
+    audioOutcomeAuthority,
     ticketSecret: realtimeSecret,
     tenantId: realtimeTenant,
     allowedOrigins: [realtimeOrigin],
@@ -447,10 +453,16 @@ async function spawnRealtimeFixture() {
       start: () => {},
       stop: async () => {},
     };
+    const audioOutcomeAuthority = {
+      stored: async ({ identity }) => identity.audioRetention === "discard" ? "discarded" : "indexed",
+      lost: async () => "accepted_lost",
+      lostMany: async () => "accepted_lost",
+    };
     const app = createRealtimeApplication({
       db,
       audioObjectStore,
       replayAuthority,
+      audioOutcomeAuthority,
       workerReadyUrl: "http://worker:8098/ready",
       asrReadyUrl: "http://asr:8091/ready",
       readinessTimeoutMs: 50,

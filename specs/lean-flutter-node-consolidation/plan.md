@@ -506,6 +506,11 @@ remains W3.6. Rust remains the public target.
 
 ### W3.6 Storage, indexing, and repair states
 
+**Implemented boundary (2026-08-09):** one shared Node domain now owns current-session authority,
+derived object identity, idempotent playback indexing, durable accepted-lost/stored-unindexed
+diagnostics, finalization loss union, and atomic repair provenance. Migration 0037 is additive and
+forced-RLS. Public realtime traffic remains on Rust; W3.7 owns client recovery.
+
 - Consume W3.5 object-store outcomes and index retained audio idempotently through the Node domain
   layer without introducing a second writer.
 - Track stored-but-unindexed, accepted-but-lost, rejected, and repaired chunks separately.

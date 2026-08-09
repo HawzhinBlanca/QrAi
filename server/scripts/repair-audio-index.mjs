@@ -1,109 +1,71 @@
 import { fileURLToPath } from "node:url";
 
-import pg from "pg";
-
+import { createDb } from "../src/lib/db.mjs";
+import {
+  markAudioChunkRepairedInTransaction,
+} from "../src/realtime/outcomes.mjs";
+import {
+  AudioIndexDomainError,
+  indexAudioChunkInTransaction,
+  inspectAudioChunkIndexInTransaction,
+} from "../src/storage/audio-index.mjs";
 import {
   AudioObjectIntegrityError,
   AudioObjectNotFoundError,
   createAudioObjectStoreFromEnv,
 } from "../src/storage/audio-object-store.mjs";
 
-const { Client } = pg;
 const RETAINED_AUDIO = new Set(["teacher-review", "training-opt-in"]);
 
-function sameIndex(row, candidate) {
-  return (
-    row.tenant_id === candidate.tenantId &&
-    row.session_id === candidate.sessionId &&
-    Number(row.start_ms) === candidate.startMs &&
-    Number(row.end_ms) === candidate.endMs &&
-    Number(row.sample_rate) === candidate.sampleRate &&
-    row.object_key === candidate.objectKey
-  );
+function repairRefusal(error) {
+  if (!(error instanceof AudioIndexDomainError)) {
+    return "database rejected candidate (unknown)";
+  }
+  const reasons = {
+    "authority-mismatch": "database learner ownership or current retention disagrees with the stored object",
+    "immutable-conflict": "existing index or outcome disagrees with the stored object",
+    "invalid-candidate": "stored object has invalid index metadata",
+    "invalid-object-key": "stored object identity cannot form the canonical object key",
+    "session-not-found": "session is absent from the declared tenant",
+  };
+  return reasons[error.code] ?? "database rejected candidate (domain)";
 }
 
-async function reconcileCandidate(client, candidate, apply) {
-  await client.query("BEGIN");
+async function reconcileCandidate(db, candidate, apply) {
   try {
-    await client.query("SELECT set_config('app.tenant_id', $1, true)", [candidate.tenantId]);
-    const sessionResult = await client.query(
-      `SELECT learner_id, audit_event_id
-         FROM recitation_sessions
-        WHERE id = $1 AND tenant_id = $2`,
-      [candidate.sessionId, candidate.tenantId],
-    );
-    const session = sessionResult.rows[0];
-    if (!session) {
-      await client.query("ROLLBACK");
-      return { status: "refused", reason: "session is absent from the declared tenant" };
-    }
-    if (session.learner_id !== candidate.learnerId) {
-      await client.query("ROLLBACK");
-      return { status: "refused", reason: "database learner ownership disagrees with the stored object" };
-    }
-
-    const existingResult = await client.query(
-      `SELECT tenant_id, session_id, start_ms, end_ms, sample_rate, object_key
-         FROM audio_chunks
-        WHERE id = $1 AND tenant_id = $2`,
-      [candidate.chunkId, candidate.tenantId],
-    );
-    const existing = existingResult.rows[0];
-    if (existing) {
-      await client.query("ROLLBACK");
-      return sameIndex(existing, candidate)
-        ? { status: "alreadyIndexed" }
-        : { status: "refused", reason: "existing index disagrees with the stored object" };
-    }
-    if (!apply) {
-      await client.query("ROLLBACK");
-      return { status: "wouldRepair" };
-    }
-
-    await client.query(
-      `INSERT INTO audio_chunks
-         (id, tenant_id, session_id, evidence_id, start_ms, end_ms, sample_rate, status,
-          object_key, audit_event_id)
-       VALUES ($1, $2, $3, $1, $4, $5, $6, 'aligned', $7, $8)`,
-      [
-        candidate.chunkId,
-        candidate.tenantId,
-        candidate.sessionId,
-        candidate.startMs,
-        candidate.endMs,
-        candidate.sampleRate,
-        candidate.objectKey,
-        session.audit_event_id,
-      ],
-    );
-    await client.query("COMMIT");
-    return { status: "repaired" };
+    return await db.withTenant(candidate.tenantId, async (tx) => {
+      const inspected = await inspectAudioChunkIndexInTransaction(tx, candidate);
+      const [diagnostic] = await tx`
+        SELECT repaired_at
+        FROM realtime_audio_chunk_outcomes
+        WHERE tenant_id = ${candidate.tenantId}
+          AND session_id = ${candidate.sessionId}
+          AND chunk_id = ${candidate.chunkId}`;
+      const needsDiagnosticRepair = diagnostic && diagnostic.repaired_at === null;
+      if (inspected.status === "already-indexed" && !needsDiagnosticRepair) {
+        return { status: "alreadyIndexed" };
+      }
+      if (!apply) return { status: "wouldRepair" };
+      if (inspected.status === "missing") {
+        await indexAudioChunkInTransaction(tx, candidate);
+      }
+      await markAudioChunkRepairedInTransaction(tx, candidate);
+      return { status: "repaired" };
+    });
   } catch (error) {
-    await client.query("ROLLBACK").catch(() => {});
     return {
       status: "refused",
-      reason: `database rejected candidate (${error?.code ?? "unknown"})`,
+      reason: repairRefusal(error),
     };
   }
 }
 
-async function indexedRowsForTenant(client, tenantId) {
-  await client.query("BEGIN");
-  try {
-    await client.query("SELECT set_config('app.tenant_id', $1, true)", [tenantId]);
-    const result = await client.query(
-      `SELECT id, tenant_id, session_id, start_ms, end_ms, sample_rate, object_key
-         FROM audio_chunks
-        WHERE tenant_id = $1
-        ORDER BY id`,
-      [tenantId],
-    );
-    await client.query("ROLLBACK");
-    return result.rows;
-  } catch (error) {
-    await client.query("ROLLBACK").catch(() => {});
-    throw error;
-  }
+async function indexedRowsForTenant(db, tenantId) {
+  return db.withTenant(tenantId, (tx) => tx`
+    SELECT id, tenant_id, session_id, start_ms, end_ms, sample_rate, object_key
+    FROM audio_chunks
+    WHERE tenant_id = ${tenantId}
+    ORDER BY id`);
 }
 
 /**
@@ -148,8 +110,7 @@ export async function repairAudioIndex(options = {}) {
     refused: 0,
     errors: [],
   };
-  const client = new Client({ connectionString: databaseUrl });
-  await client.connect();
+  const db = createDb(databaseUrl);
   try {
     const inventory = await store.inventory();
     const readableByKey = new Map();
@@ -205,9 +166,9 @@ export async function repairAudioIndex(options = {}) {
         startMs: stored.startMs,
         endMs: stored.endMs,
         sampleRate: stored.sampleRate,
-        objectKey: stored.objectKey,
+        audioRetention: stored.audioRetention,
       };
-      const outcome = await reconcileCandidate(client, candidate, apply);
+      const outcome = await reconcileCandidate(db, candidate, apply);
       if (outcome.status === "refused") {
         summary.refused += 1;
         summary.errors.push({
@@ -224,7 +185,7 @@ export async function repairAudioIndex(options = {}) {
       if (typeof tenantId !== "string" || tenantId.trim() === "") {
         throw new Error("tenantIds must contain non-empty strings");
       }
-      for (const row of await indexedRowsForTenant(client, tenantId)) {
+      for (const row of await indexedRowsForTenant(db, tenantId)) {
         if (!readableByKey.has(row.object_key)) {
           summary.indexWithoutObject += 1;
           summary.errors.push({
@@ -236,7 +197,7 @@ export async function repairAudioIndex(options = {}) {
       }
     }
   } finally {
-    await client.end();
+    await db.end();
     if (ownsStore) await store.close();
   }
   return summary;

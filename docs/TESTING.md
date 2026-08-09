@@ -106,6 +106,24 @@ correct ack below p95 250 ms, refuses session 101, and returns all gauges to zer
 stored/indexed completion, browser codec correctness, client loss recovery, image parity, or public
 traffic readiness.
 
+W3.6 runs its schema and runtime proof together in one isolated serial command:
+
+```bash
+MIGRATION_TEST_ADMIN_URL="$ADMIN_URL" \
+  node --test --test-concurrency=1 \
+  tests/migrations/realtime-audio-outcomes-migration.test.mjs \
+  tests/realtime/storage-index.test.mjs
+```
+
+The migration case pins 0037's checksum, safe columns, constraints, forced RLS, cross-tenant
+refusal, and session/privacy cascade. The runtime cases prove enqueue-before-outcome semantics,
+real Node filesystem storage into the restricted Postgres playback index, exact retry, immutable
+conflict, accepted-loss idempotency/aggregate, bounded-shutdown loss recording, dual outage,
+rejected non-recording, fixed/redacted metrics, and late-store repair. Audio index/playback parity
+and the teacher-audio E2E separately prove current-retention checks, audited playback,
+dry-run/apply repair, durable repaired provenance, and idempotent rerun. A skipped CREATEDB-backed
+case is not W3.6 completion evidence.
+
 The Node package and standalone boundary have four focused gates:
 
 ```bash

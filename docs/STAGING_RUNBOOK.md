@@ -159,7 +159,7 @@ docker compose exec -e PROBE_TOKEN="$METRICS_TOKEN" job-worker node -e \
   'fetch("http://127.0.0.1:8098/metrics",{headers:{"x-metrics-token":process.env.PROBE_TOKEN}}).then(async r=>{if(!r.ok)process.exit(1);process.stdout.write(await r.text())})'
 ```
 
-`node-realtime` is the third command of that image. Through W3.5 it remains internal: it publishes
+`node-realtime` is the third command of that image. Through W3.6 it remains internal: it publishes
 no host port and receives no Web/gateway traffic. It admits only the exact session-audio shadow
 route after ticket, tenant, lifetime, Origin/native, bounded peer-rate, and durable Postgres replay
 checks, then applies the fixed 2 MiB application/2 MiB + 64 KiB transport limit, 8-chunk/4 MiB
@@ -178,7 +178,7 @@ docker compose exec -e PROBE_TOKEN="$METRICS_TOKEN" node-realtime node -e \
   'fetch("http://127.0.0.1:8081/metrics",{headers:{"x-metrics-token":process.env.PROBE_TOKEN}}).then(async r=>{if(!r.ok)process.exit(1);process.stdout.write(await r.text())})'
 ```
 
-Confirm migration 0036 is applied before boot. Investigate any growth in fixed
+Confirm migrations 0036 and 0037 are applied before boot. Investigate any growth in fixed
 `replay_unavailable` admission outcomes or failed replay-cleanup runs; the process deliberately has
 no memory fallback. Never delete live replay rows to repair admission. Resolve database
 availability/locks, then let bounded cleanup remove only database-expired rows. Session/privacy
@@ -187,8 +187,12 @@ appear in logs or metric labels.
 
 Alert on sustained `backpressure`, `slow_consumer`, `failed`, or `aborted` audio outcomes and on
 retained gauges that do not return to zero after peers close. `accepted=true` means enqueued, not
-stored or indexed. Do not route traffic to this shadow until W3.6 outcome/repair, W3.7 recovery,
-browser codec/rate, production-image, canary, and rollback gates pass.
+stored or indexed. For the W3.6 delivery counter, `stored_unindexed`,
+`stored_unindexed_unrecorded`, `accepted_lost`, or `accepted_lost_unrecorded` requires investigation;
+the two unrecorded outcomes mean Postgres could not preserve the diagnostic. Stop the shadow, fix
+the dependency, then use the dry-run repair procedure below for verified retained objects. Do not
+delete or hand-edit outcome rows. Do not route traffic to this shadow until W3.7 recovery, browser
+codec/rate, production-image, canary, and rollback gates pass.
 
 `NodeRealtimeShadowUnready` is an investigation warning during this no-traffic phase. Diagnose the
 four closed readiness classes; never expose upstream errors or attach identity labels. W3.9, not
@@ -298,8 +302,8 @@ migration 0035 or delete rows during rollback. Re-enable only after the owner an
 approve a new bounded canary.
 
 The Node API has no WebSocket route. The separate Node realtime process owns only the exact
-authenticated session-audio upgrade and now runs the bounded W3.5 shadow handler; it still has no
-host/public traffic edge. Its shared raw-socket fallback bounds every unexpected upgrade.
+authenticated session-audio upgrade and now runs the bounded W3.6 storage/index shadow handler; it
+still has no host/public traffic edge. Its shared raw-socket fallback bounds every unexpected upgrade.
 
 ## Kill-switch — graceful maintenance mode (P5.5)
 
@@ -566,9 +570,10 @@ proved the verification has teeth: restoring a deliberately under-seeded dump re
 
 ### Repair retained audio that was stored but not indexed
 
-Alert on either a zero `realtime_gateway_audio_index_enabled` gauge or an increase in
-`realtime_gateway_chunks_stored_unindexed_total`. First fix the gateway configuration—the Compose
-service now sets `PLATFORM_API_URL=http://platform-api:8080`—then preview reconciliation:
+Alert on either a zero `realtime_gateway_audio_index_enabled` gauge, an increase in
+`realtime_gateway_chunks_stored_unindexed_total`, or a degraded Node
+`realtime_audio_delivery_total` outcome. First fix the failing writer/index dependency, then
+preview reconciliation:
 
 ```bash
 docker compose --profile operations run --rm \
@@ -587,8 +592,9 @@ private bucket configuration and must not treat a local volume as authoritative.
 `AUDIO_RECONCILE_TENANT_IDS` (or repeat `--tenant=<id>`) so inverse reconciliation can find database
 rows whose object is missing even when that tenant has no remaining storage keys. Storage metadata
 does not grant ownership: its tenant/learner/session path, metadata, bytes, object key, span, and the
-tenant-scoped session's actual learner must agree. Incomplete object/metadata pairs and inverse
-database-only rows are reported and never guessed, repaired, or deleted. Re-running a successful
+tenant-scoped session's actual learner and current retention must agree. Apply creates the index and
+closes durable repair provenance in one tenant transaction. Incomplete object/metadata pairs and
+inverse database-only rows are reported and never guessed, repaired, or deleted. Re-running a successful
 repair is idempotent.
 
 > **This number is a FLOOR, not a prediction.** Isolated infrastructure, no network latency, no

@@ -94,6 +94,11 @@ function appOptions(overrides = {}) {
       start: () => {},
       stop: async () => {},
     },
+    audioOutcomeAuthority: {
+      stored: async ({ identity }) => identity.audioRetention === "discard" ? "discarded" : "indexed",
+      lost: async () => "accepted_lost",
+      lostMany: async () => "accepted_lost",
+    },
     admissionNowUnixSeconds: () => NOW_SECONDS,
     handleAdmittedSocket(socket) {
       socket.close(1013, "test fixture complete");

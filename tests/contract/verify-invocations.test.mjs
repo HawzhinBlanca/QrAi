@@ -50,6 +50,8 @@ const REALTIME_TICKET_BOUNDARY = "tests/realtime/ticket-boundary.test.mjs";
 const REALTIME_REPLAY_MIGRATION = "tests/migrations/realtime-replay-migration.test.mjs";
 const REALTIME_REPLAY_PROTECTION = "tests/realtime/replay-protection.test.mjs";
 const REALTIME_BACKPRESSURE = "tests/realtime/backpressure.test.mjs";
+const REALTIME_AUDIO_OUTCOMES_MIGRATION = "tests/migrations/realtime-audio-outcomes-migration.test.mjs";
+const REALTIME_STORAGE_INDEX = "tests/realtime/storage-index.test.mjs";
 const ACOUSTIC_CANDIDATE_PROOF_TEST = "scripts/acoustic-candidate-proof.test.mjs";
 const ACOUSTIC_CANDIDATE_PROOF_RUNNER = "node scripts/acoustic-candidate-proof.mjs";
 
@@ -487,6 +489,26 @@ test("canonical verification runs the hermetic W3.5 bounded-audio proof exactly 
   );
   assert.match(matching[0], /test: node services/);
   assert.doesNotMatch(matching[0], /--test-concurrency=1/);
+});
+
+test("canonical verification runs the isolated W3.6 storage/index proof exactly once", () => {
+  const invocations = activeNodeTestLines(verifySource);
+  for (const target of [REALTIME_AUDIO_OUTCOMES_MIGRATION, REALTIME_STORAGE_INDEX]) {
+    assert.equal(
+      invocations.filter((line) => line.includes(target)).length,
+      1,
+      `${target} must run exactly once in canonical verification`,
+    );
+  }
+  const sharedLines = invocations.filter((line) =>
+    line.includes(REALTIME_AUDIO_OUTCOMES_MIGRATION) && line.includes(REALTIME_STORAGE_INDEX));
+  assert.equal(sharedLines.length, 1, "W3.6 schema/runtime proof must run in one isolated command");
+  assert.match(sharedLines[0], /--test-concurrency=1/);
+  assert.deepEqual(
+    (sharedLines[0].match(/[A-Za-z0-9_./-]+\.test\.mjs/g) ?? []).sort(),
+    [REALTIME_AUDIO_OUTCOMES_MIGRATION, REALTIME_STORAGE_INDEX].sort(),
+    "the isolated W3.6 command must contain exactly its schema/runtime proofs",
+  );
 });
 
 test("canonical verification guards the W1.10 exact-image harness and release mode runs it exactly once", () => {

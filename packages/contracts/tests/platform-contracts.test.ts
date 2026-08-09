@@ -55,6 +55,7 @@ describe("Quran AI platform contracts", () => {
     expect(CORE_TABLES).toContain("consent_records");
     expect(CORE_TABLES).toContain("realtime_session_tickets");
     expect(CORE_TABLES).toContain("realtime_ticket_replay_claims");
+    expect(CORE_TABLES).toContain("realtime_audio_chunk_outcomes");
     expect(CORE_TABLES).toContain("privacy_jobs");
     expect(CORE_TABLES).toContain("background_jobs");
   });

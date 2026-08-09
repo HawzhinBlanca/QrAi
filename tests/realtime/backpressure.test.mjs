@@ -7,7 +7,7 @@ import {
   AUDIO_LIMITS,
   AUDIO_MAX_SEQUENCE,
   audioTimeline,
-  createRealtimeAudioRuntime,
+  createRealtimeAudioRuntime as createRuntime,
 } from "../../server/src/realtime/audio.mjs";
 import { createRealtimeApplication } from "../../server/src/realtime/main.mjs";
 
@@ -17,6 +17,27 @@ const LIVE_SECRET = "w3.5-bounded-audio-ticket-secret-over-32-bytes";
 const LIVE_TENANT = "tenant-audio-live";
 const LIVE_NOW_SECONDS = 2_100_000_000;
 const socketInboxes = new WeakMap();
+
+function testOutcomeAuthority() {
+  return {
+    async stored({ identity }) {
+      return identity.audioRetention === "discard" ? "discarded" : "indexed";
+    },
+    async lost() {
+      return "accepted_lost";
+    },
+    async lostMany() {
+      return "accepted_lost";
+    },
+  };
+}
+
+function createRealtimeAudioRuntime(options) {
+  return createRuntime({
+    ...options,
+    audioOutcomeAuthority: options.audioOutcomeAuthority ?? testOutcomeAuthority(),
+  });
+}
 
 function admitted(sessionId, traceId = null) {
   return Object.freeze({
@@ -176,6 +197,7 @@ function liveApplication(store, overrides = {}) {
       start: () => {},
       stop: async () => {},
     },
+    audioOutcomeAuthority: testOutcomeAuthority(),
     admissionNowUnixSeconds: () => LIVE_NOW_SECONDS,
     fetchImpl: async () => ({ status: 200, body: { cancel: async () => {} } }),
     logger: false,
@@ -705,9 +727,8 @@ test("an object-store attempt times out at the declared bound without retaining 
   assert.match(runtime.renderMetrics(), /realtime_audio_store_total\{outcome="aborted"\} 1/);
   lateReject(new Error("late sensitive rejection"));
   await new Promise((resolve) => setImmediate(resolve));
-  assert.deepEqual(runtime.snapshot(), { activeSessions: 1, retainedChunks: 0, retainedBytes: 0 });
-  socket.peerClose();
-  await waitFor(() => runtime.snapshot().activeSessions === 0, "timeout session did not close");
+  assert.deepEqual(runtime.snapshot(), { activeSessions: 0, retainedChunks: 0, retainedBytes: 0 });
+  assert.deepEqual(socket.closed, [{ code: 1013, reason: "audio delivery unavailable" }]);
 });
 
 test("the real Fastify boundary preserves app/transport limits, strict acks, and duplicate refusal", async () => {

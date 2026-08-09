@@ -19,14 +19,13 @@ const serverFiles = filesBelow(join(repo, "server"));
 const source = (path) => readFileSync(path, "utf8");
 const rel = (path) => relative(repo, path);
 
-test("database drivers have one runtime owner and three explicit operator owners", () => {
+test("database drivers have one runtime owner and two explicit operator owners", () => {
   const driverImport = /(?:\bfrom\s*|\bimport\s*\()\s*["'](?:pg|postgres)["']/;
   const owners = serverFiles.filter((path) => driverImport.test(source(path))).map(rel).sort();
 
   assert.deepEqual(owners, [
     "server/scripts/migrate.mjs",
     "server/scripts/provision-role.mjs",
-    "server/scripts/repair-audio-index.mjs",
     "server/src/lib/db.mjs",
   ]);
 

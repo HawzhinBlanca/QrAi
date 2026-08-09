@@ -22,7 +22,10 @@ import {
 } from "../lib/authz.mjs";
 import { proxy } from "../lib/proxy.mjs";
 import { issueRealtimeTicket, validateRealtimeTicket } from "../lib/ticket.mjs";
-import { deriveAudioObjectKey } from "../storage/audio-object-store.mjs";
+import {
+  AudioIndexDomainError,
+  indexAudioChunkRecord,
+} from "../storage/audio-index.mjs";
 
 /** services/platform-api/src/lib.rs:19 */
 const REALTIME_TICKET_TTL_SECONDS = 300;
@@ -72,62 +75,34 @@ export async function indexAudioChunk(req, reply, ctx) {
     throw new RejectionError("sampleRate must be an integer", 422);
   }
 
-  const response = await ctx.db.withTenant(claims.tenantId, async (tx) => {
-    const [session] = await tx`
-      SELECT s.audit_event_id, s.learner_id, c.audio_retention
-      FROM recitation_sessions s
-      JOIN consent_records c ON c.id = s.consent_record_id
-      WHERE s.id = ${claims.sessionId} AND s.tenant_id = ${claims.tenantId}`;
-    if (!session) throw NotFound();
-    if (
-      session.learner_id !== claims.learnerId ||
-      session.audio_retention !== claims.audioRetention
-    ) {
-      throw Unauthorized();
-    }
-    let objectKey;
-    try {
-      objectKey = deriveAudioObjectKey({
+  try {
+    await indexAudioChunkRecord({
+      db: ctx.db,
+      input: {
         tenantId: claims.tenantId,
         learnerId: claims.learnerId,
         sessionId: claims.sessionId,
+        audioRetention: claims.audioRetention,
         chunkId,
-      });
-    } catch {
+        startMs: span.startMs,
+        endMs: span.endMs,
+        sampleRate,
+      },
+    });
+  } catch (error) {
+    if (!(error instanceof AudioIndexDomainError)) throw error;
+    if (error.code === "session-not-found") throw NotFound();
+    if (error.code === "authority-mismatch") throw Unauthorized();
+    if (error.code === "immutable-conflict") {
+      throw new ApiError("chunk id already indexes different immutable audio metadata", 409);
+    }
+    if (error.code === "invalid-object-key") {
       throw new ApiError("chunk identity cannot form a safe object key", 400);
     }
+    throw error;
+  }
 
-    const inserted = await tx`
-      INSERT INTO audio_chunks
-        (id, tenant_id, session_id, evidence_id, start_ms, end_ms, sample_rate, status,
-         object_key, audit_event_id)
-      VALUES (${chunkId}, ${claims.tenantId}, ${claims.sessionId}, ${chunkId},
-              ${span.startMs}, ${span.endMs}, ${sampleRate}, 'aligned', ${objectKey},
-              ${session.audit_event_id})
-      ON CONFLICT (id) DO NOTHING
-      RETURNING id`;
-
-    if (inserted.length === 0) {
-      const [existing] = await tx`
-        SELECT tenant_id, session_id, start_ms, end_ms, sample_rate, object_key
-        FROM audio_chunks
-        WHERE id = ${chunkId} AND tenant_id = ${claims.tenantId}`;
-      if (
-        !existing ||
-        existing.session_id !== claims.sessionId ||
-        Number(existing.start_ms) !== span.startMs ||
-        Number(existing.end_ms) !== span.endMs ||
-        Number(existing.sample_rate) !== sampleRate ||
-        existing.object_key !== objectKey
-      ) {
-        throw new ApiError("chunk id already indexes different immutable audio metadata", 409);
-      }
-    }
-
-    return { chunkId, indexed: true, sessionId: claims.sessionId };
-  });
-
-  return reply.send(response);
+  return reply.send({ chunkId, indexed: true, sessionId: claims.sessionId });
 }
 
 /** POST /v1/realtime-session-tickets — handlers/recitation.rs:298 */

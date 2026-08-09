@@ -35,6 +35,7 @@
     { "id": "0033", "filename": "0033_acoustic_finding_evidence_authority.sql", "sha256": "a6e20e4885185360cae09b91c26e5e0a00c70797b9e7a2a2364d28ea3efefe71" },
     { "id": "0034", "filename": "0034_background_jobs.sql", "sha256": "e1d8e823b9c3564d6d40a8a67b09edd2db79fe5a1bbac6975874b4e26d7a61ac" },
     { "id": "0035", "filename": "0035_device_identity.sql", "sha256": "45fac1fcb38c89ffd19a3dd6c916514b63b0eaaa31e51c277609cf609e342aa1" },
-    { "id": "0036", "filename": "0036_realtime_ticket_replay.sql", "sha256": "e3f02f468f54c978f3a6dbdb775811af819df9ec795c283607f86a8f3680a5d2" }
+    { "id": "0036", "filename": "0036_realtime_ticket_replay.sql", "sha256": "e3f02f468f54c978f3a6dbdb775811af819df9ec795c283607f86a8f3680a5d2" },
+    { "id": "0037", "filename": "0037_realtime_audio_chunk_outcomes.sql", "sha256": "aeb08e953468bd0a805d71a2c0b7c3c43d6fca3952e57dd8053f6398004de2fe" }
   ]
 }

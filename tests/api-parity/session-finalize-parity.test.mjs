@@ -482,6 +482,34 @@ test("missing chunks are surfaced and stored without relabelling finalization as
   assert.equal(session.lost_chunk_count, 2);
 });
 
+test("finalization unions inference gaps with unrepaired realtime losses without double counting", async () => {
+  mode = "gap";
+  const sessionId = await createSession(shell.baseUrl);
+  for (const [chunkId, sequence] of [["s-ws-0003", 3], [`${sessionId}-ws-0009`, 9]]) {
+    await queryJson(
+      `INSERT INTO realtime_audio_chunk_outcomes
+         (tenant_id, session_id, chunk_id, start_ms, end_ms, sample_rate,
+          initial_outcome, reason_code)
+       VALUES ($1, $2, $3, $4, $5, 16000, 'accepted-lost', 'store-failed')`,
+      [TENANT, sessionId, chunkId, sequence * 480, (sequence + 1) * 480],
+    );
+  }
+
+  const response = await request(
+    shell.baseUrl,
+    `/v1/recitation-sessions/${sessionId}/finalize`,
+    { method: "POST", role: "learner", userId: learnerId, body: {} },
+  );
+  assert.equal(response.status, 200, response.text);
+  assert.equal(response.body.finalized, true);
+  assert.equal(response.body.lostChunkCount, 3, "one overlapping loss was counted twice");
+  const [session] = await queryJson(
+    "SELECT lost_chunk_count FROM recitation_sessions WHERE id = $1",
+    [sessionId],
+  );
+  assert.equal(session.lost_chunk_count, 3);
+});
+
 test("retrying finalization replaces the run atomically instead of duplicating evidence", async () => {
   mode = "happy";
   const sessionId = await createSession(shell.baseUrl);

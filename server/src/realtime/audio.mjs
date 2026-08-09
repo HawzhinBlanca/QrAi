@@ -1,4 +1,5 @@
 import { createAudioAck, serializeAudioAck } from "./protocol.mjs";
+import { AUDIO_DELIVERY_OUTCOMES } from "./outcomes.mjs";
 
 const MiB = 1024 * 1024;
 const SOCKET_OPEN = 1;
@@ -129,11 +130,20 @@ function labelledCounter(name, help, values, orderedOutcomes) {
  */
 export function createRealtimeAudioRuntime({
   audioObjectStore,
+  audioOutcomeAuthority,
   shutdownGraceMs,
   nowMs = Date.now,
 } = {}) {
   if (!audioObjectStore || typeof audioObjectStore.put !== "function") {
     throw new TypeError("realtime audio requires the object-store put boundary");
+  }
+  if (
+    !audioOutcomeAuthority ||
+    typeof audioOutcomeAuthority.stored !== "function" ||
+    typeof audioOutcomeAuthority.lost !== "function" ||
+    typeof audioOutcomeAuthority.lostMany !== "function"
+  ) {
+    throw new TypeError("realtime audio requires a complete realtime audio outcome authority");
   }
   if (!Number.isSafeInteger(shutdownGraceMs) || shutdownGraceMs <= 0) {
     throw new TypeError("realtime audio shutdown grace must be a positive safe integer");
@@ -145,6 +155,7 @@ export function createRealtimeAudioRuntime({
   const sessionCounters = counters(AUDIO_SESSION_OUTCOMES);
   const ingressCounters = counters(AUDIO_INGRESS_OUTCOMES);
   const storeCounters = counters(AUDIO_STORE_OUTCOMES);
+  const deliveryCounters = counters(AUDIO_DELIVERY_OUTCOMES);
   let retainedChunks = 0;
   let retainedBytes = 0;
   let stopping = false;
@@ -202,6 +213,7 @@ export function createRealtimeAudioRuntime({
   }
 
   function rejection(session, message) {
+    deliveryCounters.rejected += 1;
     return sendAck(session.socket, {
       sessionId: session.identity.sessionId,
       chunkId: `${session.identity.sessionId}-ws-${String(session.nextSequence).padStart(4, "0")}`,
@@ -253,6 +265,26 @@ export function createRealtimeAudioRuntime({
     retainedBytes -= chunk.bytes.length;
   }
 
+  function outcomeChunk(chunk) {
+    return Object.freeze({
+      chunkId: chunk.chunkId,
+      sequence: chunk.sequence,
+      startMs: chunk.startMs,
+      endMs: chunk.endMs,
+      sampleRate: AUDIO_LIMITS.sampleRate,
+    });
+  }
+
+  function recordDelivery(outcome, fallback) {
+    const selected = AUDIO_DELIVERY_OUTCOMES.includes(outcome) ? outcome : fallback;
+    deliveryCounters[selected] += 1;
+    return selected;
+  }
+
+  function deliveryFailed(outcome) {
+    return outcome !== "indexed" && outcome !== "discarded";
+  }
+
   async function storeChunk(session, chunk) {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), AUDIO_LIMITS.storeAttemptTimeoutMs);
@@ -280,16 +312,43 @@ export function createRealtimeAudioRuntime({
         putPromise = Promise.reject(error);
       }
       const putResult = Promise.resolve(putPromise).then(
-          () => "stored",
-          () => (controller.signal.aborted ? "aborted" : "failed"),
+          (stored) => ({ outcome: "stored", stored }),
+          () => ({ outcome: controller.signal.aborted ? "aborted" : "failed", stored: null }),
       );
       const aborted = new Promise((resolve) => {
-        onAbort = () => resolve("aborted");
+        onAbort = () => resolve({ outcome: "aborted", stored: null });
         if (controller.signal.aborted) onAbort();
         else controller.signal.addEventListener("abort", onAbort, { once: true });
       });
-      const outcome = await Promise.race([putResult, aborted]);
-      storeCounters[outcome] += 1;
+      const result = await Promise.race([putResult, aborted]);
+      storeCounters[result.outcome] += 1;
+      let delivery;
+      if (result.outcome === "stored") {
+        try {
+          delivery = await audioOutcomeAuthority.stored({
+            identity: session.identity,
+            chunk: outcomeChunk(chunk),
+            stored: result.stored,
+          });
+        } catch {
+          delivery = "stored_unindexed_unrecorded";
+        }
+        delivery = recordDelivery(delivery, "stored_unindexed_unrecorded");
+      } else {
+        try {
+          delivery = await audioOutcomeAuthority.lost({
+            identity: session.identity,
+            chunk: outcomeChunk(chunk),
+            reasonCode: result.outcome === "failed" ? "store-failed" : "store-aborted",
+          });
+        } catch {
+          delivery = "accepted_lost_unrecorded";
+        }
+        delivery = recordDelivery(delivery, "accepted_lost_unrecorded");
+      }
+      if (deliveryFailed(delivery)) {
+        closeSocket(session.socket, 1013, "audio delivery unavailable");
+      }
     } finally {
       clearTimeout(timer);
       if (onAbort) controller.signal.removeEventListener("abort", onAbort);
@@ -338,6 +397,7 @@ export function createRealtimeAudioRuntime({
     if (session.socket.readyState !== SOCKET_OPEN) return;
     if (!ackFits(session.socket, serializedAck)) {
       ingressCounters.slow_consumer += 1;
+      deliveryCounters.rejected += 1;
       closeSocket(session.socket);
       return;
     }
@@ -459,14 +519,31 @@ export function createRealtimeAudioRuntime({
       }
       if (retainedChunks > 0) {
         const draining = [];
+        const queuedLosses = [];
         for (const session of [...sessions.values()]) {
           session.inFlightController?.abort();
           for (const chunk of session.queue.splice(0)) {
             storeCounters.aborted += 1;
-            releaseChunk(session, chunk);
+            queuedLosses.push({ identity: session.identity, chunk: outcomeChunk(chunk), session, raw: chunk });
           }
           if (session.drainPromise !== null) draining.push(session.drainPromise);
           finalizeSession(session);
+        }
+        if (queuedLosses.length > 0) {
+          let outcome;
+          try {
+            outcome = await audioOutcomeAuthority.lostMany({
+              entries: queuedLosses.map(({ identity, chunk }) => ({ identity, chunk })),
+              reasonCode: "store-aborted",
+            });
+          } catch {
+            outcome = "accepted_lost_unrecorded";
+          }
+          const selected = AUDIO_DELIVERY_OUTCOMES.includes(outcome)
+            ? outcome
+            : "accepted_lost_unrecorded";
+          deliveryCounters[selected] += queuedLosses.length;
+          for (const { session, raw } of queuedLosses) releaseChunk(session, raw);
         }
         await Promise.allSettled(draining);
       }
@@ -511,6 +588,12 @@ export function createRealtimeAudioRuntime({
       "Audio object-store outcomes after ingress acceptance.",
       storeCounters,
       AUDIO_STORE_OUTCOMES,
+    );
+    output += labelledCounter(
+      "realtime_audio_delivery_total",
+      "Audio outcomes after enqueue across storage and indexing.",
+      deliveryCounters,
+      AUDIO_DELIVERY_OUTCOMES,
     );
     return output;
   }

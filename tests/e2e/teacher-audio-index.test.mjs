@@ -429,6 +429,15 @@ test("an index outage is measurable and the command repairs it without a ticket"
   assert.equal(repaired.mode, "apply");
   assert.ok(repaired.repaired >= 1, JSON.stringify(repaired));
   await waitForIndex(metadata.chunkId, true);
+  const [diagnostic] = await queryJson(
+    `SELECT initial_outcome, reason_code, repaired_at
+     FROM realtime_audio_chunk_outcomes
+     WHERE tenant_id = $1 AND session_id = $2 AND chunk_id = $3`,
+    [TENANT, session.session, metadata.chunkId],
+  );
+  assert.equal(diagnostic.initial_outcome, "stored-unindexed");
+  assert.equal(diagnostic.reason_code, "reconciled-orphan");
+  assert.ok(diagnostic.repaired_at, "repair did not close the durable outcome in its index transaction");
 
   const playback = await request(api.baseUrl, `/v1/tajweed-findings/${session.finding}/audio`, {
     role: "teacher",
@@ -475,5 +484,42 @@ test("repair refuses path metadata that disagrees with database ownership", asyn
     result.errors.some((error) => error.chunkId === chunkId && /learner ownership/.test(error.reason)),
     JSON.stringify(result),
   );
+  await waitForIndex(chunkId, false);
+});
+
+test("repair rechecks current retention instead of trusting stale object metadata", async () => {
+  const session = await seedReviewableSession("retention");
+  const chunkId = `${session.session}-stale-retention`;
+  const dir = join(storageDir, TENANT, session.learnerId);
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(join(dir, `${chunkId}.bin`), AUDIO_BYTES);
+  writeFileSync(
+    join(dir, `${chunkId}.meta.json`),
+    JSON.stringify({
+      tenantId: TENANT,
+      learnerId: session.learnerId,
+      sessionId: session.session,
+      chunkId,
+      sampleRate: 16000,
+      startMs: 0,
+      endMs: 480,
+      audioSize: AUDIO_BYTES.length,
+      audioRetention: "teacher-review",
+      objectKey: `${TENANT}/${session.learnerId}/${chunkId}.bin`,
+    }),
+  );
+  await queryJson(
+    `UPDATE consent_records SET audio_retention = 'discard'
+     WHERE id = (SELECT consent_record_id FROM recitation_sessions WHERE id = $1)`,
+    [session.session],
+  );
+
+  const result = await repairAudioIndex({
+    databaseUrl: DATABASE_URL,
+    audioStorageDir: storageDir,
+    apply: true,
+  });
+  assert.ok(result.errors.some((error) =>
+    error.chunkId === chunkId && /current retention/.test(error.reason)), JSON.stringify(result));
   await waitForIndex(chunkId, false);
 });

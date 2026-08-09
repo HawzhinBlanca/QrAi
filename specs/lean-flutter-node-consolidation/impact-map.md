@@ -161,7 +161,8 @@ was previously wrong and how the Node composition boundary is gated directly.
 | root `package.json` runtime-shaped dev dependencies | legacy Node API/service tests, migration/operator scripts, root contract tests | Declare the production runtime dependency graph in `server/package.json`; retain root development copies only while legacy files and root tests resolve them, then remove them during W2.4 relocation | Frozen workspace install; manifest ownership assertions; server typecheck/build |
 | `pnpm-workspace.yaml` | pnpm install/filter/lockfile; CI dependency cache | Add only `server` as the backend workspace member; do not absorb Python/Rust/Flutter projects | Frozen install and `pnpm --filter @quran-ai/server ...` proofs |
 | root `package.json::{typecheck,build}` and `scripts/verify.sh` equivalents | local developers and canonical CI gate | Include the server workspace type/build checks and invoke the standalone lifecycle test exactly once | invocation guard; focused lifecycle test; canonical gate |
-| `server/scripts/{migrate,provision-role,repair-audio-index}.mjs` | root operator scripts; `pg` | Remain in place and behaviorally unchanged; the new package owns their production `pg` dependency | Existing migration/restricted-role/audio repair tests |
+| `server/scripts/{migrate,provision-role}.mjs` | root operator scripts; `pg` | Remain in place and behaviorally unchanged; the new package owns their production `pg` dependency | Existing migration/restricted-role tests |
+| `server/scripts/repair-audio-index.mjs` | operations profile; shared Node DB/index domain | Keep CLI/JSON/dry-run behavior while using the structurally tenant-scoped runtime DB and current retention/index authority | audio repair ownership/retention/idempotence E2E |
 
 W2.2 is a package/composition seam only. The Rust API remains the traffic target, the legacy Node
 modules remain the behavior source, and no standalone-production or cutover claim is made; W2.3 and
@@ -489,6 +490,16 @@ enqueue-only and W3.6 owns durable stored/unindexed/lost/repair truth. The priva
 adds only fixed session/ingress/store outcomes plus active/retained gauges. No package, image,
 service, port, schema, client, Rust, or traffic target changes. Full caller and proof detail is in
 `W3.5-bounded-audio/impact-map.md`.
+
+## 8.8 W3.6 durable storage/index outcome delta
+
+W3.6 adds migration 0037 plus one shared index domain and one realtime outcome authority. Retained
+Node store success creates `audio_chunks`; discard remains unadvertised; store/index failures close
+the socket and record fixed accepted-lost/stored-unindexed state when Postgres is available.
+Finalization unions unique unrepaired accepted losses with inference gaps. Repair uses current
+tenant learner/retention authority and atomically creates the index plus repaired provenance.
+Playback still reads only `audio_chunks`; Rust and every public traffic target remain unchanged.
+Full caller, privacy, migration, and proof detail is in `W3.6-storage-index-outcomes/impact-map.md`.
 
 ## 9. Test and documentation impact by wave
 

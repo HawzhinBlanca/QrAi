@@ -85,8 +85,8 @@
   execution, retained-audio writes/retention, and the server-local inference runtime;
   `node-realtime` is an internal, independently drainable process with liveness, bounded deep
   readiness, private fixed-cardinality metrics, W3.3 ticket/Origin/rate admission, W3.4 durable
-  replay, and the W3.5 bounded audio runtime on the exact session-audio route. The process receives
-  no traffic and Rust remains the only realtime traffic target.
+  replay, and the W3.6 bounded storage/index outcome runtime on the exact session-audio route. The
+  process receives no traffic and Rust remains the only realtime traffic target.
   The worker's key-gated,
   rate-limited private listener on port 8098 exists only for the measured Rust/gateway compatibility
   consumers and exposes a closed route allowlist.
@@ -185,8 +185,8 @@ that never bypasses tenant/session/expiry/retention checks. Replay stores only a
 never a raw ticket. A shared authority must fail closed; the W3.4 cross-instance benchmark
 selected restricted Postgres for Node. Each session uses a bounded queue and explicit ack semantics;
 ack message text is diagnostic only. W3.1 records this boundary and its fixtures; W3.2 implements
-the independently drainable process lifecycle. Replay and bounded audio are implemented below;
-durable outcome/index repair, recovery, image parity, and traffic switch remain separately gated.
+the independently drainable process lifecycle. Replay, bounded audio, and durable outcome/index
+repair are implemented below; recovery, image parity, and traffic switch remain separately gated.
 
 ### W3.3 realtime admission (ADR-0052)
 
@@ -223,10 +223,28 @@ create-only object-store boundary with a two-second abort signal; store and ingr
 separate fixed-cardinality metrics. Shutdown drains for a derived maximum of four seconds, aborts
 uncooperative work, clears accounting, then closes replay/storage/database resources.
 
-This is still a no-traffic shadow. Durable stored/unindexed/lost/repair state belongs to W3.6,
-reconnect recovery belongs to W3.7/W4.11, and the raw wire cannot describe the browser WebM/MP4
+This is still a no-traffic shadow. The following W3.6 section owns durable
+stored/unindexed/lost/repair state; reconnect recovery belongs to W3.7/W4.11, and the raw wire cannot
+describe the browser WebM/MP4
 codec or negotiated 24/48 kHz rates. That browser WebM/MP4 mismatch remains a cutover blocker;
 Rust stays the public traffic target.
+
+### W3.6 durable storage/index outcomes (ADR-0037/0051/0052)
+
+The FIFO consumer now passes every accepted chunk through one injected outcome authority after the
+create-only object-store attempt. Retained success uses the same tenant/session/learner/retention,
+derived-key, span/rate, idempotency, and immutable-conflict domain as `POST /v1/audio-chunks`;
+`audio_chunks` remains the only playback index. Store and index failure close the socket and emit
+separate fixed outcomes. Migration 0037 stores only constrained accepted-lost or stored-unindexed
+diagnostics under forced RLS and session cascade; it contains no bytes, credentials, caller key,
+trace, exception, or learner display data. Finalization unions unrepaired accepted losses with
+inference gaps without double counting.
+
+The repair command uses the same tenant transaction and current consent authority. Dry-run remains
+the default; apply creates the index and closes repair provenance atomically, including the case
+where a timed-out conditional object write committed remotely. Playback never reads the diagnostic
+table. W3.6 adds no client, public route, service, package, port, or traffic movement; W3.7 recovery,
+browser codec/rate negotiation, production-image parity, and canary evidence remain blockers.
 
 The implemented W2.16 device-identity boundary is additive migration 0035 plus three Node routes,
 one identity-domain module, and one audited operator command. Invitations and access/refresh
@@ -257,8 +275,8 @@ through `withTenant`, or through `withDiscoveredTenant` only when a locked-down 
 function must discover tenant identity first. Both install the same transaction-local tenant GUC
 and bounded statement timeout. Raw runtime SQL is statically limited to immutable canonical-Quran
 reads, readiness `SELECT 1`, and the two pre-tenant pilot security-definer lookups. Database drivers
-have one runtime owner; migration/provision/repair scripts remain the three explicit operator
-owners.
+have one runtime owner; migration/provision remain the two explicit raw-driver operator owners, and
+audio repair uses the shared structurally tenant-scoped runtime boundary.
 
 The implemented W2.12 dependency boundary creates one request-scoped monotonic deadline before
 local API work. A dependency-free helper composes elapsed-time and caller-disconnect signals and is

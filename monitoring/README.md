@@ -1,10 +1,13 @@
 # HTTP canary monitoring
 
 This stack scrapes the Node API, durable worker, internal Node realtime shadow, Rust compatibility
-API, and realtime gateway. W2.18 traffic alerts are machine stop signals; the W3.5 bounded
+API, and realtime gateway. W2.18 traffic alerts are machine stop signals; the W3.6 bounded
 realtime-shadow alert is an investigation warning because that process receives no traffic. Its
-admission, replay-cleanup, audio-session, ingress, and store counters use closed outcomes only;
-active/retained audio gauges contain no identity or credential labels. Live receiver
+admission, replay-cleanup, audio-session, ingress, store, and delivery counters use closed outcomes
+only; active/retained audio gauges contain no identity or credential labels. Delivery distinguishes
+indexed/discarded, stored-unindexed, accepted-lost, unrecorded dependency failures, and rejected
+frames. Any degraded delivery outcome in the no-traffic shadow is an operator investigation signal,
+not evidence that public traffic was affected. Live receiver
 validation and SRE sign-off remain external release gates.
 
 ## Run without placing a secret in the repository

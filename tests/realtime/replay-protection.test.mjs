@@ -84,6 +84,11 @@ function appOptions({ db, replayAuthority, useDefaultReplay = false, handleAdmit
     allowMissingOrigin: false,
     rateLimitEnabled: false,
     trustedProxyHops: 0,
+    audioOutcomeAuthority: {
+      stored: async ({ identity }) => identity.audioRetention === "discard" ? "discarded" : "indexed",
+      lost: async () => "accepted_lost",
+      lostMany: async () => "accepted_lost",
+    },
     handleAdmittedSocket,
     fetchImpl: async () => ({ status: 200, body: { cancel: async () => {} } }),
     logger: false,

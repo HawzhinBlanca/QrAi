@@ -85,8 +85,20 @@ proof and an explicit test seam, but the production default now runs one bounded
 accepts at most 2 MiB of application bytes behind a 2 MiB + 64 KiB transport ceiling, retains at
 most 8 chunks/4 MiB per session and 64 MiB process-wide, and permits 100 active/draining sessions.
 `accepted=true` means enqueued, not stored; create-only object-store success/failure is a separate
-fixed metric outcome. Rust remains the traffic target while W3.6 durable outcome/index repair,
-W3.7 client recovery, codec/rate negotiation, image parity, and canary evidence remain open.
+fixed metric outcome. At the W3.5 milestone Rust remained the traffic target while W3.6 durable
+outcome/index repair and later recovery, codec/rate, image, and canary gates remained open.
+
+**W3.6 implementation note (2026-08-09):** the production shadow now sends every accepted store
+result through one shared audio-index/outcome authority. Retained success creates the sole playback
+index (`audio_chunks`) with the same current-session, learner, retention, derived-key, span/rate,
+retry, and immutable-conflict rules as the HTTP adapter. Migration 0037 keeps only constrained
+accepted-lost/stored-unindexed diagnostics under forced RLS and session cascade. Store/index failure
+closes the socket and has a fixed outcome; finalization unions unrepaired accepted losses with
+inference gaps. Repair revalidates object metadata against current tenant state and atomically
+creates the index plus repaired provenance. A remotely committed conditional write discovered
+after a timeout may therefore repair an initially accepted-lost chunk. Playback never consults the
+diagnostic table. Rust remains the traffic target; W3.7 recovery and later image/canary gates remain
+open.
 
 ---
 
@@ -152,6 +164,15 @@ active/draining sessions. `accepted=true` means enqueued, not stored; a bounded 
 the existing create-only object-store interface and reports storage separately. Shutdown drains or
 aborts before resource close. Rust remains the traffic target until recovery, durable outcome,
 format, image, canary, and rollback gates pass.
+
+**W3.6 implementation note (2026-08-09):** the bounded consumer now reports fixed indexed,
+discarded, stored-unindexed, accepted-lost, unrecorded-dependency, and rejected outcomes. Retained
+success and the signed-ticket HTTP adapter share one current-session/retention/index domain;
+migration 0037 records only privacy-safe forced-RLS diagnostics, while `audio_chunks` remains the
+sole playback authority. Store/index failure closes the socket, finalization preserves unique
+unrepaired accepted losses, and the dry-run-first repair command atomically indexes and marks a
+verified retained object repaired. Rust still receives all public realtime traffic; recovery,
+format, image, canary, and rollback gates remain open.
 
 ---
 
@@ -2723,9 +2744,10 @@ they disagree, something is wrong and the safe answer is to refuse.
 - A retained object survives an index outage. `server/scripts/repair-audio-index.mjs` reconciles
   S3-compatible, current-filesystem, and legacy objects dry-run first and idempotently, but does not
   treat a key or metadata as authority: the tenant-scoped session row must independently confirm
-  tenant and learner. It also reports incomplete object/metadata pairs and database indexes whose
-  object is missing. The operations container uses the configured store and restricted application
-  role.
+  tenant, learner, and current retention through the same domain used by the Node realtime/HTTP
+  writers. Apply mode creates the playback index and repaired diagnostic provenance in one
+  transaction. It also reports incomplete object/metadata pairs and database indexes whose object
+  is missing. The operations container uses the configured store and restricted application role.
 - `tests/e2e/teacher-audio-index.test.mjs` proves real WebSocket storage → database index → audited
   teacher playback, then forces an index outage and proves metric, repair, idempotence, and an
   ownership-mismatch refusal.
