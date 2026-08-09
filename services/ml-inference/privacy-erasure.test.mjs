@@ -212,3 +212,56 @@ test("erasing a learner twice is a no-op, not an error", async () => {
   );
   assert.deepEqual(filesFor("learner-twice"), [], "the audio came back");
 });
+
+test("a learner's privacy export contains only their own audit trail, never another learner's", async () => {
+  // Scope again, on the OTHER privacy right. `exportPrivacy` filtered its audit lists by tenant
+  // while the export itself is per-learner, so a right-of-access packet handed to one learner
+  // carried every other learner's rows in the same tenant.
+  //
+  // The two rows this stages are the worst case rather than a generic one: `privacy.export.requested`
+  // and `privacy.delete.requested` both key subjectId to the LEARNER, so what leaked was another
+  // child's identifier attached to the fact that they had asked to be erased. GDPR Art. 15(4) — a
+  // copy provided under the right of access "shall not adversely affect the rights and freedoms of
+  // others" — and erasure means their id should be getting rarer, not copied into someone else's file.
+  const OTHER = "learner-with-their-own-privacy-history";
+  const SUBJECT = "learner-requesting-an-export";
+
+  // The other learner exercises both privacy rights, writing two audit rows that name them.
+  await post("/v1/privacy/export", { tenantId: TENANT, learnerId: OTHER, traceId: "other-export" });
+  await post("/v1/privacy/delete", { tenantId: TENANT, learnerId: OTHER, traceId: "other-delete" });
+
+  const res = await post("/v1/privacy/export", {
+    tenantId: TENANT,
+    learnerId: SUBJECT,
+    traceId: "subject-export",
+  });
+  // Read the body ONCE: an `await res.text()` inside an assertion message is evaluated eagerly and
+  // would consume the stream before res.json() could run.
+  const raw = await res.text();
+  assert.equal(res.status, 200, `the export failed: ${raw}`);
+  const body = JSON.parse(raw);
+
+  // Without this the test passes on an export that returns nothing at all — "no other learner's
+  // rows" is trivially true of an empty list, and would stay true if scoping were implemented by
+  // dropping the audit trail entirely.
+  assert.ok(
+    body.auditEvents.some((e) => e.subjectId === SUBJECT || e.learnerId === SUBJECT),
+    `the export carried none of the subject's OWN audit rows, so this proves nothing: ${JSON.stringify(body.auditEvents)}`,
+  );
+
+  const foreign = body.auditEvents.filter(
+    (e) => e.subjectId === OTHER || e.learnerId === OTHER,
+  );
+  assert.deepEqual(
+    foreign,
+    [],
+    `another learner's audit rows were disclosed in this learner's export: ${JSON.stringify(foreign, null, 2)}`,
+  );
+
+  // Belt and braces: the id must not survive anywhere in the payload, including the two derived
+  // lists that were filtered the same tenant-wide way.
+  assert.ok(
+    !JSON.stringify(body).includes(OTHER),
+    "another learner's id appears somewhere in the export payload",
+  );
+});
