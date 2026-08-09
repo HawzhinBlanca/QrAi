@@ -341,6 +341,13 @@ function appendAudit(tenantId, action, subjectId, details = {}) {
     action,
     subjectType: action.startsWith("privacy.") ? "privacy" : "ml_prediction",
     subjectId,
+    // WHOSE event this is, as a structured field rather than something a reader has to infer from
+    // subjectId. subjectId is the learner for `privacy.*` but the SESSION for `external-asr.*`, so
+    // "is this row about learner X" was previously unanswerable for session-keyed rows — which is
+    // how a learner-scoped privacy export ended up returning the whole tenant's audit trail. Null
+    // when the caller does not know it; an unattributable row is excluded from every learner's
+    // export rather than shown to all of them.
+    learnerId: typeof details.learnerId === "string" && details.learnerId ? details.learnerId : null,
     details,
     createdAt: new Date().toISOString(),
   };
@@ -483,16 +490,16 @@ async function predictAlignment(requestBody) {
   let externalAsr;
   if (asrAllowed && !childProfile) {
     externalAsr = { called: true, reason: "consent-granted" };
-    appendAudit(tenantId, "privacy.external-asr.called", sessionId, { traceId, reason: "consent-granted" });
+    appendAudit(tenantId, "privacy.external-asr.called", sessionId, { traceId, reason: "consent-granted", learnerId: requestBody.learnerId });
   } else if (asrAllowed && childProfile && guardianApproved) {
     externalAsr = { called: true, reason: "child-profile-guardian-approved" };
-    appendAudit(tenantId, "privacy.external-asr.called", sessionId, { traceId, reason: "child-profile-guardian-approved" });
+    appendAudit(tenantId, "privacy.external-asr.called", sessionId, { traceId, reason: "child-profile-guardian-approved", learnerId: requestBody.learnerId });
   } else if (externalAsrRequested && childProfile && !guardianApproved) {
     externalAsr = { called: false, reason: "child-profile-no-guardian-consent" };
-    appendAudit(tenantId, "privacy.external-asr.denied", sessionId, { traceId, reason: "child-profile-no-guardian-consent" });
+    appendAudit(tenantId, "privacy.external-asr.denied", sessionId, { traceId, reason: "child-profile-no-guardian-consent", learnerId: requestBody.learnerId });
   } else if (externalAsrRequested && !asrAllowed) {
     externalAsr = { called: false, reason: "consent-revoked-or-insufficient" };
-    appendAudit(tenantId, "privacy.external-asr.denied", sessionId, { traceId, reason: "consent-revoked-or-insufficient" });
+    appendAudit(tenantId, "privacy.external-asr.denied", sessionId, { traceId, reason: "consent-revoked-or-insufficient", learnerId: requestBody.learnerId });
   } else {
     externalAsr = { called: false, reason: "not-requested" };
   }
@@ -836,10 +843,25 @@ async function exportPrivacy(requestBody) {
   const tenantId = safeStorageSegment(requestBody.tenantId, "tenantId");
   const learnerId = safeStorageSegment(requestBody.learnerId, "learnerId");
   const traceId = extractTraceId(requestBody);
-  appendAudit(tenantId, "privacy.export.requested", learnerId, { traceId });
+  appendAudit(tenantId, "privacy.export.requested", learnerId, { traceId, learnerId });
 
   // List audio files for this tenant/learner
   const { audioObjectKeys, metadataObjectKeys } = await listAudioObjects(tenantId, learnerId);
+
+  // Read ONCE. This was three separate readTenantAuditEvents(tenantId) calls building one response
+  // — three synchronous full-file reads and JSON parses of an append-only log that never rotates,
+  // on the single-threaded event loop.
+  //
+  // Scoped to THIS learner, which is the actual fix. The three lists were filtered only by tenant
+  // inside a per-learner export, so learner A's right-of-access packet contained learner B's id and
+  // B's privacy history — including that B had requested erasure. Two ways a row is attributable:
+  // `learnerId` (the structured field appendAudit now records) or `subjectId`, which IS the learner
+  // for `privacy.*` rows and covers rows written before that field existed. A row matching neither
+  // is not attributable to anyone and is omitted — under-reporting one learner's own history is
+  // recoverable, disclosing another learner's is not.
+  const learnerAuditEvents = readTenantAuditEvents(tenantId).filter(
+    (event) => event.learnerId === learnerId || event.subjectId === learnerId,
+  );
 
   return {
     traceId,
@@ -847,13 +869,13 @@ async function exportPrivacy(requestBody) {
     learnerId,
     audioObjectKeys,
     metadataObjectKeys,
-    externalAsrCalls: readTenantAuditEvents(tenantId).filter(
+    externalAsrCalls: learnerAuditEvents.filter(
       (event) => event.action === "privacy.external-asr.called",
     ),
-    deniedExternalAsr: readTenantAuditEvents(tenantId).filter(
+    deniedExternalAsr: learnerAuditEvents.filter(
       (event) => event.action === "privacy.external-asr.denied",
     ),
-    auditEvents: readTenantAuditEvents(tenantId),
+    auditEvents: learnerAuditEvents,
   };
 }
 
@@ -880,6 +902,7 @@ async function deletePrivacy(requestBody) {
   appendAudit(tenantId, "privacy.delete.requested", learnerId, {
     jobId: job.id,
     traceId,
+    learnerId,
     deletedAudioObjectKeys,
     deletedMetadataObjectKeys,
   });
@@ -1185,6 +1208,7 @@ async function transcribeSession(requestBody) {
   if (!asrAllowed) {
     appendAudit(tenantId, "privacy.external-asr.denied", sessionId, {
       traceId,
+      learnerId,
       reason: "consent-revoked-or-insufficient",
     });
     return {
@@ -1288,6 +1312,7 @@ async function transcribeSession(requestBody) {
 
   appendAudit(tenantId, "privacy.external-asr.called", sessionId, {
     traceId,
+    learnerId,
     reason: "consent-granted",
     chunkCount: parts.length,
   });
