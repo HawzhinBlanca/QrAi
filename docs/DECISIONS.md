@@ -1798,9 +1798,12 @@ they disagree, something is wrong and the safe answer is to refuse.
 
 ---
 
-## ADR-0038 — hamza-on-carrier (ؤ/ئ) ASR variance: partial credit, not full normalization
+## ADR-0039 — hamza-on-carrier (ؤ/ئ) ASR variance: partial credit, not full normalization
 
 **Date:** 2026-08-08 · **Status:** Accepted (interim); full normalization pending scholar review
+
+> Numbered 0039, not 0038: `docs/fix-adr-0019-number-collision` renumbers the interface-locale
+> capability-gates ADR (a duplicate ADR-0019) to ADR-0038, so 0038 is spoken for.
 
 **Context.** `normalizeArabic()` in `services/ml-inference/alignment.js` unifies taa marbuta (ة) with
 haa (ه), since the two are acoustically similar in pause form with no tajweed significance —
