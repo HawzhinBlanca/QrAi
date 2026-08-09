@@ -128,27 +128,51 @@ async function storeAudioObject(tenantId, learnerId, chunkId, audioBytes) {
   return objectKey;
 }
 
+/**
+ * Erase everything this service holds for one learner.
+ *
+ * Deletes EVERY file in the learner's directory, not just the two extensions it happens to write
+ * today. The old loop unlinked `.bin` and `.meta.json` and silently stepped over anything else, so
+ * a single file of any other name — a temp file, a partial write, a format added later by someone
+ * who did not know to update this list — survived "delete my child's recordings" without a word.
+ * An allowlist is the wrong default for erasure: forgetting to extend it fails towards RETAINING
+ * a learner's data, which is the direction that must never be the quiet one.
+ *
+ * Classified, not lumped: an unrecognised file is still deleted, but reported under
+ * `deletedOtherObjectKeys` rather than being miscounted as audio or as metadata, so the two
+ * existing counts keep meaning exactly what they meant.
+ *
+ * NOT recursive, deliberately. Nothing writes a subdirectory here, and giving erasure the power to
+ * walk a tree rooted at a request-derived path is a much larger blast radius than the gap it would
+ * close. A subdirectory is therefore left in place — and because `rmdirSync` then fails, the caller's
+ * `tombstonedDerivedRecords` post-condition reports false and the residue is loud instead of silent.
+ */
 async function deleteAudioObjects(tenantId, learnerId) {
   tenantId = safeStorageSegment(tenantId, "tenantId");
   learnerId = safeStorageSegment(learnerId, "learnerId");
   const tenantDir = join(AUDIO_STORAGE_DIR, tenantId, learnerId);
   const deletedAudioObjectKeys = [];
   const deletedMetadataObjectKeys = [];
+  const deletedOtherObjectKeys = [];
   if (existsSync(tenantDir)) {
     const { readdirSync, unlinkSync, rmdirSync } = await import("node:fs");
-    const files = readdirSync(tenantDir);
-    for (const file of files) {
-      if (file.endsWith(".bin")) {
-        unlinkSync(join(tenantDir, file));
-        deletedAudioObjectKeys.push(`${tenantId}/${learnerId}/${file}`);
-      } else if (file.endsWith(".meta.json")) {
-        unlinkSync(join(tenantDir, file));
-        deletedMetadataObjectKeys.push(`${tenantId}/${learnerId}/${file}`);
+    for (const entry of readdirSync(tenantDir, { withFileTypes: true })) {
+      // Only files are unlinkable; see the note above on why a directory is left for the
+      // post-condition to surface rather than recursed into.
+      if (!entry.isFile()) continue;
+      const key = `${tenantId}/${learnerId}/${entry.name}`;
+      unlinkSync(join(tenantDir, entry.name));
+      if (entry.name.endsWith(".bin")) {
+        deletedAudioObjectKeys.push(key);
+      } else if (entry.name.endsWith(".meta.json")) {
+        deletedMetadataObjectKeys.push(key);
+      } else {
+        deletedOtherObjectKeys.push(key);
       }
     }
     try { rmdirSync(tenantDir); } catch {}
   }
-  return { deletedAudioObjectKeys, deletedMetadataObjectKeys };
+  return { deletedAudioObjectKeys, deletedMetadataObjectKeys, deletedOtherObjectKeys };
 }
 
 async function listAudioObjects(tenantId, learnerId) {
@@ -887,7 +911,8 @@ async function deletePrivacy(requestBody) {
   const traceId = extractTraceId(requestBody);
 
   // Delete audio files
-  const { deletedAudioObjectKeys, deletedMetadataObjectKeys } = await deleteAudioObjects(tenantId, learnerId);
+  const { deletedAudioObjectKeys, deletedMetadataObjectKeys, deletedOtherObjectKeys } =
+    await deleteAudioObjects(tenantId, learnerId);
 
   const job = {
     id: `privacy-delete-${randomUUID()}`,
@@ -897,15 +922,16 @@ async function deletePrivacy(requestBody) {
     status: "completed",
     deletedAudioObjectKeys,
     deletedMetadataObjectKeys,
+    deletedOtherObjectKeys,
     // A real post-condition, not a constant. This was hardcoded `true`, and the only thing
     // checking it (scripts/smoke-privacy.mjs) asserted that constant equalled true — an assertion
     // that could not fail, in the smoke whose own deletion reports ZERO removed keys. Now it says
     // something this service can actually answer: nothing of this learner's is left on its disk.
     //
-    // It is a genuine check, not a restatement: deleteAudioObjects only unlinks `.bin` and
-    // `.meta.json`, and its rmdir is swallowed by a try/catch, so any other file written into the
-    // learner's directory would survive erasure and leave the directory behind — which this now
-    // reports as false instead of cheerfully claiming true.
+    // It is a genuine check, not a restatement. deleteAudioObjects now removes every FILE, so the
+    // residue it can still leave is a subdirectory — which it deliberately does not recurse into,
+    // and whose presence makes the swallowed rmdir fail. That case reports false here instead of
+    // cheerfully claiming true, which is the whole point of computing it rather than asserting it.
     //
     // Scope: alignments and tajweed findings are platform-api's rows in Postgres, erased by its own
     // privacy cascade. ml-inference never held them, so it never spoke for them.
@@ -919,6 +945,7 @@ async function deletePrivacy(requestBody) {
     learnerId,
     deletedAudioObjectKeys,
     deletedMetadataObjectKeys,
+    deletedOtherObjectKeys,
   });
   return job;
 }
