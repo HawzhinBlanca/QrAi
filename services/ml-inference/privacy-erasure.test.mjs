@@ -266,36 +266,58 @@ test("a learner's privacy export contains only their own audit trail, never anot
   );
 });
 
-test("tombstonedDerivedRecords reports the real post-condition, and can say false", async () => {
-  // This field was the literal `true`, and smoke-privacy.mjs asserted that literal equalled true —
-  // in a smoke whose own delete reports zero removed keys. A claim that cannot be false is not
-  // evidence, so the value that matters is the NEGATIVE one: prove it can report failure.
-  //
-  // The staged failure is not hypothetical. deleteAudioObjects unlinks only `.bin` and
-  // `.meta.json`; anything else in the learner's directory survives erasure, and its rmdir is
-  // wrapped in a bare try/catch, so the leftover is silent. A stray file is exactly that case.
-  const STUCK = "learner-with-an-unexpected-file";
-  await storeChunk(STUCK, "chunk-stuck");
+test("erasure removes a file of an unrecognised type, and reports it as neither audio nor metadata", async () => {
+  // The erasure loop used to unlink only `.bin` and `.meta.json` and step silently over anything
+  // else, so one file of any other name survived "delete my child's recordings". An allowlist is
+  // the wrong default here: forgetting to extend it fails towards RETAINING learner data.
+  const STRAY = "learner-with-an-unexpected-file";
+  await storeChunk(STRAY, "chunk-stray");
   const { writeFileSync } = await import("node:fs");
-  writeFileSync(join(storageDir, TENANT, STUCK, "leftover.tmp"), "not a .bin and not a .meta.json");
+  writeFileSync(join(storageDir, TENANT, STRAY, "leftover.tmp"), "not a .bin and not a .meta.json");
+  assert.ok(filesFor(STRAY).includes("leftover.tmp"), "the stray file was never written");
 
-  const stuck = await post("/v1/privacy/delete", { tenantId: TENANT, learnerId: STUCK });
-  const stuckBody = JSON.parse(await stuck.text());
+  const res = await post("/v1/privacy/delete", { tenantId: TENANT, learnerId: STRAY });
+  const body = JSON.parse(await res.text());
+
+  assert.deepEqual(filesFor(STRAY), [], "a file erasure does not recognise survived the erasure");
+  assert.ok(
+    body.deletedOtherObjectKeys.some((k) => k.endsWith("/leftover.tmp")),
+    `the stray file was deleted but not reported: ${JSON.stringify(body.deletedOtherObjectKeys)}`,
+  );
+  // Counted separately on purpose: an unrecognised file must not inflate either of the two counts
+  // that already mean something specific.
+  assert.ok(
+    !JSON.stringify(body.deletedAudioObjectKeys).includes("leftover.tmp") &&
+      !JSON.stringify(body.deletedMetadataObjectKeys).includes("leftover.tmp"),
+    "the stray file was miscounted as audio or as metadata",
+  );
+  assert.equal(body.tombstonedDerivedRecords, true, "nothing was left, so this should be true");
+});
+
+test("tombstonedDerivedRecords can still report false — it is computed, not asserted", async () => {
+  // The field was a hardcoded `true` whose only check compared that literal to true. Now that
+  // erasure removes every FILE, the residue it can still leave is a SUBDIRECTORY, which it
+  // deliberately does not recurse into. That is the remaining honest false, and it has to be
+  // reachable or the field is back to being a constant with extra steps.
+  const NESTED = "learner-with-a-subdirectory";
+  await storeChunk(NESTED, "chunk-nested");
+  const { mkdirSync, writeFileSync } = await import("node:fs");
+  const sub = join(storageDir, TENANT, NESTED, "unexpected-subdir");
+  mkdirSync(sub, { recursive: true });
+  writeFileSync(join(sub, "inner.bin"), "nested");
+
+  const res = await post("/v1/privacy/delete", { tenantId: TENANT, learnerId: NESTED });
+  const body = JSON.parse(await res.text());
+
   assert.equal(
-    stuckBody.tombstonedDerivedRecords,
+    body.tombstonedDerivedRecords,
     false,
-    "a file the erasure cannot remove was left behind, and the delete still claimed everything was tombstoned",
+    `something of this learner's remains on disk, so the delete must not claim otherwise: ${JSON.stringify(body)}`,
   );
-
-  // And the clean path still reports true, so the check is not simply stuck at false.
-  const CLEAN = "learner-erased-cleanly";
-  await storeChunk(CLEAN, "chunk-clean");
-  const clean = await post("/v1/privacy/delete", { tenantId: TENANT, learnerId: CLEAN });
-  const cleanBody = JSON.parse(await clean.text());
-  assert.equal(
-    cleanBody.tombstonedDerivedRecords,
-    true,
-    `a fully erased learner should report true: ${JSON.stringify(cleanBody)}`,
+  // The flat files still went, so this is a partial erasure being reported honestly rather than a
+  // delete that gave up.
+  assert.ok(
+    body.deletedAudioObjectKeys.length > 0,
+    "the learner's own top-level audio should still have been erased",
   );
-  assert.deepEqual(filesFor(CLEAN), [], "the audio survived a clean erasure");
 });
