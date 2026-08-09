@@ -1795,3 +1795,56 @@ they disagree, something is wrong and the safe answer is to refuse.
 - **Not yet built:** `audio_chunks` (the DB index) is still written by nothing, so no finding
   currently resolves to a stored object. The read path exists and is tested; the write path from
   realtime-gateway to platform-api is the remaining half and is a separate change.
+
+---
+
+## ADR-0038 — hamza-on-carrier (ؤ/ئ) ASR variance: partial credit, not full normalization
+
+**Date:** 2026-08-08 · **Status:** Accepted (interim); full normalization pending scholar review
+
+**Context.** `normalizeArabic()` in `services/ml-inference/alignment.js` unifies taa marbuta (ة) with
+haa (ه), since the two are acoustically similar in pause form with no tajweed significance —
+verified empirically that ASR transcribing a correctly-recited taa-marbuta word as haa scored as low
+as 0.75 similarity, wrongly landing in the "misread" band. A similar-shaped gap exists for hamza on a
+carrier letter (ؤ hamza-on-waw, ئ hamza-on-yaa) vs the bare carrier (و, ي): also unnormalized, also
+producing low scores — `similarity("مؤمن", "مومن")` = 0.75, `similarity("سئل", "سيل")` = 0.667
+(adjacent to `alignWords`' `reviewThreshold`'s 0.65 missed/review boundary).
+
+Unlike taa-marbuta/haa, hamza articulation is **itself a genuine tajweed correctness point**: hamzat
+al-qat' is a real, always-pronounced glottal stop a Quran teacher corrects when dropped or
+mispronounced (hamzat al-wasl is a separate, context-dependent case — silent when connected in
+flowing recitation — not the bare-carrier substitution at issue here). Web research on Arabic ASR
+confirms hamza is a well-documented error source in Arabic transcription — both misrecognition and
+spurious insertion — but found nothing establishing the same acoustic-equivalence claim that backs
+the taa-marbuta/haa normalization: an ASR writing a bare carrier for a hamza-on-carrier grapheme does
+not reliably mean the reciter articulated the hamza correctly. Fully normalizing ؤ/ئ to و/ي the same
+way risks the more serious opposite failure mode: scoring a genuinely dropped or mispronounced hamza
+as "matched" (a false positive), in a product whose value proposition is accurate error correction.
+This is exactly the kind of judgment call ADR-0014 records a precedent for routing through
+`docs/SCHOLAR_REVIEW.md` and a qualified reviewer (Sheikh Hisham al-Erbili, mujawwid) rather than an
+agent deciding it unilaterally.
+
+**Decision.** Do not fully normalize. Instead, `levenshtein()` gives a hamza-on-carrier/bare-carrier
+**substitution** (ؤ↔و, ئ↔ي at the same string position) partial credit — cost 0.5 instead of a full
+1 — via a new `substitutionCost()` helper; `normalizeArabic()` itself is untouched. This is
+deliberately narrower than full normalization:
+- `similarity("مؤمن", "مومن")` moves from 0.75 → 0.875 (out of "misread", into "needs-review" —
+  still surfaced for a teacher, not silently accepted as "matched").
+- `similarity("سئل", "سيل")` moves from 0.667 → 0.833 (still "misread", but clear of the
+  `reviewThreshold` boundary rather than sitting on it).
+- Partial credit applies **only** to a same-position substitution. An outright dropped hamza (an
+  insertion/deletion, e.g. `similarity("شيء", "شي")`, deleting the word-final hamza entirely) is
+  unaffected — still a full-cost edit, still flagged — because that is a real, correctable
+  recitation error, not an orthographic ASR ambiguity.
+
+This mirrors the fallback already used elsewhere in this codebase when a normalization question
+can't be fully resolved without a scholar: normalize only enough to stop ASR noise from tipping a
+correct recitation into "misread"/"missed", while keeping the word flagged for review rather than
+masking it as fully "matched".
+
+**Consequences.** No test needing a hamza-carrier pair to score a full 1.0 match should ever be
+added without a scholar sign-off recorded as its own ADR, following the ADR-0014 pattern. If a
+qualified reviewer confirms hamza-on-carrier ASR variance should be scored as fully equivalent — or,
+conversely, that even partial credit is inappropriate and it must score as a full penalty —
+`substitutionCost()` in `services/ml-inference/alignment.js` is the single place to change, with
+`alignment.test.mjs` updated to match.
