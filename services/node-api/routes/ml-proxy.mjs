@@ -194,6 +194,14 @@ async function proxyMl(req, reply, ctx, label, path) {
       externalAsrProcessing: row.external_asr_processing,
       audioRetention: row.audio_retention,
     };
+
+    // Server-authoritative LEARNER, from the same row the authz check above just read. Parity with
+    // handlers/ml_proxy.rs, and for the same reason consent is overwritten rather than trusted: the
+    // server's answer, not the client's claim. ml-inference keys its external-ASR and prediction
+    // audit rows by sessionId, so with no learner on the request those rows are attributable to
+    // nobody — and a learner-scoped privacy export has to drop them. Sending it is what keeps a
+    // learner's own history in their export while another learner's stays out of it.
+    forwarded.learnerId = row.learner_id;
   }
 
   const result = await forward({
