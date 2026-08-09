@@ -389,7 +389,7 @@ export interface RealtimeSessionTicket {
   tenantId: string;
   learnerId: string;
   expiresAt: string;
-  allowedSampleRates: Array<16000 | 24000 | 48000>;
+  allowedSampleRates: Array<16000>;
   externalAsrProcessing: boolean;
   token: string;
   auditEventId: string;

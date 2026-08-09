@@ -145,10 +145,10 @@ export async function createRealtimeTicket(req, reply, ctx) {
     // consent snapshot JSON (which is the learner's stated preference, not the resolved gate).
     const externalAsr = row.external_processing_allowed === true;
 
-    const requested = Array.isArray(req.body?.requestedSampleRates)
-      ? req.body.requestedSampleRates.filter((sr) => [16000, 24000, 48000].includes(sr))
-      : [];
-    const allowedSampleRates = requested.length > 0 ? requested : [16000];
+    // The v1 realtime wire carries raw bytes with no codec/rate metadata. The Node audio runtime
+    // can therefore describe exactly one truthful product profile: mono PCM16LE at 16 kHz.
+    // Silently echoing 24/48 kHz here caused those bytes to be persisted and timed as 16 kHz.
+    const allowedSampleRates = [16000];
 
     const auditId = `audit-${randomUUID()}`;
     const ticketId = `rt-ticket-${randomUUID()}`;

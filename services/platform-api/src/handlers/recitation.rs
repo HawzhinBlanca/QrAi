@@ -547,19 +547,9 @@ pub async fn create_realtime_ticket(
 
     actor.require_self_or_any(&learner_id, &[ActorRole::Admin, ActorRole::Ops])?;
 
-    let allowed_sample_rates = if req.requested_sample_rates.is_empty() {
-        vec![16_000u32]
-    } else {
-        req.requested_sample_rates
-            .into_iter()
-            .filter(|sr| matches!(sr, 16_000 | 24_000 | 48_000))
-            .collect::<Vec<_>>()
-    };
-    let allowed_sample_rates = if allowed_sample_rates.is_empty() {
-        vec![16_000u32]
-    } else {
-        allowed_sample_rates
-    };
+    // rt_v2 carries raw audio bytes but no codec/rate metadata. Keep the public oracle truthful
+    // during migration: both issuers advertise only the mono PCM16LE/16 kHz product profile.
+    let allowed_sample_rates = vec![16_000u32];
 
     let audit_id = next_id("audit");
     let ticket_id = next_id("rt-ticket");

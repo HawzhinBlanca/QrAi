@@ -18,6 +18,7 @@ export const AUDIO_LIMITS = Object.freeze({
   maxDrainMs: 4_000,
   sampleRate: 16_000,
   chunkDurationMs: 480,
+  frameBytes: 15_360,
 });
 
 export const AUDIO_SESSION_OUTCOMES = Object.freeze([
@@ -32,6 +33,7 @@ export const AUDIO_INGRESS_OUTCOMES = Object.freeze([
   "backpressure",
   "empty",
   "oversized",
+  "invalid_format",
   "sequence_exhausted",
   "slow_consumer",
 ]);
@@ -430,6 +432,14 @@ export function createRealtimeAudioRuntime({
     if (bytes.length > AUDIO_LIMITS.maxPayloadBytes) {
       ingressCounters.oversized += 1;
       rejection(session, `audio frame exceeds ${AUDIO_LIMITS.maxPayloadBytes} bytes`);
+      return;
+    }
+    if (bytes.length !== AUDIO_LIMITS.frameBytes) {
+      ingressCounters.invalid_format += 1;
+      rejection(
+        session,
+        `audio frame must contain exactly ${AUDIO_LIMITS.frameBytes} bytes of mono PCM16LE at ${AUDIO_LIMITS.sampleRate} Hz`,
+      );
       return;
     }
     if (audioTimeline(session.nextSequence) === null) {

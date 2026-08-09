@@ -28,6 +28,7 @@ import {
 } from "../migrations/lib/postgres.mjs";
 
 const { Client } = pg;
+const pcmFrame = (marker = 1) => Buffer.alloc(AUDIO_LIMITS.frameBytes, marker);
 
 class FakeSocket extends EventEmitter {
   readyState = 1;
@@ -203,7 +204,7 @@ test("retained store success is indexed after the enqueue ack with exact immutab
   });
   const socket = new FakeSocket();
   runtime.handleSocket(socket, admitted("session-indexed"));
-  socket.binary(Buffer.from([1, 2, 3]));
+  socket.binary(pcmFrame(1));
 
   assert.equal(socket.acks()[0].accepted, true, "ack must remain enqueue-only and immediate");
   await waitFor(() => outcomes.calls.stored.length === 1, "stored outcome was not consumed");
@@ -225,7 +226,7 @@ test("retained store success is indexed after the enqueue ack with exact immutab
     stored: store.calls[0] && {
       objectKey: "audio/v1/tenant-storage-index/learner-storage-index/session-indexed/session-indexed-ws-0000.pcm",
       sha256: "a".repeat(64),
-      size: 3,
+      size: AUDIO_LIMITS.frameBytes,
       storedAt: "2026-08-09T00:00:00.000Z",
       created: true,
     },
@@ -251,7 +252,7 @@ test("stored-unindexed is separate from storage success and closes the socket wi
   });
   const socket = new FakeSocket();
   runtime.handleSocket(socket, admitted("session-orphan"));
-  socket.binary(Buffer.from([9]));
+  socket.binary(pcmFrame(9));
   assert.equal(socket.acks()[0].accepted, true);
 
   await waitFor(() => socket.closed.length === 1, "stored-unindexed socket remained open");
@@ -272,7 +273,7 @@ test("an accepted store failure records accepted-lost and closes instead of sile
   });
   const socket = new FakeSocket();
   runtime.handleSocket(socket, admitted("session-lost"));
-  socket.binary(Buffer.from("private-audio"));
+  socket.binary(pcmFrame(17));
   assert.equal(socket.acks()[0].accepted, true);
 
   await waitFor(() => outcomes.calls.lost.length === 1, "accepted loss was not recorded");
@@ -299,7 +300,7 @@ test("a durable-outcome outage is distinct and still forces the recovery boundar
   });
   const socket = new FakeSocket();
   runtime.handleSocket(socket, admitted("session-dual-outage"));
-  socket.binary(Buffer.from([1]));
+  socket.binary(pcmFrame(1));
 
   await waitFor(() => socket.closed.length === 1, "dual-outage socket remained open");
   const metrics = runtime.renderMetrics();
@@ -321,8 +322,8 @@ test("bounded shutdown durably classifies both in-flight and queued accepted chu
   });
   const socket = new FakeSocket();
   runtime.handleSocket(socket, admitted("session-shutdown-loss"));
-  socket.binary(Buffer.from([1]));
-  socket.binary(Buffer.from([2]));
+  socket.binary(pcmFrame(1));
+  socket.binary(pcmFrame(2));
   assert.deepEqual(socket.acks().map(({ accepted }) => accepted), [true, true]);
 
   await runtime.stop();
@@ -350,7 +351,7 @@ test("pre-enqueue rejections report separately and never call durable accepted-c
   runtime.handleSocket(socket, admitted("session-rejected"));
   socket.binary(Buffer.alloc(0));
   socket.binary(Buffer.alloc(AUDIO_LIMITS.maxPayloadBytes + 1));
-  socket.binary(Buffer.from([1]));
+  socket.binary(pcmFrame(1));
 
   assert.deepEqual(socket.acks().map(({ accepted, sequence }) => ({ accepted, sequence })), [
     { accepted: false, sequence: 0 },
@@ -551,7 +552,7 @@ test("the restricted database authority indexes, deduplicates loss, and repairs 
       claims: Object.freeze(identity),
       traceId: "trace-node-live-storage",
     }));
-    const audioBytes = Buffer.from([7, 8, 9, 10]);
+    const audioBytes = pcmFrame(7);
     socket.binary(audioBytes);
     assert.equal(socket.acks()[0]?.accepted, true);
     const chunkId = `${identity.sessionId}-ws-0000`;

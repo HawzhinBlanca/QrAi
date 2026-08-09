@@ -23,6 +23,7 @@ const SESSION_ID = "session-recovery-1";
 const LIVE_TENANT = "hikmah-pilot-erbil";
 const LIVE_LEARNER = "learner-1";
 const LIVE_SECRET = "w3.7-real-node-recovery-secret-over-32-bytes";
+const LIVE_PCM_FRAME_BYTES = 15_360;
 const fixture = JSON.parse(
   await readFile(
     new URL("../../packages/contracts/fixtures/realtime/recovery-policy.json", import.meta.url),
@@ -685,7 +686,7 @@ test("the real Node client re-tickets through the API, reconnects, and finalizes
     });
 
     await controller.start();
-    assert.equal(controller.capture(frame(64, 1)), true);
+    assert.equal(controller.capture(frame(LIVE_PCM_FRAME_BYTES, 1)), true);
     await waitFor(
       () => controller.snapshot().acknowledgedChunks === 1,
       "the first real Node acknowledgement never reached the controller",
@@ -699,7 +700,7 @@ test("the real Node client re-tickets through the API, reconnects, and finalizes
       "the clean drop did not mint and admit one fresh ticket",
     );
 
-    assert.equal(controller.capture(frame(64, 2)), true);
+    assert.equal(controller.capture(frame(LIVE_PCM_FRAME_BYTES, 2)), true);
     await waitFor(
       () => controller.snapshot().acknowledgedChunks === 2,
       "the recovered real Node socket did not acknowledge the second frame",
@@ -716,7 +717,10 @@ test("the real Node client re-tickets through the API, reconnects, and finalizes
     });
     assert.equal(stopped, 1);
     assert.equal(new Set(tokens).size, 2, "a reconnect reused a single-use ticket");
-    assert.deepEqual(storedFrames, [frame(64, 1), frame(64, 2)]);
+    assert.deepEqual(
+      storedFrames,
+      [frame(LIVE_PCM_FRAME_BYTES, 1), frame(LIVE_PCM_FRAME_BYTES, 2)],
+    );
     assert.deepEqual(errors, []);
     assert.ok(states.includes("reconnecting"));
     assert.equal(finalizationResponse.statusCode, 200);

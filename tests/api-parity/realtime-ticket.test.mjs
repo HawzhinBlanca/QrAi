@@ -179,13 +179,17 @@ test("external processing stays FALSE when guardian approval is missing, whateve
 
 // --- sample-rate negotiation ---
 
-test("sample rates default to [16000] and unsupported values are filtered out", async () => {
+test("the realtime product profile is fixed at [16000] even when clients request other rates", async () => {
   const sessionId = await createSession("learner-1");
   const dflt = await mint(sessionId);
   assert.deepEqual(dflt.body.allowedSampleRates, [16000], "no request means 16 kHz");
 
   const some = await mint(sessionId, { body: { requestedSampleRates: [48000, 22050, 24000] } });
-  assert.deepEqual(some.body.allowedSampleRates, [48000, 24000], "22050 is not supported");
+  assert.deepEqual(
+    some.body.allowedSampleRates,
+    [16000],
+    "the raw binary wire cannot truthfully negotiate 24/48 kHz",
+  );
 
   const none = await mint(sessionId, { body: { requestedSampleRates: [22050, 8000] } });
   assert.deepEqual(none.body.allowedSampleRates, [16000], "an empty result falls back to 16 kHz");

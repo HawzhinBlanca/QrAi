@@ -16,7 +16,10 @@ const LIVE_ORIGIN = "https://audio.example.org";
 const LIVE_SECRET = "w3.5-bounded-audio-ticket-secret-over-32-bytes";
 const LIVE_TENANT = "tenant-audio-live";
 const LIVE_NOW_SECONDS = 2_100_000_000;
+const PCM_FRAME_BYTES = 15_360;
 const socketInboxes = new WeakMap();
+
+const pcmFrame = (marker = 1) => Buffer.alloc(PCM_FRAME_BYTES, marker);
 
 function testOutcomeAuthority() {
   return {
@@ -332,6 +335,7 @@ test("the production audio bounds are explicit and leave Rust-compatible rejecti
     maxDrainMs: 4_000,
     sampleRate: 16_000,
     chunkDurationMs: 480,
+    frameBytes: PCM_FRAME_BYTES,
   }));
   assert.deepEqual(audioTimeline(AUDIO_MAX_SEQUENCE), {
     startMs: AUDIO_MAX_SEQUENCE * AUDIO_LIMITS.chunkDurationMs,
@@ -343,6 +347,35 @@ test("the production audio bounds are explicit and leave Rust-compatible rejecti
   }
 });
 
+test("only one truthful 480 ms mono PCM16LE frame size is admitted", async () => {
+  const store = immediateStore();
+  const runtime = createRealtimeAudioRuntime({ audioObjectStore: store, shutdownGraceMs: 8_000 });
+  const socket = new FakeSocket();
+  runtime.handleSocket(socket, admitted("session-pcm-profile", "trace-pcm-profile"));
+
+  for (const size of [1, PCM_FRAME_BYTES - 1, PCM_FRAME_BYTES + 1, AUDIO_LIMITS.maxPayloadBytes]) {
+    socket.binary(Buffer.alloc(size, 41));
+    const ack = socket.acks().at(-1);
+    assert.equal(ack.accepted, false, `${size} bytes must not be labelled as 480 ms PCM`);
+    assert.equal(ack.sequence, 0, `${size} bytes consumed the reusable sequence`);
+    assert.equal(ack.trace_id, "trace-pcm-profile");
+    assert.match(ack.message, /15360/);
+    assert.equal(store.calls.length, 0, `${size} invalid bytes reached storage`);
+  }
+
+  const frame = Buffer.alloc(PCM_FRAME_BYTES, 43);
+  socket.binary(frame);
+  assert.deepEqual(
+    (({ accepted, sequence }) => ({ accepted, sequence }))(socket.acks().at(-1)),
+    { accepted: true, sequence: 0 },
+  );
+  await waitFor(() => store.calls.length === 1, "the exact PCM frame did not reach storage");
+  assert.deepEqual(store.calls[0].value.audioBytes, frame);
+  assert.match(runtime.renderMetrics(), /realtime_audio_ingress_total\{outcome="invalid_format"\} 4/);
+  socket.peerClose();
+  await waitFor(() => runtime.snapshot().activeSessions === 0, "PCM profile session did not close");
+});
+
 test("a paused store applies exact per-session chunk backpressure and reuses the rejected sequence", async () => {
   const store = pausedStore();
   const runtime = createRealtimeAudioRuntime({ audioObjectStore: store, shutdownGraceMs: 8_000 });
@@ -350,9 +383,9 @@ test("a paused store applies exact per-session chunk backpressure and reuses the
   runtime.handleSocket(socket, admitted("session-slots", "trace-slots"));
 
   for (let index = 0; index < AUDIO_LIMITS.maxRetainedChunksPerSession; index += 1) {
-    socket.binary(Buffer.from([index]));
+    socket.binary(pcmFrame(index));
   }
-  socket.binary(Buffer.from([99]));
+  socket.binary(pcmFrame(99));
 
   const acks = socket.acks();
   assert.equal(acks.length, 9);
@@ -364,12 +397,12 @@ test("a paused store applies exact per-session chunk backpressure and reuses the
   assert.deepEqual(runtime.snapshot(), {
     activeSessions: 1,
     retainedChunks: 8,
-    retainedBytes: 8,
+    retainedBytes: 8 * PCM_FRAME_BYTES,
   });
 
   await releaseCalls(store, 8);
   await waitFor(() => runtime.snapshot().retainedChunks === 0, "the session queue did not drain");
-  socket.binary(Buffer.from([8]));
+  socket.binary(pcmFrame(8));
   assert.deepEqual(socket.acks().at(-1), {
     kind: "audio.ack",
     session_id: "session-slots",
@@ -384,49 +417,13 @@ test("a paused store applies exact per-session chunk backpressure and reuses the
   await waitFor(() => runtime.snapshot().activeSessions === 0, "the closed session remained active");
 });
 
-test("per-session and process-wide byte budgets include in-flight storage", async () => {
-  const perSessionStore = pausedStore();
-  const perSession = createRealtimeAudioRuntime({
-    audioObjectStore: perSessionStore,
-    shutdownGraceMs: 8_000,
-  });
-  const socket = new FakeSocket();
-  perSession.handleSocket(socket, admitted("session-bytes"));
-  socket.binary(Buffer.alloc(2 * MiB, 1));
-  socket.binary(Buffer.alloc(2 * MiB, 2));
-  socket.binary(Buffer.from([3]));
-  assert.deepEqual(socket.acks().map(({ accepted, sequence }) => ({ accepted, sequence })), [
-    { accepted: true, sequence: 0 },
-    { accepted: true, sequence: 1 },
-    { accepted: false, sequence: 2 },
-  ]);
-  assert.equal(perSession.snapshot().retainedBytes, 4 * MiB);
-  await releaseCalls(perSessionStore, 2);
-  socket.peerClose();
-  await waitFor(() => perSession.snapshot().activeSessions === 0, "byte-bound session did not close");
-
-  const globalStore = pausedStore();
-  const global = createRealtimeAudioRuntime({ audioObjectStore: globalStore, shutdownGraceMs: 8_000 });
-  const sockets = [];
-  for (let index = 0; index < 16; index += 1) {
-    const peer = new FakeSocket();
-    sockets.push(peer);
-    global.handleSocket(peer, admitted(`session-global-${index}`));
-    peer.binary(Buffer.alloc(2 * MiB, index));
-    peer.binary(Buffer.alloc(2 * MiB, index + 1));
-  }
-  const overflow = new FakeSocket();
-  sockets.push(overflow);
-  global.handleSocket(overflow, admitted("session-global-overflow"));
-  overflow.binary(Buffer.from([1]));
-  assert.equal(global.snapshot().retainedBytes, 64 * MiB);
-  assert.equal(overflow.acks().at(-1).accepted, false);
-  assert.equal(overflow.acks().at(-1).sequence, 0);
-
-  await releaseCalls(globalStore, 32);
-  await waitFor(() => global.snapshot().retainedBytes === 0, "global byte budget did not release");
-  for (const peer of sockets) peer.peerClose();
-  await waitFor(() => global.snapshot().activeSessions === 0, "global sessions did not close");
+test("the fixed profile makes every reachable queue stay inside both byte budgets", () => {
+  const maximumSessionBytes = AUDIO_LIMITS.frameBytes * AUDIO_LIMITS.maxRetainedChunksPerSession;
+  const maximumProcessBytes = maximumSessionBytes * AUDIO_LIMITS.maxActiveSessions;
+  assert.ok(maximumSessionBytes < AUDIO_LIMITS.maxRetainedBytesPerSession);
+  assert.ok(maximumProcessBytes < AUDIO_LIMITS.maxRetainedBytesGlobal);
+  assert.equal(maximumSessionBytes, 122_880);
+  assert.equal(maximumProcessBytes, 12_288_000);
 });
 
 test("the 101st active session is refused without a queue or identity-bearing close reason", async () => {
@@ -468,7 +465,7 @@ test("a slow acknowledgement consumer is closed before audio is retained", async
     const socket = new FakeSocket();
     runtime.handleSocket(socket, admitted(`session-slow-${suffix}`));
     socket.bufferedAmount = bufferedAmount;
-    socket.binary(Buffer.from([1]));
+    socket.binary(pcmFrame());
 
     assert.deepEqual(socket.sent, []);
     assert.deepEqual(socket.closed, [{ code: 1013, reason: "try again later" }]);
@@ -484,7 +481,7 @@ test("accepted frames are acknowledged immediately and stored FIFO with claims-d
   const socket = new FakeSocket();
   runtime.handleSocket(socket, admitted("session-fifo", "trace-fifo"));
 
-  const frames = [Buffer.from([1, 2]), Buffer.from([3, 4, 5]), Buffer.from([6])];
+  const frames = [pcmFrame(1), pcmFrame(2), pcmFrame(3)];
   for (const frame of frames) socket.binary(frame);
   assert.deepEqual(socket.acks().map(({ accepted, sequence }) => ({ accepted, sequence })), [
     { accepted: true, sequence: 0 },
@@ -530,7 +527,7 @@ test("text is ignored while empty and oversized binary messages refuse without c
   socket.text("not audio");
   socket.binary(Buffer.alloc(0));
   socket.binary(Buffer.alloc(AUDIO_LIMITS.maxPayloadBytes + 1));
-  socket.binary(Buffer.alloc(AUDIO_LIMITS.maxPayloadBytes, 7));
+  socket.binary(pcmFrame(7));
 
   assert.deepEqual(socket.acks().map(({ accepted, sequence, message }) => ({
     accepted,
@@ -547,7 +544,7 @@ test("text is ignored while empty and oversized binary messages refuse without c
   ]);
   assert.equal(store.calls.length, 1);
   store.resolve(0);
-  await waitFor(() => runtime.snapshot().retainedChunks === 0, "exact-limit frame did not release");
+  await waitFor(() => runtime.snapshot().retainedChunks === 0, "exact-profile frame did not release");
   socket.peerClose();
 });
 
@@ -569,14 +566,14 @@ test("duplicate sessions are refused, and reconnect cursors advance monotonicall
   }]);
   assert.deepEqual(duplicate.closed, [{ code: 1013, reason: "try again later" }]);
 
-  first.binary(Buffer.from([1]));
+  first.binary(pcmFrame(1));
   await waitFor(() => runtime.snapshot().retainedChunks === 0, "first reconnect frame did not store");
   first.peerClose();
   await waitFor(() => runtime.snapshot().activeSessions === 0, "first socket did not finalize");
 
   const second = new FakeSocket();
   runtime.handleSocket(second, admitted("session-reconnect"));
-  second.binary(Buffer.from([2]));
+  second.binary(pcmFrame(2));
   assert.equal(second.acks().at(-1).sequence, 1);
   await waitFor(() => runtime.snapshot().retainedChunks === 0, "second reconnect frame did not store");
   second.peerClose();
@@ -585,7 +582,7 @@ test("duplicate sessions are refused, and reconnect cursors advance monotonicall
 
   const third = new FakeSocket();
   runtime.handleSocket(third, admitted("session-reconnect"));
-  third.binary(Buffer.from([3]));
+  third.binary(pcmFrame(3));
   assert.equal(third.acks().at(-1).sequence, 2, "a late old close must never rewind the cursor");
   await waitFor(() => runtime.snapshot().retainedChunks === 0, "third reconnect frame did not store");
   third.peerClose();
@@ -601,14 +598,14 @@ test("cursor retention is bounded by TTL and entry count", async () => {
   });
   const first = new FakeSocket();
   ttlRuntime.handleSocket(first, admitted("session-ttl"));
-  first.binary(Buffer.from([1]));
+  first.binary(pcmFrame(1));
   await waitFor(() => ttlRuntime.snapshot().retainedChunks === 0, "TTL seed did not store");
   first.peerClose();
   await waitFor(() => ttlRuntime.snapshot().activeSessions === 0, "TTL seed did not close");
   clockMs += AUDIO_LIMITS.cursorTtlMs;
   const expired = new FakeSocket();
   ttlRuntime.handleSocket(expired, admitted("session-ttl"));
-  expired.binary(Buffer.from([2]));
+  expired.binary(pcmFrame(2));
   assert.equal(expired.acks().at(-1).sequence, 0);
   await waitFor(() => ttlRuntime.snapshot().retainedChunks === 0, "TTL restart did not store");
   expired.peerClose();
@@ -620,7 +617,7 @@ test("cursor retention is bounded by TTL and entry count", async () => {
   });
   const oldest = new FakeSocket();
   capRuntime.handleSocket(oldest, admitted("session-oldest"));
-  oldest.binary(Buffer.from([1]));
+  oldest.binary(pcmFrame(1));
   await waitFor(() => capRuntime.snapshot().retainedChunks === 0, "cursor-cap seed did not store");
   oldest.peerClose();
   for (let index = 0; index < AUDIO_LIMITS.maxCursorEntries - 1; index += 1) {
@@ -630,7 +627,7 @@ test("cursor retention is bounded by TTL and entry count", async () => {
   }
   const evicted = new FakeSocket();
   capRuntime.handleSocket(evicted, admitted("session-oldest"));
-  evicted.binary(Buffer.from([2]));
+  evicted.binary(pcmFrame(2));
   assert.equal(evicted.acks().at(-1).sequence, 0, "the oldest cursor must be evicted at capacity");
   await waitFor(() => capRuntime.snapshot().retainedChunks === 0, "evicted cursor frame did not store");
   evicted.peerClose();
@@ -641,7 +638,7 @@ test("store failures are separate from ingress acceptance and metrics never expo
   const runtime = createRealtimeAudioRuntime({ audioObjectStore: store, shutdownGraceMs: 8_000 });
   const socket = new FakeSocket();
   runtime.handleSocket(socket, admitted("session-secret", "trace-secret"));
-  socket.binary(Buffer.from("private-audio"));
+  socket.binary(pcmFrame(17));
   assert.equal(socket.acks().at(-1).accepted, true);
   store.reject(0, new Error("tenant-audio learner-audio private-audio sensitive failure"));
   await waitFor(() => runtime.snapshot().retainedChunks === 0, "failed store retained the frame");
@@ -684,8 +681,8 @@ test("shutdown aborts an uncooperative store, releases all accounting, and ignor
   });
   const socket = new FakeSocket();
   runtime.handleSocket(socket, admitted("session-abort"));
-  socket.binary(Buffer.from([1]));
-  socket.binary(Buffer.from([2]));
+  socket.binary(pcmFrame(1));
+  socket.binary(pcmFrame(2));
   await waitFor(() => calls.length === 1, "uncooperative store did not start");
 
   const startedAt = Date.now();
@@ -715,7 +712,7 @@ test("an object-store attempt times out at the declared bound without retaining 
   const socket = new FakeSocket();
   runtime.handleSocket(socket, admitted("session-timeout"));
   const startedAt = Date.now();
-  socket.binary(Buffer.from([1]));
+  socket.binary(pcmFrame(1));
   await waitFor(
     () => runtime.snapshot().retainedChunks === 0,
     "timed-out object-store frame was retained",
@@ -767,11 +764,19 @@ test("the real Fastify boundary preserves app/transport limits, strict acks, and
       message: `audio frame exceeds ${AUDIO_LIMITS.maxPayloadBytes} bytes`,
     });
 
+    const appLimitAck = nextSocketMessage(socket);
+    socket.send(Buffer.alloc(AUDIO_LIMITS.maxPayloadBytes, 23));
+    const appLimitRefusal = await appLimitAck;
+    assert.equal(appLimitRefusal.accepted, false);
+    assert.equal(appLimitRefusal.sequence, 0);
+    assert.match(appLimitRefusal.message, /15360/);
+    assert.equal(store.calls.length, 0);
+
     const exactAck = nextSocketMessage(socket);
-    const exactBytes = Buffer.alloc(AUDIO_LIMITS.maxPayloadBytes, 23);
+    const exactBytes = pcmFrame(23);
     socket.send(exactBytes);
     assert.equal((await exactAck).accepted, true);
-    await waitFor(() => store.calls.length === 1, "the exact-limit live frame did not store");
+    await waitFor(() => store.calls.length === 1, "the exact-profile live frame did not store");
     assert.deepEqual(store.calls[0].value.audioBytes, exactBytes);
 
     const slackAck = nextSocketMessage(socket);
@@ -802,6 +807,7 @@ test("the real Fastify boundary preserves app/transport limits, strict acks, and
     assert.equal(metricValue(metrics, "realtime_audio_ingress_total{outcome=\"enqueued\"}"), 1);
     assert.equal(metricValue(metrics, "realtime_audio_ingress_total{outcome=\"empty\"}"), 1);
     assert.equal(metricValue(metrics, "realtime_audio_ingress_total{outcome=\"oversized\"}"), 2);
+    assert.equal(metricValue(metrics, "realtime_audio_ingress_total{outcome=\"invalid_format\"}"), 1);
     assert.equal(metricValue(metrics, "realtime_audio_sessions_total{outcome=\"duplicate\"}"), 1);
   } finally {
     await Promise.allSettled(sockets.map((socket) => terminateSocket(socket)));
@@ -820,7 +826,7 @@ test("100 real Fastify sessions meet the ack bar and every retained gauge return
       (_, index) => openLiveSocket(app, `session-load-${index}`),
     )));
 
-    const frame = Buffer.alloc(4 * 1024, 37);
+    const frame = pcmFrame(37);
     const timings = await Promise.all(sockets.map(async (socket, index) => {
       const ack = nextSocketMessage(socket);
       const startedAt = performance.now();
@@ -917,7 +923,7 @@ test("Fastify pre-close aborts audio before replay, object-store, and database r
   await app.ready();
   const socket = await openLiveSocket(app, "session-preclose");
   const ack = nextSocketMessage(socket);
-  socket.send(Buffer.from([1]));
+  socket.send(pcmFrame(1));
   assert.equal((await ack).accepted, true);
   await waitFor(() => storeSignal instanceof AbortSignal, "pre-close store attempt did not start");
 

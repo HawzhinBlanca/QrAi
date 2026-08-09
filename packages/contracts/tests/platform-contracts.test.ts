@@ -223,7 +223,7 @@ describe("Quran AI platform contracts", () => {
       tenantId: "tenant-1",
       learnerId: "learner-1",
       expiresAt: "1782426600",
-      allowedSampleRates: [16000, 48000],
+      allowedSampleRates: [16000],
       externalAsrProcessing: true,
       token: "rt_v1.session-1.tenant-1.learner-1.true.1782426600.nonce.signature",
       auditEventId: "audit-1",
@@ -233,7 +233,7 @@ describe("Quran AI platform contracts", () => {
     expect(ticket.tenantId).toBe("tenant-1");
     expect(ticket.learnerId).toBe("learner-1");
     expect(ticket.externalAsrProcessing).toBe(true);
-    expect(ticket.allowedSampleRates).toContain(16000);
+    expect(ticket.allowedSampleRates).toEqual([16000]);
   });
 
   it("refuses aggregate-looking release claims without a verified evidence authority", () => {

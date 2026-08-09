@@ -622,7 +622,9 @@ components:
         allowedSampleRates:
           type: array
           minItems: 1
-          items: { type: integer, enum: [16000, 24000, 48000] }
+          maxItems: 1
+          description: The single realtime v1 profile is mono signed PCM16LE at 16 kHz.
+          items: { type: integer, enum: [16000] }
         externalAsrProcessing: { type: boolean }
         # rt_v2.{session}.{tenant}.{learner}.{bool}.{audioRetention}.{expiry}.{nonce}.{hex hmac-sha256}
         # audioRetention joined the payload on 2026-08-03: the gateway has no database, so the ticket

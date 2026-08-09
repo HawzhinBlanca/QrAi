@@ -84,24 +84,32 @@ void main() {
     expect(uri.toString(), isNot(endsWith('#')));
   });
 
-  test('the sample rate comes from the ticket, not from a constant', () {
+  test('the one truthful 16 kHz PCM profile comes from the ticket', () {
     final StreamingRecorder r = StreamingRecorder(
-      ticket: ticketWith(rates: <int>[48000, 16000]),
+      ticket: ticketWith(rates: <int>[16000]),
       gatewayBase: Uri.parse('http://127.0.0.1:8081'),
       socketFactory: (Uri _) => FakeChannel(),
       pcmStreamFactory: (int _) async => const Stream<Uint8List>.empty(),
     );
-    expect(r.sampleRate, 48000);
+    expect(r.sampleRate, 16000);
   });
 
-  test('a ticket that allows no rate is refused rather than guessed', () {
-    final StreamingRecorder r = StreamingRecorder(
-      ticket: ticketWith(rates: <int>[]),
-      gatewayBase: Uri.parse('http://127.0.0.1:8081'),
-      socketFactory: (Uri _) => FakeChannel(),
-      pcmStreamFactory: (int _) async => const Stream<Uint8List>.empty(),
-    );
-    expect(() => r.sampleRate, throwsStateError);
+  test('empty, 24/48 kHz, duplicate, and mixed ticket profiles fail closed', () {
+    for (final List<int> rates in <List<int>>[
+      <int>[],
+      <int>[24000],
+      <int>[48000],
+      <int>[16000, 16000],
+      <int>[48000, 16000],
+    ]) {
+      final StreamingRecorder r = StreamingRecorder(
+        ticket: ticketWith(rates: rates),
+        gatewayBase: Uri.parse('http://127.0.0.1:8081'),
+        socketFactory: (Uri _) => FakeChannel(),
+        pcmStreamFactory: (int _) async => const Stream<Uint8List>.empty(),
+      );
+      expect(() => r.sampleRate, throwsStateError, reason: '$rates must fail closed');
+    }
   });
 
   test('the socket opens BEFORE the microphone', () async {
@@ -232,4 +240,3 @@ class _ThrowingSink implements WebSocketSink {
   @override
   Future<void> get done async {}
 }
-

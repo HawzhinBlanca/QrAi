@@ -178,6 +178,13 @@ for (const [dartClass, schemaName] of Object.entries(MODELS)) {
   });
 }
 
+test("the Flutter realtime ticket contract advertises only the 16 kHz PCM profile", () => {
+  assert.deepEqual(
+    spec.components.schemas.RealtimeSessionTicket.properties.allowedSampleRates.items.enum,
+    [16000],
+  );
+});
+
 // ── request bodies ──────────────────────────────────────────────────────────────────────────────
 // The response half above would never have caught audit finding #2: the client posted `{}` to two
 // routes whose handler requires `learnerId`, so both privacy actions returned 422 and neither had a
