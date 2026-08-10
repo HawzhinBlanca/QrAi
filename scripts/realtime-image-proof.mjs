@@ -445,6 +445,205 @@ export function collectRealtimeCandidateRunningImagesRuntime({
   });
 }
 
+function realtimeProofComposeArguments(projectName) {
+  const [file, ...argumentsWithConfig] = realtimeImageCommandPlan({ projectName })[0];
+  const expectedTail = [
+    "--profile",
+    "realtime-proof-fault",
+    "config",
+    "--format",
+    "json",
+  ];
+  if (
+    file !== "docker" ||
+    JSON.stringify(argumentsWithConfig.slice(-expectedTail.length)) !== JSON.stringify(expectedTail)
+  ) {
+    throw new TypeError("realtime proof Compose command is invalid");
+  }
+  return argumentsWithConfig.slice(0, -expectedTail.length);
+}
+
+function nonRootContainerUser(value) {
+  if (typeof value !== "string") return false;
+  const user = value.split(":", 1)[0];
+  return user !== "" && user !== "root" && user !== "0";
+}
+
+async function defaultS3FaultReadinessProbe({ port, timeoutMs, fetchImpl }) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  timer.unref?.();
+  try {
+    const response = await fetchImpl(`http://127.0.0.1:${port}/ready`, {
+      method: "GET",
+      redirect: "error",
+      signal: controller.signal,
+    });
+    return { reachable: true, statusCode: response.status };
+  } catch {
+    return { reachable: false, statusCode: null };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/** Prove the opt-in same-image process fails closed against its fixed unreachable S3 endpoint. */
+export async function probeRealtimeS3FaultProcessRuntime({
+  selection,
+  projectName,
+  faultNodePort,
+  env = process.env,
+  commandRunner = run,
+  readinessProbe = defaultS3FaultReadinessProbe,
+  fetchImpl = globalThis.fetch,
+  delayImpl = (milliseconds) => new Promise((resolveDelay) => setTimeout(resolveDelay, milliseconds)),
+  timeoutMs = 2_000,
+} = {}) {
+  const serviceName = "node-realtime-proof-s3-fault";
+  let failure = null;
+  let result = null;
+  let composeArguments = null;
+  let commandEnvironment = null;
+  try {
+    const selected = assertReleaseDeploymentSelection(selection);
+    const selectedImages = composeImageEnvironment(selected, "candidate");
+    const port = parseRealtimeProofPort(String(faultNodePort));
+    if (
+      typeof commandRunner !== "function" ||
+      typeof readinessProbe !== "function" ||
+      typeof fetchImpl !== "function" ||
+      typeof delayImpl !== "function" ||
+      !Number.isSafeInteger(timeoutMs) ||
+      timeoutMs < 100 ||
+      timeoutMs > 5_000
+    ) {
+      throw new TypeError("realtime S3 fault process adapters are invalid");
+    }
+    composeArguments = realtimeProofComposeArguments(projectName);
+    commandEnvironment = {
+      ...env,
+      ...selectedImages,
+      REALTIME_PROOF_FAULT_NODE_PORT: String(port),
+    };
+    const withFaultProfile = [...composeArguments, "--profile", "realtime-proof-fault"];
+    commandRunner(
+      "docker",
+      [
+        ...withFaultProfile,
+        "up",
+        "-d",
+        "--no-build",
+        "--no-deps",
+        serviceName,
+      ],
+      commandEnvironment,
+    );
+    const containerIds = commandRunner(
+      "docker",
+      [...withFaultProfile, "ps", "--all", "--quiet", serviceName],
+      commandEnvironment,
+    ).trim().split("\n").filter(Boolean);
+    if (containerIds.length !== 1 || !/^[0-9a-f]{12,64}$/.test(containerIds[0])) {
+      throw new TypeError("realtime S3 fault process container resolution failed");
+    }
+    const containerId = containerIds[0];
+    let container = null;
+    for (let attempt = 0; attempt < 40; attempt += 1) {
+      const inspected = JSON.parse(commandRunner(
+        "docker",
+        ["inspect", containerId],
+        commandEnvironment,
+      ));
+      if (!Array.isArray(inspected) || inspected.length !== 1) {
+        throw new TypeError("realtime S3 fault process inspection failed");
+      }
+      container = inspected[0];
+      if (container?.State?.Running === false) break;
+      if (attempt === 39) throw new TypeError("realtime S3 fault process did not stop");
+      await delayImpl(250);
+    }
+    const inspectedImages = JSON.parse(commandRunner(
+      "docker",
+      ["image", "inspect", container?.Config?.Image],
+      commandEnvironment,
+    ));
+    if (!Array.isArray(inspectedImages) || inspectedImages.length !== 1) {
+      throw new TypeError("realtime S3 fault image inspection failed");
+    }
+    const image = inspectedImages[0];
+    if (
+      container?.State?.Running !== false ||
+      !Number.isSafeInteger(container?.State?.ExitCode) ||
+      container.State.ExitCode === 0 ||
+      container.State.Health?.Status === "healthy"
+    ) {
+      throw new TypeError("realtime S3 fault process did not fail closed");
+    }
+    if (
+      container?.Config?.Image !== selectedImages.NODE_BACKEND_IMAGE ||
+      typeof container?.Image !== "string" ||
+      !/^sha256:[0-9a-f]{64}$/.test(container.Image) ||
+      image?.Id !== container.Image ||
+      !Array.isArray(image?.RepoDigests) ||
+      !image.RepoDigests.includes(selectedImages.NODE_BACKEND_IMAGE)
+    ) {
+      throw new TypeError("realtime S3 fault process image identity failed");
+    }
+    if (
+      !nonRootContainerUser(container.Config.User) ||
+      !nonRootContainerUser(image?.Config?.User) ||
+      container.Config.User !== image.Config.User
+    ) {
+      throw new TypeError("realtime S3 fault process must preserve the image non-root user");
+    }
+    const readiness = await readinessProbe({ port, timeoutMs, fetchImpl });
+    if (
+      !readiness ||
+      JSON.stringify(Object.keys(readiness).sort()) !==
+        JSON.stringify(["reachable", "statusCode"]) ||
+      readiness.reachable !== false ||
+      readiness.statusCode !== null
+    ) {
+      throw new TypeError("realtime S3 fault process became reachable");
+    }
+    result = {
+      sameCandidateImage: true,
+      configuredNonRoot: true,
+      unreachableEndpointUnready: true,
+      removed: true,
+    };
+  } catch {
+    failure = new Error("realtime S3 fault process probe failed");
+  } finally {
+    if (composeArguments !== null && commandEnvironment !== null) {
+      const withFaultProfile = [
+        ...composeArguments,
+        "--profile",
+        "realtime-proof-fault",
+      ];
+      try {
+        commandRunner(
+          "docker",
+          [...withFaultProfile, "rm", "--stop", "--force", serviceName],
+          commandEnvironment,
+        );
+        const remaining = commandRunner(
+          "docker",
+          [...withFaultProfile, "ps", "--all", "--quiet", serviceName],
+          commandEnvironment,
+        ).trim();
+        if (remaining !== "") throw new TypeError("realtime S3 fault process cleanup failed");
+      } catch {
+        failure = new Error("realtime S3 fault process probe failed");
+      }
+    }
+  }
+  if (failure !== null || result === null) {
+    throw failure ?? new Error("realtime S3 fault process probe failed");
+  }
+  return Object.freeze(result);
+}
+
 function readSelection(path) {
   let parsed;
   try {

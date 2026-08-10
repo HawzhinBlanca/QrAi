@@ -46,6 +46,7 @@ import {
 import {
   collectRealtimeCandidateRunningImagesRuntime,
   parseRealtimeImageProofArguments,
+  probeRealtimeS3FaultProcessRuntime,
   runRealtimeImageProofStage,
 } from "../../scripts/realtime-image-proof.mjs";
 import { issueRealtimeTicket } from "../../server/src/lib/ticket.mjs";
@@ -2672,6 +2673,132 @@ test("candidate runtime collection inspects exact Compose containers, local dige
   assert.equal(commands.filter(([file, args]) => file === "docker" && args[0] === "inspect").length, 4);
   assert.equal(commands.filter(([file, args]) => file === "docker" && args[0] === "exec").length, 4);
   assert.equal(JSON.stringify(result).includes("must-not-leave-collector"), false);
+});
+
+function s3FaultProcessHarness({
+  containerOverride = {},
+  imageOverride = {},
+  readiness = { reachable: false, statusCode: null },
+  residual = "",
+  privateFailure = null,
+} = {}) {
+  const value = selection();
+  const observation = candidateRunningObservations(value)["node-realtime"];
+  const calls = [];
+  let psCalls = 0;
+  const commandRunner = (file, args, environment) => {
+    calls.push([file, args]);
+    assert.equal(
+      environment.NODE_BACKEND_IMAGE,
+      composeImageEnvironment(value, "candidate").NODE_BACKEND_IMAGE,
+    );
+    assert.equal(environment.REALTIME_PROOF_FAULT_NODE_PORT, "18083");
+    if (privateFailure !== null && args.includes("up")) throw new Error(privateFailure);
+    if (file !== "docker") throw new Error("unexpected S3 fault command");
+    if (args[0] === "compose" && args.includes("up")) return "";
+    if (args[0] === "compose" && args.includes("ps")) {
+      psCalls += 1;
+      return psCalls === 1 ? observation.containerId : residual;
+    }
+    if (args[0] === "inspect") {
+      return JSON.stringify([{
+        Id: observation.containerId,
+        Image: observation.imageId,
+        Config: {
+          Image: observation.configuredImage,
+          User: observation.configuredUser,
+        },
+        State: {
+          Running: false,
+          ExitCode: 2,
+          Health: { Status: "unhealthy" },
+        },
+        ...containerOverride,
+      }]);
+    }
+    if (args[0] === "image" && args[1] === "inspect") {
+      return JSON.stringify([{
+        Id: observation.imageId,
+        RepoDigests: observation.repoDigests,
+        Config: { User: observation.configuredUser },
+        ...imageOverride,
+      }]);
+    }
+    if (args[0] === "compose" && args.includes("rm")) return "";
+    throw new Error(`unexpected S3 fault command: ${args.join(" ")}`);
+  };
+  return {
+    value,
+    calls,
+    input: {
+      selection: value,
+      projectName: "qrai-realtime-proof",
+      faultNodePort: 18_083,
+      env: { PRIVATE_RUNTIME_SECRET: "must-not-leave-fault-probe" },
+      commandRunner,
+      delayImpl: async () => {},
+      readinessProbe: async ({ port, timeoutMs }) => {
+        assert.equal(port, 18_083);
+        assert.equal(timeoutMs, 2_000);
+        return readiness;
+      },
+    },
+  };
+}
+
+test("the same-image S3 fault process stays unready, non-root, bounded, and is always removed", async () => {
+  const harness = s3FaultProcessHarness();
+  const result = await probeRealtimeS3FaultProcessRuntime(harness.input);
+  assert.deepEqual(result, {
+    sameCandidateImage: true,
+    configuredNonRoot: true,
+    unreachableEndpointUnready: true,
+    removed: true,
+  });
+  const renderedCalls = harness.calls.map(([, args]) => args.join(" "));
+  assert.match(renderedCalls[0], /--profile realtime-proof-fault up -d --no-build --no-deps node-realtime-proof-s3-fault$/);
+  assert.match(renderedCalls.at(-2), /--profile realtime-proof-fault rm --stop --force node-realtime-proof-s3-fault$/);
+  assert.match(renderedCalls.at(-1), /--profile realtime-proof-fault ps --all --quiet node-realtime-proof-s3-fault$/);
+  for (const privateValue of [
+    "must-not-leave-fault-probe",
+    candidateRunningObservations(harness.value)["node-realtime"].containerId,
+  ]) {
+    assert.equal(JSON.stringify(result).includes(privateValue), false);
+  }
+});
+
+test("the S3 fault process probe fails closed on identity, readiness, exit, cleanup, and private errors", async () => {
+  const value = selection();
+  const nodeReference = composeImageEnvironment(value, "candidate").NODE_BACKEND_IMAGE;
+  const mutations = [
+    { containerOverride: { State: { Running: true, ExitCode: 0, Health: { Status: "healthy" } } } },
+    { containerOverride: { State: { Running: false, ExitCode: 0, Health: { Status: "unhealthy" } } } },
+    { containerOverride: { Config: { Image: "qrai/node:mutable", User: "node" } } },
+    { containerOverride: { Config: { Image: nodeReference, User: "root" } } },
+    { imageOverride: { Id: `sha256:${"9".repeat(64)}` } },
+    { imageOverride: { RepoDigests: [] } },
+    { imageOverride: { Config: { User: "0" } } },
+    { readiness: { reachable: true, statusCode: 200 } },
+    { readiness: { reachable: false, statusCode: 503 } },
+    { residual: "private-residual-container" },
+  ];
+  for (const mutation of mutations) {
+    const harness = s3FaultProcessHarness(mutation);
+    await assert.rejects(
+      () => probeRealtimeS3FaultProcessRuntime(harness.input),
+      (error) => error.message === "realtime S3 fault process probe failed",
+    );
+    assert.equal(harness.calls.some(([, args]) => args.includes("rm")), true);
+  }
+
+  const privateFailure = "private-container private-image private-ticket";
+  const harness = s3FaultProcessHarness({ privateFailure });
+  await assert.rejects(
+    () => probeRealtimeS3FaultProcessRuntime(harness.input),
+    (error) => error.message === "realtime S3 fault process probe failed" &&
+      !String(error).includes(privateFailure),
+  );
+  assert.equal(harness.calls.some(([, args]) => args.includes("rm")), true);
 });
 
 test("the candidate CLI stage dispatches strict project and selection configuration with identity-only output", async () => {
