@@ -5341,6 +5341,7 @@ async fn seed_session_for(router: &axum::Router, checksum: &str) -> String {
 /// becomes visible is silent: the learner is shown a judgement about their recitation that a teacher
 /// looked at and refused.
 #[tokio::test]
+#[ignore = "requires live Postgres"]
 async fn a_finding_becomes_visible_to_the_learner_only_when_a_teacher_accepts_it() {
     let state = test_state();
     let router = platform_router_with_rate_limit(test_state(), false);
