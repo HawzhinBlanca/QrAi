@@ -304,7 +304,8 @@ function assertFaultMeasurements(value) {
     value,
     [
       "faultsTested",
-      "framesSent",
+      "framesCaptured",
+      "framesTransmitted",
       "accepted",
       "rejected",
       "lost",
@@ -326,8 +327,13 @@ function assertFaultMeasurements(value) {
   ) {
     throw new TypeError("fault-recovery must test Node process, Postgres, and S3 in order");
   }
-  assertClosedAccounting(value, "framesSent", "fault-recovery");
   for (const key of [
+    "framesCaptured",
+    "framesTransmitted",
+    "accepted",
+    "rejected",
+    "lost",
+    "uncertain",
     "durableLost",
     "durableOrphan",
     "unresolvedUncertain",
@@ -336,6 +342,18 @@ function assertFaultMeasurements(value) {
     "incompleteReportedComplete",
   ]) {
     assertNonnegativeInteger(value[key], `fault-recovery.${key}`);
+  }
+  if (
+    value.framesCaptured <= 0 ||
+    value.framesCaptured !== value.accepted + value.rejected + value.lost + value.uncertain
+  ) {
+    throw new TypeError("fault-recovery capture accounting is open");
+  }
+  if (
+    value.framesTransmitted !==
+      value.accepted + value.rejected + value.durableLost + value.uncertain
+  ) {
+    throw new TypeError("fault-recovery transmission accounting is open");
   }
   if (value.durableLost > value.lost) {
     throw new TypeError("fault-recovery durable loss outcomes exceed known loss accounting");

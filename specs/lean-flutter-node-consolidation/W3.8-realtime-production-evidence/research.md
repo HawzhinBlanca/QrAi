@@ -28,6 +28,11 @@ frame, one unresolved sent/no-ack frame, and zero invented durable outcomes. Agg
 may be less than total known loss but can never exceed it; the S3 accepted-loss profile separately
 requires exact durable loss equality.
 
+For the same reason, fault evidence records both captured and transmitted totals. Capture accounting
+closes across accepted, rejected, lost, and uncertain; transmission accounting closes across
+accepted, rejected, durable accepted-loss, and uncertain. The unsent client-dropped tail belongs
+only to the first equation. Calling all captured audio “sent” would overstate transport evidence.
+
 ## Grounded boundary and data flow
 
 - `server/src/realtime/main.mjs::{parseRealtimeConfig,createRealtimeApplication,startRealtimeProcess}`

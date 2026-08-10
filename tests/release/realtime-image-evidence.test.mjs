@@ -191,7 +191,8 @@ function stageMeasurements(name) {
     case "fault-recovery":
       return {
         faultsTested: ["node-process", "postgres", "s3"],
-        framesSent: 12,
+        framesCaptured: 12,
+        framesTransmitted: 11,
         accepted: 7,
         rejected: 2,
         lost: 2,
@@ -588,7 +589,11 @@ test("every measured profile is closed-accounting and cannot lower or merely cla
     [(copy) => { copy.stages[2].measurements.sessionsAccepted = 99; }, /100 sessions/i],
     [(copy) => { copy.stages[3].measurements.retentionModesTested = 2; }, /retention/i],
     [(copy) => { copy.stages[3].measurements.privacyLeaks = 1; }, /privacy/i],
-    [(copy) => { copy.stages[4].measurements.durableLost = 3; }, /durable loss/i],
+    [(copy) => { copy.stages[4].measurements.framesTransmitted = 12; }, /transmission/i],
+    [(copy) => {
+      copy.stages[4].measurements.durableLost = 3;
+      copy.stages[4].measurements.framesTransmitted = 13;
+    }, /durable loss/i],
     [(copy) => { copy.stages[4].measurements.unresolvedUncertain = 2; }, /uncertainty/i],
     [(copy) => { copy.stages[4].measurements.unresolvedUncertain = 0; }, /uncertainty/i],
     [(copy) => { copy.stages[4].measurements.outstandingActionable = 1; }, /actionable/i],
@@ -2580,7 +2585,8 @@ function faultProbeResults() {
   return {
     nodeProcess: {
       fault: "node-process",
-      framesSent: 4,
+      framesCaptured: 4,
+      framesTransmitted: 3,
       accepted: 2,
       rejected: 0,
       lost: 1,
@@ -2599,7 +2605,8 @@ function faultProbeResults() {
     },
     postgres: {
       fault: "postgres",
-      framesSent: 4,
+      framesCaptured: 4,
+      framesTransmitted: 4,
       accepted: 2,
       rejected: 2,
       lost: 0,
@@ -2618,7 +2625,8 @@ function faultProbeResults() {
     },
     s3: {
       fault: "s3",
-      framesSent: 4,
+      framesCaptured: 4,
+      framesTransmitted: 4,
       accepted: 3,
       rejected: 0,
       lost: 1,
@@ -2675,7 +2683,8 @@ test("the fault stage rejects open accounting, missing safety proofs, incomplete
     repairProbe: async () => values.repair,
   });
   const cases = [
-    [(copy) => { copy.nodeProcess.framesSent += 1; }],
+    [(copy) => { copy.nodeProcess.framesCaptured += 1; }],
+    [(copy) => { copy.nodeProcess.framesTransmitted += 1; }],
     [(copy) => { copy.nodeProcess.uncertain = 0; copy.nodeProcess.accepted += 1; }],
     [(copy) => { copy.nodeProcess.unresolvedUncertain = 0; }],
     [(copy) => { copy.nodeProcess.durableLost = 1; }],

@@ -2129,7 +2129,8 @@ export async function runRealtimePostgresFaultProbe({
 
     return Object.freeze({
       fault: "postgres",
-      framesSent: 4,
+      framesCaptured: 4,
+      framesTransmitted: 4,
       accepted: 2,
       rejected: 2,
       lost: 0,
@@ -3217,7 +3218,8 @@ export async function createRealtimeFaultRepairProbe({
 function validateFaultProbe(value, fault, proofFields) {
   const commonFields = [
     "fault",
-    "framesSent",
+    "framesCaptured",
+    "framesTransmitted",
     "accepted",
     "rejected",
     "lost",
@@ -3233,7 +3235,8 @@ function validateFaultProbe(value, fault, proofFields) {
   exactFaultKeys(value, commonFields, `${fault} fault result`);
   if (value.fault !== fault) throw new TypeError(`${fault} fault identity is invalid`);
   for (const field of [
-    "framesSent",
+    "framesCaptured",
+    "framesTransmitted",
     "accepted",
     "rejected",
     "lost",
@@ -3246,10 +3249,16 @@ function validateFaultProbe(value, fault, proofFields) {
     faultCount(value[field], `${fault}.${field}`);
   }
   if (
-    value.framesSent <= 0 ||
-    value.framesSent !== value.accepted + value.rejected + value.lost + value.uncertain
+    value.framesCaptured <= 0 ||
+    value.framesCaptured !== value.accepted + value.rejected + value.lost + value.uncertain
   ) {
-    throw new TypeError(`${fault} fault frame accounting is open`);
+    throw new TypeError(`${fault} fault capture accounting is open`);
+  }
+  if (
+    value.framesTransmitted !==
+      value.accepted + value.rejected + value.durableLost + value.uncertain
+  ) {
+    throw new TypeError(`${fault} fault transmission accounting is open`);
   }
   if (value.durableLost > value.lost) {
     throw new TypeError(`${fault} durable loss exceeds known frame loss`);
@@ -3370,7 +3379,11 @@ export async function runRealtimeFaultRecoveryStage({
     }
     return Object.freeze({
       faultsTested: Object.freeze(results.map(({ fault }) => fault)),
-      framesSent: results.reduce((total, value) => total + value.framesSent, 0),
+      framesCaptured: results.reduce((total, value) => total + value.framesCaptured, 0),
+      framesTransmitted: results.reduce(
+        (total, value) => total + value.framesTransmitted,
+        0,
+      ),
       accepted: results.reduce((total, value) => total + value.accepted, 0),
       rejected: results.reduce((total, value) => total + value.rejected, 0),
       lost: results.reduce((total, value) => total + value.lost, 0),

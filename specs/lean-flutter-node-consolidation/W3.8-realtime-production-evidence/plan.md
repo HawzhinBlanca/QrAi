@@ -55,8 +55,9 @@ artifact hashes and validated outcomes.
    replaced by the production-S3 candidate. Then run outcome/repair: stored orphans must repair
    idempotently, while genuinely absent accepted-loss bytes must remain explicitly actionable and
    the recording incomplete. Then run 100/101 capacity, 25-session
-   classroom; 100-session backpressure burst; and 10-session 30-minute soak. Every sent frame must
-   land in a closed accepted/rejected/lost/uncertain/durable-outcome accounting equation.
+   classroom; 100-session backpressure burst; and 10-session 30-minute soak. Fault evidence must
+   close every captured frame across accepted/rejected/lost/uncertain and independently close the
+   transmitted subset across accepted/rejected/durable-loss/uncertain.
 6. Extend Docker CI with a bounded production-image realtime smoke and workflow path filters. It
    proves non-root boot, exact valid/invalid ack behavior, liveness after hostile input, and cleanup;
    it emits no full W3.8 pass artifact and cannot replace isolated staging soak/fault proof.
