@@ -1898,10 +1898,24 @@ this ADR. Choosing any of them silently would be an agent inventing a compliance
    which preserves provability while dropping the identifier, or (c) deleted outright? (b) is the
    usual reconciliation, and is a real option here because `learnerId` is now a discrete field on
    every row rather than something buried in free text.
-3. **Read bound.** Is mirroring platform-api's `LIMIT 200` + explicit pagination on
-   `GET /v1/audit-events` acceptable, given a caller today receives everything? This is the one part
-   that is purely engineering, and it is held back only because changing what an endpoint returns
-   should not be bundled into a decision the rest of this ADR defers.
+3. ~~**Read bound.**~~ **ANSWERED — implemented.** `GET /v1/audit-events` is now bounded at 200,
+   newest-first, mirroring platform-api's existing `ORDER BY created_at DESC LIMIT 200` rather than
+   inventing a number, with `limit`/`offset` and `X-Total-Count`/`X-Truncated` headers so a cap can
+   never be a silent one. This was always the purely-engineering part; it is settled independently
+   of questions 1 and 2, which remain open.
+
+### Urgency, corrected by evidence
+
+This ADR originally read as though a learner's identifier were accumulating in a live system. It is
+not, and the register says so plainly: **every row of `docs/readiness/SIGNOFF_REGISTER.md` is
+`_PENDING_`** — including **P7.6 go/no-go**, **P7.3 bounded external pilot** and **P7.2 internal
+dogfood** — there are **no release tags** in the repository, and **P5.6** records "(requires prod
+infra — drill not yet run)". QrAi has never been released. No real learner has an audit row.
+
+That lowers the urgency and raises the value of deciding now: retention is cheapest to settle before
+any real data exists, not after. Questions 1 and 2 belong to the **P4.6 privacy / legal review**
+signature already waiting in that register (lawyer / DPO), not to a new process — this ADR is
+evidence prepared for that row, and should be read alongside `INVENTORIES.md`.
 
 ### Consequences until it is answered
 
