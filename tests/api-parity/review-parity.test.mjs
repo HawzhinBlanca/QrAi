@@ -189,6 +189,11 @@ test("tajweed-findings key order is alphabetical, and the sort has a unique tieb
     "id",
     "reviewStatus",
     "rule",
+    // Which session this finding is about. The queue fetches tenant-wide and used to attribute
+    // findings to the open session by matching wordId — the CANONICAL id, shared by every learner
+    // reciting that passage — so one learner's findings appeared under another's session and a
+    // teacher's accept/reject went to the wrong recitation.
+    "sessionId",
     "severity",
     "sources",
     // ADR-0030: what this finding's evidence rests on. A finding anchored to a `client-reported`

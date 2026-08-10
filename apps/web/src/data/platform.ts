@@ -442,6 +442,14 @@ export function fetchTeacherReviewQueue(tenantId: string, authToken?: string): P
 
 export interface TajweedFindingSummary {
   id: string;
+  /**
+   * The session this finding is about. Required, not optional: the teacher queue fetches findings
+   * TENANT-WIDE and has to decide which belong to the session on screen. It used to do that by
+   * matching `wordId`, which is the CANONICAL word id and therefore identical for every learner
+   * reciting the same passage — so other learners' findings were attributed to the open session and
+   * a teacher's accept/reject went to the wrong recitation.
+   */
+  sessionId: string;
   wordId: string;
   rule: string;
   severity: "practice" | "warning" | "critical";

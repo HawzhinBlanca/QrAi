@@ -599,7 +599,13 @@ pub async fn list_tajweed_findings(
         // Promoting the first to `teacher-reviewed` makes it learner-visible feedback (ADR-0028)
         // about a recitation nobody can show happened, and until now the queue gave a teacher no way
         // to tell the two apart.
-        "SELECT tf.id, tf.alignment_id, wa.word_id, wa.transcript_source, tf.analysis_basis,
+        // wa.session_id is SELECTed and returned as `sessionId`. It was already in this join and
+        // simply never surfaced, and its absence was a real defect in the teacher queue: the web
+        // client fetches this list TENANT-WIDE and then decided which findings belonged to the open
+        // session by matching `wordId`. word_id is the CANONICAL id (e.g. "1:1:2"), identical for
+        // every learner reciting that passage, so another learner's findings were attributed to the
+        // session on screen — and a teacher's accept/reject was submitted against that finding id.
+        "SELECT tf.id, tf.alignment_id, wa.session_id, wa.word_id, wa.transcript_source, tf.analysis_basis,
                 tf.rule, tf.severity,
                 tf.confidence::float8 AS confidence, tf.explanation, tf.review_status, tf.source_refs,
                 cr.audio_retention,
@@ -673,6 +679,7 @@ pub async fn list_tajweed_findings(
                 r.try_get("source_refs").unwrap_or(serde_json::json!([]));
             serde_json::json!({
                 "id": r.try_get::<String, _>("id").unwrap_or_default(),
+                "sessionId": r.try_get::<String, _>("session_id").unwrap_or_default(),
                 "wordId": r.try_get::<String, _>("word_id").unwrap_or_default(),
                 // `server-derived` | `client-reported` — what this finding's evidence rests on.
                 "transcriptSource": r

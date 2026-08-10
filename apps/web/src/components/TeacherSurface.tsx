@@ -158,10 +158,17 @@ export function TeacherSurface({ tenantId, authToken }: TeacherSurfaceProps) {
     }
   };
 
-  // Find findings matching word alignments of this session
-  const sessionFindings = findings.filter((finding) =>
-    alignments.some((align) => align.wordId === finding.wordId)
-  );
+  // Findings BELONGING to this session, by session id.
+  //
+  // This matched on `wordId` against the session's alignments. wordId is the canonical id
+  // ("1:1:2"), identical for every learner reciting that passage, and `findings` is fetched
+  // tenant-wide — so a teacher reviewing one learner saw other learners' findings listed under this
+  // session, and `handleReview` submitted their accept/reject against that finding's id. The
+  // decision landed on the wrong recitation, which is the one thing the review gate exists to get
+  // right.
+  const sessionFindings = selectedSession
+    ? findings.filter((finding) => finding.sessionId === selectedSession.id)
+    : [];
 
   const handleReview = async (findingId: string, decision: "accepted" | "rejected" | "edited") => {
     setMessage(null);
