@@ -2326,6 +2326,12 @@ test("proof CLI arguments reject unsafe paths, ports, projects, actors, acknowle
     command: "probe",
     stage: "retention",
   });
+  for (const stage of ["protocol-parity", "hostile-capacity"]) {
+    assert.deepEqual(parseRealtimeImageProofArguments(["probe", "--stage", stage]), {
+      command: "probe",
+      stage,
+    });
+  }
   for (const argv of [
     ["probe"],
     ["probe", "--stage"],
@@ -2416,6 +2422,77 @@ test("the retention CLI stage validates environment, closes real adapters, and e
         retentionStage: async () => measurements,
       }),
       /realtime proof stage retention (configuration|failed)/i,
+    );
+  }
+});
+
+test("the protocol and hostile CLI stages dispatch exact validated configuration with no private output", async () => {
+  const privateLearner = "private-cli-dispatch-learner";
+  const privateMetricsToken = "private-cli-metrics-token";
+  const env = {
+    JWT_SECRET: probeSecret,
+    REALTIME_PROOF_NODE_PORT: "18081",
+    REALTIME_PROOF_SECONDARY_NODE_PORT: "18082",
+    REALTIME_PROOF_ORIGIN: probeOrigin,
+    REALTIME_PROOF_DISALLOWED_ORIGIN: "https://disallowed.quran.example.org",
+    REALTIME_PROOF_TENANT_ID: probeTenant,
+    REALTIME_PROOF_LEARNER_ID: privateLearner,
+    REALTIME_PROOF_METRICS_TOKEN: privateMetricsToken,
+    REALTIME_PROOF_TIMEOUT_MS: "10000",
+  };
+  const protocolMeasurements = stageMeasurements("protocol-parity");
+  const hostileMeasurements = stageMeasurements("hostile-capacity");
+  const calls = [];
+  const protocol = await runRealtimeImageProofStage({
+    stage: "protocol-parity",
+    env,
+    protocolStage: async (input) => {
+      calls.push({ stage: "protocol", input });
+      return protocolMeasurements;
+    },
+  });
+  const hostile = await runRealtimeImageProofStage({
+    stage: "hostile-capacity",
+    env,
+    hostileCapacityStage: async (input) => {
+      calls.push({ stage: "hostile", input });
+      return hostileMeasurements;
+    },
+  });
+  assert.deepEqual(protocol, {
+    status: "passed",
+    stage: "protocol-parity",
+    measurements: protocolMeasurements,
+  });
+  assert.deepEqual(hostile, {
+    status: "passed",
+    stage: "hostile-capacity",
+    measurements: hostileMeasurements,
+  });
+  assert.equal(calls[0].input.nodePort, 18_081);
+  assert.equal(calls[0].input.secondaryNodePort, 18_082);
+  assert.equal(calls[0].input.disallowedOrigin, "https://disallowed.quran.example.org");
+  assert.equal(calls[1].input.metricsToken, privateMetricsToken);
+  for (const result of [protocol, hostile]) {
+    const serialized = JSON.stringify(result);
+    for (const privateValue of [probeSecret, probeTenant, privateLearner, privateMetricsToken]) {
+      assert.equal(serialized.includes(privateValue), false);
+    }
+  }
+
+  for (const [stage, override] of [
+    ["protocol-parity", { REALTIME_PROOF_SECONDARY_NODE_PORT: "18081" }],
+    ["protocol-parity", { REALTIME_PROOF_DISALLOWED_ORIGIN: probeOrigin }],
+    ["hostile-capacity", { REALTIME_PROOF_METRICS_TOKEN: "" }],
+  ]) {
+    await assert.rejects(
+      () => runRealtimeImageProofStage({
+        stage,
+        env: { ...env, ...override },
+        protocolStage: async () => protocolMeasurements,
+        hostileCapacityStage: async () => hostileMeasurements,
+      }),
+      new RegExp(`realtime proof stage ${stage} (configuration|failed)`, "i"),
     );
   }
 });

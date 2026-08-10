@@ -9,6 +9,8 @@ import {
   createRealtimeProofPreflight,
   createRealtimeRetentionProofAdaptersFromEnvironment,
   parseRealtimeProofPort,
+  runRealtimeHostileCapacityStage,
+  runRealtimeProtocolParityStage,
   runRealtimeRetentionStage,
 } from "./lib/realtime-image-probe.mjs";
 import {
@@ -19,7 +21,7 @@ import {
 const repo = resolve(fileURLToPath(new URL("..", import.meta.url)));
 const providerPattern = /^[a-z0-9][a-z0-9._-]{1,127}$/;
 const proofIdentityPattern = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
-const enabledProbeStages = new Set(["retention"]);
+const enabledProbeStages = new Set(["protocol-parity", "hostile-capacity", "retention"]);
 const allowedFlags = new Set([
   "--selection",
   "--project-name",
@@ -115,8 +117,8 @@ function stageIdentity(env, name) {
   return value;
 }
 
-function stageOrigin(env) {
-  const value = stageString(env, "REALTIME_PROOF_ORIGIN", 2_048);
+function stageOrigin(env, name = "REALTIME_PROOF_ORIGIN") {
+  const value = stageString(env, name, 2_048);
   let parsed;
   try {
     parsed = new URL(value);
@@ -168,14 +170,71 @@ function retentionStageConfiguration(env) {
   }
 }
 
+function protocolStageConfiguration(env) {
+  try {
+    const base = retentionStageConfiguration(env);
+    const secondaryNodePort = parseRealtimeProofPort(
+      stageString(env, "REALTIME_PROOF_SECONDARY_NODE_PORT", 5),
+    );
+    if (secondaryNodePort === base.nodePort) {
+      fail("realtime proof stage protocol ports must be distinct");
+    }
+    const disallowedOrigin = stageOrigin(env, "REALTIME_PROOF_DISALLOWED_ORIGIN");
+    if (disallowedOrigin === base.origin) {
+      fail("realtime proof stage protocol origins must be distinct");
+    }
+    return Object.freeze({ ...base, secondaryNodePort, disallowedOrigin });
+  } catch {
+    throw new TypeError("realtime proof stage protocol-parity configuration is invalid");
+  }
+}
+
+function hostileCapacityStageConfiguration(env) {
+  try {
+    return Object.freeze({
+      ...retentionStageConfiguration(env),
+      metricsToken: stageString(env, "REALTIME_PROOF_METRICS_TOKEN"),
+    });
+  } catch {
+    throw new TypeError("realtime proof stage hostile-capacity configuration is invalid");
+  }
+}
+
+async function runAggregateStage(stage, configuration, runner) {
+  if (typeof runner !== "function") {
+    throw new TypeError(`realtime proof stage ${stage} adapter is invalid`);
+  }
+  try {
+    return Object.freeze({
+      status: "passed",
+      stage,
+      measurements: await runner(configuration),
+    });
+  } catch {
+    throw new Error(`realtime proof stage ${stage} failed`);
+  }
+}
+
 export async function runRealtimeImageProofStage({
   stage,
   env = process.env,
+  protocolStage = runRealtimeProtocolParityStage,
+  hostileCapacityStage = runRealtimeHostileCapacityStage,
   retentionAdaptersFactory = createRealtimeRetentionProofAdaptersFromEnvironment,
   retentionStage = runRealtimeRetentionStage,
 } = {}) {
-  if (stage !== "retention") {
+  if (!enabledProbeStages.has(stage)) {
     throw new TypeError("realtime proof stage is not enabled");
+  }
+  if (stage === "protocol-parity") {
+    return runAggregateStage(stage, protocolStageConfiguration(env), protocolStage);
+  }
+  if (stage === "hostile-capacity") {
+    return runAggregateStage(
+      stage,
+      hostileCapacityStageConfiguration(env),
+      hostileCapacityStage,
+    );
   }
   const configuration = retentionStageConfiguration(env);
   if (typeof retentionAdaptersFactory !== "function" || typeof retentionStage !== "function") {
