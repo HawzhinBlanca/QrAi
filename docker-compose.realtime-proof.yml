@@ -30,3 +30,55 @@ services:
       AUDIO_STORAGE_S3_ENCRYPTION: "${AUDIO_STORAGE_S3_ENCRYPTION:-AES256}"
     ports:
       - "127.0.0.1:${REALTIME_PROOF_NODE_PORT:-18081}:8081"
+
+  # Proof-only second process of the exact immutable Node image. It shares the candidate's
+  # Postgres replay authority, ticket secret, tenant, and production S3 identity so the isolated
+  # runner can prove cross-instance replay. It is loopback-only and no public service depends on it.
+  node-realtime-proof-peer:
+    restart: unless-stopped
+    image: "${NODE_BACKEND_IMAGE:?Set NODE_BACKEND_IMAGE to an immutable repository@sha256 digest}"
+    command: ["node", "server/src/realtime/main.mjs"]
+    environment:
+      DATABASE_URL: "postgresql://quran_ai_app:${APP_DATABASE_PASSWORD}@postgres:5432/quran_ai"
+      SHUTDOWN_GRACE_SECS: "${NODE_REALTIME_SHUTDOWN_GRACE_SECS:-8}"
+      NODE_REALTIME_BIND: "0.0.0.0:8081"
+      NODE_HEALTHCHECK_URL: "http://127.0.0.1:8081/ready"
+      REALTIME_READINESS_TIMEOUT_MS: "${REALTIME_READINESS_TIMEOUT_MS:-2000}"
+      REALTIME_GATEWAY_TICKET_SECRET: "${REALTIME_GATEWAY_TICKET_SECRET:?REALTIME_GATEWAY_TICKET_SECRET is required in production}"
+      GATEWAY_TENANT_ID: "hikmah-pilot-erbil"
+      CORS_ALLOWED_ORIGINS: "${CORS_ALLOWED_ORIGINS:-}"
+      GATEWAY_ALLOW_MISSING_ORIGIN: "1"
+      DISABLE_RATE_LIMIT: "${DISABLE_RATE_LIMIT:-0}"
+      TRUST_PROXY_HEADERS: "${TRUST_PROXY_HEADERS:-0}"
+      TRUST_PROXY_HOPS: "${TRUST_PROXY_HOPS:-}"
+      METRICS_TOKEN: "${METRICS_TOKEN:-}"
+      METRICS_DEV_OPEN: "${METRICS_DEV_OPEN:-}"
+      ML_INFERENCE_URL: "http://job-worker:8098"
+      ASR_SERVICE_URL: "http://asr-inference:8091"
+      AUDIO_STORAGE_DRIVER: "s3"
+      AUDIO_STORAGE_FILESYSTEM_ACKNOWLEDGED_DEV_ONLY: "0"
+      AUDIO_STORAGE_DIR: "/data/audio-storage"
+      AUDIO_STORAGE_S3_BUCKET: "${AUDIO_STORAGE_S3_BUCKET:?AUDIO_STORAGE_S3_BUCKET is required for realtime release proof}"
+      AUDIO_STORAGE_S3_REGION: "${AUDIO_STORAGE_S3_REGION:?AUDIO_STORAGE_S3_REGION is required for realtime release proof}"
+      AUDIO_STORAGE_S3_ENDPOINT: "${AUDIO_STORAGE_S3_ENDPOINT:-}"
+      AUDIO_STORAGE_S3_FORCE_PATH_STYLE: "${AUDIO_STORAGE_S3_FORCE_PATH_STYLE:-}"
+      AUDIO_STORAGE_S3_EXPECTED_OWNER: "${AUDIO_STORAGE_S3_EXPECTED_OWNER:?AUDIO_STORAGE_S3_EXPECTED_OWNER is required for realtime release proof}"
+      AUDIO_STORAGE_S3_ENCRYPTION: "${AUDIO_STORAGE_S3_ENCRYPTION:-AES256}"
+      AUDIO_STORAGE_S3_KMS_KEY_ID: "${AUDIO_STORAGE_S3_KMS_KEY_ID:-}"
+    expose:
+      - "8081"
+    ports:
+      - "127.0.0.1:${REALTIME_PROOF_SECONDARY_NODE_PORT:-18082}:8081"
+    depends_on:
+      migrations:
+        condition: service_completed_successfully
+      job-worker:
+        condition: service_healthy
+      asr-inference:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "node", "server/src/container-healthcheck.mjs"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+    stop_grace_period: "${NODE_REALTIME_STOP_GRACE_PERIOD:-10s}"

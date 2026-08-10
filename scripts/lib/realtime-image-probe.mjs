@@ -11,7 +11,12 @@ import { AUDIO_ACK_FIELDS, parseAudioAck } from "../../server/src/realtime/proto
 
 const sourceShaPattern = /^[a-f0-9]{40}$/;
 const expectedOwnerPattern = /^\d{12}$/;
-const storageServices = Object.freeze(["node-api", "job-worker", "node-realtime"]);
+const storageServices = Object.freeze([
+  "node-api",
+  "job-worker",
+  "node-realtime",
+  "node-realtime-proof-peer",
+]);
 const audioProbeResultFields = Object.freeze(["accepted", "ackLatencyMs", "sequence"]);
 const audioProbeResultFieldSet = new Set(audioProbeResultFields);
 const minimumProbeTimeoutMs = 50;
@@ -201,19 +206,37 @@ function publishedPort(value) {
   return typeof value === "number" ? value : Number(value);
 }
 
-function assertNodePort(nodeRealtime, nodePort) {
+function assertNodePort(nodeRealtime, nodePort, label) {
   if (!Array.isArray(nodeRealtime.ports) || nodeRealtime.ports.length !== 1) {
-    throw new TypeError("Node realtime proof must publish exactly one port");
+    throw new TypeError(`${label} must publish exactly one port`);
   }
   const [port] = nodeRealtime.ports;
-  assertObject(port, "Node realtime proof port");
+  assertObject(port, `${label} port`);
   if (
     port.host_ip !== "127.0.0.1" ||
     publishedPort(port.published) !== nodePort ||
     Number(port.target) !== 8081 ||
     port.protocol !== "tcp"
   ) {
-    throw new TypeError("Node realtime proof port must be the selected loopback mapped to 8081/tcp");
+    throw new TypeError(`${label} port must be the selected loopback mapped to 8081/tcp`);
+  }
+}
+
+function assertSharedRealtimeAuthority(primary, secondary) {
+  const authorities = [
+    ["DATABASE_URL", "database"],
+    ["REALTIME_GATEWAY_TICKET_SECRET", "ticket"],
+    ["GATEWAY_TENANT_ID", "tenant"],
+  ];
+  for (const [key, label] of authorities) {
+    const primaryValue = nonblank(primary.environment?.[key], `primary realtime ${label} authority`);
+    const secondaryValue = nonblank(
+      secondary.environment?.[key],
+      `secondary realtime ${label} authority`,
+    );
+    if (primaryValue !== secondaryValue) {
+      throw new TypeError(`realtime proof peers must share one ${label} authority`);
+    }
   }
 }
 
@@ -290,6 +313,57 @@ function storageConfiguration(rendered) {
     expectedOwnerConfigured: true,
     filesystemFallback: false,
   };
+}
+
+function topologyEnvironmentKeys(value, serviceName) {
+  if (value.environment === undefined || value.environment === null) return [];
+  assertObject(value.environment, `${serviceName} environment`);
+  return Object.keys(value.environment).sort();
+}
+
+function topologyHealthPolicy(value) {
+  if (value.healthcheck === undefined || value.healthcheck === null) return null;
+  assertObject(value.healthcheck, "rendered Compose healthcheck");
+  return {
+    disable: value.healthcheck.disable ?? null,
+    interval: value.healthcheck.interval ?? null,
+    retries: value.healthcheck.retries ?? null,
+    startInterval: value.healthcheck.start_interval ?? null,
+    startPeriod: value.healthcheck.start_period ?? null,
+    timeout: value.healthcheck.timeout ?? null,
+  };
+}
+
+/**
+ * Hash executable topology without ever feeding environment values to the digest. Compose's
+ * rendered model contains expanded database credentials, ticket/JWT secrets, and service keys;
+ * their presence is proven by key name and their required equality is checked in memory above.
+ */
+function renderedTopologyDigest(rendered) {
+  const services = {};
+  for (const serviceName of Object.keys(rendered.services ?? {}).sort()) {
+    const value = service(rendered, serviceName);
+    services[serviceName] = {
+      command: value.command ?? null,
+      dependsOn: value.depends_on ?? null,
+      entrypoint: value.entrypoint ?? null,
+      environmentKeys: topologyEnvironmentKeys(value, serviceName),
+      expose: value.expose ?? null,
+      healthPolicy: topologyHealthPolicy(value),
+      image: value.image ?? null,
+      init: value.init ?? null,
+      networks: value.networks ?? null,
+      ports: value.ports ?? null,
+      restart: value.restart ?? null,
+      stopGracePeriod: value.stop_grace_period ?? null,
+      user: value.user ?? null,
+    };
+  }
+  return sha256(canonicalJson({
+    networkNames: Object.keys(rendered.networks ?? {}).sort(),
+    services,
+    volumeNames: Object.keys(rendered.volumes ?? {}).sort(),
+  }));
 }
 
 export function parseRealtimeProofPort(value) {
@@ -2050,10 +2124,24 @@ export function summarizeRealtimeAudioFrameProbes(results) {
   };
 }
 
-export function validateRealtimeProofRenderedTopology({ rendered, selection, nodePort }) {
+export function validateRealtimeProofRenderedTopology({
+  rendered,
+  selection,
+  nodePort,
+  secondaryNodePort,
+}) {
   assertObject(rendered, "rendered Compose topology");
   if (!Number.isSafeInteger(nodePort) || nodePort < 1024 || nodePort > 65_535 || nodePort === 8081) {
     throw new TypeError("Node realtime proof port is invalid");
+  }
+  if (
+    !Number.isSafeInteger(secondaryNodePort) ||
+    secondaryNodePort < 1024 ||
+    secondaryNodePort > 65_535 ||
+    secondaryNodePort === 8081 ||
+    secondaryNodePort === nodePort
+  ) {
+    throw new TypeError("secondary Node realtime proof port must be valid and distinct");
   }
   const selected = assertReleaseDeploymentSelection(selection);
   const imageEnvironment = composeImageEnvironment(selected, "candidate");
@@ -2064,6 +2152,11 @@ export function validateRealtimeProofRenderedTopology({ rendered, selection, nod
     "node-realtime",
     imageEnvironment.NODE_BACKEND_IMAGE,
   );
+  const nodeRealtimeProofPeer = assertSelectedImage(
+    rendered,
+    "node-realtime-proof-peer",
+    imageEnvironment.NODE_BACKEND_IMAGE,
+  );
   const gateway = assertSelectedImage(
     rendered,
     "realtime-gateway",
@@ -2071,19 +2164,28 @@ export function validateRealtimeProofRenderedTopology({ rendered, selection, nod
   );
   void nodeApi;
   void worker;
-  assertNodePort(nodeRealtime, nodePort);
+  assertNodePort(nodeRealtime, nodePort, "Node realtime proof");
+  assertNodePort(
+    nodeRealtimeProofPeer,
+    secondaryNodePort,
+    "secondary Node realtime proof",
+  );
+  assertSharedRealtimeAuthority(nodeRealtime, nodeRealtimeProofPeer);
   assertRustPort(gateway);
 
   const web = service(rendered, "web");
   if (web.depends_on?.["node-realtime"] !== undefined) {
     throw new TypeError("Web must not target the Node realtime proof endpoint");
   }
+  if (web.depends_on?.["node-realtime-proof-peer"] !== undefined) {
+    throw new TypeError("Web must not target the secondary Node realtime proof endpoint");
+  }
   if (!web.depends_on?.["realtime-gateway"]) {
     throw new TypeError("Web must retain the Rust realtime gateway dependency");
   }
 
   return {
-    renderedSha256: sha256(canonicalJson(rendered)),
+    renderedSha256: renderedTopologyDigest(rendered),
     topology: {
       nodeRealtimeLoopback: `127.0.0.1:${nodePort}`,
       rustPublicPort: 8081,
@@ -2094,7 +2196,13 @@ export function validateRealtimeProofRenderedTopology({ rendered, selection, nod
   };
 }
 
-export function createRealtimeProofPreflight({ sourceState, selection, rendered, nodePort }) {
+export function createRealtimeProofPreflight({
+  sourceState,
+  selection,
+  rendered,
+  nodePort,
+  secondaryNodePort,
+}) {
   assertObject(sourceState, "realtime proof source state");
   if (Object.keys(sourceState).sort().join(",") !== "clean,headSha") {
     throw new TypeError("realtime proof sourceState must contain exactly clean and headSha");
@@ -2109,7 +2217,12 @@ export function createRealtimeProofPreflight({ sourceState, selection, rendered,
   if (sourceState.headSha !== selected.candidate.sourceSha) {
     throw new TypeError("checked-out source must equal the selected candidate SHA");
   }
-  const validated = validateRealtimeProofRenderedTopology({ rendered, selection: selected, nodePort });
+  const validated = validateRealtimeProofRenderedTopology({
+    rendered,
+    selection: selected,
+    nodePort,
+    secondaryNodePort,
+  });
   return {
     sourceState: { ...sourceState },
     sourceSha: selected.candidate.sourceSha,

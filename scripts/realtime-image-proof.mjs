@@ -22,6 +22,7 @@ const allowedFlags = new Set([
   "--provider",
   "--actor-class",
   "--node-port",
+  "--secondary-node-port",
   "--acknowledge-staging-isolated",
 ]);
 
@@ -65,13 +66,17 @@ export function parseRealtimeImageProofArguments(argv) {
   if (values["--acknowledge-staging-isolated"] !== "yes") {
     fail("--acknowledge-staging-isolated must be exactly yes");
   }
+  const nodePort = parseRealtimeProofPort(values["--node-port"]);
+  const secondaryNodePort = parseRealtimeProofPort(values["--secondary-node-port"]);
+  if (secondaryNodePort === nodePort) fail("proof ports must be distinct");
   return {
     command,
     selectionPath: values["--selection"],
     projectName: values["--project-name"],
     provider: values["--provider"],
     actorClass: values["--actor-class"],
-    nodePort: parseRealtimeProofPort(values["--node-port"]),
+    nodePort,
+    secondaryNodePort,
   };
 }
 
@@ -111,6 +116,7 @@ async function main() {
     ...process.env,
     ...composeImageEnvironment(selection, "candidate"),
     REALTIME_PROOF_NODE_PORT: String(options.nodePort),
+    REALTIME_PROOF_SECONDARY_NODE_PORT: String(options.secondaryNodePort),
   };
   const [file, ...args] = realtimeImageCommandPlan({ projectName: options.projectName })[0];
   const rendered = JSON.parse(run(file, args, commandEnvironment));
@@ -119,6 +125,7 @@ async function main() {
     selection,
     rendered,
     nodePort: options.nodePort,
+    secondaryNodePort: options.secondaryNodePort,
   });
   console.log(JSON.stringify({
     status: "passed",

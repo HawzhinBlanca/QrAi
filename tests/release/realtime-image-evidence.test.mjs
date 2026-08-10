@@ -278,7 +278,7 @@ function validInput() {
   };
 }
 
-function renderedProofTopology(value = selection(), nodePort = 18_081) {
+function renderedProofTopology(value = selection(), nodePort = 18_081, secondaryNodePort = 18_082) {
   const environment = composeImageEnvironment(value, "candidate");
   const storage = {
     AUDIO_STORAGE_DRIVER: "s3",
@@ -287,6 +287,11 @@ function renderedProofTopology(value = selection(), nodePort = 18_081) {
     AUDIO_STORAGE_S3_REGION: "eu-central-1",
     AUDIO_STORAGE_S3_EXPECTED_OWNER: "123456789012",
     AUDIO_STORAGE_S3_ENCRYPTION: "AES256",
+  };
+  const realtimeAuthority = {
+    DATABASE_URL: "postgresql://quran_ai_app:fixture@postgres:5432/quran_ai",
+    REALTIME_GATEWAY_TICKET_SECRET: "fixture-proof-ticket-secret",
+    GATEWAY_TENANT_ID: "hikmah-pilot-erbil",
   };
   return {
     services: {
@@ -300,11 +305,22 @@ function renderedProofTopology(value = selection(), nodePort = 18_081) {
       },
       "node-realtime": {
         image: environment.NODE_BACKEND_IMAGE,
-        environment: { ...storage },
+        environment: { ...storage, ...realtimeAuthority },
         ports: [{
           mode: "ingress",
           target: 8081,
           published: String(nodePort),
+          protocol: "tcp",
+          host_ip: "127.0.0.1",
+        }],
+      },
+      "node-realtime-proof-peer": {
+        image: environment.NODE_BACKEND_IMAGE,
+        environment: { ...storage, ...realtimeAuthority },
+        ports: [{
+          mode: "ingress",
+          target: 8081,
+          published: String(secondaryNodePort),
           protocol: "tcp",
           host_ip: "127.0.0.1",
         }],
@@ -593,18 +609,30 @@ test("the command plan uses immutable release images, loopback proof topology, a
   assert.throws(() => realtimeImageCommandPlan({ projectName: "../../unsafe" }), /projectName/);
 });
 
-test("the proof overlay exposes only Node realtime on a configurable loopback and forces production S3", () => {
+test("the proof overlay exposes two same-image Node realtime peers on distinct loopbacks and forces production S3", () => {
   const overlay = parseYaml(readFileSync("docker-compose.realtime-proof.yml", "utf8"));
   assert.deepEqual(
     overlay.services?.["node-realtime"]?.ports,
     ["127.0.0.1:${REALTIME_PROOF_NODE_PORT:-18081}:8081"],
   );
+  assert.deepEqual(
+    overlay.services?.["node-realtime-proof-peer"]?.ports,
+    ["127.0.0.1:${REALTIME_PROOF_SECONDARY_NODE_PORT:-18082}:8081"],
+  );
+  assert.equal(
+    overlay.services?.["node-realtime-proof-peer"]?.image,
+    "${NODE_BACKEND_IMAGE:?Set NODE_BACKEND_IMAGE to an immutable repository@sha256 digest}",
+  );
+  assert.deepEqual(
+    overlay.services?.["node-realtime-proof-peer"]?.command,
+    ["node", "server/src/realtime/main.mjs"],
+  );
   assert.equal(overlay.services?.["realtime-gateway"], undefined);
 
-  for (const service of ["node-api", "job-worker", "node-realtime"]) {
+  for (const service of ["node-api", "job-worker", "node-realtime", "node-realtime-proof-peer"]) {
     const config = overlay.services?.[service];
     assert.equal(config?.build, undefined);
-    assert.equal(config?.image, undefined);
+    if (service !== "node-realtime-proof-peer") assert.equal(config?.image, undefined);
     assert.equal(config?.environment?.AUDIO_STORAGE_DRIVER, "s3");
     assert.equal(config?.environment?.AUDIO_STORAGE_FILESYSTEM_ACKNOWLEDGED_DEV_ONLY, "0");
     assert.equal(
@@ -625,6 +653,7 @@ test("rendered proof preflight binds exact images, topology, storage, and clean 
     rendered,
     selection: value,
     nodePort: 18_081,
+    secondaryNodePort: 18_082,
   });
   assert.deepEqual(validated.topology, {
     nodeRealtimeLoopback: "127.0.0.1:18081",
@@ -645,6 +674,7 @@ test("rendered proof preflight binds exact images, topology, storage, and clean 
     selection: value,
     rendered,
     nodePort: 18_081,
+    secondaryNodePort: 18_082,
   });
   assert.equal(preflight.sourceState.headSha, candidateSha);
   assert.deepEqual(preflight.topology, validated.topology);
@@ -652,19 +682,30 @@ test("rendered proof preflight binds exact images, topology, storage, and clean 
   const cases = [
     [(copy) => { copy.services["node-realtime"].ports[0].host_ip = "0.0.0.0"; }, /loopback/i],
     [(copy) => { copy.services["node-realtime"].ports[0].published = "8081"; }, /Node.*port|8081/i],
+    [(copy) => { copy.services["node-realtime-proof-peer"].ports[0].host_ip = "0.0.0.0"; }, /loopback/i],
+    [(copy) => { copy.services["node-realtime-proof-peer"].ports[0].published = "18081"; }, /distinct|port/i],
     [(copy) => { copy.services["realtime-gateway"].ports[0].published = "18081"; }, /Rust.*8081/i],
     [(copy) => { copy.services["node-realtime"].image = "qrai/node-backend:mutable"; }, /selected.*image/i],
+    [(copy) => { copy.services["node-realtime-proof-peer"].image = "qrai/node-backend:mutable"; }, /selected.*image/i],
     [(copy) => { copy.services["node-api"].build = { context: "." }; }, /source build/i],
     [(copy) => { copy.services["job-worker"].environment.AUDIO_STORAGE_DRIVER = "filesystem"; }, /production S3/i],
     [(copy) => { copy.services["node-realtime"].environment.AUDIO_STORAGE_S3_EXPECTED_OWNER = ""; }, /expected owner/i],
     [(copy) => { copy.services["node-api"].environment.AUDIO_STORAGE_S3_BUCKET = "another-bucket"; }, /same production S3/i],
+    [(copy) => { copy.services["node-realtime-proof-peer"].environment.DATABASE_URL = "postgresql://other"; }, /database authority/i],
+    [(copy) => { copy.services["node-realtime-proof-peer"].environment.REALTIME_GATEWAY_TICKET_SECRET = "other"; }, /ticket authority/i],
+    [(copy) => { copy.services["node-realtime-proof-peer"].environment.GATEWAY_TENANT_ID = "other"; }, /tenant authority/i],
     [(copy) => { copy.services["node-realtime"].ports.push(copy.services["node-realtime"].ports[0]); }, /exactly one/i],
   ];
   for (const [mutate, pattern] of cases) {
     const copy = structuredClone(rendered);
     mutate(copy);
     assert.throws(
-      () => validateRealtimeProofRenderedTopology({ rendered: copy, selection: value, nodePort: 18_081 }),
+      () => validateRealtimeProofRenderedTopology({
+        rendered: copy,
+        selection: value,
+        nodePort: 18_081,
+        secondaryNodePort: 18_082,
+      }),
       pattern,
     );
   }
@@ -674,6 +715,7 @@ test("rendered proof preflight binds exact images, topology, storage, and clean 
       selection: value,
       rendered,
       nodePort: 18_081,
+      secondaryNodePort: 18_082,
     }),
     /clean/i,
   );
@@ -683,8 +725,51 @@ test("rendered proof preflight binds exact images, topology, storage, and clean 
       selection: value,
       rendered,
       nodePort: 18_081,
+      secondaryNodePort: 18_082,
     }),
     /candidate SHA/i,
+  );
+});
+
+test("rendered topology hashing excludes credential values but still binds executable topology", () => {
+  const value = selection();
+  const rendered = renderedProofTopology(value);
+  const baseline = validateRealtimeProofRenderedTopology({
+    rendered,
+    selection: value,
+    nodePort: 18_081,
+    secondaryNodePort: 18_082,
+  });
+
+  const rotatedCredentials = structuredClone(rendered);
+  for (const service of ["node-realtime", "node-realtime-proof-peer"]) {
+    rotatedCredentials.services[service].environment.DATABASE_URL =
+      "postgresql://quran_ai_app:rotated@postgres:5432/quran_ai";
+    rotatedCredentials.services[service].environment.REALTIME_GATEWAY_TICKET_SECRET =
+      "rotated-proof-ticket-secret";
+  }
+  assert.equal(
+    validateRealtimeProofRenderedTopology({
+      rendered: rotatedCredentials,
+      selection: value,
+      nodePort: 18_081,
+      secondaryNodePort: 18_082,
+    }).renderedSha256,
+    baseline.renderedSha256,
+    "credential rotation must not alter or leak into the topology digest",
+  );
+
+  const executableChange = structuredClone(rendered);
+  executableChange.services["node-api"].command = ["node", "server/src/other.mjs"];
+  assert.notEqual(
+    validateRealtimeProofRenderedTopology({
+      rendered: executableChange,
+      selection: value,
+      nodePort: 18_081,
+      secondaryNodePort: 18_082,
+    }).renderedSha256,
+    baseline.renderedSha256,
+    "an executable topology change must alter the topology digest",
   );
 });
 
@@ -1839,6 +1924,7 @@ test("proof CLI arguments reject unsafe paths, ports, projects, actors, acknowle
     "--provider", "release-staging",
     "--actor-class", "release-operator",
     "--node-port", "18081",
+    "--secondary-node-port", "18082",
     "--acknowledge-staging-isolated", "yes",
   ];
   assert.deepEqual(parseRealtimeImageProofArguments(valid), {
@@ -1848,6 +1934,7 @@ test("proof CLI arguments reject unsafe paths, ports, projects, actors, acknowle
     provider: "release-staging",
     actorClass: "release-operator",
     nodePort: 18_081,
+    secondaryNodePort: 18_082,
   });
 
   const cases = [
@@ -1856,7 +1943,8 @@ test("proof CLI arguments reject unsafe paths, ports, projects, actors, acknowle
     [[...valid.slice(0, 2), "relative.json", ...valid.slice(3)], /absolute/i],
     [[...valid.slice(0, 4), "../../unsafe", ...valid.slice(5)], /project/i],
     [[...valid.slice(0, 10), "8081", ...valid.slice(11)], /8081|proof port/i],
-    [[...valid.slice(0, 12), "no"], /acknowledge/i],
+    [[...valid.slice(0, 12), "18081", ...valid.slice(13)], /distinct|port/i],
+    [[...valid.slice(0, 14), "no"], /acknowledge/i],
     [[...valid.slice(0, 6), "bad provider", ...valid.slice(7)], /provider/i],
     [[...valid.slice(0, 8), "developer", ...valid.slice(9)], /actor/i],
   ];
