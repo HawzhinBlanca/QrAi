@@ -112,10 +112,41 @@ export function clearsLearnerGate(finding) {
  * person recited. `confidence: 0` and `sources: []` are not filler — they make the redacted finding
  * fail the client gate on its own merits.
  */
-function redactWithheldFindings(result) {
-  if (!Array.isArray(result?.findings)) return;
-  for (const finding of result.findings) {
-    if (finding === null || typeof finding !== "object" || clearsLearnerGate(finding)) continue;
+export function redactWithheldFindings(result) {
+  if (result === null || typeof result !== "object" || !("findings" in result)) {
+    // No `findings` key at all: the response claims nothing about how the person recited, so there
+    // is nothing to gate. A legitimate ML response shape; untouched.
+    return;
+  }
+
+  // ── Shapes this function was NOT written to inspect ─────────────────────────────────────────
+  // Both branches here forwarded the value UNREDACTED, which is the gate failing OPEN on exactly
+  // the input it cannot reason about — reachable without anyone editing the gate: a partially
+  // migrated model server, a debug build with a different schema, or a compromised ML service.
+  // handlers/ml_proxy.rs fixed both and says so in its own comment; this port kept the old
+  // behaviour, so a cutover to node-api would have silently reopened an ADR-0028 gate that the
+  // Rust side had already closed.
+  //
+  // The rule (ADR-0028) is that learner-facing model output does not leave this service without
+  // source, confidence and an approval gate. "A client probably would not render it" is not that
+  // rule — it is the reasoning that put the gate on the wrong side of the boundary to begin with.
+  if (!Array.isArray(result.findings)) {
+    console.error("ML proxy: `findings` was present but not an array; dropping ungated model output");
+    result.findings = [];
+    return;
+  }
+
+  for (let i = 0; i < result.findings.length; i++) {
+    const finding = result.findings[i];
+    if (finding === null || typeof finding !== "object" || Array.isArray(finding)) {
+      // Not an object, so its fields cannot be cleared one by one. Replace it wholesale rather than
+      // passing it through: the array keeps its length, which is what both clients count to render
+      // "N notes are waiting for a teacher", and it carries no model text.
+      console.error("ML proxy: a finding was not an object; replacing it with a withheld placeholder");
+      result.findings[i] = { withheld: true, confidence: 0, sources: [] };
+      continue;
+    }
+    if (clearsLearnerGate(finding)) continue;
     for (const field of ["rule", "arabicName", "category", "severity", "explanation", "wordId"]) {
       if (field in finding) finding[field] = "";
     }

@@ -276,3 +276,47 @@ test("both ml_proxy implementations forward the learner from the row they author
     "the forwarded learner must come from the session row, never from the caller's body",
   );
 });
+
+// --- the learner gate must fail CLOSED on shapes it cannot reason about ---
+
+test("node-api's learner redaction fails CLOSED on malformed ML responses, like the Rust original", async () => {
+  // handlers/ml_proxy.rs documents that BOTH branches below used to forward the value unredacted —
+  // the gate failing open on exactly the input it cannot reason about — and fixed them. This port
+  // kept the old behaviour, so a cutover to node-api would have silently reopened an ADR-0028 gate
+  // the Rust side had already closed. Reachable without anyone editing the gate: a partially
+  // migrated model server, a debug build with a different schema, a compromised ML service.
+  const { redactWithheldFindings } = await import("../../services/node-api/routes/ml-proxy.mjs");
+
+  // 1. `findings` present but not an array — drop it, do not forward it.
+  const notAnArray = { findings: "MODEL-TEXT-A-LEARNER-MUST-NOT-SEE" };
+  redactWithheldFindings(notAnArray);
+  assert.deepEqual(notAnArray.findings, [], "ungated model output was forwarded to a learner");
+
+  // 2. A finding that is not an object — replace wholesale, keeping the array length the clients
+  //    count for "N notes are waiting for a teacher".
+  const notObjects = { findings: ["MODEL-TEXT-A-LEARNER-MUST-NOT-SEE", 42, null] };
+  redactWithheldFindings(notObjects);
+  assert.equal(notObjects.findings.length, 3, "the count clients render must survive redaction");
+  for (const f of notObjects.findings) {
+    assert.equal(f.withheld, true);
+    assert.equal(f.confidence, 0);
+    assert.deepEqual(f.sources, []);
+  }
+  assert.ok(
+    !JSON.stringify(notObjects).includes("MUST-NOT-SEE"),
+    "model text survived redaction and would reach the learner",
+  );
+
+  // 3. No `findings` key at all is a legitimate shape and stays untouched.
+  const noKey = { sessionId: "s1" };
+  redactWithheldFindings(noKey);
+  assert.deepEqual(noKey, { sessionId: "s1" }, "a response with no findings must not be rewritten");
+
+  // 4. The happy path still redacts an unapproved OBJECT finding rather than passing it through.
+  const unapproved = {
+    findings: [{ reviewStatus: "ai-suggested", confidence: 0.99, sources: [{ id: "s" }], explanation: "MUST-NOT-SEE" }],
+  };
+  redactWithheldFindings(unapproved);
+  assert.equal(unapproved.findings[0].explanation, "");
+  assert.equal(unapproved.findings[0].withheld, true);
+});
