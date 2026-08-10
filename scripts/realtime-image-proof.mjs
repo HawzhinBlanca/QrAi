@@ -35,6 +35,7 @@ const allowedFlags = new Set([
   "--actor-class",
   "--node-port",
   "--secondary-node-port",
+  "--fault-node-port",
   "--acknowledge-staging-isolated",
 ]);
 
@@ -90,7 +91,10 @@ export function parseRealtimeImageProofArguments(argv) {
   }
   const nodePort = parseRealtimeProofPort(values["--node-port"]);
   const secondaryNodePort = parseRealtimeProofPort(values["--secondary-node-port"]);
-  if (secondaryNodePort === nodePort) fail("proof ports must be distinct");
+  const faultNodePort = parseRealtimeProofPort(values["--fault-node-port"]);
+  if (new Set([nodePort, secondaryNodePort, faultNodePort]).size !== 3) {
+    fail("proof ports must be distinct");
+  }
   return {
     command,
     selectionPath: values["--selection"],
@@ -99,6 +103,7 @@ export function parseRealtimeImageProofArguments(argv) {
     actorClass: values["--actor-class"],
     nodePort,
     secondaryNodePort,
+    faultNodePort,
   };
 }
 
@@ -190,10 +195,19 @@ function candidateStageConfiguration(env) {
     const secondaryNodePort = parseRealtimeProofPort(
       stageString(env, "REALTIME_PROOF_SECONDARY_NODE_PORT", 5),
     );
-    if (secondaryNodePort === nodePort) {
+    const faultNodePort = parseRealtimeProofPort(
+      stageString(env, "REALTIME_PROOF_FAULT_NODE_PORT", 5),
+    );
+    if (new Set([nodePort, secondaryNodePort, faultNodePort]).size !== 3) {
       fail("realtime proof candidate ports must be distinct");
     }
-    return Object.freeze({ selectionPath, projectName, nodePort, secondaryNodePort });
+    return Object.freeze({
+      selectionPath,
+      projectName,
+      nodePort,
+      secondaryNodePort,
+      faultNodePort,
+    });
   } catch {
     throw new TypeError(
       "realtime proof stage candidate-running-images configuration is invalid",
@@ -285,6 +299,7 @@ export async function runRealtimeImageProofStage({
       projectName: input.projectName,
       nodePort: input.nodePort,
       secondaryNodePort: input.secondaryNodePort,
+      faultNodePort: input.faultNodePort,
       env,
     }));
     return runCandidateStage(stage, configuration, runner);
@@ -340,6 +355,7 @@ export function collectRealtimeCandidateRunningImagesRuntime({
   projectName,
   nodePort,
   secondaryNodePort,
+  faultNodePort,
   env = process.env,
   commandRunner = run,
 }) {
@@ -353,6 +369,7 @@ export function collectRealtimeCandidateRunningImagesRuntime({
     ...composeImageEnvironment(selected, "candidate"),
     REALTIME_PROOF_NODE_PORT: String(nodePort),
     REALTIME_PROOF_SECONDARY_NODE_PORT: String(secondaryNodePort),
+    REALTIME_PROOF_FAULT_NODE_PORT: String(faultNodePort),
   };
   const sourceState = {
     headSha: commandRunner("git", ["rev-parse", "HEAD"], commandEnvironment).trim(),
@@ -423,6 +440,7 @@ export function collectRealtimeCandidateRunningImagesRuntime({
     rendered,
     nodePort,
     secondaryNodePort,
+    faultNodePort,
     observations,
   });
 }
@@ -471,6 +489,7 @@ async function main() {
     ...composeImageEnvironment(selection, "candidate"),
     REALTIME_PROOF_NODE_PORT: String(options.nodePort),
     REALTIME_PROOF_SECONDARY_NODE_PORT: String(options.secondaryNodePort),
+    REALTIME_PROOF_FAULT_NODE_PORT: String(options.faultNodePort),
   };
   const [file, ...args] = realtimeImageCommandPlan({ projectName: options.projectName })[0];
   const rendered = JSON.parse(run(file, args, commandEnvironment));
@@ -480,6 +499,7 @@ async function main() {
     rendered,
     nodePort: options.nodePort,
     secondaryNodePort: options.secondaryNodePort,
+    faultNodePort: options.faultNodePort,
   });
   console.log(JSON.stringify({
     status: "passed",

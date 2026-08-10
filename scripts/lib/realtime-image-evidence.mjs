@@ -916,7 +916,14 @@ export function realtimeImageCommandPlan({ projectName }) {
     "docker-compose.realtime-proof.yml",
   ];
   const commands = [
-    [...compose, "config", "--format", "json"],
+    [
+      ...compose,
+      "--profile",
+      "realtime-proof-fault",
+      "config",
+      "--format",
+      "json",
+    ],
     ["node", "scripts/release-deployment.mjs", "verify", "--slot", "candidate"],
     [...compose, "up", "-d", "--no-build", "--wait"],
     ...REQUIRED_REALTIME_IMAGE_STAGES.map(stageCommand),

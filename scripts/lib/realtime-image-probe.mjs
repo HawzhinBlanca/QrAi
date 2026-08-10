@@ -269,6 +269,43 @@ function assertSharedRealtimeAuthority(primary, secondary) {
   }
 }
 
+function assertS3FaultTopology(primary, fault) {
+  if (
+    JSON.stringify(fault.profiles) !== JSON.stringify(["realtime-proof-fault"]) ||
+    fault.restart !== "no"
+  ) {
+    throw new TypeError("S3 fault process must use only the opt-in fault profile");
+  }
+  if (
+    JSON.stringify(fault.command) !==
+    JSON.stringify(["node", "server/src/realtime/main.mjs"])
+  ) {
+    throw new TypeError("S3 fault process must run the production realtime command");
+  }
+  assertSharedRealtimeAuthority(primary, fault);
+  const environment = fault.environment;
+  assertObject(environment, "S3 fault process environment");
+  if (
+    environment.AUDIO_STORAGE_DRIVER !== "s3" ||
+    environment.AUDIO_STORAGE_FILESYSTEM_ACKNOWLEDGED_DEV_ONLY !== "0" ||
+    environment.AUDIO_STORAGE_S3_ENDPOINT !== "http://127.0.0.1:9" ||
+    environment.AUDIO_STORAGE_S3_FORCE_PATH_STYLE !== "1"
+  ) {
+    throw new TypeError("S3 fault process must use the fixed unreachable S3 endpoint");
+  }
+  for (const key of [
+    "AUDIO_STORAGE_S3_BUCKET",
+    "AUDIO_STORAGE_S3_REGION",
+    "AUDIO_STORAGE_S3_EXPECTED_OWNER",
+    "AUDIO_STORAGE_S3_ENCRYPTION",
+    "AUDIO_STORAGE_S3_KMS_KEY_ID",
+  ]) {
+    if ((environment[key] ?? "") !== (primary.environment?.[key] ?? "")) {
+      throw new TypeError("S3 fault process must preserve the production S3 identity");
+    }
+  }
+}
+
 function assertRustPort(gateway) {
   if (!Array.isArray(gateway.ports) || gateway.ports.length !== 1) {
     throw new TypeError("Rust gateway must retain exactly one public port");
@@ -2515,6 +2552,7 @@ export function validateRealtimeProofRenderedTopology({
   selection,
   nodePort,
   secondaryNodePort,
+  faultNodePort,
 }) {
   assertObject(rendered, "rendered Compose topology");
   if (!Number.isSafeInteger(nodePort) || nodePort < 1024 || nodePort > 65_535 || nodePort === 8081) {
@@ -2528,6 +2566,16 @@ export function validateRealtimeProofRenderedTopology({
     secondaryNodePort === nodePort
   ) {
     throw new TypeError("secondary Node realtime proof port must be valid and distinct");
+  }
+  if (
+    !Number.isSafeInteger(faultNodePort) ||
+    faultNodePort < 1024 ||
+    faultNodePort > 65_535 ||
+    faultNodePort === 8081 ||
+    faultNodePort === nodePort ||
+    faultNodePort === secondaryNodePort
+  ) {
+    throw new TypeError("fault Node realtime proof port must be valid and distinct");
   }
   const selected = assertReleaseDeploymentSelection(selection);
   const imageEnvironment = composeImageEnvironment(selected, "candidate");
@@ -2543,6 +2591,11 @@ export function validateRealtimeProofRenderedTopology({
     "node-realtime-proof-peer",
     imageEnvironment.NODE_BACKEND_IMAGE,
   );
+  const nodeRealtimeS3Fault = assertSelectedImage(
+    rendered,
+    "node-realtime-proof-s3-fault",
+    imageEnvironment.NODE_BACKEND_IMAGE,
+  );
   const gateway = assertSelectedImage(
     rendered,
     "realtime-gateway",
@@ -2556,7 +2609,13 @@ export function validateRealtimeProofRenderedTopology({
     secondaryNodePort,
     "secondary Node realtime proof",
   );
+  assertNodePort(
+    nodeRealtimeS3Fault,
+    faultNodePort,
+    "fault Node realtime proof",
+  );
   assertSharedRealtimeAuthority(nodeRealtime, nodeRealtimeProofPeer);
+  assertS3FaultTopology(nodeRealtime, nodeRealtimeS3Fault);
   assertRustPort(gateway);
 
   const web = service(rendered, "web");
@@ -2565,6 +2624,9 @@ export function validateRealtimeProofRenderedTopology({
   }
   if (web.depends_on?.["node-realtime-proof-peer"] !== undefined) {
     throw new TypeError("Web must not target the secondary Node realtime proof endpoint");
+  }
+  if (web.depends_on?.["node-realtime-proof-s3-fault"] !== undefined) {
+    throw new TypeError("Web must not target the S3 fault realtime proof endpoint");
   }
   if (!web.depends_on?.["realtime-gateway"]) {
     throw new TypeError("Web must retain the Rust realtime gateway dependency");
@@ -2588,6 +2650,7 @@ export function createRealtimeProofPreflight({
   rendered,
   nodePort,
   secondaryNodePort,
+  faultNodePort,
 }) {
   assertObject(sourceState, "realtime proof source state");
   if (Object.keys(sourceState).sort().join(",") !== "clean,headSha") {
@@ -2608,6 +2671,7 @@ export function createRealtimeProofPreflight({
     selection: selected,
     nodePort,
     secondaryNodePort,
+    faultNodePort,
   });
   return {
     sourceState: { ...sourceState },
@@ -2626,6 +2690,7 @@ export function probeRealtimeCandidateRunningImages({
   rendered,
   nodePort,
   secondaryNodePort,
+  faultNodePort,
   observations,
 }) {
   const preflight = createRealtimeProofPreflight({
@@ -2634,6 +2699,7 @@ export function probeRealtimeCandidateRunningImages({
     rendered,
     nodePort,
     secondaryNodePort,
+    faultNodePort,
   });
   assertObject(observations, "candidate running image observations");
   if (
