@@ -30,6 +30,7 @@ import {
   createRealtimeProofPreflight,
   parseRealtimeProofPort,
   probeRealtimeAudioFrame,
+  probeRealtimeCapacityCohort,
   probeRealtimeUpgradeRefusal,
   runRealtimeProtocolParityStage,
   summarizeRealtimeAudioFrameProbes,
@@ -322,9 +323,9 @@ function renderedProofTopology(value = selection(), nodePort = 18_081) {
   };
 }
 
-function realtimeProbeTicket(nonce = "nonce-w3-8-proof") {
+function realtimeProbeTicket(nonce = "nonce-w3-8-proof", sessionId = probeSession) {
   return issueRealtimeTicket({
-    sessionId: probeSession,
+    sessionId,
     tenantId: probeTenant,
     learnerId: probeLearner,
     externalAsrProcessing: false,
@@ -377,7 +378,7 @@ async function withRealtimeProbeApp(handleAdmittedSocket, body, overrides = {}) 
   const app = createRealtimeApplication(realtimeProbeAppOptions(handleAdmittedSocket, overrides));
   await app.listen({ host: "127.0.0.1", port: 0 });
   try {
-    return await body(app.server.address().port);
+    return await body(app.server.address().port, app);
   } finally {
     await app.close();
   }
@@ -1165,6 +1166,129 @@ test("the parity stage fails closed on malformed issuance or unexpected wire beh
     }),
     /refusal was not proven/i,
   );
+});
+
+test("the capacity cohort holds 100 exact-profile sessions, refuses 101, and closes every peer", async () => {
+  const sessions = Array.from({ length: 100 }, (_, index) => {
+    const sessionId = `private-capacity-session-${index}`;
+    return {
+      sessionId,
+      ticket: realtimeProbeTicket(`private-capacity-nonce-${index}`, sessionId),
+    };
+  });
+  const refusedSessionId = "private-capacity-session-101";
+  const refused = {
+    sessionId: refusedSessionId,
+    ticket: realtimeProbeTicket("private-capacity-nonce-101", refusedSessionId),
+  };
+  let stored = 0;
+
+  await withRealtimeProbeApp(null, async (port, app) => {
+    const result = await probeRealtimeCapacityCohort({
+      port,
+      sessions,
+      refusedSession: refused,
+      origin: probeOrigin,
+      traceId: "private-capacity-trace",
+      frame: Buffer.alloc(15_360, 41),
+      timeoutMs: 10_000,
+    });
+    assert.equal(result.sessionsAccepted, 100);
+    assert.equal(result.sessionsRefused, 1);
+    assert.equal(result.session101Refused, true);
+    assert.ok(result.ackP95Ms >= 0 && result.ackP95Ms < 250);
+    assert.deepEqual(Object.keys(result).sort(), [
+      "ackP95Ms",
+      "session101Refused",
+      "sessionsAccepted",
+      "sessionsRefused",
+    ]);
+    assert.equal(stored, 100);
+
+    let metrics;
+    const drainDeadline = performance.now() + 2_000;
+    do {
+      metrics = await app.inject({ method: "GET", url: "/metrics" });
+      if (/realtime_audio_active_sessions 0(?:\n|$)/.test(metrics.body)) break;
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    } while (performance.now() < drainDeadline);
+    assert.equal(metrics.statusCode, 200);
+    assert.match(metrics.body, /realtime_audio_active_sessions 0(?:\n|$)/);
+    assert.match(metrics.body, /realtime_audio_retained_chunks 0(?:\n|$)/);
+    assert.match(metrics.body, /realtime_audio_retained_bytes 0(?:\n|$)/);
+    const serialized = JSON.stringify(result);
+    for (const privateValue of [
+      probeTenant,
+      probeLearner,
+      "private-capacity-trace",
+      ...sessions.flatMap(({ sessionId, ticket }) => [sessionId, ticket]),
+      refused.sessionId,
+      refused.ticket,
+    ]) {
+      assert.equal(serialized.includes(privateValue), false);
+    }
+  }, {
+    audioObjectStore: {
+      assertReady: async () => {},
+      close: async () => {},
+      put: async () => {
+        stored += 1;
+        return { created: true };
+      },
+    },
+  });
+});
+
+test("the capacity cohort rejects unsafe inputs and never reflects credential-bearing peer data", async () => {
+  const sessions = Array.from({ length: 100 }, (_, index) => {
+    const sessionId = `private-mutation-session-${index}`;
+    return {
+      sessionId,
+      ticket: realtimeProbeTicket(`private-mutation-nonce-${index}`, sessionId),
+    };
+  });
+  const refusedSessionId = "private-mutation-session-101";
+  const base = {
+    port: 65_534,
+    sessions,
+    refusedSession: {
+      sessionId: refusedSessionId,
+      ticket: realtimeProbeTicket("private-mutation-nonce-101", refusedSessionId),
+    },
+    origin: probeOrigin,
+    traceId: null,
+    frame: Buffer.alloc(15_360),
+    timeoutMs: 100,
+  };
+
+  const cases = [
+    [{ ...base, sessions: sessions.slice(1) }, /exactly 100/i],
+    [{ ...base, sessions: [...sessions.slice(0, 99), sessions[0]] }, /unique/i],
+    [{ ...base, refusedSession: sessions[0] }, /distinct/i],
+    [{ ...base, frame: Buffer.alloc(15_359) }, /15360|exact/i],
+    [{ ...base, timeoutMs: 49 }, /timeout/i],
+  ];
+  for (const [input, pattern] of cases) {
+    await assert.rejects(() => probeRealtimeCapacityCohort(input), pattern);
+  }
+
+  let error;
+  try {
+    await probeRealtimeCapacityCohort(base);
+  } catch (value) {
+    error = value;
+  }
+  assert.ok(error instanceof Error);
+  for (const privateValue of [
+    probeTenant,
+    probeLearner,
+    sessions[0].sessionId,
+    sessions[0].ticket,
+    base.refusedSession.sessionId,
+    base.refusedSession.ticket,
+  ]) {
+    assert.equal(error.message.includes(privateValue), false);
+  }
 });
 
 test("proof CLI arguments reject unsafe paths, ports, projects, actors, acknowledgements, and extra flags", () => {

@@ -21,6 +21,7 @@ const maximumProbeSessionBytes = 256;
 const maximumProbeTicketBytes = 16 * 1024;
 const maximumProbeTraceBytes = 256;
 const maximumParityResponseBytes = 64 * 1024;
+const maximumCapacityCleanupMs = 2_000;
 const platformApiBaseUrl = "http://127.0.0.1:8080";
 const rustRealtimePort = 8081;
 const protocolParityRetentions = Object.freeze([
@@ -421,6 +422,308 @@ export async function probeRealtimeAudioFrame({
       else finish(probeError("transport failed"));
     };
   });
+}
+
+function capacityError(message) {
+  return new Error(`realtime capacity probe ${message}`);
+}
+
+function capacityPeer(value, label) {
+  if (
+    !value ||
+    typeof value !== "object" ||
+    Array.isArray(value) ||
+    Object.keys(value).length !== 2 ||
+    !Object.hasOwn(value, "sessionId") ||
+    !Object.hasOwn(value, "ticket")
+  ) {
+    throw new TypeError(`realtime capacity probe ${label} must contain exactly sessionId and ticket`);
+  }
+  return Object.freeze({
+    sessionId: requiredProbeString(value.sessionId, `${label} session id`, maximumProbeSessionBytes),
+    ticket: requiredProbeString(value.ticket, `${label} ticket`, maximumProbeTicketBytes),
+  });
+}
+
+function capacityEndpoint(port, peer, traceId) {
+  const endpoint = new URL(`ws://127.0.0.1:${port}`);
+  endpoint.pathname = `/v1/recitation-sessions/${encodeURIComponent(peer.sessionId)}/audio`;
+  endpoint.searchParams.set("ticket", peer.ticket);
+  if (traceId !== null) endpoint.searchParams.set("trace_id", traceId);
+  return endpoint;
+}
+
+function capacitySocket(port, peer, origin, traceId, sockets) {
+  let socket;
+  try {
+    socket = new globalThis.WebSocket(capacityEndpoint(port, peer, traceId), {
+      headers: { Origin: origin },
+    });
+  } catch {
+    throw capacityError("transport failed");
+  }
+  const tracked = {
+    socket,
+    closed: false,
+    closePromise: null,
+    closeResolve: null,
+  };
+  tracked.closePromise = new Promise((resolve) => {
+    tracked.closeResolve = resolve;
+  });
+  sockets.add(tracked);
+  return tracked;
+}
+
+function markCapacitySocketClosed(tracked) {
+  if (tracked.closed) return;
+  tracked.closed = true;
+  tracked.closeResolve();
+}
+
+function openCapacityPeer({ port, peer, origin, traceId, frame, deadline, sockets }) {
+  const tracked = capacitySocket(port, peer, origin, traceId, sockets);
+  const { socket } = tracked;
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    let sentAt = null;
+    const timeout = setTimeout(
+      () => finish(capacityError("timed out")),
+      Math.max(1, Math.ceil(deadline - performance.now())),
+    );
+    const finish = (error, value = null) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeout);
+      if (error) reject(error);
+      else resolve(value);
+    };
+    socket.binaryType = "arraybuffer";
+    socket.onopen = () => {
+      sentAt = performance.now();
+      try {
+        socket.send(frame);
+      } catch {
+        finish(capacityError("transport failed"));
+      }
+    };
+    socket.onmessage = (event) => {
+      if (settled) {
+        tracked.protocolError = true;
+        return;
+      }
+      const ack = parseAudioAck(acknowledgementInput(event.data));
+      if (
+        ack === null ||
+        ack.session_id !== peer.sessionId ||
+        ack.sequence !== 0 ||
+        ack.accepted !== true ||
+        ack.trace_id !== traceId ||
+        sentAt === null
+      ) {
+        finish(capacityError("acknowledgement did not match an accepted capacity frame"));
+        return;
+      }
+      finish(null, Math.max(0, performance.now() - sentAt));
+    };
+    socket.onclose = () => {
+      markCapacitySocketClosed(tracked);
+      if (!settled) finish(capacityError("closed before acknowledgement"));
+    };
+    socket.onerror = () => {
+      if (!settled) finish(capacityError("transport failed"));
+    };
+  });
+}
+
+function openRefusedCapacityPeer({ port, peer, origin, traceId, deadline, sockets }) {
+  const tracked = capacitySocket(port, peer, origin, traceId, sockets);
+  const { socket } = tracked;
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    let refusalAck = false;
+    const timeout = setTimeout(
+      () => finish(capacityError("session 101 refusal timed out")),
+      Math.max(1, Math.ceil(deadline - performance.now())),
+    );
+    const finish = (error) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeout);
+      if (error) reject(error);
+      else resolve();
+    };
+    socket.binaryType = "arraybuffer";
+    socket.onmessage = (event) => {
+      if (refusalAck) {
+        finish(capacityError("session 101 received multiple acknowledgements"));
+        return;
+      }
+      const ack = parseAudioAck(acknowledgementInput(event.data));
+      if (
+        ack === null ||
+        ack.session_id !== peer.sessionId ||
+        ack.chunk_id !== "session-start" ||
+        ack.sequence !== 0 ||
+        ack.accepted !== false ||
+        ack.trace_id !== traceId ||
+        ack.message !== "realtime session capacity reached"
+      ) {
+        finish(capacityError("session 101 acknowledgement was invalid"));
+        return;
+      }
+      refusalAck = true;
+    };
+    socket.onclose = (event) => {
+      markCapacitySocketClosed(tracked);
+      if (!refusalAck || event.code !== 1013 || event.reason !== "try again later") {
+        finish(capacityError("session 101 refusal was invalid"));
+        return;
+      }
+      finish(null);
+    };
+    socket.onerror = () => {
+      if (!settled) finish(capacityError("transport failed"));
+    };
+  });
+}
+
+async function closeCapacitySockets(sockets, timeoutMs) {
+  for (const tracked of sockets) {
+    if (tracked.closed) continue;
+    try {
+      if (tracked.socket.readyState === 0) {
+        tracked.socket.onopen = () => {
+          try {
+            tracked.socket.close();
+          } catch {
+            // The peer failed between the open event and cleanup.
+          }
+        };
+      } else {
+        tracked.socket.close();
+      }
+    } catch {
+      // The close/error event remains the authoritative cleanup signal.
+    }
+  }
+  const pending = [...sockets].filter(({ closed }) => !closed).map(({ closePromise }) => closePromise);
+  if (pending.length === 0) return true;
+  let timer;
+  const completed = await Promise.race([
+    Promise.all(pending).then(() => true),
+    new Promise((resolve) => {
+      timer = setTimeout(() => resolve(false), timeoutMs);
+    }),
+  ]);
+  clearTimeout(timer);
+  return completed;
+}
+
+/**
+ * Hold the frozen active-session ceiling open against one loopback candidate, measure one exact
+ * frame per peer, prove the 101st session refusal, then close every credential-bearing socket.
+ * Only aggregate capacity and latency facts escape this boundary.
+ */
+export async function probeRealtimeCapacityCohort({
+  port,
+  sessions,
+  refusedSession,
+  origin,
+  traceId,
+  frame,
+  timeoutMs,
+}) {
+  const selectedPort = probePort(port);
+  const selectedOrigin = probeOrigin(origin);
+  if (
+    traceId !== null &&
+    (
+      typeof traceId !== "string" ||
+      traceId.trim() === "" ||
+      traceId !== traceId.trim() ||
+      Buffer.byteLength(traceId) > maximumProbeTraceBytes
+    )
+  ) {
+    throw new TypeError("realtime capacity probe trace id must be null or a non-empty string");
+  }
+  if (!Array.isArray(sessions) || sessions.length !== AUDIO_LIMITS.maxActiveSessions) {
+    throw new TypeError(`realtime capacity probe requires exactly ${AUDIO_LIMITS.maxActiveSessions} sessions`);
+  }
+  const selectedSessions = sessions.map((peer) => capacityPeer(peer, "session"));
+  const selectedRefusedSession = capacityPeer(refusedSession, "refused session");
+  const sessionIds = new Set(selectedSessions.map(({ sessionId }) => sessionId));
+  const tickets = new Set(selectedSessions.map(({ ticket }) => ticket));
+  if (sessionIds.size !== selectedSessions.length || tickets.size !== selectedSessions.length) {
+    throw new TypeError("realtime capacity probe sessions and tickets must be unique");
+  }
+  if (
+    sessionIds.has(selectedRefusedSession.sessionId) ||
+    tickets.has(selectedRefusedSession.ticket)
+  ) {
+    throw new TypeError("realtime capacity probe refused session must be distinct");
+  }
+  const selectedFrame = probeFrame(frame);
+  if (selectedFrame.byteLength !== AUDIO_LIMITS.frameBytes) {
+    throw new TypeError(`realtime capacity probe frame must contain exactly ${AUDIO_LIMITS.frameBytes} bytes`);
+  }
+  const selectedTimeout = assertProbeTimeout(timeoutMs);
+  if (typeof globalThis.WebSocket !== "function") {
+    throw new TypeError("realtime capacity probe requires the Node WebSocket runtime");
+  }
+
+  const sockets = new Set();
+  const deadline = performance.now() + selectedTimeout;
+  let result;
+  let operationError = null;
+  try {
+    const latencies = await Promise.all(selectedSessions.map((peer) => openCapacityPeer({
+      port: selectedPort,
+      peer,
+      origin: selectedOrigin,
+      traceId,
+      frame: selectedFrame,
+      deadline,
+      sockets,
+    })));
+    if ([...sockets].some(({ socket, protocolError }) => socket.readyState !== 1 || protocolError)) {
+      throw capacityError("an accepted capacity session did not remain open");
+    }
+    await openRefusedCapacityPeer({
+      port: selectedPort,
+      peer: selectedRefusedSession,
+      origin: selectedOrigin,
+      traceId,
+      deadline,
+      sockets,
+    });
+    if (performance.now() + duplicateAckWindowMs > deadline) {
+      throw capacityError("timed out");
+    }
+    await new Promise((resolve) => setTimeout(resolve, duplicateAckWindowMs));
+    if ([...sockets].some(({ protocolError }) => protocolError)) {
+      throw capacityError("a capacity session received multiple acknowledgements");
+    }
+    result = Object.freeze({
+      sessionsAccepted: selectedSessions.length,
+      sessionsRefused: 1,
+      session101Refused: true,
+      ackP95Ms: percentile(latencies, 0.95),
+    });
+  } catch (error) {
+    operationError =
+      error instanceof Error && error.message.startsWith("realtime capacity probe ")
+        ? error
+        : capacityError("failed");
+  }
+
+  const cleaned = await closeCapacitySockets(
+    sockets,
+    Math.min(maximumCapacityCleanupMs, selectedTimeout),
+  );
+  if (operationError) throw operationError;
+  if (!cleaned) throw capacityError("socket cleanup timed out");
+  return result;
 }
 
 /**
