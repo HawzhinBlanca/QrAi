@@ -29,9 +29,13 @@ import {
 import {
   createRealtimeProofPreflight,
   parseRealtimeProofPort,
+  probeRealtimeAudioFrame,
+  summarizeRealtimeAudioFrameProbes,
   validateRealtimeProofRenderedTopology,
 } from "../../scripts/lib/realtime-image-probe.mjs";
 import { parseRealtimeImageProofArguments } from "../../scripts/realtime-image-proof.mjs";
+import { issueRealtimeTicket } from "../../server/src/lib/ticket.mjs";
+import { createRealtimeApplication } from "../../server/src/realtime/main.mjs";
 
 const MiB = 1024 * 1024;
 const candidateSha = "0123456789abcdef0123456789abcdef01234567";
@@ -40,6 +44,12 @@ const selectionCreatedAt = "2026-08-08T07:59:00.000Z";
 const startedAt = "2026-08-08T08:00:00.000Z";
 const completedAt = "2026-08-08T08:51:00.000Z";
 const expiresAt = "2026-08-09T08:51:00.000Z";
+const probeOrigin = "https://proof.quran.example.org";
+const probeSecret = "w3.8-image-proof-ticket-secret-over-32-bytes";
+const probeTenant = "tenant-w3-8-proof";
+const probeSession = "session-w3-8-proof";
+const probeLearner = "learner-w3-8-proof";
+const probeNowSeconds = 2_100_000_000;
 
 function digests(offset) {
   const digits = "123456789abcdef";
@@ -310,6 +320,66 @@ function renderedProofTopology(value = selection(), nodePort = 18_081) {
   };
 }
 
+function realtimeProbeTicket(nonce = "nonce-w3-8-proof") {
+  return issueRealtimeTicket({
+    sessionId: probeSession,
+    tenantId: probeTenant,
+    learnerId: probeLearner,
+    externalAsrProcessing: false,
+    audioRetention: "discard",
+    expiresAtUnixSeconds: probeNowSeconds + 300,
+    nonce,
+  }, probeSecret);
+}
+
+function realtimeProbeAppOptions(handleAdmittedSocket) {
+  return {
+    db: { assertRestrictedRole: async () => {}, end: async () => {} },
+    audioObjectStore: {
+      assertReady: async () => {},
+      close: async () => {},
+      put: async () => ({ created: true }),
+    },
+    workerReadyUrl: "http://worker:8098/ready",
+    asrReadyUrl: "http://asr:8091/ready",
+    readinessTimeoutMs: 100,
+    shutdownGraceMs: 1_000,
+    metricsToken: null,
+    metricsDevOpen: true,
+    fetchImpl: async () => ({ status: 200, body: { cancel: async () => {} } }),
+    ticketSecret: probeSecret,
+    tenantId: probeTenant,
+    allowedOrigins: [probeOrigin],
+    allowMissingOrigin: false,
+    rateLimitEnabled: true,
+    trustedProxyHops: 0,
+    replayAuthority: {
+      claim: async () => "fresh",
+      renderMetrics: () => "",
+      start: () => {},
+      stop: async () => {},
+    },
+    audioOutcomeAuthority: {
+      stored: async () => "discarded",
+      lost: async () => "accepted_lost",
+      lostMany: async () => "accepted_lost",
+    },
+    admissionNowUnixSeconds: () => probeNowSeconds,
+    handleAdmittedSocket,
+    logger: false,
+  };
+}
+
+async function withRealtimeProbeApp(handleAdmittedSocket, body) {
+  const app = createRealtimeApplication(realtimeProbeAppOptions(handleAdmittedSocket));
+  await app.listen({ host: "127.0.0.1", port: 0 });
+  try {
+    return await body(app.server.address().port);
+  } finally {
+    await app.close();
+  }
+}
+
 test("passed evidence binds the candidate, immutable non-root images, topology, storage, stages, and bars", () => {
   const evidence = createRealtimeImageEvidence(validInput());
   assert.equal(evidence.schemaVersion, "qrai-realtime-image-evidence/v1");
@@ -547,6 +617,184 @@ test("rendered proof preflight binds exact images, topology, storage, and clean 
       nodePort: 18_081,
     }),
     /candidate SHA/i,
+  );
+});
+
+test("the actual-image transport probe returns only strict aggregate acknowledgement facts", async () => {
+  const credential = realtimeProbeTicket("nonce-safe-result");
+  const traceId = "trace-w3-8-proof";
+  const diagnostic = `accepted-without-exposing-${credential}`;
+  let receivedFrame = null;
+  let receivedAsBinary = null;
+
+  await withRealtimeProbeApp((socket) => {
+    socket.once("message", (payload, isBinary) => {
+      receivedFrame = Buffer.from(payload);
+      receivedAsBinary = isBinary;
+      socket.send(JSON.stringify({
+        kind: "audio.ack",
+        session_id: probeSession,
+        chunk_id: "private-chunk-w3-8",
+        sequence: 0,
+        accepted: true,
+        trace_id: traceId,
+        message: diagnostic,
+      }));
+    });
+  }, async (port) => {
+    const frame = Buffer.alloc(15_360, 0x2a);
+    const pending = probeRealtimeAudioFrame({
+      port,
+      sessionId: probeSession,
+      ticket: credential,
+      origin: probeOrigin,
+      traceId,
+      frame,
+      expectedSequence: 0,
+      timeoutMs: 2_000,
+    });
+    frame.fill(0x00);
+    const result = await pending;
+    assert.deepEqual(Object.keys(result).sort(), ["accepted", "ackLatencyMs", "sequence"]);
+    assert.equal(result.accepted, true);
+    assert.equal(result.sequence, 0);
+    assert.ok(Number.isFinite(result.ackLatencyMs) && result.ackLatencyMs >= 0);
+    const serialized = JSON.stringify(result);
+    for (const privateValue of [credential, probeSession, probeLearner, traceId, diagnostic, "private-chunk-w3-8"]) {
+      assert.equal(serialized.includes(privateValue), false);
+    }
+  });
+
+  assert.equal(receivedAsBinary, true);
+  assert.deepEqual(receivedFrame, Buffer.alloc(15_360, 0x2a));
+});
+
+test("the actual-image transport probe fails closed without reflecting credentials or peer data", async () => {
+  const credential = realtimeProbeTicket("nonce-safe-errors");
+  const privateDiagnostic = `peer-said-${credential}-${probeLearner}`;
+  const invalidPeers = [
+    ["invalid acknowledgement", (socket) => socket.once("message", () => socket.send(JSON.stringify({
+      kind: "audio.ack",
+      session_id: probeSession,
+      chunk_id: "private-chunk-invalid",
+      sequence: 0,
+      accepted: true,
+      trace_id: null,
+      message: privateDiagnostic,
+      extra: true,
+    })))],
+    ["did not match", (socket) => socket.once("message", () => socket.send(JSON.stringify({
+      kind: "audio.ack",
+      session_id: "another-private-session",
+      chunk_id: "private-chunk-mismatch",
+      sequence: 7,
+      accepted: false,
+      trace_id: "another-private-trace",
+      message: privateDiagnostic,
+    })))],
+    ["multiple acknowledgements", (socket) => socket.once("message", () => {
+      const ack = JSON.stringify({
+        kind: "audio.ack",
+        session_id: probeSession,
+        chunk_id: "private-chunk-duplicate",
+        sequence: 0,
+        accepted: true,
+        trace_id: null,
+        message: privateDiagnostic,
+      });
+      socket.send(ack);
+      socket.send(ack);
+    })],
+  ];
+
+  for (const [pattern, handler] of invalidPeers) {
+    await withRealtimeProbeApp(handler, async (port) => {
+      const error = await probeRealtimeAudioFrame({
+        port,
+        sessionId: probeSession,
+        ticket: credential,
+        origin: probeOrigin,
+        traceId: null,
+        frame: Buffer.alloc(15_360),
+        expectedSequence: 0,
+        timeoutMs: 2_000,
+      }).then(() => null, (reason) => reason);
+      assert.match(error?.message ?? "", new RegExp(pattern, "i"));
+      const serialized = String(error?.stack ?? error);
+      for (const privateValue of [credential, probeSession, probeLearner, privateDiagnostic, "private-chunk"]) {
+        assert.equal(serialized.includes(privateValue), false, `${pattern} reflected private peer data`);
+      }
+    });
+  }
+
+  await withRealtimeProbeApp(() => {}, async (port) => {
+    const error = await probeRealtimeAudioFrame({
+      port,
+      sessionId: probeSession,
+      ticket: credential,
+      origin: probeOrigin,
+      traceId: null,
+      frame: Buffer.alloc(15_360),
+      expectedSequence: 0,
+      timeoutMs: 50,
+    }).then(() => null, (reason) => reason);
+    assert.match(error?.message ?? "", /timed out/i);
+    assert.equal(String(error?.stack ?? error).includes(credential), false);
+  });
+});
+
+test("the transport probe target, payload, expectation, and aggregate accounting are bounded", async () => {
+  const base = {
+    port: 18_081,
+    sessionId: probeSession,
+    ticket: realtimeProbeTicket("nonce-input-bounds"),
+    origin: probeOrigin,
+    traceId: null,
+    frame: Buffer.alloc(15_360),
+    expectedSequence: 0,
+    timeoutMs: 2_000,
+  };
+  for (const [change, pattern] of [
+    [{ port: 80 }, /port/i],
+    [{ sessionId: "" }, /session/i],
+    [{ sessionId: ` ${probeSession}` }, /session/i],
+    [{ sessionId: "s".repeat(257) }, /session/i],
+    [{ ticket: "" }, /ticket/i],
+    [{ ticket: "t".repeat(16 * 1024 + 1) }, /ticket/i],
+    [{ origin: "http://proof.quran.example.org" }, /origin/i],
+    [{ origin: "https://user:secret@proof.quran.example.org" }, /origin/i],
+    [{ origin: `${probeOrigin}/path` }, /origin/i],
+    [{ traceId: " " }, /trace/i],
+    [{ traceId: "t".repeat(257) }, /trace/i],
+    [{ frame: "not-binary" }, /binary/i],
+    [{ frame: Buffer.alloc(2 * 1024 * 1024 + 64 * 1024 + 1) }, /transport/i],
+    [{ expectedSequence: -1 }, /sequence/i],
+    [{ timeoutMs: 49 }, /timeout/i],
+  ]) {
+    await assert.rejects(() => probeRealtimeAudioFrame({ ...base, ...change }), pattern);
+  }
+
+  const probes = Array.from({ length: 20 }, (_value, index) => ({
+    accepted: index % 4 !== 0,
+    sequence: index,
+    ackLatencyMs: index + 1,
+  }));
+  assert.deepEqual(summarizeRealtimeAudioFrameProbes(probes), {
+    framesSent: 20,
+    accepted: 15,
+    rejected: 5,
+    lost: 0,
+    uncertain: 0,
+    ackP95Ms: 19,
+    ackP99Ms: 20,
+  });
+  assert.throws(
+    () => summarizeRealtimeAudioFrameProbes([{ ...probes[0], ticket: base.ticket }]),
+    /exact|probe result/i,
+  );
+  assert.throws(
+    () => summarizeRealtimeAudioFrameProbes([{ ...probes[0], ackLatencyMs: -1 }]),
+    /latency/i,
   );
 });
 

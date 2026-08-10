@@ -4,10 +4,20 @@ import {
   assertReleaseDeploymentSelection,
   composeImageEnvironment,
 } from "./release-deployment.mjs";
+import { AUDIO_LIMITS } from "../../server/src/realtime/audio.mjs";
+import { parseAudioAck } from "../../server/src/realtime/protocol.mjs";
 
 const sourceShaPattern = /^[a-f0-9]{40}$/;
 const expectedOwnerPattern = /^\d{12}$/;
 const storageServices = Object.freeze(["node-api", "job-worker", "node-realtime"]);
+const audioProbeResultFields = Object.freeze(["accepted", "ackLatencyMs", "sequence"]);
+const audioProbeResultFieldSet = new Set(audioProbeResultFields);
+const minimumProbeTimeoutMs = 50;
+const maximumProbeTimeoutMs = 30_000;
+const duplicateAckWindowMs = 25;
+const maximumProbeSessionBytes = 256;
+const maximumProbeTicketBytes = 16 * 1024;
+const maximumProbeTraceBytes = 256;
 
 function assertObject(value, label) {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
@@ -26,6 +36,81 @@ function canonicalJson(value) {
 
 function sha256(value) {
   return `sha256:${createHash("sha256").update(value).digest("hex")}`;
+}
+
+function requiredProbeString(value, label, maximumBytes) {
+  if (
+    typeof value !== "string" ||
+    value.trim() === "" ||
+    value !== value.trim() ||
+    Buffer.byteLength(value) > maximumBytes
+  ) {
+    throw new TypeError(`realtime audio probe ${label} is required`);
+  }
+  return value;
+}
+
+function probeOrigin(value) {
+  const selected = requiredProbeString(value, "origin", 2_048);
+  let parsed;
+  try {
+    parsed = new URL(selected);
+  } catch {
+    throw new TypeError("realtime audio probe origin must be an exact HTTPS origin");
+  }
+  if (
+    parsed.protocol !== "https:" ||
+    parsed.username !== "" ||
+    parsed.password !== "" ||
+    parsed.pathname !== "/" ||
+    parsed.search !== "" ||
+    parsed.hash !== "" ||
+    parsed.origin !== selected
+  ) {
+    throw new TypeError("realtime audio probe origin must be an exact HTTPS origin");
+  }
+  return selected;
+}
+
+function probePort(value) {
+  if (!Number.isSafeInteger(value) || value < 1024 || value > 65_535) {
+    throw new TypeError("realtime audio probe port must be a safe integer from 1024 through 65535");
+  }
+  return value;
+}
+
+function probeFrame(value) {
+  let frame;
+  if (Buffer.isBuffer(value)) frame = Buffer.from(value);
+  else if (value instanceof ArrayBuffer) frame = Buffer.from(value.slice(0));
+  else if (ArrayBuffer.isView(value)) {
+    frame = Buffer.from(new Uint8Array(value.buffer, value.byteOffset, value.byteLength));
+  } else {
+    throw new TypeError("realtime audio probe frame must be binary");
+  }
+  if (frame.byteLength > AUDIO_LIMITS.maxTransportBytes) {
+    throw new TypeError("realtime audio probe frame exceeds the frozen transport boundary");
+  }
+  return frame;
+}
+
+function acknowledgementInput(value) {
+  if (typeof value === "string") return value;
+  if (Buffer.isBuffer(value)) return value.toString("utf8");
+  if (value instanceof ArrayBuffer) return Buffer.from(value).toString("utf8");
+  if (ArrayBuffer.isView(value)) {
+    return Buffer.from(value.buffer, value.byteOffset, value.byteLength).toString("utf8");
+  }
+  return null;
+}
+
+function probeError(message) {
+  return new Error(`realtime audio probe ${message}`);
+}
+
+function percentile(values, proportion) {
+  const ordered = [...values].sort((left, right) => left - right);
+  return ordered[Math.ceil(proportion * ordered.length) - 1];
 }
 
 function service(rendered, name) {
@@ -149,6 +234,182 @@ export function parseRealtimeProofPort(value) {
     throw new TypeError("realtime proof port must be 1024..65535 and must not be Rust port 8081");
   }
   return port;
+}
+
+/**
+ * Send one bounded binary frame to a loopback release-candidate endpoint and accept only the
+ * frozen seven-field acknowledgement. The credential-bearing URL and peer fields stay inside this
+ * function; callers receive only the delivery decision, sequence, and measured latency.
+ */
+export async function probeRealtimeAudioFrame({
+  port,
+  sessionId,
+  ticket,
+  origin,
+  traceId,
+  frame,
+  expectedSequence,
+  timeoutMs,
+}) {
+  const selectedPort = probePort(port);
+  const selectedSession = requiredProbeString(sessionId, "session id", maximumProbeSessionBytes);
+  const selectedTicket = requiredProbeString(ticket, "ticket", maximumProbeTicketBytes);
+  const selectedOrigin = probeOrigin(origin);
+  if (
+    traceId !== null &&
+    (
+      typeof traceId !== "string" ||
+      traceId.trim() === "" ||
+      traceId !== traceId.trim() ||
+      Buffer.byteLength(traceId) > maximumProbeTraceBytes
+    )
+  ) {
+    throw new TypeError("realtime audio probe trace id must be null or a non-empty string");
+  }
+  if (!Number.isSafeInteger(expectedSequence) || expectedSequence < 0) {
+    throw new TypeError("realtime audio probe expected sequence must be a non-negative safe integer");
+  }
+  if (
+    !Number.isSafeInteger(timeoutMs) ||
+    timeoutMs < minimumProbeTimeoutMs ||
+    timeoutMs > maximumProbeTimeoutMs
+  ) {
+    throw new TypeError(
+      `realtime audio probe timeout must be ${minimumProbeTimeoutMs}..${maximumProbeTimeoutMs} milliseconds`,
+    );
+  }
+  const selectedFrame = probeFrame(frame);
+  if (typeof globalThis.WebSocket !== "function") {
+    throw new TypeError("realtime audio probe requires the Node WebSocket runtime");
+  }
+
+  const endpoint = new URL(`ws://127.0.0.1:${selectedPort}`);
+  endpoint.pathname = `/v1/recitation-sessions/${encodeURIComponent(selectedSession)}/audio`;
+  endpoint.searchParams.set("ticket", selectedTicket);
+  if (traceId !== null) endpoint.searchParams.set("trace_id", traceId);
+
+  return new Promise((resolve, reject) => {
+    let socket;
+    let timeout;
+    let duplicateWindow;
+    let sentAt = null;
+    let result = null;
+    let settled = false;
+
+    const close = () => {
+      try {
+        socket?.close();
+      } catch {
+        // The bounded timeout remains authoritative even if the peer already closed.
+      }
+    };
+    const finish = (error, value = null) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeout);
+      clearTimeout(duplicateWindow);
+      close();
+      if (error) reject(error);
+      else resolve(Object.freeze(value));
+    };
+
+    try {
+      // Node's built-in WebSocket accepts request headers without introducing a second transport
+      // package. Origin is the only caller-controlled header and was reduced to an exact HTTPS
+      // origin above.
+      socket = new globalThis.WebSocket(endpoint, { headers: { Origin: selectedOrigin } });
+    } catch {
+      finish(probeError("transport failed"));
+      return;
+    }
+
+    timeout = setTimeout(() => finish(probeError("timed out")), timeoutMs);
+    socket.binaryType = "arraybuffer";
+    socket.onopen = () => {
+      sentAt = performance.now();
+      try {
+        socket.send(selectedFrame);
+      } catch {
+        finish(probeError("transport failed"));
+      }
+    };
+    socket.onmessage = (event) => {
+      if (result !== null) {
+        finish(probeError("received multiple acknowledgements"));
+        return;
+      }
+      const ack = parseAudioAck(acknowledgementInput(event.data));
+      if (ack === null) {
+        finish(probeError("received an invalid acknowledgement"));
+        return;
+      }
+      if (
+        ack.session_id !== selectedSession ||
+        ack.sequence !== expectedSequence ||
+        ack.trace_id !== traceId
+      ) {
+        finish(probeError("acknowledgement did not match the requested frame"));
+        return;
+      }
+      if (sentAt === null) {
+        finish(probeError("received an acknowledgement before sending a frame"));
+        return;
+      }
+      result = {
+        accepted: ack.accepted,
+        ackLatencyMs: Math.max(0, performance.now() - sentAt),
+        sequence: ack.sequence,
+      };
+      duplicateWindow = setTimeout(() => finish(null, result), duplicateAckWindowMs);
+    };
+    socket.onclose = () => {
+      if (result !== null) finish(null, result);
+      else finish(probeError("closed before acknowledgement"));
+    };
+    socket.onerror = () => {
+      if (result !== null) finish(null, result);
+      else finish(probeError("transport failed"));
+    };
+  });
+}
+
+/** Convert successful one-frame probes into the closed accounting used by W3.8 stage evidence. */
+export function summarizeRealtimeAudioFrameProbes(results) {
+  if (!Array.isArray(results) || results.length === 0) {
+    throw new TypeError("realtime audio probe results must be a non-empty array");
+  }
+  let accepted = 0;
+  const latencies = [];
+  for (const result of results) {
+    assertObject(result, "realtime audio probe result");
+    const keys = Object.keys(result);
+    if (
+      keys.length !== audioProbeResultFields.length ||
+      !keys.every((key) => audioProbeResultFieldSet.has(key))
+    ) {
+      throw new TypeError("realtime audio probe result must have the exact aggregate shape");
+    }
+    if (typeof result.accepted !== "boolean") {
+      throw new TypeError("realtime audio probe result accepted must be boolean");
+    }
+    if (!Number.isSafeInteger(result.sequence) || result.sequence < 0) {
+      throw new TypeError("realtime audio probe result sequence is invalid");
+    }
+    if (!Number.isFinite(result.ackLatencyMs) || result.ackLatencyMs < 0) {
+      throw new TypeError("realtime audio probe result latency is invalid");
+    }
+    if (result.accepted) accepted += 1;
+    latencies.push(result.ackLatencyMs);
+  }
+  return {
+    framesSent: results.length,
+    accepted,
+    rejected: results.length - accepted,
+    lost: 0,
+    uncertain: 0,
+    ackP95Ms: percentile(latencies, 0.95),
+    ackP99Ms: percentile(latencies, 0.99),
+  };
 }
 
 export function validateRealtimeProofRenderedTopology({ rendered, selection, nodePort }) {
