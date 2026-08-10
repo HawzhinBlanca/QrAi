@@ -235,6 +235,27 @@ function readTenantAuditEvents(tenantId) {
   return events;
 }
 
+/**
+ * Bounds for `GET /v1/audit-events`. Defaults mirror platform-api's `LIMIT 200`; the ceiling exists
+ * so `?limit=999999` cannot reinstate the unbounded read this replaced. A malformed or negative
+ * value falls back to the default rather than 400 — the caller gets a sane page, not an error, and
+ * never accidentally gets everything.
+ */
+const AUDIT_PAGE_DEFAULT = 200;
+const AUDIT_PAGE_MAX = 1000;
+
+export function clampAuditLimit(raw) {
+  const n = Number.parseInt(raw ?? "", 10);
+  if (!Number.isFinite(n) || n <= 0) return AUDIT_PAGE_DEFAULT;
+  return Math.min(n, AUDIT_PAGE_MAX);
+}
+
+export function clampAuditOffset(raw) {
+  const n = Number.parseInt(raw ?? "", 10);
+  if (!Number.isFinite(n) || n <= 0) return 0;
+  return n;
+}
+
 // Load surah data cache
 const surahCache = new Map();
 function getSurah(surahNumber) {
@@ -1442,7 +1463,31 @@ async function route(request, response) {
     if (!tenantId) {
       throw httpError(400, "tenantId query parameter is required");
     }
-    jsonResponse(response, 200, readTenantAuditEvents(tenantId));
+    // BOUNDED. This returned the entire per-tenant JSONL, which nothing rotates (ADR-0040), so both
+    // the response and the synchronous read behind it grew without limit for the life of a
+    // deployment — on a single-threaded service, where that read blocks every other request.
+    //
+    // 200 is not invented: platform-api's own audit endpoint (handlers/audit.rs) has always been
+    // `ORDER BY created_at DESC LIMIT 200`. Same default, same newest-first order, so the two audit
+    // surfaces answer the same shape of question the same way.
+    //
+    // The body stays a bare ARRAY. Wrapping it in {items, total} would be a nicer API and would
+    // silently break every existing caller (scripts/smoke-ml.mjs filters the array directly), so
+    // the pagination facts travel in headers instead — and X-Truncated exists so a cap can never be
+    // a SILENT one. A caller that reads only the body still gets the newest 200 rather than a
+    // truncated page it cannot detect.
+    const all = readTenantAuditEvents(tenantId).reverse(); // newest first, matching platform-api
+    const limit = clampAuditLimit(url.searchParams.get("limit"));
+    const offset = clampAuditOffset(url.searchParams.get("offset"));
+    const page = all.slice(offset, offset + limit);
+    response.writeHead(200, {
+      "content-type": "application/json; charset=utf-8",
+      "cache-control": "no-store",
+      "x-total-count": String(all.length),
+      "x-truncated": String(offset + page.length < all.length),
+      ...CORS_HEADERS,
+    });
+    response.end(JSON.stringify(page));
     return;
   }
 
