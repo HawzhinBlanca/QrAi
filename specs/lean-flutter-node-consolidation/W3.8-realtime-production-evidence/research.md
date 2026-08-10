@@ -22,6 +22,12 @@ diagnostic at all, so the evidence records `unresolvedUncertain` separately. Onl
 observed without its index counts as `durableOrphan`; unresolved client ambiguity remains actionable
 and keeps finalization incomplete.
 
+A client-dropped frame retained behind the one in-flight frame is not a server `accepted-lost`
+outcome either: it was never sent or accepted. The Node hard-kill profile therefore has one dropped
+frame, one unresolved sent/no-ack frame, and zero invented durable outcomes. Aggregate durable loss
+may be less than total known loss but can never exceed it; the S3 accepted-loss profile separately
+requires exact durable loss equality.
+
 ## Grounded boundary and data flow
 
 - `server/src/realtime/main.mjs::{parseRealtimeConfig,createRealtimeApplication,startRealtimeProcess}`

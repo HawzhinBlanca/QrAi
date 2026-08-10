@@ -337,8 +337,8 @@ function assertFaultMeasurements(value) {
   ]) {
     assertNonnegativeInteger(value[key], `fault-recovery.${key}`);
   }
-  if (value.durableLost !== value.lost) {
-    throw new TypeError("fault-recovery durable loss outcomes must match known loss accounting");
+  if (value.durableLost > value.lost) {
+    throw new TypeError("fault-recovery durable loss outcomes exceed known loss accounting");
   }
   if (value.unresolvedUncertain > value.uncertain) {
     throw new TypeError("fault-recovery unresolved uncertainty cannot exceed client uncertainty");

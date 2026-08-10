@@ -196,11 +196,11 @@ function stageMeasurements(name) {
         rejected: 2,
         lost: 2,
         uncertain: 1,
-        durableLost: 2,
+        durableLost: 1,
         durableOrphan: 0,
         unresolvedUncertain: 1,
         repaired: 0,
-        outstandingActionable: 3,
+        outstandingActionable: 2,
         incompleteReportedComplete: 0,
         readinessFailedClosed: true,
         repairIdempotent: true,
@@ -588,6 +588,7 @@ test("every measured profile is closed-accounting and cannot lower or merely cla
     [(copy) => { copy.stages[2].measurements.sessionsAccepted = 99; }, /100 sessions/i],
     [(copy) => { copy.stages[3].measurements.retentionModesTested = 2; }, /retention/i],
     [(copy) => { copy.stages[3].measurements.privacyLeaks = 1; }, /privacy/i],
+    [(copy) => { copy.stages[4].measurements.durableLost = 3; }, /durable loss/i],
     [(copy) => { copy.stages[4].measurements.unresolvedUncertain = 2; }, /uncertainty/i],
     [(copy) => { copy.stages[4].measurements.unresolvedUncertain = 0; }, /uncertainty/i],
     [(copy) => { copy.stages[4].measurements.outstandingActionable = 1; }, /actionable/i],
@@ -2584,7 +2585,7 @@ function faultProbeResults() {
       rejected: 0,
       lost: 1,
       uncertain: 1,
-      durableLost: 1,
+      durableLost: 0,
       durableOrphan: 0,
       unresolvedUncertain: 1,
       recovered: true,
@@ -2636,9 +2637,9 @@ function faultProbeResults() {
       },
     },
     repair: {
-      attempted: 2,
+      attempted: 1,
       repaired: 0,
-      outstandingActionable: 2,
+      outstandingActionable: 1,
       secondPassRepaired: 0,
       idempotent: true,
     },
@@ -2654,7 +2655,7 @@ test("the fault stage repairs stored orphans and preserves genuine accepted loss
     s3Probe: async () => { calls.push("s3"); return values.s3; },
     repairProbe: async (input) => {
       calls.push("repair");
-      assert.deepEqual(input, { durableLost: 2, durableOrphan: 0 });
+      assert.deepEqual(input, { durableLost: 1, durableOrphan: 0 });
       return values.repair;
     },
   });
@@ -2677,6 +2678,7 @@ test("the fault stage rejects open accounting, missing safety proofs, incomplete
     [(copy) => { copy.nodeProcess.framesSent += 1; }],
     [(copy) => { copy.nodeProcess.uncertain = 0; copy.nodeProcess.accepted += 1; }],
     [(copy) => { copy.nodeProcess.unresolvedUncertain = 0; }],
+    [(copy) => { copy.nodeProcess.durableLost = 1; }],
     [(copy) => { copy.nodeProcess.proofs.ambiguousFrameNotReplayed = false; }],
     [(copy) => { copy.nodeProcess.incompleteReportedComplete = 1; }],
     [(copy) => { copy.postgres.readinessFailedClosed = false; }],
@@ -2687,9 +2689,9 @@ test("the fault stage rejects open accounting, missing safety proofs, incomplete
     [(copy) => { copy.s3.proofs.acceptedLossRecorded = false; }],
     [(copy) => { copy.s3.durableLost = 0; }],
     [(copy) => { copy.s3.recovered = false; }],
-    [(copy) => { copy.repair.attempted = 1; }],
+    [(copy) => { copy.repair.attempted = 2; }],
     [(copy) => { copy.repair.repaired = 2; }],
-    [(copy) => { copy.repair.outstandingActionable = 1; }],
+    [(copy) => { copy.repair.outstandingActionable = 2; }],
     [(copy) => { copy.repair.repaired = 3; copy.repair.outstandingActionable = 0; }],
     [(copy) => { copy.repair.secondPassRepaired = 1; }],
     [(copy) => { copy.repair.idempotent = false; }],

@@ -48,7 +48,9 @@ artifact hashes and validated outcomes.
    serialized, logged, or hashed into a reversible artifact.
 5. Implement probe stages behind testable adapters: valid Rust/Node parity; hostile tickets/frames;
    durable cross-instance replay; three retention modes and cleanup; clean and ambiguous process
-   interruption; Postgres outage; and a second same-image fault container whose deliberately
+   interruption, counting an unsent retained tail as client-dropped and sent/no-ack audio as
+   unresolved without inventing a durable server outcome; Postgres outage; and a second same-image
+   fault container whose deliberately
    unreachable S3 endpoint must stay unready, record accepted loss, and recover only after it is
    replaced by the production-S3 candidate. Then run outcome/repair: stored orphans must repair
    idempotently, while genuinely absent accepted-loss bytes must remain explicitly actionable and
@@ -109,6 +111,9 @@ artifact hashes and validated outcomes.
   incomplete recording is complete.
 - A client-uncertain frame is not relabelled as a stored orphan. Evidence separately counts
   unresolved uncertainty; only an observed immutable object without its exact index is repairable.
+- A client-dropped frame that never crossed the socket is not relabelled as `accepted-lost`.
+  Durable loss can be lower than aggregate loss and can never exceed it; only an observed durable
+  outcome contributes to repair/actionable database accounting.
 - Rollback of implementation restores the earlier issuer/runtime contract and removes proof-only
   files. Evidence is external/write-once and requires no database rollback. No destructive schema,
   canonical Quran data, learner feedback, or stored learner record is introduced by this slice.

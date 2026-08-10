@@ -3251,8 +3251,8 @@ function validateFaultProbe(value, fault, proofFields) {
   ) {
     throw new TypeError(`${fault} fault frame accounting is open`);
   }
-  if (value.durableLost !== value.lost) {
-    throw new TypeError(`${fault} durable loss does not match known frame loss`);
+  if (value.durableLost > value.lost) {
+    throw new TypeError(`${fault} durable loss exceeds known frame loss`);
   }
   if (value.unresolvedUncertain > value.uncertain) {
     throw new TypeError(`${fault} unresolved uncertainty exceeds client uncertainty`);
@@ -3298,6 +3298,7 @@ export async function runRealtimeFaultRecoveryStage({
     if (
       nodeProcess.lost < 1 ||
       nodeProcess.uncertain < 1 ||
+      nodeProcess.durableLost !== 0 ||
       nodeProcess.unresolvedUncertain < 1
     ) {
       throw new TypeError("node-process fault must prove both clean and ambiguous interruption");
@@ -3331,6 +3332,7 @@ export async function runRealtimeFaultRecoveryStage({
     );
     if (
       s3.lost < 1 ||
+      s3.durableLost !== s3.lost ||
       s3.uncertain !== 0 ||
       s3.durableOrphan !== 0 ||
       s3.unresolvedUncertain !== 0
