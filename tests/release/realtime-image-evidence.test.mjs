@@ -32,7 +32,9 @@ import {
   probeRealtimeAudioFrame,
   probeRealtimeCapacityCohort,
   probeRealtimeHostileSweep,
+  probeRealtimeMetricsSnapshot,
   probeRealtimeUpgradeRefusal,
+  runRealtimeHostileCapacityStage,
   runRealtimeProtocolParityStage,
   summarizeRealtimeAudioFrameProbes,
   validateRealtimeProofRenderedTopology,
@@ -352,6 +354,40 @@ function realtimeHostilePeers(prefix = "private-hostile") {
       peer("duplicate-secondary", duplicateSessionId),
     ],
   };
+}
+
+function realtimeMetricsSnapshot(overrides = {}) {
+  return {
+    activeSessions: 0,
+    retainedChunks: 0,
+    retainedBytes: 0,
+    ingressEnqueued: 10,
+    storeStored: 10,
+    storeFailed: 2,
+    storeAborted: 1,
+    deliveryDiscarded: 8,
+    deliveryRejected: 4,
+    deliveryAcceptedLost: 3,
+    deliveryAcceptedLostUnrecorded: 2,
+    ...overrides,
+  };
+}
+
+function realtimeMetricsText(snapshot) {
+  return [
+    `realtime_audio_active_sessions ${snapshot.activeSessions}`,
+    `realtime_audio_retained_chunks ${snapshot.retainedChunks}`,
+    `realtime_audio_retained_bytes ${snapshot.retainedBytes}`,
+    `realtime_audio_ingress_total{outcome="enqueued"} ${snapshot.ingressEnqueued}`,
+    `realtime_audio_store_total{outcome="stored"} ${snapshot.storeStored}`,
+    `realtime_audio_store_total{outcome="failed"} ${snapshot.storeFailed}`,
+    `realtime_audio_store_total{outcome="aborted"} ${snapshot.storeAborted}`,
+    `realtime_audio_delivery_total{outcome="discarded"} ${snapshot.deliveryDiscarded}`,
+    `realtime_audio_delivery_total{outcome="rejected"} ${snapshot.deliveryRejected}`,
+    `realtime_audio_delivery_total{outcome="accepted_lost"} ${snapshot.deliveryAcceptedLost}`,
+    `realtime_audio_delivery_total{outcome="accepted_lost_unrecorded"} ${snapshot.deliveryAcceptedLostUnrecorded}`,
+    "",
+  ].join("\n");
 }
 
 function realtimeProbeAppOptions(handleAdmittedSocket, overrides = {}) {
@@ -1478,6 +1514,270 @@ test("the hostile sweep rejects peer-shape mutations before transport and keeps 
     peers.frames[0].ticket,
   ]) {
     assert.equal(error.message.includes(privateValue), false);
+  }
+});
+
+test("the metrics snapshot uses the private loopback endpoint and returns only fixed numeric series", async () => {
+  const expected = realtimeMetricsSnapshot();
+  const requests = [];
+  const result = await probeRealtimeMetricsSnapshot({
+    port: 18_081,
+    metricsToken: "private-metrics-token",
+    timeoutMs: 2_000,
+    fetchImpl: async (input, options) => {
+      requests.push({ input, options });
+      return new Response(realtimeMetricsText(expected), {
+        status: 200,
+        headers: { "content-type": "text/plain" },
+      });
+    },
+  });
+  assert.deepEqual(result, expected);
+  assert.equal(requests.length, 1);
+  assert.equal(requests[0].input, "http://127.0.0.1:18081/metrics");
+  assert.deepEqual(requests[0].options.headers, { "x-metrics-token": "private-metrics-token" });
+  assert.equal(requests[0].options.redirect, "manual");
+  assert.ok(requests[0].options.signal instanceof AbortSignal);
+  assert.equal(JSON.stringify(result).includes("private-metrics-token"), false);
+});
+
+test("the metrics snapshot rejects missing, duplicate, oversized, negative, and private error bodies", async () => {
+  const valid = realtimeMetricsText(realtimeMetricsSnapshot());
+  const privateBody = "private-metrics-body-must-not-escape";
+  const cases = [
+    [valid.replace(/^realtime_audio_active_sessions.*\n/m, ""), /metrics/i],
+    [`${valid}realtime_audio_active_sessions 0\n`, /metrics/i],
+    [valid.replace("realtime_audio_retained_bytes 0", "realtime_audio_retained_bytes -1"), /metrics/i],
+    ["x".repeat(128 * 1024 + 1), /metrics/i],
+    [privateBody, /metrics/i],
+  ];
+  for (const [body, pattern] of cases) {
+    let error;
+    try {
+      await probeRealtimeMetricsSnapshot({
+        port: 18_081,
+        metricsToken: "private-metrics-token",
+        timeoutMs: 2_000,
+        fetchImpl: async () => new Response(body, { status: 200 }),
+      });
+    } catch (value) {
+      error = value;
+    }
+    assert.ok(error instanceof Error);
+    assert.match(error.message, pattern);
+    assert.equal(error.message.includes(privateBody), false);
+  }
+});
+
+test("the hostile-capacity stage issues every peer through the API and emits exact closed evidence", async () => {
+  const sessions = new Map();
+  const requests = [];
+  let ticketNumber = 0;
+  const fetchImpl = async (input, options) => {
+    const url = new URL(input);
+    const body = JSON.parse(options.body);
+    requests.push({ url, options, body });
+    assert.equal(url.origin, "http://127.0.0.1:8080");
+    assert.equal(options.method, "POST");
+    assert.equal(options.headers.Origin, probeOrigin);
+    assert.match(options.headers.authorization, /^Bearer /);
+    assert.equal(options.headers["content-type"], "application/json");
+    assert.ok(options.signal instanceof AbortSignal);
+    if (url.pathname === "/v1/recitation-sessions") {
+      assert.equal(Object.hasOwn(body, "modelVersion"), false);
+      assert.equal(body.consent.audioRetention, "discard");
+      assert.match(body.practicePlanId, /^w3\.8-hostile-capacity-/);
+      assert.match(body.sourceChecksum, /^declared:w3\.8-realtime-production-proof:/);
+      const id = `private-stage-session-${sessions.size}`;
+      sessions.set(id, body.practicePlanId);
+      return new Response(JSON.stringify({
+        id,
+        tenantId: probeTenant,
+        learnerId: probeLearner,
+        consent: body.consent,
+      }), { status: 200 });
+    }
+    assert.equal(url.pathname, "/v1/realtime-session-tickets");
+    assert.ok(sessions.has(body.sessionId));
+    assert.deepEqual(body.requestedSampleRates, [16_000]);
+    ticketNumber += 1;
+    const token = [
+      "rt_v2",
+      body.sessionId,
+      probeTenant,
+      probeLearner,
+      "false",
+      "discard",
+      String(probeNowSeconds + 300),
+      `private-stage-nonce-${ticketNumber}`,
+      `private-stage-signature-${ticketNumber}`,
+    ].join(".");
+    return new Response(JSON.stringify({
+      sessionId: body.sessionId,
+      tenantId: probeTenant,
+      learnerId: probeLearner,
+      expiresAt: String(probeNowSeconds + 300),
+      allowedSampleRates: [16_000],
+      externalAsrProcessing: false,
+      token,
+      auditEventId: `private-stage-audit-${ticketNumber}`,
+    }), { status: 200 });
+  };
+  const hostileCalls = [];
+  const capacityCalls = [];
+  const metricsCalls = [];
+  const baseline = realtimeMetricsSnapshot();
+  const final = realtimeMetricsSnapshot({
+    ingressEnqueued: baseline.ingressEnqueued + 100,
+    storeStored: baseline.storeStored + 100,
+    deliveryDiscarded: baseline.deliveryDiscarded + 100,
+    deliveryRejected: baseline.deliveryRejected + 7,
+  });
+
+  const result = await runRealtimeHostileCapacityStage({
+    nodePort: 18_081,
+    origin: probeOrigin,
+    jwtSecret: probeSecret,
+    metricsToken: "private-metrics-token",
+    tenantId: probeTenant,
+    learnerId: probeLearner,
+    fetchImpl,
+    hostileProbe: async (input) => {
+      hostileCalls.push(input);
+      return {
+        binaryFramesSent: 8,
+        accepted: 0,
+        rejected: 8,
+        hostileTicketRefusals: 7,
+        textFramesIgnored: 1,
+        duplicateSessionsRefused: 1,
+        processAlive: true,
+      };
+    },
+    capacityProbe: async (input) => {
+      capacityCalls.push(input);
+      return {
+        sessionsAccepted: 100,
+        sessionsRefused: 1,
+        session101Refused: true,
+        ackP95Ms: 120,
+      };
+    },
+    metricsProbe: async (input) => {
+      metricsCalls.push(input);
+      return metricsCalls.length === 1 ? baseline : final;
+    },
+    nowUnixSeconds: () => probeNowSeconds,
+    timeoutMs: 10_000,
+  });
+
+  assert.deepEqual(result, {
+    binaryFramesSent: 108,
+    accepted: 100,
+    rejected: 8,
+    lost: 0,
+    uncertain: 0,
+    sessionsAccepted: 100,
+    sessionsRefused: 1,
+    session101Refused: true,
+    ackP95Ms: 120,
+    processAlive: true,
+    activeSessionsFinal: 0,
+    retainedChunksFinal: 0,
+    retainedBytesFinal: 0,
+  });
+  assert.equal(sessions.size, 112);
+  assert.equal(ticketNumber, 113);
+  assert.equal(requests.filter(({ url }) => url.pathname === "/v1/recitation-sessions").length, 112);
+  assert.equal(requests.filter(({ url }) => url.pathname === "/v1/realtime-session-tickets").length, 113);
+  assert.equal(hostileCalls.length, 1);
+  assert.equal(hostileCalls[0].peers.frames.length, 7);
+  assert.equal(hostileCalls[0].peers.duplicate[0].sessionId, hostileCalls[0].peers.duplicate[1].sessionId);
+  assert.notEqual(hostileCalls[0].peers.duplicate[0].ticket, hostileCalls[0].peers.duplicate[1].ticket);
+  assert.equal(capacityCalls.length, 1);
+  assert.equal(capacityCalls[0].sessions.length, 100);
+  assert.equal(metricsCalls.length, 2);
+  assert.ok(metricsCalls.every(({ metricsToken }) => metricsToken === "private-metrics-token"));
+
+  const serialized = JSON.stringify(result);
+  for (const privateValue of [
+    probeTenant,
+    probeLearner,
+    "private-metrics-token",
+    ...[...sessions.keys()],
+    ...hostileCalls[0].peers.frames.map(({ ticket }) => ticket),
+    ...capacityCalls[0].sessions.map(({ ticket }) => ticket),
+  ]) {
+    assert.equal(serialized.includes(privateValue), false);
+  }
+});
+
+test("the hostile-capacity stage refuses false measurements, loss, dirty gauges, and lowered bars", async () => {
+  const safePeers = realtimeHostilePeers("private-stage-mutation");
+  const base = {
+    nodePort: 18_081,
+    origin: probeOrigin,
+    jwtSecret: probeSecret,
+    metricsToken: "private-metrics-token",
+    tenantId: probeTenant,
+    learnerId: probeLearner,
+    fetchImpl: async () => new Response("{}", { status: 500 }),
+    hostileProbe: async () => ({
+      binaryFramesSent: 8,
+      accepted: 0,
+      rejected: 8,
+      hostileTicketRefusals: 7,
+      textFramesIgnored: 1,
+      duplicateSessionsRefused: 1,
+      processAlive: true,
+    }),
+    capacityProbe: async () => ({
+      sessionsAccepted: 100,
+      sessionsRefused: 1,
+      session101Refused: true,
+      ackP95Ms: 120,
+    }),
+    metricsProbe: async () => realtimeMetricsSnapshot(),
+    peerIssuer: async () => safePeers,
+    capacityIssuer: async () => ({
+      sessions: Array.from({ length: 100 }, (_, index) => ({
+        sessionId: `private-capacity-${index}`,
+        ticket: `private-capacity-ticket-${index}`,
+      })),
+      refusedSession: { sessionId: "private-capacity-101", ticket: "private-capacity-ticket-101" },
+    }),
+    nowUnixSeconds: () => probeNowSeconds,
+    timeoutMs: 100,
+  };
+  const baseline = realtimeMetricsSnapshot();
+  const goodFinal = realtimeMetricsSnapshot({
+    ingressEnqueued: baseline.ingressEnqueued + 100,
+    storeStored: baseline.storeStored + 100,
+    deliveryDiscarded: baseline.deliveryDiscarded + 100,
+    deliveryRejected: baseline.deliveryRejected + 7,
+  });
+  const metricsPair = (final) => {
+    let call = 0;
+    return async () => (call++ === 0 ? baseline : final);
+  };
+  const cases = [
+    { hostileProbe: async () => ({ binaryFramesSent: 7 }) },
+    { capacityProbe: async () => ({ sessionsAccepted: 99 }) },
+    { capacityProbe: async () => ({ sessionsAccepted: 100, sessionsRefused: 1, session101Refused: true, ackP95Ms: 250 }) },
+    { metricsProbe: metricsPair({ ...goodFinal, activeSessions: 1 }) },
+    { metricsProbe: metricsPair({ ...goodFinal, deliveryAcceptedLost: baseline.deliveryAcceptedLost + 1 }) },
+    { metricsProbe: metricsPair({ ...goodFinal, storeStored: baseline.storeStored + 99 }) },
+    { metricsProbe: metricsPair({ ...goodFinal, deliveryRejected: baseline.deliveryRejected + 6 }) },
+  ];
+  for (const overrides of cases) {
+    await assert.rejects(
+      () => runRealtimeHostileCapacityStage({
+        ...base,
+        metricsProbe: metricsPair(goodFinal),
+        ...overrides,
+      }),
+      /hostile-capacity/i,
+    );
   }
 });
 

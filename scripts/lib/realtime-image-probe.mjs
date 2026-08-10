@@ -21,6 +21,7 @@ const maximumProbeSessionBytes = 256;
 const maximumProbeTicketBytes = 16 * 1024;
 const maximumProbeTraceBytes = 256;
 const maximumParityResponseBytes = 64 * 1024;
+const maximumMetricsResponseBytes = 128 * 1024;
 const maximumCapacityCleanupMs = 2_000;
 const platformApiBaseUrl = "http://127.0.0.1:8080";
 const rustRealtimePort = 8081;
@@ -40,6 +41,21 @@ const ticketResponseFields = Object.freeze([
   "auditEventId",
 ]);
 const ticketResponseFieldSet = new Set(ticketResponseFields);
+const realtimeMetricSeries = Object.freeze({
+  activeSessions: "realtime_audio_active_sessions",
+  retainedChunks: "realtime_audio_retained_chunks",
+  retainedBytes: "realtime_audio_retained_bytes",
+  ingressEnqueued: 'realtime_audio_ingress_total{outcome="enqueued"}',
+  storeStored: 'realtime_audio_store_total{outcome="stored"}',
+  storeFailed: 'realtime_audio_store_total{outcome="failed"}',
+  storeAborted: 'realtime_audio_store_total{outcome="aborted"}',
+  deliveryDiscarded: 'realtime_audio_delivery_total{outcome="discarded"}',
+  deliveryRejected: 'realtime_audio_delivery_total{outcome="rejected"}',
+  deliveryAcceptedLost: 'realtime_audio_delivery_total{outcome="accepted_lost"}',
+  deliveryAcceptedLostUnrecorded:
+    'realtime_audio_delivery_total{outcome="accepted_lost_unrecorded"}',
+});
+const realtimeMetricFields = Object.freeze(Object.keys(realtimeMetricSeries));
 
 function assertObject(value, label) {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
@@ -1348,6 +1364,96 @@ async function readBoundedParityJson(response) {
   return JSON.parse(Buffer.concat(chunks, total).toString("utf8"));
 }
 
+async function readBoundedText(response, maximumBytes, errorFactory) {
+  const contentLength = Number(response.headers?.get?.("content-length"));
+  if (Number.isFinite(contentLength) && contentLength > maximumBytes) {
+    throw errorFactory();
+  }
+  if (!response.body || typeof response.body.getReader !== "function") throw errorFactory();
+  const reader = response.body.getReader();
+  const chunks = [];
+  let total = 0;
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    total += value.byteLength;
+    if (total > maximumBytes) {
+      await reader.cancel().catch(() => {});
+      throw errorFactory();
+    }
+    chunks.push(Buffer.from(value));
+  }
+  return Buffer.concat(chunks, total).toString("utf8");
+}
+
+function metricsError() {
+  return new Error("realtime metrics probe failed");
+}
+
+function validateMetricsSnapshot(value) {
+  if (
+    !value ||
+    typeof value !== "object" ||
+    Array.isArray(value) ||
+    JSON.stringify(Object.keys(value).sort()) !== JSON.stringify([...realtimeMetricFields].sort())
+  ) {
+    throw metricsError();
+  }
+  for (const field of realtimeMetricFields) {
+    if (!Number.isSafeInteger(value[field]) || value[field] < 0) throw metricsError();
+  }
+  return Object.freeze(Object.fromEntries(realtimeMetricFields.map((field) => [field, value[field]])));
+}
+
+function parseMetricsSnapshot(textValue) {
+  const lines = textValue.split("\n");
+  const snapshot = {};
+  for (const [field, series] of Object.entries(realtimeMetricSeries)) {
+    const prefix = `${series} `;
+    const matches = lines.filter((line) => line.startsWith(prefix));
+    if (matches.length !== 1) throw metricsError();
+    const raw = matches[0].slice(prefix.length);
+    if (!/^(?:0|[1-9][0-9]*)$/.test(raw)) throw metricsError();
+    snapshot[field] = Number(raw);
+  }
+  return validateMetricsSnapshot(snapshot);
+}
+
+/** Read only the fixed-cardinality realtime series from the private loopback metrics endpoint. */
+export async function probeRealtimeMetricsSnapshot({
+  port,
+  metricsToken,
+  timeoutMs,
+  fetchImpl = fetch,
+}) {
+  const selectedPort = probePort(port);
+  const selectedToken = requiredParityString(metricsToken, "metrics token", 4_096);
+  const selectedTimeout = assertProbeTimeout(timeoutMs);
+  if (typeof fetchImpl !== "function") {
+    throw new TypeError("realtime metrics probe fetch implementation must be a function");
+  }
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), selectedTimeout);
+  try {
+    const response = await fetchImpl(`http://127.0.0.1:${selectedPort}/metrics`, {
+      headers: { "x-metrics-token": selectedToken },
+      redirect: "manual",
+      signal: controller.signal,
+    });
+    if (!response || response.status !== 200) throw metricsError();
+    const textValue = await readBoundedText(
+      response,
+      maximumMetricsResponseBytes,
+      metricsError,
+    );
+    return parseMetricsSnapshot(textValue);
+  } catch {
+    throw metricsError();
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
 async function postParityJson({ fetchImpl, path, authorization, origin, body, timeoutMs, label }) {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), timeoutMs);
@@ -1404,6 +1510,103 @@ function validateIssuedTicket(value, { sessionId, tenantId, learnerId, nowUnixSe
     throw parityError("ticket issuance failed");
   }
   return value.token;
+}
+
+async function createRealtimeProofTicketIssuer({
+  fetchImpl,
+  origin,
+  jwtSecret,
+  tenantId,
+  learnerId,
+  timeoutMs,
+  nowUnixSeconds,
+}) {
+  const authorization = await createHttpCanaryActorAuthorization({
+    jwtSecret,
+    tenantId,
+    userId: learnerId,
+    role: "learner",
+  });
+  const sessions = new Map();
+
+  async function sessionFor(proofId, retention) {
+    const cacheKey = `${proofId}\n${retention}`;
+    if (!sessions.has(cacheKey)) {
+      sessions.set(cacheKey, (async () => {
+        const body = await postParityJson({
+          fetchImpl,
+          path: "/v1/recitation-sessions",
+          authorization,
+          origin,
+          timeoutMs,
+          label: "session issuance",
+          body: {
+            learnerId,
+            quranRef: {
+              surahNumber: 1,
+              ayahStart: 1,
+              ayahEnd: 7,
+              display: "Al-Fatihah 1:1-7",
+            },
+            sourceChecksum: `declared:w3.8-realtime-production-proof:${proofId}`,
+            language: "ckb",
+            mode: "guided-recite",
+            practicePlanId: `w3.8-${proofId}`,
+            consent: {
+              recordingConsent: true,
+              audioRetention: retention,
+              anonymizedLearning: false,
+              externalAsrProcessing: false,
+              guardianApproved: false,
+              consentVersion: "w3.8-realtime-production-proof-v1",
+            },
+          },
+        });
+        if (
+          !body ||
+          typeof body !== "object" ||
+          Array.isArray(body) ||
+          typeof body.id !== "string" ||
+          body.id.trim() === "" ||
+          body.tenantId !== tenantId ||
+          body.learnerId !== learnerId ||
+          body.consent?.audioRetention !== retention
+        ) {
+          throw parityError("session issuance failed");
+        }
+        return body.id;
+      })());
+    }
+    return sessions.get(cacheKey);
+  }
+
+  async function issue(proofId, retention = "discard") {
+    const sessionId = await sessionFor(proofId, retention);
+    const body = await postParityJson({
+      fetchImpl,
+      path: "/v1/realtime-session-tickets",
+      authorization,
+      origin,
+      timeoutMs,
+      label: "ticket issuance",
+      body: { sessionId, requestedSampleRates: [16_000] },
+    });
+    const currentSeconds = nowUnixSeconds();
+    if (!Number.isSafeInteger(currentSeconds) || currentSeconds < 0) {
+      throw new TypeError("realtime protocol parity clock returned an invalid time");
+    }
+    return Object.freeze({
+      sessionId,
+      ticket: validateIssuedTicket(body, {
+        sessionId,
+        tenantId,
+        learnerId,
+        nowUnixSeconds: currentSeconds,
+      }),
+    });
+  }
+
+  return Object.freeze({ issue });
 }
 
 function validateFrameProbeResult(value) {
@@ -1463,98 +1666,16 @@ export async function runRealtimeProtocolParityStage({
     throw new TypeError("realtime protocol parity clock must be a function");
   }
   const selectedTimeout = assertProbeTimeout(timeoutMs);
-  const authorization = await createHttpCanaryActorAuthorization({
+  const issuer = await createRealtimeProofTicketIssuer({
+    fetchImpl,
+    origin: selectedOrigin,
     jwtSecret: selectedSecret,
     tenantId: selectedTenant,
-    userId: selectedLearner,
-    role: "learner",
+    learnerId: selectedLearner,
+    timeoutMs: selectedTimeout,
+    nowUnixSeconds,
   });
-  const sessions = new Map();
-  const sessionPromises = new Map();
-
-  async function sessionFor(retention) {
-    const cached = sessions.get(retention);
-    if (cached) return cached;
-    const pending = sessionPromises.get(retention);
-    if (pending) return pending;
-    const creation = (async () => {
-      const body = await postParityJson({
-        fetchImpl,
-        path: "/v1/recitation-sessions",
-        authorization,
-        origin: selectedOrigin,
-        timeoutMs: selectedTimeout,
-        label: "session issuance",
-        body: {
-          learnerId: selectedLearner,
-          quranRef: {
-            surahNumber: 1,
-            ayahStart: 1,
-            ayahEnd: 7,
-            display: "Al-Fatihah 1:1-7",
-          },
-          sourceChecksum: `declared:w3.8-realtime-production-proof:${retention}`,
-          language: "ckb",
-          mode: "guided-recite",
-          practicePlanId: "w3.8-realtime-production-proof",
-          consent: {
-            recordingConsent: true,
-            audioRetention: retention,
-            anonymizedLearning: false,
-            externalAsrProcessing: false,
-            guardianApproved: false,
-            consentVersion: "w3.8-realtime-production-proof-v1",
-          },
-        },
-      });
-      if (
-        !body ||
-        typeof body !== "object" ||
-        Array.isArray(body) ||
-        typeof body.id !== "string" ||
-        body.id.trim() === "" ||
-        body.tenantId !== selectedTenant ||
-        body.learnerId !== selectedLearner ||
-        body.consent?.audioRetention !== retention
-      ) {
-        throw parityError("session issuance failed");
-      }
-      sessions.set(retention, body.id);
-      return body.id;
-    })();
-    sessionPromises.set(retention, creation);
-    try {
-      return await creation;
-    } finally {
-      sessionPromises.delete(retention);
-    }
-  }
-
-  async function issueTicket(retention) {
-    const sessionId = await sessionFor(retention);
-    const body = await postParityJson({
-      fetchImpl,
-      path: "/v1/realtime-session-tickets",
-      authorization,
-      origin: selectedOrigin,
-      timeoutMs: selectedTimeout,
-      label: "ticket issuance",
-      body: { sessionId, requestedSampleRates: [16_000] },
-    });
-    const currentSeconds = nowUnixSeconds();
-    if (!Number.isSafeInteger(currentSeconds) || currentSeconds < 0) {
-      throw new TypeError("realtime protocol parity clock returned an invalid time");
-    }
-    return {
-      sessionId,
-      ticket: validateIssuedTicket(body, {
-        sessionId,
-        tenantId: selectedTenant,
-        learnerId: selectedLearner,
-        nowUnixSeconds: currentSeconds,
-      }),
-    };
-  }
+  const issueTicket = (retention) => issuer.issue(`protocol-${retention}`, retention);
 
   async function sendFrame(port, issued, frame) {
     const result = await frameProbe({
@@ -1644,6 +1765,210 @@ export async function runRealtimeProtocolParityStage({
     originRefusals,
     replayRefusals,
   });
+}
+
+function hostileCapacityError(message) {
+  return new Error(`realtime hostile-capacity stage ${message}`);
+}
+
+async function issueHostilePeers(issuer) {
+  const [ticket, frames, transport, text, duplicate] = await Promise.all([
+    issuer.issue("hostile-capacity-ticket"),
+    Promise.all(Array.from(
+      { length: 7 },
+      (_, index) => issuer.issue(`hostile-capacity-frame-${index}`),
+    )),
+    issuer.issue("hostile-capacity-transport"),
+    issuer.issue("hostile-capacity-text"),
+    Promise.all([
+      issuer.issue("hostile-capacity-duplicate"),
+      issuer.issue("hostile-capacity-duplicate"),
+    ]),
+  ]);
+  return Object.freeze({ ticket, frames, transport, text, duplicate });
+}
+
+async function issueCapacityPeers(issuer) {
+  const issued = new Array(AUDIO_LIMITS.maxActiveSessions + 1);
+  let cursor = 0;
+  await Promise.all(Array.from({ length: 8 }, async () => {
+    while (cursor < issued.length) {
+      const index = cursor;
+      cursor += 1;
+      issued[index] = await issuer.issue(`hostile-capacity-session-${index}`);
+    }
+  }));
+  return Object.freeze({
+    sessions: Object.freeze(issued.slice(0, AUDIO_LIMITS.maxActiveSessions)),
+    refusedSession: issued[AUDIO_LIMITS.maxActiveSessions],
+  });
+}
+
+function validateHostileStageResult(value) {
+  exactProbeResult(value, {
+    binaryFramesSent: 8,
+    accepted: 0,
+    rejected: 8,
+    hostileTicketRefusals: 7,
+    textFramesIgnored: 1,
+    duplicateSessionsRefused: 1,
+    processAlive: true,
+  }, "hostile sweep");
+  return value;
+}
+
+function validateCapacityStageResult(value) {
+  const fields = ["sessionsAccepted", "sessionsRefused", "session101Refused", "ackP95Ms"];
+  if (
+    !value ||
+    typeof value !== "object" ||
+    Array.isArray(value) ||
+    JSON.stringify(Object.keys(value).sort()) !== JSON.stringify([...fields].sort()) ||
+    value.sessionsAccepted !== AUDIO_LIMITS.maxActiveSessions ||
+    value.sessionsRefused !== 1 ||
+    value.session101Refused !== true ||
+    typeof value.ackP95Ms !== "number" ||
+    !Number.isFinite(value.ackP95Ms) ||
+    value.ackP95Ms < 0 ||
+    value.ackP95Ms >= 250
+  ) {
+    throw hostileCapacityError("capacity measurement was invalid");
+  }
+  return value;
+}
+
+function assertHostileCapacityMetrics(baseline, final) {
+  const expectedDeltas = {
+    ingressEnqueued: 100,
+    storeStored: 100,
+    storeFailed: 0,
+    storeAborted: 0,
+    deliveryDiscarded: 100,
+    deliveryRejected: 7,
+    deliveryAcceptedLost: 0,
+    deliveryAcceptedLostUnrecorded: 0,
+  };
+  for (const [field, delta] of Object.entries(expectedDeltas)) {
+    if (final[field] - baseline[field] !== delta) {
+      throw hostileCapacityError("metrics accounting was invalid");
+    }
+  }
+  if (final.activeSessions !== 0 || final.retainedChunks !== 0 || final.retainedBytes !== 0) {
+    throw hostileCapacityError("final gauges did not drain to zero");
+  }
+}
+
+/** Compose API-issued hostile and 100/101 probes into the exact evidence measurement shape. */
+export async function runRealtimeHostileCapacityStage({
+  nodePort,
+  origin,
+  jwtSecret,
+  metricsToken,
+  tenantId,
+  learnerId,
+  fetchImpl = fetch,
+  hostileProbe = probeRealtimeHostileSweep,
+  capacityProbe = probeRealtimeCapacityCohort,
+  metricsProbe = probeRealtimeMetricsSnapshot,
+  peerIssuer = null,
+  capacityIssuer = null,
+  nowUnixSeconds = () => Math.floor(Date.now() / 1_000),
+  timeoutMs,
+}) {
+  const selectedPort = probePort(nodePort);
+  const selectedOrigin = probeOrigin(origin);
+  const selectedSecret = requiredParityString(jwtSecret, "JWT secret", 4_096);
+  if (Buffer.byteLength(selectedSecret) < 32) {
+    throw new TypeError("realtime hostile-capacity JWT secret must be at least 32 bytes");
+  }
+  const selectedMetricsToken = requiredParityString(metricsToken, "metrics token", 4_096);
+  const selectedTenant = requiredParityString(tenantId, "tenant id");
+  const selectedLearner = requiredParityString(learnerId, "learner id");
+  const selectedTimeout = assertProbeTimeout(timeoutMs);
+  for (const adapter of [fetchImpl, hostileProbe, capacityProbe, metricsProbe, nowUnixSeconds]) {
+    if (typeof adapter !== "function") {
+      throw new TypeError("realtime hostile-capacity adapters must be functions");
+    }
+  }
+  for (const adapter of [peerIssuer, capacityIssuer]) {
+    if (adapter !== null && typeof adapter !== "function") {
+      throw new TypeError("realtime hostile-capacity issuers must be null or functions");
+    }
+  }
+
+  try {
+    const issuer = await createRealtimeProofTicketIssuer({
+      fetchImpl,
+      origin: selectedOrigin,
+      jwtSecret: selectedSecret,
+      tenantId: selectedTenant,
+      learnerId: selectedLearner,
+      timeoutMs: selectedTimeout,
+      nowUnixSeconds,
+    });
+    const baseline = validateMetricsSnapshot(await metricsProbe({
+      port: selectedPort,
+      metricsToken: selectedMetricsToken,
+      timeoutMs: selectedTimeout,
+    }));
+    const [hostilePeers, capacityPeers] = await Promise.all([
+      peerIssuer ? peerIssuer({ issuer }) : issueHostilePeers(issuer),
+      capacityIssuer ? capacityIssuer({ issuer }) : issueCapacityPeers(issuer),
+    ]);
+    const hostile = validateHostileStageResult(await hostileProbe({
+      port: selectedPort,
+      peers: hostilePeers,
+      origin: selectedOrigin,
+      traceId: null,
+      timeoutMs: selectedTimeout,
+    }));
+    const capacity = validateCapacityStageResult(await capacityProbe({
+      port: selectedPort,
+      sessions: capacityPeers.sessions,
+      refusedSession: capacityPeers.refusedSession,
+      origin: selectedOrigin,
+      traceId: null,
+      frame: Buffer.alloc(AUDIO_LIMITS.frameBytes),
+      timeoutMs: selectedTimeout,
+    }));
+
+    const drainDeadline = performance.now() + selectedTimeout;
+    let final;
+    do {
+      final = validateMetricsSnapshot(await metricsProbe({
+        port: selectedPort,
+        metricsToken: selectedMetricsToken,
+        timeoutMs: hostileTimeout(drainDeadline),
+      }));
+      if (final.activeSessions === 0 && final.retainedChunks === 0 && final.retainedBytes === 0) break;
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    } while (performance.now() < drainDeadline);
+    assertHostileCapacityMetrics(baseline, final);
+
+    return Object.freeze({
+      binaryFramesSent: hostile.binaryFramesSent + capacity.sessionsAccepted,
+      accepted: capacity.sessionsAccepted,
+      rejected: hostile.rejected,
+      lost: 0,
+      uncertain: 0,
+      sessionsAccepted: capacity.sessionsAccepted,
+      sessionsRefused: capacity.sessionsRefused,
+      session101Refused: capacity.session101Refused,
+      ackP95Ms: capacity.ackP95Ms,
+      processAlive: hostile.processAlive,
+      activeSessionsFinal: final.activeSessions,
+      retainedChunksFinal: final.retainedChunks,
+      retainedBytesFinal: final.retainedBytes,
+    });
+  } catch (error) {
+    if (
+      error instanceof Error &&
+      error.message.startsWith("realtime hostile-capacity stage ")
+    ) {
+      throw error;
+    }
+    throw hostileCapacityError("failed");
+  }
 }
 
 /** Convert successful one-frame probes into the closed accounting used by W3.8 stage evidence. */
