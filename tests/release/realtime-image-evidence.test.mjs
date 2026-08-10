@@ -196,9 +196,10 @@ function stageMeasurements(name) {
         lost: 2,
         uncertain: 1,
         durableLost: 2,
-        durableOrphan: 1,
-        repaired: 1,
-        outstandingActionable: 2,
+        durableOrphan: 0,
+        unresolvedUncertain: 1,
+        repaired: 0,
+        outstandingActionable: 3,
         incompleteReportedComplete: 0,
         readinessFailedClosed: true,
         repairIdempotent: true,
@@ -586,6 +587,8 @@ test("every measured profile is closed-accounting and cannot lower or merely cla
     [(copy) => { copy.stages[2].measurements.sessionsAccepted = 99; }, /100 sessions/i],
     [(copy) => { copy.stages[3].measurements.retentionModesTested = 2; }, /retention/i],
     [(copy) => { copy.stages[3].measurements.privacyLeaks = 1; }, /privacy/i],
+    [(copy) => { copy.stages[4].measurements.unresolvedUncertain = 2; }, /uncertainty/i],
+    [(copy) => { copy.stages[4].measurements.unresolvedUncertain = 0; }, /uncertainty/i],
     [(copy) => { copy.stages[4].measurements.outstandingActionable = 1; }, /actionable/i],
     [(copy) => { copy.stages[4].measurements.incompleteReportedComplete = 1; }, /incomplete/i],
     [(copy) => { copy.stages[5].measurements.classroom.framesSent -= 1; }, /15,625|classroom/i],
@@ -2581,7 +2584,8 @@ function faultProbeResults() {
       lost: 1,
       uncertain: 1,
       durableLost: 1,
-      durableOrphan: 1,
+      durableOrphan: 0,
+      unresolvedUncertain: 1,
       recovered: true,
       readinessFailedClosed: true,
       incompleteReportedComplete: 0,
@@ -2600,6 +2604,7 @@ function faultProbeResults() {
       uncertain: 0,
       durableLost: 0,
       durableOrphan: 0,
+      unresolvedUncertain: 0,
       recovered: true,
       readinessFailedClosed: true,
       incompleteReportedComplete: 0,
@@ -2618,6 +2623,7 @@ function faultProbeResults() {
       uncertain: 0,
       durableLost: 1,
       durableOrphan: 0,
+      unresolvedUncertain: 0,
       recovered: true,
       readinessFailedClosed: true,
       incompleteReportedComplete: 0,
@@ -2629,8 +2635,8 @@ function faultProbeResults() {
       },
     },
     repair: {
-      attempted: 3,
-      repaired: 1,
+      attempted: 2,
+      repaired: 0,
       outstandingActionable: 2,
       secondPassRepaired: 0,
       idempotent: true,
@@ -2647,7 +2653,7 @@ test("the fault stage repairs stored orphans and preserves genuine accepted loss
     s3Probe: async () => { calls.push("s3"); return values.s3; },
     repairProbe: async (input) => {
       calls.push("repair");
-      assert.deepEqual(input, { durableLost: 2, durableOrphan: 1 });
+      assert.deepEqual(input, { durableLost: 2, durableOrphan: 0 });
       return values.repair;
     },
   });
@@ -2669,6 +2675,7 @@ test("the fault stage rejects open accounting, missing safety proofs, incomplete
   const cases = [
     [(copy) => { copy.nodeProcess.framesSent += 1; }],
     [(copy) => { copy.nodeProcess.uncertain = 0; copy.nodeProcess.accepted += 1; }],
+    [(copy) => { copy.nodeProcess.unresolvedUncertain = 0; }],
     [(copy) => { copy.nodeProcess.proofs.ambiguousFrameNotReplayed = false; }],
     [(copy) => { copy.nodeProcess.incompleteReportedComplete = 1; }],
     [(copy) => { copy.postgres.readinessFailedClosed = false; }],
@@ -2679,7 +2686,7 @@ test("the fault stage rejects open accounting, missing safety proofs, incomplete
     [(copy) => { copy.s3.proofs.acceptedLossRecorded = false; }],
     [(copy) => { copy.s3.durableLost = 0; }],
     [(copy) => { copy.s3.recovered = false; }],
-    [(copy) => { copy.repair.attempted = 2; }],
+    [(copy) => { copy.repair.attempted = 1; }],
     [(copy) => { copy.repair.repaired = 2; }],
     [(copy) => { copy.repair.outstandingActionable = 1; }],
     [(copy) => { copy.repair.repaired = 3; copy.repair.outstandingActionable = 0; }],
@@ -2725,11 +2732,11 @@ function faultRepairHarness({ snapshots, summaries } = {}) {
   const repairCalls = [];
   const remainingSnapshots = structuredClone(snapshots ?? [
     { lostOutstanding: 0, orphanOutstanding: 0, repaired: 0 },
-    { lostOutstanding: 2, orphanOutstanding: 1, repaired: 0 },
-    { lostOutstanding: 2, orphanOutstanding: 0, repaired: 1 },
-    { lostOutstanding: 2, orphanOutstanding: 0, repaired: 1 },
+    { lostOutstanding: 2, orphanOutstanding: 0, repaired: 0 },
+    { lostOutstanding: 2, orphanOutstanding: 0, repaired: 0 },
+    { lostOutstanding: 2, orphanOutstanding: 0, repaired: 0 },
   ]);
-  const remainingSummaries = structuredClone(summaries ?? [repairSummary(1), repairSummary(0)]);
+  const remainingSummaries = structuredClone(summaries ?? [repairSummary(0), repairSummary(0)]);
   const db = {
     withTenant: async () => {},
     assertRestrictedRole: async () => {},
@@ -2767,13 +2774,13 @@ function faultRepairHarness({ snapshots, summaries } = {}) {
   };
 }
 
-test("the repair observer proves RLS deltas, repairs only stored orphans, and is idempotent", async () => {
+test("the repair observer preserves absent audio as actionable without fabricating an orphan", async () => {
   const harness = faultRepairHarness();
   const adapter = await createRealtimeFaultRepairProbe(harness.input);
-  const result = await adapter.repairProbe({ durableLost: 2, durableOrphan: 1 });
+  const result = await adapter.repairProbe({ durableLost: 2, durableOrphan: 0 });
   assert.deepEqual(result, {
-    attempted: 3,
-    repaired: 1,
+    attempted: 2,
+    repaired: 0,
     outstandingActionable: 2,
     secondPassRepaired: 0,
     idempotent: true,
@@ -2791,6 +2798,28 @@ test("the repair observer proves RLS deltas, repairs only stored orphans, and is
   assert.deepEqual(harness.closeCalls.sort(), ["db", "store"]);
 });
 
+test("the repair observer repairs an actually observed stored orphan exactly once", async () => {
+  const harness = faultRepairHarness({
+    snapshots: [
+      { lostOutstanding: 0, orphanOutstanding: 0, repaired: 0 },
+      { lostOutstanding: 2, orphanOutstanding: 1, repaired: 0 },
+      { lostOutstanding: 2, orphanOutstanding: 0, repaired: 1 },
+      { lostOutstanding: 2, orphanOutstanding: 0, repaired: 1 },
+    ],
+    summaries: [repairSummary(1), repairSummary(0)],
+  });
+  const adapter = await createRealtimeFaultRepairProbe(harness.input);
+  const result = await adapter.repairProbe({ durableLost: 2, durableOrphan: 1 });
+  assert.deepEqual(result, {
+    attempted: 3,
+    repaired: 1,
+    outstandingActionable: 2,
+    secondPassRepaired: 0,
+    idempotent: true,
+  });
+  await adapter.close();
+});
+
 test("the repair observer fails closed on contamination, drift, repair lies, and reuse", async () => {
   const cases = [
     { snapshots: [
@@ -2798,16 +2827,16 @@ test("the repair observer fails closed on contamination, drift, repair lies, and
     ] },
     { snapshots: [
       { lostOutstanding: 0, orphanOutstanding: 0, repaired: 0 },
-      { lostOutstanding: 1, orphanOutstanding: 1, repaired: 0 },
+      { lostOutstanding: 1, orphanOutstanding: 0, repaired: 0 },
     ] },
-    { summaries: [{ ...repairSummary(1), refused: 1, errors: [{ reason: "private" }] }] },
-    { summaries: [repairSummary(2)] },
+    { summaries: [{ ...repairSummary(0), refused: 1, errors: [{ reason: "private" }] }] },
+    { summaries: [repairSummary(1)] },
     { snapshots: [
       { lostOutstanding: 0, orphanOutstanding: 0, repaired: 0 },
-      { lostOutstanding: 2, orphanOutstanding: 1, repaired: 0 },
-      { lostOutstanding: 1, orphanOutstanding: 0, repaired: 1 },
+      { lostOutstanding: 2, orphanOutstanding: 0, repaired: 0 },
+      { lostOutstanding: 1, orphanOutstanding: 0, repaired: 0 },
     ] },
-    { summaries: [repairSummary(1), repairSummary(1)] },
+    { summaries: [repairSummary(0), repairSummary(1)] },
   ];
   for (const mutation of cases) {
     const harness = faultRepairHarness(mutation);
@@ -2815,7 +2844,7 @@ test("the repair observer fails closed on contamination, drift, repair lies, and
     try {
       adapter = await createRealtimeFaultRepairProbe(harness.input);
       await assert.rejects(
-        () => adapter.repairProbe({ durableLost: 2, durableOrphan: 1 }),
+        () => adapter.repairProbe({ durableLost: 2, durableOrphan: 0 }),
         (error) => error.message === "realtime fault repair probe failed",
       );
     } catch (error) {
@@ -2827,9 +2856,9 @@ test("the repair observer fails closed on contamination, drift, repair lies, and
 
   const harness = faultRepairHarness();
   const adapter = await createRealtimeFaultRepairProbe(harness.input);
-  await adapter.repairProbe({ durableLost: 2, durableOrphan: 1 });
+  await adapter.repairProbe({ durableLost: 2, durableOrphan: 0 });
   await assert.rejects(
-    () => adapter.repairProbe({ durableLost: 2, durableOrphan: 1 }),
+    () => adapter.repairProbe({ durableLost: 2, durableOrphan: 0 }),
     (error) => error.message === "realtime fault repair probe failed",
   );
   await adapter.close();

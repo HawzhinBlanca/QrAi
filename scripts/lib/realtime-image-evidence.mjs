@@ -311,6 +311,7 @@ function assertFaultMeasurements(value) {
       "uncertain",
       "durableLost",
       "durableOrphan",
+      "unresolvedUncertain",
       "repaired",
       "outstandingActionable",
       "incompleteReportedComplete",
@@ -329,23 +330,33 @@ function assertFaultMeasurements(value) {
   for (const key of [
     "durableLost",
     "durableOrphan",
+    "unresolvedUncertain",
     "repaired",
     "outstandingActionable",
     "incompleteReportedComplete",
   ]) {
     assertNonnegativeInteger(value[key], `fault-recovery.${key}`);
   }
-  if (value.durableLost !== value.lost || value.durableOrphan !== value.uncertain) {
-    throw new TypeError("fault-recovery durable loss/orphan outcomes must match loss accounting");
+  if (value.durableLost !== value.lost) {
+    throw new TypeError("fault-recovery durable loss outcomes must match known loss accounting");
+  }
+  if (value.unresolvedUncertain > value.uncertain) {
+    throw new TypeError("fault-recovery unresolved uncertainty cannot exceed client uncertainty");
+  }
+  if (value.durableOrphan + value.unresolvedUncertain !== value.uncertain) {
+    throw new TypeError("fault-recovery must resolve every client uncertainty exactly once");
   }
   if (value.repaired !== value.durableOrphan) {
     throw new TypeError("fault-recovery must repair every stored orphan and no absent audio");
   }
   if (
-    value.outstandingActionable !== value.durableLost ||
-    value.repaired + value.outstandingActionable !== value.durableLost + value.durableOrphan
+    value.outstandingActionable !== value.durableLost + value.unresolvedUncertain ||
+    value.repaired + value.outstandingActionable !==
+      value.durableLost + value.durableOrphan + value.unresolvedUncertain
   ) {
-    throw new TypeError("fault-recovery must preserve every genuine loss as actionable");
+    throw new TypeError(
+      "fault-recovery must preserve every loss and unresolved uncertainty as actionable",
+    );
   }
   if (value.incompleteReportedComplete !== 0) {
     throw new TypeError("fault-recovery must never report an incomplete recording complete");

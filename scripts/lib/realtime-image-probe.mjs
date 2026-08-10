@@ -2136,6 +2136,7 @@ export async function runRealtimePostgresFaultProbe({
       uncertain: 0,
       durableLost: 0,
       durableOrphan: 0,
+      unresolvedUncertain: 0,
       recovered: true,
       readinessFailedClosed: true,
       incompleteReportedComplete: 0,
@@ -3152,7 +3153,7 @@ export async function createRealtimeFaultRepairProbe({
       try {
         faultCount(durableLost, "fault repair durableLost");
         faultCount(durableOrphan, "fault repair durableOrphan");
-        if (used || durableLost < 1 || durableOrphan < 1) {
+        if (used || durableLost < 1) {
           throw new TypeError("fault repair invocation is invalid");
         }
         used = true;
@@ -3223,6 +3224,7 @@ function validateFaultProbe(value, fault, proofFields) {
     "uncertain",
     "durableLost",
     "durableOrphan",
+    "unresolvedUncertain",
     "recovered",
     "readinessFailedClosed",
     "incompleteReportedComplete",
@@ -3238,6 +3240,7 @@ function validateFaultProbe(value, fault, proofFields) {
     "uncertain",
     "durableLost",
     "durableOrphan",
+    "unresolvedUncertain",
     "incompleteReportedComplete",
   ]) {
     faultCount(value[field], `${fault}.${field}`);
@@ -3248,8 +3251,14 @@ function validateFaultProbe(value, fault, proofFields) {
   ) {
     throw new TypeError(`${fault} fault frame accounting is open`);
   }
-  if (value.durableLost !== value.lost || value.durableOrphan !== value.uncertain) {
-    throw new TypeError(`${fault} durable outcomes do not match frame accounting`);
+  if (value.durableLost !== value.lost) {
+    throw new TypeError(`${fault} durable loss does not match known frame loss`);
+  }
+  if (value.unresolvedUncertain > value.uncertain) {
+    throw new TypeError(`${fault} unresolved uncertainty exceeds client uncertainty`);
+  }
+  if (value.durableOrphan + value.unresolvedUncertain !== value.uncertain) {
+    throw new TypeError(`${fault} did not resolve every client uncertainty exactly once`);
   }
   if (
     value.recovered !== true ||
@@ -3286,7 +3295,11 @@ export async function runRealtimeFaultRecoveryStage({
       "node-process",
       ["cleanInterruptionRecovered", "ambiguousFrameNotReplayed", "freshTicketIssued"],
     );
-    if (nodeProcess.lost < 1 || nodeProcess.uncertain < 1) {
+    if (
+      nodeProcess.lost < 1 ||
+      nodeProcess.uncertain < 1 ||
+      nodeProcess.unresolvedUncertain < 1
+    ) {
       throw new TypeError("node-process fault must prove both clean and ambiguous interruption");
     }
 
@@ -3300,7 +3313,8 @@ export async function runRealtimeFaultRecoveryStage({
       postgres.lost !== 0 ||
       postgres.uncertain !== 0 ||
       postgres.durableLost !== 0 ||
-      postgres.durableOrphan !== 0
+      postgres.durableOrphan !== 0 ||
+      postgres.unresolvedUncertain !== 0
     ) {
       throw new TypeError("Postgres outage must reject before accepting or losing audio");
     }
@@ -3315,13 +3329,23 @@ export async function runRealtimeFaultRecoveryStage({
         "productionCandidateRestored",
       ],
     );
-    if (s3.lost < 1 || s3.uncertain !== 0 || s3.durableOrphan !== 0) {
+    if (
+      s3.lost < 1 ||
+      s3.uncertain !== 0 ||
+      s3.durableOrphan !== 0 ||
+      s3.unresolvedUncertain !== 0
+    ) {
       throw new TypeError("S3 fault must record accepted loss without uncertain audio");
     }
 
     const durableLost = nodeProcess.durableLost + postgres.durableLost + s3.durableLost;
     const durableOrphan =
       nodeProcess.durableOrphan + postgres.durableOrphan + s3.durableOrphan;
+    const results = [nodeProcess, postgres, s3];
+    const unresolvedUncertain = results.reduce(
+      (total, value) => total + value.unresolvedUncertain,
+      0,
+    );
     const repair = await repairProbe(Object.freeze({ durableLost, durableOrphan }));
     exactFaultKeys(
       repair,
@@ -3342,8 +3366,6 @@ export async function runRealtimeFaultRecoveryStage({
     ) {
       throw new TypeError("fault repair did not close idempotently");
     }
-
-    const results = [nodeProcess, postgres, s3];
     return Object.freeze({
       faultsTested: Object.freeze(results.map(({ fault }) => fault)),
       framesSent: results.reduce((total, value) => total + value.framesSent, 0),
@@ -3353,8 +3375,9 @@ export async function runRealtimeFaultRecoveryStage({
       uncertain: results.reduce((total, value) => total + value.uncertain, 0),
       durableLost,
       durableOrphan,
+      unresolvedUncertain,
       repaired: repair.repaired,
-      outstandingActionable: repair.outstandingActionable,
+      outstandingActionable: repair.outstandingActionable + unresolvedUncertain,
       incompleteReportedComplete: results.reduce(
         (total, value) => total + value.incompleteReportedComplete,
         0,

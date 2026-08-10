@@ -107,6 +107,8 @@ artifact hashes and validated outcomes.
   remains actionable; only an extant immutable object can be indexed and marked repaired. Evidence
   closes the equation across repaired plus outstanding states and rejects any claim that such an
   incomplete recording is complete.
+- A client-uncertain frame is not relabelled as a stored orphan. Evidence separately counts
+  unresolved uncertainty; only an observed immutable object without its exact index is repairable.
 - Rollback of implementation restores the earlier issuer/runtime contract and removes proof-only
   files. Evidence is external/write-once and requires no database rollback. No destructive schema,
   canonical Quran data, learner feedback, or stored learner record is introduced by this slice.

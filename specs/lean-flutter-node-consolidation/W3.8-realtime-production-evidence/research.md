@@ -11,9 +11,16 @@ The production outcome and repair authorities distinguish two materially differe
 `stored-unindexed` orphan still has immutable audio bytes and can be indexed idempotently. An
 `accepted-lost` row produced by a definitive object-store failure has no audio bytes to recreate;
 it must remain an actionable loss and the recording must remain incomplete. Therefore W3.8 evidence
-must close the repair equation as `repaired + outstandingActionable = durableLost + durableOrphan`,
-with stored orphans repaired and genuine loss left actionable. Treating every lost frame as repaired
-would fabricate recovery and contradict `server/scripts/repair-audio-index.mjs`.
+must close the repair equation as
+`repaired + outstandingActionable = durableLost + durableOrphan + unresolvedUncertain`, with stored
+orphans repaired and genuine loss or unresolved ambiguity left actionable. Treating every lost or
+uncertain frame as repaired would fabricate recovery and contradict
+`server/scripts/repair-audio-index.mjs`.
+
+Client uncertainty is also not proof of a stored orphan. A process kill may leave no object or
+diagnostic at all, so the evidence records `unresolvedUncertain` separately. Only an object actually
+observed without its index counts as `durableOrphan`; unresolved client ambiguity remains actionable
+and keeps finalization incomplete.
 
 ## Grounded boundary and data flow
 
