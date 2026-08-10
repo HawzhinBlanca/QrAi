@@ -1,11 +1,13 @@
-import { createHash } from "node:crypto";
+import { createHash, randomBytes, randomUUID } from "node:crypto";
+import { request as httpRequest } from "node:http";
 
 import {
   assertReleaseDeploymentSelection,
   composeImageEnvironment,
 } from "./release-deployment.mjs";
+import { createHttpCanaryActorAuthorization } from "./http-canary-probe.mjs";
 import { AUDIO_LIMITS } from "../../server/src/realtime/audio.mjs";
-import { parseAudioAck } from "../../server/src/realtime/protocol.mjs";
+import { AUDIO_ACK_FIELDS, parseAudioAck } from "../../server/src/realtime/protocol.mjs";
 
 const sourceShaPattern = /^[a-f0-9]{40}$/;
 const expectedOwnerPattern = /^\d{12}$/;
@@ -18,6 +20,25 @@ const duplicateAckWindowMs = 25;
 const maximumProbeSessionBytes = 256;
 const maximumProbeTicketBytes = 16 * 1024;
 const maximumProbeTraceBytes = 256;
+const maximumParityResponseBytes = 64 * 1024;
+const platformApiBaseUrl = "http://127.0.0.1:8080";
+const rustRealtimePort = 8081;
+const protocolParityRetentions = Object.freeze([
+  "discard",
+  "teacher-review",
+  "training-opt-in",
+]);
+const ticketResponseFields = Object.freeze([
+  "sessionId",
+  "tenantId",
+  "learnerId",
+  "expiresAt",
+  "allowedSampleRates",
+  "externalAsrProcessing",
+  "token",
+  "auditEventId",
+]);
+const ticketResponseFieldSet = new Set(ticketResponseFields);
 
 function assertObject(value, label) {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
@@ -106,6 +127,35 @@ function acknowledgementInput(value) {
 
 function probeError(message) {
   return new Error(`realtime audio probe ${message}`);
+}
+
+function parityError(message) {
+  return new Error(`realtime protocol parity ${message}`);
+}
+
+function requiredParityString(value, label, maximumBytes = 256) {
+  if (
+    typeof value !== "string" ||
+    value.trim() === "" ||
+    value !== value.trim() ||
+    Buffer.byteLength(value) > maximumBytes
+  ) {
+    throw new TypeError(`realtime protocol parity ${label} is required`);
+  }
+  return value;
+}
+
+function assertProbeTimeout(value) {
+  if (
+    !Number.isSafeInteger(value) ||
+    value < minimumProbeTimeoutMs ||
+    value > maximumProbeTimeoutMs
+  ) {
+    throw new TypeError(
+      `realtime audio probe timeout must be ${minimumProbeTimeoutMs}..${maximumProbeTimeoutMs} milliseconds`,
+    );
+  }
+  return value;
 }
 
 function percentile(values, proportion) {
@@ -370,6 +420,419 @@ export async function probeRealtimeAudioFrame({
       if (result !== null) finish(null, result);
       else finish(probeError("transport failed"));
     };
+  });
+}
+
+/**
+ * Prove a credential-bearing upgrade was refused with a bodyless security response. Node's
+ * built-in WebSocket client intentionally hides non-101 response status, so this probe performs
+ * only the bounded HTTP/1.1 handshake and never exposes the credential-bearing request target.
+ */
+export async function probeRealtimeUpgradeRefusal({
+  port,
+  sessionId,
+  ticket,
+  origin,
+  expectedStatus,
+  timeoutMs,
+}) {
+  const selectedPort = probePort(port);
+  const selectedSession = requiredProbeString(sessionId, "session id", maximumProbeSessionBytes);
+  const selectedTicket = requiredProbeString(ticket, "ticket", maximumProbeTicketBytes);
+  const selectedOrigin = probeOrigin(origin);
+  if (![401, 403].includes(expectedStatus)) {
+    throw new TypeError("realtime audio probe refusal status must be 401 or 403");
+  }
+  const selectedTimeout = assertProbeTimeout(timeoutMs);
+  const query = new URLSearchParams({ ticket: selectedTicket });
+  const path = `/v1/recitation-sessions/${encodeURIComponent(selectedSession)}/audio?${query}`;
+
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    let timeout;
+    let request;
+    const finish = (error, value = null) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeout);
+      request?.destroy();
+      if (error) reject(error);
+      else resolve(Object.freeze(value));
+    };
+    try {
+      request = httpRequest({
+        host: "127.0.0.1",
+        port: selectedPort,
+        method: "GET",
+        path,
+        headers: {
+          Connection: "Upgrade",
+          Origin: selectedOrigin,
+          Upgrade: "websocket",
+          "Sec-WebSocket-Key": randomBytes(16).toString("base64"),
+          "Sec-WebSocket-Version": "13",
+        },
+      });
+    } catch {
+      finish(probeError("refusal transport failed"));
+      return;
+    }
+    timeout = setTimeout(() => finish(probeError("refusal timed out")), selectedTimeout);
+    request.once("upgrade", (_response, socket) => {
+      socket.destroy();
+      finish(probeError("refusal unexpectedly upgraded"));
+    });
+    request.once("response", (response) => {
+      let bodyBytes = 0;
+      response.on("data", (chunk) => {
+        bodyBytes += Buffer.byteLength(chunk);
+        if (bodyBytes > 0) finish(probeError("refusal did not match the bodyless security boundary"));
+      });
+      response.once("end", () => {
+        const contentLength = response.headers["content-length"];
+        if (
+          response.statusCode !== expectedStatus ||
+          bodyBytes !== 0 ||
+          (contentLength !== undefined && contentLength !== "0")
+        ) {
+          finish(probeError("refusal did not match the bodyless security boundary"));
+          return;
+        }
+        finish(null, { refused: true, statusCode: expectedStatus });
+      });
+      response.once("aborted", () => finish(probeError("refusal transport failed")));
+      response.once("error", () => finish(probeError("refusal transport failed")));
+    });
+    request.once("error", () => finish(probeError("refusal transport failed")));
+    request.end();
+  });
+}
+
+function exactObjectFields(value, fields, fieldSet) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const keys = Object.keys(value);
+  return keys.length === fields.length && keys.every((key) => fieldSet.has(key));
+}
+
+async function readBoundedParityJson(response) {
+  const contentLength = Number(response.headers?.get?.("content-length"));
+  if (Number.isFinite(contentLength) && contentLength > maximumParityResponseBytes) {
+    throw parityError("API response exceeded its byte limit");
+  }
+  if (!response.body || typeof response.body.getReader !== "function") {
+    throw parityError("API response body was unavailable");
+  }
+  const reader = response.body.getReader();
+  const chunks = [];
+  let total = 0;
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    total += value.byteLength;
+    if (total > maximumParityResponseBytes) {
+      await reader.cancel().catch(() => {});
+      throw parityError("API response exceeded its byte limit");
+    }
+    chunks.push(Buffer.from(value));
+  }
+  return JSON.parse(Buffer.concat(chunks, total).toString("utf8"));
+}
+
+async function postParityJson({ fetchImpl, path, authorization, origin, body, timeoutMs, label }) {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const response = await fetchImpl(`${platformApiBaseUrl}${path}`, {
+      method: "POST",
+      headers: {
+        authorization,
+        "content-type": "application/json",
+        Origin: origin,
+        "x-trace-id": `w3-8-realtime-proof-${randomUUID()}`,
+      },
+      body: JSON.stringify(body),
+      redirect: "manual",
+      signal: controller.signal,
+    });
+    if (!response || response.status !== 200) {
+      throw parityError(`${label} failed`);
+    }
+    return await readBoundedParityJson(response);
+  } catch {
+    throw parityError(`${label} failed`);
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+function validateIssuedTicket(value, { sessionId, tenantId, learnerId, nowUnixSeconds }) {
+  if (!exactObjectFields(value, ticketResponseFields, ticketResponseFieldSet)) {
+    throw parityError("ticket issuance failed");
+  }
+  const tokenParts = typeof value.token === "string" ? value.token.split(".") : [];
+  const expiresAt = Number(value.expiresAt);
+  if (
+    value.sessionId !== sessionId ||
+    value.tenantId !== tenantId ||
+    value.learnerId !== learnerId ||
+    typeof value.expiresAt !== "string" ||
+    !/^(?:0|[1-9][0-9]*)$/.test(value.expiresAt) ||
+    !Number.isSafeInteger(expiresAt) ||
+    expiresAt <= nowUnixSeconds ||
+    expiresAt > nowUnixSeconds + 600 ||
+    JSON.stringify(value.allowedSampleRates) !== "[16000]" ||
+    value.externalAsrProcessing !== false ||
+    typeof value.token !== "string" ||
+    value.token !== value.token.trim() ||
+    tokenParts.length !== 9 ||
+    tokenParts[0] !== "rt_v2" ||
+    tokenParts.some((part) => part === "") ||
+    Buffer.byteLength(value.token) > maximumProbeTicketBytes ||
+    typeof value.auditEventId !== "string" ||
+    value.auditEventId.trim() === ""
+  ) {
+    throw parityError("ticket issuance failed");
+  }
+  return value.token;
+}
+
+function validateFrameProbeResult(value) {
+  summarizeRealtimeAudioFrameProbes([value]);
+  if (value.sequence !== 0) throw parityError("frame acknowledgement sequence mismatch");
+  return value.accepted;
+}
+
+function validateRefusalProbeResult(value, expectedStatus) {
+  const fields = ["refused", "statusCode"];
+  if (
+    !exactObjectFields(value, fields, new Set(fields)) ||
+    value.refused !== true ||
+    value.statusCode !== expectedStatus
+  ) {
+    throw parityError("upgrade refusal was not proven");
+  }
+}
+
+/**
+ * Exercise valid, deliberate-invalid, Origin, and replay behavior against the loopback Node
+ * candidate and the still-public Rust oracle. All credentials and learner/session identity remain
+ * process-local; the returned evidence is the exact aggregate protocol-parity measurement shape.
+ */
+export async function runRealtimeProtocolParityStage({
+  nodePort,
+  origin,
+  disallowedOrigin,
+  jwtSecret,
+  tenantId,
+  learnerId,
+  fetchImpl = fetch,
+  frameProbe = probeRealtimeAudioFrame,
+  refusalProbe = probeRealtimeUpgradeRefusal,
+  nowUnixSeconds = () => Math.floor(Date.now() / 1_000),
+  timeoutMs,
+}) {
+  const selectedNodePort = probePort(nodePort);
+  if (selectedNodePort === rustRealtimePort) {
+    throw new TypeError("realtime protocol parity Node port must remain distinct from Rust port 8081");
+  }
+  const selectedOrigin = probeOrigin(origin);
+  const selectedDisallowedOrigin = probeOrigin(disallowedOrigin);
+  if (selectedOrigin === selectedDisallowedOrigin) {
+    throw new TypeError("realtime protocol parity disallowed origin must be distinct");
+  }
+  const selectedTenant = requiredParityString(tenantId, "tenant id");
+  const selectedLearner = requiredParityString(learnerId, "learner id");
+  const selectedSecret = requiredParityString(jwtSecret, "JWT secret", 4_096);
+  if (Buffer.byteLength(selectedSecret) < 32) {
+    throw new TypeError("realtime protocol parity JWT secret must be at least 32 bytes");
+  }
+  if (typeof fetchImpl !== "function" || typeof frameProbe !== "function" || typeof refusalProbe !== "function") {
+    throw new TypeError("realtime protocol parity adapters must be functions");
+  }
+  if (typeof nowUnixSeconds !== "function") {
+    throw new TypeError("realtime protocol parity clock must be a function");
+  }
+  const selectedTimeout = assertProbeTimeout(timeoutMs);
+  const authorization = await createHttpCanaryActorAuthorization({
+    jwtSecret: selectedSecret,
+    tenantId: selectedTenant,
+    userId: selectedLearner,
+    role: "learner",
+  });
+  const sessions = new Map();
+  const sessionPromises = new Map();
+
+  async function sessionFor(retention) {
+    const cached = sessions.get(retention);
+    if (cached) return cached;
+    const pending = sessionPromises.get(retention);
+    if (pending) return pending;
+    const creation = (async () => {
+      const body = await postParityJson({
+        fetchImpl,
+        path: "/v1/recitation-sessions",
+        authorization,
+        origin: selectedOrigin,
+        timeoutMs: selectedTimeout,
+        label: "session issuance",
+        body: {
+          learnerId: selectedLearner,
+          quranRef: {
+            surahNumber: 1,
+            ayahStart: 1,
+            ayahEnd: 7,
+            display: "Al-Fatihah 1:1-7",
+          },
+          sourceChecksum: `declared:w3.8-realtime-production-proof:${retention}`,
+          language: "ckb",
+          mode: "guided-recite",
+          practicePlanId: "w3.8-realtime-production-proof",
+          consent: {
+            recordingConsent: true,
+            audioRetention: retention,
+            anonymizedLearning: false,
+            externalAsrProcessing: false,
+            guardianApproved: false,
+            consentVersion: "w3.8-realtime-production-proof-v1",
+          },
+        },
+      });
+      if (
+        !body ||
+        typeof body !== "object" ||
+        Array.isArray(body) ||
+        typeof body.id !== "string" ||
+        body.id.trim() === "" ||
+        body.tenantId !== selectedTenant ||
+        body.learnerId !== selectedLearner ||
+        body.consent?.audioRetention !== retention
+      ) {
+        throw parityError("session issuance failed");
+      }
+      sessions.set(retention, body.id);
+      return body.id;
+    })();
+    sessionPromises.set(retention, creation);
+    try {
+      return await creation;
+    } finally {
+      sessionPromises.delete(retention);
+    }
+  }
+
+  async function issueTicket(retention) {
+    const sessionId = await sessionFor(retention);
+    const body = await postParityJson({
+      fetchImpl,
+      path: "/v1/realtime-session-tickets",
+      authorization,
+      origin: selectedOrigin,
+      timeoutMs: selectedTimeout,
+      label: "ticket issuance",
+      body: { sessionId, requestedSampleRates: [16_000] },
+    });
+    const currentSeconds = nowUnixSeconds();
+    if (!Number.isSafeInteger(currentSeconds) || currentSeconds < 0) {
+      throw new TypeError("realtime protocol parity clock returned an invalid time");
+    }
+    return {
+      sessionId,
+      ticket: validateIssuedTicket(body, {
+        sessionId,
+        tenantId: selectedTenant,
+        learnerId: selectedLearner,
+        nowUnixSeconds: currentSeconds,
+      }),
+    };
+  }
+
+  async function sendFrame(port, issued, frame) {
+    const result = await frameProbe({
+      port,
+      sessionId: issued.sessionId,
+      ticket: issued.ticket,
+      origin: selectedOrigin,
+      traceId: null,
+      frame,
+      expectedSequence: 0,
+      timeoutMs: selectedTimeout,
+    });
+    return validateFrameProbeResult(result);
+  }
+
+  async function proveRefusal(port, issued, refusalOrigin, expectedStatus) {
+    const result = await refusalProbe({
+      port,
+      sessionId: issued.sessionId,
+      ticket: issued.ticket,
+      origin: refusalOrigin,
+      expectedStatus,
+      timeoutMs: selectedTimeout,
+    });
+    validateRefusalProbeResult(result, expectedStatus);
+  }
+
+  let validCases = 0;
+  let matchedCases = 0;
+  let unexpectedDivergences = 0;
+  for (const retention of protocolParityRetentions) {
+    const [nodeTicket, rustTicket] = await Promise.all([
+      issueTicket(retention),
+      issueTicket(retention),
+    ]);
+    const [nodeAccepted, rustAccepted] = await Promise.all([
+      sendFrame(selectedNodePort, nodeTicket, Buffer.alloc(AUDIO_LIMITS.frameBytes)),
+      sendFrame(rustRealtimePort, rustTicket, Buffer.alloc(AUDIO_LIMITS.frameBytes)),
+    ]);
+    validCases += 1;
+    if (nodeAccepted && rustAccepted) matchedCases += 1;
+    else unexpectedDivergences += 1;
+  }
+  if (unexpectedDivergences !== 0 || matchedCases !== validCases) {
+    throw parityError("valid wire behavior diverged");
+  }
+
+  const [nodeInvalidTicket, rustInvalidTicket] = await Promise.all([
+    issueTicket("discard"),
+    issueTicket("discard"),
+  ]);
+  const invalidFrame = Buffer.alloc(AUDIO_LIMITS.frameBytes - 1);
+  const [nodeInvalidAccepted, rustInvalidAccepted] = await Promise.all([
+    sendFrame(selectedNodePort, nodeInvalidTicket, invalidFrame),
+    sendFrame(rustRealtimePort, rustInvalidTicket, invalidFrame),
+  ]);
+  if (nodeInvalidAccepted || !rustInvalidAccepted) {
+    throw parityError("deliberate invalid-frame divergence was not proven");
+  }
+
+  let originRefusals = 0;
+  for (const port of [selectedNodePort, rustRealtimePort]) {
+    const issued = await issueTicket("discard");
+    await proveRefusal(port, issued, selectedDisallowedOrigin, 403);
+    originRefusals += 1;
+    if (!await sendFrame(port, issued, Buffer.alloc(AUDIO_LIMITS.frameBytes))) {
+      throw parityError("origin refusal consumed a single-use ticket");
+    }
+  }
+
+  let replayRefusals = 0;
+  for (const port of [selectedNodePort, rustRealtimePort]) {
+    const issued = await issueTicket("discard");
+    if (!await sendFrame(port, issued, Buffer.alloc(AUDIO_LIMITS.frameBytes))) {
+      throw parityError("replay setup frame was not accepted");
+    }
+    await proveRefusal(port, issued, selectedOrigin, 401);
+    replayRefusals += 1;
+  }
+
+  return Object.freeze({
+    validCases,
+    matchedCases,
+    unexpectedDivergences,
+    nodeInvalidFrameDivergences: 1,
+    ackFieldCount: AUDIO_ACK_FIELDS.length,
+    originRefusals,
+    replayRefusals,
   });
 }
 

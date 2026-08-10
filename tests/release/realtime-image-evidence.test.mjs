@@ -30,6 +30,8 @@ import {
   createRealtimeProofPreflight,
   parseRealtimeProofPort,
   probeRealtimeAudioFrame,
+  probeRealtimeUpgradeRefusal,
+  runRealtimeProtocolParityStage,
   summarizeRealtimeAudioFrameProbes,
   validateRealtimeProofRenderedTopology,
 } from "../../scripts/lib/realtime-image-probe.mjs";
@@ -332,7 +334,7 @@ function realtimeProbeTicket(nonce = "nonce-w3-8-proof") {
   }, probeSecret);
 }
 
-function realtimeProbeAppOptions(handleAdmittedSocket) {
+function realtimeProbeAppOptions(handleAdmittedSocket, overrides = {}) {
   return {
     db: { assertRestrictedRole: async () => {}, end: async () => {} },
     audioObjectStore: {
@@ -367,11 +369,12 @@ function realtimeProbeAppOptions(handleAdmittedSocket) {
     admissionNowUnixSeconds: () => probeNowSeconds,
     handleAdmittedSocket,
     logger: false,
+    ...overrides,
   };
 }
 
-async function withRealtimeProbeApp(handleAdmittedSocket, body) {
-  const app = createRealtimeApplication(realtimeProbeAppOptions(handleAdmittedSocket));
+async function withRealtimeProbeApp(handleAdmittedSocket, body, overrides = {}) {
+  const app = createRealtimeApplication(realtimeProbeAppOptions(handleAdmittedSocket, overrides));
   await app.listen({ host: "127.0.0.1", port: 0 });
   try {
     return await body(app.server.address().port);
@@ -795,6 +798,372 @@ test("the transport probe target, payload, expectation, and aggregate accounting
   assert.throws(
     () => summarizeRealtimeAudioFrameProbes([{ ...probes[0], ackLatencyMs: -1 }]),
     /latency/i,
+  );
+});
+
+test("the upgrade refusal probe proves bodyless origin and replay refusals without consuming origin-refused tickets", async () => {
+  const consumedNonces = new Set();
+  const replayAuthority = {
+    async claim(claims) {
+      if (consumedNonces.has(claims.nonce)) return "replay";
+      consumedNonces.add(claims.nonce);
+      return "fresh";
+    },
+    renderMetrics: () => "",
+    start: () => {},
+    stop: async () => {},
+  };
+  const credential = realtimeProbeTicket("nonce-origin-then-replay");
+  const disallowedOrigin = "https://disallowed.quran.example.org";
+
+  await withRealtimeProbeApp((socket) => {
+    socket.once("message", () => socket.send(JSON.stringify({
+      kind: "audio.ack",
+      session_id: probeSession,
+      chunk_id: "private-refusal-proof-chunk",
+      sequence: 0,
+      accepted: true,
+      trace_id: null,
+      message: "accepted",
+    })));
+  }, async (port) => {
+    const originRefusal = await probeRealtimeUpgradeRefusal({
+      port,
+      sessionId: probeSession,
+      ticket: credential,
+      origin: disallowedOrigin,
+      expectedStatus: 403,
+      timeoutMs: 2_000,
+    });
+    assert.deepEqual(originRefusal, { refused: true, statusCode: 403 });
+    assert.equal(consumedNonces.size, 0, "an origin refusal consumed a single-use ticket");
+
+    const accepted = await probeRealtimeAudioFrame({
+      port,
+      sessionId: probeSession,
+      ticket: credential,
+      origin: probeOrigin,
+      traceId: null,
+      frame: Buffer.alloc(15_360),
+      expectedSequence: 0,
+      timeoutMs: 2_000,
+    });
+    assert.equal(accepted.accepted, true);
+    assert.equal(consumedNonces.size, 1);
+
+    const replayRefusal = await probeRealtimeUpgradeRefusal({
+      port,
+      sessionId: probeSession,
+      ticket: credential,
+      origin: probeOrigin,
+      expectedStatus: 401,
+      timeoutMs: 2_000,
+    });
+    assert.deepEqual(replayRefusal, { refused: true, statusCode: 401 });
+
+    for (const result of [originRefusal, replayRefusal]) {
+      const serialized = JSON.stringify(result);
+      for (const privateValue of [credential, probeSession, probeLearner]) {
+        assert.equal(serialized.includes(privateValue), false);
+      }
+    }
+  }, { replayAuthority });
+});
+
+test("the protocol parity stage uses server-issued single-use tickets and records only closed aggregate facts", async () => {
+  const retentions = ["discard", "teacher-review", "training-opt-in"];
+  const sessions = new Map();
+  const ticketCalls = [];
+  const frameCalls = [];
+  const refusalCalls = [];
+  const requests = [];
+  let ticketNumber = 0;
+
+  const fetchImpl = async (input, options) => {
+    const url = new URL(input);
+    const body = JSON.parse(options.body);
+    requests.push({ url, options, body });
+    assert.equal(url.origin, "http://127.0.0.1:8080");
+    assert.equal(options.method, "POST");
+    assert.equal(options.headers.Origin, probeOrigin);
+    assert.match(options.headers.authorization, /^Bearer /);
+    assert.equal(options.headers["content-type"], "application/json");
+    assert.ok(options.signal instanceof AbortSignal);
+
+    if (url.pathname === "/v1/recitation-sessions") {
+      assert.equal(Object.hasOwn(body, "modelVersion"), false);
+      assert.equal(body.learnerId, probeLearner);
+      assert.equal(body.language, "ckb");
+      assert.equal(body.consent.recordingConsent, true);
+      assert.equal(body.consent.anonymizedLearning, false);
+      assert.equal(body.consent.externalAsrProcessing, false);
+      assert.equal(body.consent.guardianApproved, false);
+      assert.deepEqual(body.quranRef, {
+        surahNumber: 1,
+        ayahStart: 1,
+        ayahEnd: 7,
+        display: "Al-Fatihah 1:1-7",
+      });
+      assert.match(body.sourceChecksum, /^declared:w3\.8-realtime-production-proof:/);
+      const sessionId = `private-session-${body.consent.audioRetention}`;
+      sessions.set(sessionId, body.consent.audioRetention);
+      return new Response(JSON.stringify({
+        id: sessionId,
+        tenantId: probeTenant,
+        learnerId: probeLearner,
+        consent: body.consent,
+      }), { status: 200, headers: { "content-type": "application/json" } });
+    }
+
+    assert.equal(url.pathname, "/v1/realtime-session-tickets");
+    assert.deepEqual(body.requestedSampleRates, [16_000]);
+    assert.ok(sessions.has(body.sessionId));
+    ticketNumber += 1;
+    const retention = sessions.get(body.sessionId);
+    const ticket = [
+      "rt_v2",
+      body.sessionId,
+      probeTenant,
+      probeLearner,
+      "false",
+      retention,
+      String(probeNowSeconds + 300),
+      `private-nonce-${ticketNumber}`,
+      `private-signature-${ticketNumber}`,
+    ].join(".");
+    ticketCalls.push({ sessionId: body.sessionId, ticket });
+    return new Response(JSON.stringify({
+      sessionId: body.sessionId,
+      tenantId: probeTenant,
+      learnerId: probeLearner,
+      expiresAt: String(probeNowSeconds + 300),
+      allowedSampleRates: [16_000],
+      externalAsrProcessing: false,
+      token: ticket,
+      auditEventId: `private-audit-${ticketNumber}`,
+    }), { status: 200, headers: { "content-type": "application/json" } });
+  };
+
+  const frameProbe = async (input) => {
+    frameCalls.push(input);
+    assert.equal(input.expectedSequence, 0);
+    assert.equal(input.traceId, null);
+    assert.equal(input.origin, probeOrigin);
+    const exactProfile = input.frame.byteLength === 15_360;
+    return {
+      accepted: exactProfile || input.port === 8081,
+      ackLatencyMs: 5,
+      sequence: 0,
+    };
+  };
+  const refusalProbe = async (input) => {
+    refusalCalls.push(input);
+    return { refused: true, statusCode: input.expectedStatus };
+  };
+
+  const result = await runRealtimeProtocolParityStage({
+    nodePort: 18_081,
+    origin: probeOrigin,
+    disallowedOrigin: "https://disallowed.quran.example.org",
+    jwtSecret: probeSecret,
+    tenantId: probeTenant,
+    learnerId: probeLearner,
+    fetchImpl,
+    frameProbe,
+    refusalProbe,
+    nowUnixSeconds: () => probeNowSeconds,
+    timeoutMs: 2_000,
+  });
+
+  assert.deepEqual(result, {
+    validCases: 3,
+    matchedCases: 3,
+    unexpectedDivergences: 0,
+    nodeInvalidFrameDivergences: 1,
+    ackFieldCount: 7,
+    originRefusals: 2,
+    replayRefusals: 2,
+  });
+  assert.equal(sessions.size, 3);
+  assert.deepEqual([...sessions.values()], retentions);
+  assert.equal(ticketCalls.length, 12);
+  assert.equal(requests.filter(({ url }) => url.pathname === "/v1/recitation-sessions").length, 3);
+  assert.equal(frameCalls.length, 12);
+  assert.deepEqual(new Set(frameCalls.map(({ port }) => port)), new Set([18_081, 8081]));
+  assert.equal(refusalCalls.length, 4);
+  assert.deepEqual(refusalCalls.map(({ expectedStatus }) => expectedStatus), [403, 403, 401, 401]);
+  for (const refusal of refusalCalls) {
+    if (refusal.expectedStatus === 401) {
+      assert.ok(frameCalls.some(({ ticket }) => ticket === refusal.ticket));
+    }
+  }
+
+  const serialized = JSON.stringify(result);
+  for (const privateValue of [
+    ...ticketCalls.map(({ ticket }) => ticket),
+    ...sessions.keys(),
+    probeTenant,
+    probeLearner,
+    requests[0].options.headers.authorization,
+  ]) {
+    assert.equal(serialized.includes(privateValue), false);
+  }
+});
+
+test("the parity stage fails closed on malformed issuance or unexpected wire behavior without reflecting private API data", async () => {
+  const privateApiValue = "private-api-body-must-not-be-reflected";
+  function validFetch({ mutateSession = (value) => value, mutateTicket = (value) => value } = {}) {
+    const sessions = new Map();
+    let ticketNumber = 0;
+    return async (input, options) => {
+      const url = new URL(input);
+      const requestBody = JSON.parse(options.body);
+      if (url.pathname === "/v1/recitation-sessions") {
+        const session = mutateSession({
+          id: `private-session-${requestBody.consent.audioRetention}`,
+          tenantId: probeTenant,
+          learnerId: probeLearner,
+          consent: requestBody.consent,
+        });
+        sessions.set(session.id, requestBody.consent.audioRetention);
+        return new Response(JSON.stringify(session), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
+      }
+      ticketNumber += 1;
+      const retention = sessions.get(requestBody.sessionId);
+      return new Response(JSON.stringify(mutateTicket({
+        sessionId: requestBody.sessionId,
+        tenantId: probeTenant,
+        learnerId: probeLearner,
+        expiresAt: String(probeNowSeconds + 300),
+        allowedSampleRates: [16_000],
+        externalAsrProcessing: false,
+        token: [
+          "rt_v2",
+          requestBody.sessionId,
+          probeTenant,
+          probeLearner,
+          "false",
+          retention,
+          String(probeNowSeconds + 300),
+          `private-nonce-${ticketNumber}`,
+          `${privateApiValue}-${ticketNumber}`,
+        ].join("."),
+        auditEventId: `private-audit-${ticketNumber}`,
+      })), { status: 200, headers: { "content-type": "application/json" } });
+    };
+  }
+  const base = {
+    nodePort: 18_081,
+    origin: probeOrigin,
+    disallowedOrigin: "https://disallowed.quran.example.org",
+    jwtSecret: probeSecret,
+    tenantId: probeTenant,
+    learnerId: probeLearner,
+    nowUnixSeconds: () => probeNowSeconds,
+    timeoutMs: 2_000,
+    refusalProbe: async ({ expectedStatus }) => ({ refused: true, statusCode: expectedStatus }),
+    frameProbe: async ({ frame, port }) => ({
+      accepted: frame.byteLength === 15_360 || port === 8081,
+      ackLatencyMs: 1,
+      sequence: 0,
+    }),
+  };
+
+  const invalidResponse = async () => new Response(JSON.stringify({ error: privateApiValue }), {
+    status: 503,
+    headers: { "content-type": "application/json" },
+  });
+  const apiError = await runRealtimeProtocolParityStage({
+    ...base,
+    fetchImpl: invalidResponse,
+  }).then(() => null, (reason) => reason);
+  assert.match(apiError?.message ?? "", /session issuance failed/i);
+  assert.equal(String(apiError?.stack ?? apiError).includes(privateApiValue), false);
+
+  for (const body of ["{", JSON.stringify({ privateApiValue: privateApiValue.repeat(4_096) })]) {
+    const error = await runRealtimeProtocolParityStage({
+      ...base,
+      fetchImpl: async () => new Response(body, {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      }),
+    }).then(() => null, (reason) => reason);
+    assert.match(error?.message ?? "", /session issuance failed/i);
+    assert.equal(String(error?.stack ?? error).includes(privateApiValue), false);
+  }
+
+  for (const mutateTicket of [
+    (value) => ({ ...value, allowedSampleRates: [48_000] }),
+    (value) => ({ ...value, expiresAt: String(probeNowSeconds) }),
+    (value) => ({ ...value, expiresAt: `0${probeNowSeconds + 300}` }),
+    (value) => ({ ...value, tenantId: "private-wrong-tenant" }),
+    (value) => ({ ...value, token: "rt_v2.private-incomplete-ticket" }),
+    (value) => ({
+      ...value,
+      token: [
+        "rt_v2",
+        "private-session",
+        probeTenant,
+        probeLearner,
+        "false",
+        "discard",
+        String(probeNowSeconds + 300),
+        "private-nonce",
+        "x".repeat(16 * 1024),
+      ].join("."),
+    }),
+    (value) => ({ ...value, extraPrivateField: privateApiValue }),
+  ]) {
+    const error = await runRealtimeProtocolParityStage({
+      ...base,
+      fetchImpl: validFetch({ mutateTicket }),
+    }).then(() => null, (reason) => reason);
+    assert.match(error?.message ?? "", /ticket issuance failed/i);
+    assert.equal(String(error?.stack ?? error).includes(privateApiValue), false);
+  }
+
+  await assert.rejects(
+    () => runRealtimeProtocolParityStage({
+      ...base,
+      fetchImpl: invalidResponse,
+      nodePort: 8081,
+    }),
+    /Node.*Rust|port/i,
+  );
+  await assert.rejects(
+    () => runRealtimeProtocolParityStage({
+      ...base,
+      fetchImpl: invalidResponse,
+      disallowedOrigin: probeOrigin,
+    }),
+    /disallowed.*distinct|origin/i,
+  );
+  await assert.rejects(
+    () => runRealtimeProtocolParityStage({
+      ...base,
+      fetchImpl: validFetch(),
+      frameProbe: async () => ({ accepted: false, ackLatencyMs: 1, sequence: 0 }),
+    }),
+    /valid wire behavior diverged/i,
+  );
+  await assert.rejects(
+    () => runRealtimeProtocolParityStage({
+      ...base,
+      fetchImpl: validFetch(),
+      frameProbe: async () => ({ accepted: true, ackLatencyMs: 1, sequence: 0 }),
+    }),
+    /invalid-frame divergence/i,
+  );
+  await assert.rejects(
+    () => runRealtimeProtocolParityStage({
+      ...base,
+      fetchImpl: validFetch(),
+      refusalProbe: async () => ({ refused: true, statusCode: 401 }),
+    }),
+    /refusal was not proven/i,
   );
 });
 
