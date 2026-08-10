@@ -28,6 +28,7 @@ import {
 } from "../../scripts/lib/release-deployment.mjs";
 import {
   createRealtimeProofPreflight,
+  probeRealtimeCandidateRunningImages,
   createRealtimeRetentionProofAdapters,
   parseRealtimeProofPort,
   probeRealtimeAudioFrame,
@@ -42,6 +43,7 @@ import {
   validateRealtimeProofRenderedTopology,
 } from "../../scripts/lib/realtime-image-probe.mjs";
 import {
+  collectRealtimeCandidateRunningImagesRuntime,
   parseRealtimeImageProofArguments,
   runRealtimeImageProofStage,
 } from "../../scripts/realtime-image-proof.mjs";
@@ -98,6 +100,36 @@ function runningImages(value = selection()) {
     imageId,
     user,
   }));
+}
+
+function candidateRunningObservations(value = selection()) {
+  const environment = composeImageEnvironment(value, "candidate");
+  const nodeImageId = `sha256:${"1".repeat(64)}`;
+  return Object.fromEntries([
+    ["node-api", environment.NODE_BACKEND_IMAGE, nodeImageId, "node", 1000],
+    ["job-worker", environment.NODE_BACKEND_IMAGE, nodeImageId, "node", 1000],
+    ["node-realtime", environment.NODE_BACKEND_IMAGE, nodeImageId, "node", 1000],
+    [
+      "realtime-gateway",
+      environment.REALTIME_GATEWAY_IMAGE,
+      `sha256:${"2".repeat(64)}`,
+      "appuser",
+      10_001,
+    ],
+  ].map(([service, configuredImage, imageId, configuredUser, effectiveUid], index) => [
+    service,
+    {
+      containerId: `${String(index + 1).repeat(12)}`,
+      configuredImage,
+      imageId,
+      localImageId: imageId,
+      repoDigests: [configuredImage],
+      running: true,
+      health: "healthy",
+      configuredUser,
+      effectiveUid,
+    },
+  ]));
 }
 
 function stageMeasurements(name) {
@@ -734,6 +766,44 @@ test("rendered proof preflight binds exact images, topology, storage, and clean 
     }),
     /candidate SHA/i,
   );
+});
+
+test("candidate runtime inspection proves the exact healthy non-root selected image processes", () => {
+  const value = selection();
+  const input = {
+    sourceState: { headSha: candidateSha, clean: true },
+    selection: value,
+    rendered: renderedProofTopology(value),
+    nodePort: 18_081,
+    secondaryNodePort: 18_082,
+    observations: candidateRunningObservations(value),
+  };
+  const result = probeRealtimeCandidateRunningImages(input);
+  assert.deepEqual(result, {
+    images: runningImages(value),
+    measurements: stageMeasurements("candidate-running-images"),
+  });
+  assert.equal(JSON.stringify(result).includes("fixture-proof-ticket-secret"), false);
+  assert.equal(JSON.stringify(result).includes("postgresql://"), false);
+
+  const cases = [
+    [(copy) => { delete copy.observations["job-worker"]; }, /exactly four|job-worker/i],
+    [(copy) => { copy.observations["node-api"].running = false; }, /running/i],
+    [(copy) => { copy.observations["node-api"].health = "starting"; }, /healthy/i],
+    [(copy) => { copy.observations["node-api"].configuredUser = "root"; }, /non-root/i],
+    [(copy) => { copy.observations["node-api"].effectiveUid = 0; }, /non-root/i],
+    [(copy) => { copy.observations["node-api"].containerId = "node-api"; }, /container/i],
+    [(copy) => { copy.observations["node-api"].configuredImage = copy.observations["realtime-gateway"].configuredImage; }, /selected/i],
+    [(copy) => { copy.observations["node-api"].localImageId = `sha256:${"9".repeat(64)}`; }, /image content/i],
+    [(copy) => { copy.observations["node-api"].repoDigests = []; }, /repository digest/i],
+    [(copy) => { copy.observations["job-worker"].imageId = `sha256:${"9".repeat(64)}`; copy.observations["job-worker"].localImageId = copy.observations["job-worker"].imageId; copy.observations["job-worker"].repoDigests = [copy.observations["job-worker"].configuredImage]; }, /shared Node image/i],
+    [(copy) => { copy.sourceState.clean = false; }, /clean/i],
+  ];
+  for (const [mutate, pattern] of cases) {
+    const copy = structuredClone(input);
+    mutate(copy);
+    assert.throws(() => probeRealtimeCandidateRunningImages(copy), pattern);
+  }
 });
 
 test("rendered topology hashing excludes credential values but still binds executable topology", () => {
@@ -2326,7 +2396,7 @@ test("proof CLI arguments reject unsafe paths, ports, projects, actors, acknowle
     command: "probe",
     stage: "retention",
   });
-  for (const stage of ["protocol-parity", "hostile-capacity"]) {
+  for (const stage of ["candidate-running-images", "protocol-parity", "hostile-capacity"]) {
     assert.deepEqual(parseRealtimeImageProofArguments(["probe", "--stage", stage]), {
       command: "probe",
       stage,
@@ -2339,6 +2409,112 @@ test("proof CLI arguments reject unsafe paths, ports, projects, actors, acknowle
     ["probe", "--stage", "retention", "--skip", "yes"],
   ]) {
     assert.throws(() => parseRealtimeImageProofArguments(argv), /stage|argument|exact/i);
+  }
+});
+
+test("candidate runtime collection inspects exact Compose containers, local digests, health, and effective UIDs", () => {
+  const value = selection();
+  const observations = candidateRunningObservations(value);
+  const commands = [];
+  const commandRunner = (file, args, environment) => {
+    commands.push([file, args]);
+    assert.equal(environment.NODE_BACKEND_IMAGE, composeImageEnvironment(value, "candidate").NODE_BACKEND_IMAGE);
+    if (file === "git" && args.join(" ") === "rev-parse HEAD") return candidateSha;
+    if (file === "git" && args.join(" ") === "status --porcelain") return "";
+    if (file !== "docker") throw new Error("unexpected proof command");
+    if (args.includes("config")) return JSON.stringify(renderedProofTopology(value));
+    if (args[0] === "compose" && args.includes("ps")) {
+      return observations[args.at(-1)].containerId;
+    }
+    if (args[0] === "inspect") {
+      const observation = Object.values(observations).find(({ containerId }) => containerId === args[1]);
+      return JSON.stringify([{
+        Id: observation.containerId,
+        Image: observation.imageId,
+        Config: {
+          Image: observation.configuredImage,
+          User: observation.configuredUser,
+        },
+        State: { Running: observation.running, Health: { Status: observation.health } },
+      }]);
+    }
+    if (args[0] === "image" && args[1] === "inspect") {
+      const observation = Object.values(observations)
+        .find(({ configuredImage }) => configuredImage === args[2]);
+      return JSON.stringify([{
+        Id: observation.imageId,
+        RepoDigests: observation.repoDigests,
+      }]);
+    }
+    if (args[0] === "exec" && args.slice(2).join(" ") === "id -u") {
+      return String(Object.values(observations)
+        .find(({ containerId }) => containerId === args[1]).effectiveUid);
+    }
+    throw new Error(`unexpected proof command: ${args.join(" ")}`);
+  };
+  const result = collectRealtimeCandidateRunningImagesRuntime({
+    selection: value,
+    projectName: "qrai-realtime-proof",
+    nodePort: 18_081,
+    secondaryNodePort: 18_082,
+    env: { PRIVATE_RUNTIME_SECRET: "must-not-leave-collector" },
+    commandRunner,
+  });
+  assert.deepEqual(result, {
+    images: runningImages(value),
+    measurements: stageMeasurements("candidate-running-images"),
+  });
+  assert.equal(commands.filter(([file]) => file === "git").length, 2);
+  assert.equal(commands.filter(([file, args]) => file === "docker" && args[0] === "inspect").length, 4);
+  assert.equal(commands.filter(([file, args]) => file === "docker" && args[0] === "exec").length, 4);
+  assert.equal(JSON.stringify(result).includes("must-not-leave-collector"), false);
+});
+
+test("the candidate CLI stage dispatches strict project and selection configuration with identity-only output", async () => {
+  const privateSelectionPath = "/tmp/private-release-selection.json";
+  const env = {
+    REALTIME_PROOF_SELECTION_PATH: privateSelectionPath,
+    REALTIME_PROOF_PROJECT_NAME: "qrai-realtime-proof",
+    REALTIME_PROOF_NODE_PORT: "18081",
+    REALTIME_PROOF_SECONDARY_NODE_PORT: "18082",
+  };
+  const candidate = {
+    images: runningImages(),
+    measurements: stageMeasurements("candidate-running-images"),
+  };
+  const result = await runRealtimeImageProofStage({
+    stage: "candidate-running-images",
+    env,
+    candidateStage: async (configuration) => {
+      assert.deepEqual(configuration, {
+        selectionPath: privateSelectionPath,
+        projectName: "qrai-realtime-proof",
+        nodePort: 18_081,
+        secondaryNodePort: 18_082,
+      });
+      return candidate;
+    },
+  });
+  assert.deepEqual(result, {
+    status: "passed",
+    stage: "candidate-running-images",
+    ...candidate,
+  });
+  assert.equal(JSON.stringify(result).includes(privateSelectionPath), false);
+
+  for (const override of [
+    { REALTIME_PROOF_SELECTION_PATH: "relative.json" },
+    { REALTIME_PROOF_PROJECT_NAME: "../unsafe" },
+    { REALTIME_PROOF_SECONDARY_NODE_PORT: "18081" },
+  ]) {
+    await assert.rejects(
+      () => runRealtimeImageProofStage({
+        stage: "candidate-running-images",
+        env: { ...env, ...override },
+        candidateStage: async () => candidate,
+      }),
+      /candidate-running-images.*configuration|proof stage.*failed/i,
+    );
   }
 });
 

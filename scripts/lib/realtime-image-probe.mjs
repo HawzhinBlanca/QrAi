@@ -20,7 +20,26 @@ import {
 } from "../../server/src/inference/runtime.mjs";
 
 const sourceShaPattern = /^[a-f0-9]{40}$/;
+const imageIdPattern = /^sha256:[a-f0-9]{64}$/;
+const containerIdPattern = /^[a-f0-9]{12,64}$/;
 const expectedOwnerPattern = /^\d{12}$/;
+const candidateRuntimeServices = Object.freeze([
+  "node-api",
+  "job-worker",
+  "node-realtime",
+  "realtime-gateway",
+]);
+const candidateObservationFields = Object.freeze([
+  "containerId",
+  "configuredImage",
+  "imageId",
+  "localImageId",
+  "repoDigests",
+  "running",
+  "health",
+  "configuredUser",
+  "effectiveUid",
+]);
 const storageServices = Object.freeze([
   "node-api",
   "job-worker",
@@ -2595,4 +2614,119 @@ export function createRealtimeProofPreflight({
     sourceSha: selected.candidate.sourceSha,
     ...validated,
   };
+}
+
+/**
+ * Bind the approved release selection and rendered topology to the exact healthy processes that
+ * Docker actually started. Only non-secret image/process identity leaves this boundary.
+ */
+export function probeRealtimeCandidateRunningImages({
+  sourceState,
+  selection,
+  rendered,
+  nodePort,
+  secondaryNodePort,
+  observations,
+}) {
+  const preflight = createRealtimeProofPreflight({
+    sourceState,
+    selection,
+    rendered,
+    nodePort,
+    secondaryNodePort,
+  });
+  assertObject(observations, "candidate running image observations");
+  if (
+    JSON.stringify(Object.keys(observations)) !== JSON.stringify(candidateRuntimeServices)
+  ) {
+    throw new TypeError("candidate proof requires exactly four ordered running image observations");
+  }
+  const selected = assertReleaseDeploymentSelection(selection);
+  const environment = composeImageEnvironment(selected, "candidate");
+  const expectedReferences = {
+    "node-api": environment.NODE_BACKEND_IMAGE,
+    "job-worker": environment.NODE_BACKEND_IMAGE,
+    "node-realtime": environment.NODE_BACKEND_IMAGE,
+    "realtime-gateway": environment.REALTIME_GATEWAY_IMAGE,
+  };
+  const images = candidateRuntimeServices.map((serviceName) => {
+    const observation = observations[serviceName];
+    assertObject(observation, `${serviceName} running image observation`);
+    if (
+      JSON.stringify(Object.keys(observation).sort()) !==
+      JSON.stringify([...candidateObservationFields].sort())
+    ) {
+      throw new TypeError(`${serviceName} running image observation has an invalid shape`);
+    }
+    const reference = expectedReferences[serviceName];
+    if (observation.running !== true) {
+      throw new TypeError(`${serviceName} candidate container is not running`);
+    }
+    if (observation.health !== "healthy") {
+      throw new TypeError(`${serviceName} candidate container is not healthy`);
+    }
+    if (observation.configuredImage !== reference) {
+      throw new TypeError(`${serviceName} does not use the selected candidate image`);
+    }
+    if (
+      typeof observation.containerId !== "string" ||
+      !containerIdPattern.test(observation.containerId)
+    ) {
+      throw new TypeError(`${serviceName} candidate container ID is invalid`);
+    }
+    if (
+      typeof observation.imageId !== "string" ||
+      !imageIdPattern.test(observation.imageId) ||
+      observation.localImageId !== observation.imageId
+    ) {
+      throw new TypeError(`${serviceName} image content does not match the selected reference`);
+    }
+    if (
+      !Array.isArray(observation.repoDigests) ||
+      !observation.repoDigests.includes(reference)
+    ) {
+      throw new TypeError(`${serviceName} local image lacks the selected repository digest`);
+    }
+    const configuredIdentity = typeof observation.configuredUser === "string"
+      ? observation.configuredUser.split(":", 1)[0]
+      : "";
+    if (
+      configuredIdentity === "" ||
+      configuredIdentity === "root" ||
+      configuredIdentity === "0" ||
+      !Number.isSafeInteger(observation.effectiveUid) ||
+      observation.effectiveUid <= 0
+    ) {
+      throw new TypeError(`${serviceName} candidate container must execute as non-root`);
+    }
+    return Object.freeze({
+      service: serviceName,
+      containerId: observation.containerId,
+      reference,
+      imageId: observation.imageId,
+      user: observation.configuredUser,
+    });
+  });
+  if (new Set(images.slice(0, 3).map(({ imageId }) => imageId)).size !== 1) {
+    throw new TypeError("API, worker, and realtime must share one shared Node image");
+  }
+  if (
+    preflight.storageConfiguration.driver !== "s3" ||
+    preflight.storageConfiguration.expectedOwnerConfigured !== true ||
+    preflight.storageConfiguration.filesystemFallback !== false
+  ) {
+    throw new TypeError("candidate runtime requires healthy production S3 configuration");
+  }
+  return Object.freeze({
+    images: Object.freeze(images),
+    measurements: Object.freeze({
+      cleanSource: true,
+      selectionMatched: true,
+      runningImagesMatched: images.length,
+      nonRootContainers: images.length,
+      sharedNodeImage: true,
+      topologyMatched: true,
+      productionStorageReady: true,
+    }),
+  });
 }

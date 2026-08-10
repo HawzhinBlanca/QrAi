@@ -9,6 +9,7 @@ import {
   createRealtimeProofPreflight,
   createRealtimeRetentionProofAdaptersFromEnvironment,
   parseRealtimeProofPort,
+  probeRealtimeCandidateRunningImages,
   runRealtimeHostileCapacityStage,
   runRealtimeProtocolParityStage,
   runRealtimeRetentionStage,
@@ -21,7 +22,12 @@ import {
 const repo = resolve(fileURLToPath(new URL("..", import.meta.url)));
 const providerPattern = /^[a-z0-9][a-z0-9._-]{1,127}$/;
 const proofIdentityPattern = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
-const enabledProbeStages = new Set(["protocol-parity", "hostile-capacity", "retention"]);
+const enabledProbeStages = new Set([
+  "candidate-running-images",
+  "protocol-parity",
+  "hostile-capacity",
+  "retention",
+]);
 const allowedFlags = new Set([
   "--selection",
   "--project-name",
@@ -170,6 +176,31 @@ function retentionStageConfiguration(env) {
   }
 }
 
+function candidateStageConfiguration(env) {
+  try {
+    const selectionPath = stageString(env, "REALTIME_PROOF_SELECTION_PATH");
+    if (!isAbsolute(selectionPath)) {
+      fail("realtime proof candidate selection path must be absolute");
+    }
+    const projectName = stageString(env, "REALTIME_PROOF_PROJECT_NAME", 128);
+    realtimeImageCommandPlan({ projectName });
+    const nodePort = parseRealtimeProofPort(
+      stageString(env, "REALTIME_PROOF_NODE_PORT", 5),
+    );
+    const secondaryNodePort = parseRealtimeProofPort(
+      stageString(env, "REALTIME_PROOF_SECONDARY_NODE_PORT", 5),
+    );
+    if (secondaryNodePort === nodePort) {
+      fail("realtime proof candidate ports must be distinct");
+    }
+    return Object.freeze({ selectionPath, projectName, nodePort, secondaryNodePort });
+  } catch {
+    throw new TypeError(
+      "realtime proof stage candidate-running-images configuration is invalid",
+    );
+  }
+}
+
 function protocolStageConfiguration(env) {
   try {
     const base = retentionStageConfiguration(env);
@@ -215,9 +246,30 @@ async function runAggregateStage(stage, configuration, runner) {
   }
 }
 
+async function runCandidateStage(stage, configuration, runner) {
+  if (typeof runner !== "function") {
+    throw new TypeError(`realtime proof stage ${stage} adapter is invalid`);
+  }
+  try {
+    const result = await runner(configuration);
+    if (
+      !result ||
+      typeof result !== "object" ||
+      Array.isArray(result) ||
+      JSON.stringify(Object.keys(result).sort()) !== JSON.stringify(["images", "measurements"])
+    ) {
+      throw new TypeError("candidate runtime result is invalid");
+    }
+    return Object.freeze({ status: "passed", stage, ...result });
+  } catch {
+    throw new Error(`realtime proof stage ${stage} failed`);
+  }
+}
+
 export async function runRealtimeImageProofStage({
   stage,
   env = process.env,
+  candidateStage,
   protocolStage = runRealtimeProtocolParityStage,
   hostileCapacityStage = runRealtimeHostileCapacityStage,
   retentionAdaptersFactory = createRealtimeRetentionProofAdaptersFromEnvironment,
@@ -225,6 +277,17 @@ export async function runRealtimeImageProofStage({
 } = {}) {
   if (!enabledProbeStages.has(stage)) {
     throw new TypeError("realtime proof stage is not enabled");
+  }
+  if (stage === "candidate-running-images") {
+    const configuration = candidateStageConfiguration(env);
+    const runner = candidateStage ?? ((input) => collectRealtimeCandidateRunningImagesRuntime({
+      selection: readSelection(input.selectionPath),
+      projectName: input.projectName,
+      nodePort: input.nodePort,
+      secondaryNodePort: input.secondaryNodePort,
+      env,
+    }));
+    return runCandidateStage(stage, configuration, runner);
   }
   if (stage === "protocol-parity") {
     return runAggregateStage(stage, protocolStageConfiguration(env), protocolStage);
@@ -270,6 +333,98 @@ export async function runRealtimeImageProofStage({
   }
   if (failure) throw failure;
   return Object.freeze({ status: "passed", stage, measurements });
+}
+
+export function collectRealtimeCandidateRunningImagesRuntime({
+  selection,
+  projectName,
+  nodePort,
+  secondaryNodePort,
+  env = process.env,
+  commandRunner = run,
+}) {
+  const selected = assertReleaseDeploymentSelection(selection);
+  realtimeImageCommandPlan({ projectName });
+  if (typeof commandRunner !== "function") {
+    throw new TypeError("realtime candidate runtime command adapter is invalid");
+  }
+  const commandEnvironment = {
+    ...env,
+    ...composeImageEnvironment(selected, "candidate"),
+    REALTIME_PROOF_NODE_PORT: String(nodePort),
+    REALTIME_PROOF_SECONDARY_NODE_PORT: String(secondaryNodePort),
+  };
+  const sourceState = {
+    headSha: commandRunner("git", ["rev-parse", "HEAD"], commandEnvironment).trim(),
+    clean: commandRunner("git", ["status", "--porcelain"], commandEnvironment).trim() === "",
+  };
+  const [dockerFile, ...renderArguments] = realtimeImageCommandPlan({ projectName })[0];
+  if (dockerFile !== "docker") {
+    throw new TypeError("realtime candidate runtime Compose command is invalid");
+  }
+  const rendered = JSON.parse(commandRunner(
+    dockerFile,
+    renderArguments,
+    commandEnvironment,
+  ));
+  const composeArguments = renderArguments.slice(0, -3);
+  const services = ["node-api", "job-worker", "node-realtime", "realtime-gateway"];
+  const observations = {};
+  for (const service of services) {
+    const containerIds = commandRunner(
+      "docker",
+      [...composeArguments, "ps", "--all", "--quiet", service],
+      commandEnvironment,
+    ).trim().split("\n").filter(Boolean);
+    if (containerIds.length !== 1) {
+      throw new TypeError(`${service} must resolve to exactly one proof container`);
+    }
+    const inspectedContainers = JSON.parse(commandRunner(
+      "docker",
+      ["inspect", containerIds[0]],
+      commandEnvironment,
+    ));
+    if (!Array.isArray(inspectedContainers) || inspectedContainers.length !== 1) {
+      throw new TypeError(`${service} proof container inspection is invalid`);
+    }
+    const container = inspectedContainers[0];
+    const inspectedImages = JSON.parse(commandRunner(
+      "docker",
+      ["image", "inspect", container?.Config?.Image],
+      commandEnvironment,
+    ));
+    if (!Array.isArray(inspectedImages) || inspectedImages.length !== 1) {
+      throw new TypeError(`${service} proof image inspection is invalid`);
+    }
+    const effectiveUidValue = commandRunner(
+      "docker",
+      ["exec", container.Id, "id", "-u"],
+      commandEnvironment,
+    ).trim();
+    if (!/^[0-9]+$/.test(effectiveUidValue)) {
+      throw new TypeError(`${service} effective runtime UID is invalid`);
+    }
+    const image = inspectedImages[0];
+    observations[service] = {
+      containerId: container.Id,
+      configuredImage: container.Config.Image,
+      imageId: container.Image,
+      localImageId: image.Id,
+      repoDigests: image.RepoDigests ?? [],
+      running: container.State?.Running,
+      health: container.State?.Health?.Status,
+      configuredUser: container.Config.User,
+      effectiveUid: Number(effectiveUidValue),
+    };
+  }
+  return probeRealtimeCandidateRunningImages({
+    sourceState,
+    selection: selected,
+    rendered,
+    nodePort,
+    secondaryNodePort,
+    observations,
+  });
 }
 
 function readSelection(path) {
