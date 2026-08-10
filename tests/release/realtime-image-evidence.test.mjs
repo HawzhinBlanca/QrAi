@@ -43,6 +43,7 @@ import {
   runRealtimeFaultRecoveryStage,
   runRealtimeNodeProcessFaultProbe,
   runRealtimePostgresFaultProbe,
+  runRealtimeS3FaultProbe,
   runRealtimeProtocolParityStage,
   runRealtimeRetentionStage,
   summarizeRealtimeAudioFrameProbes,
@@ -1869,6 +1870,185 @@ test("the Node process fault fails closed on lifecycle, readiness, finalization,
         "failure path did not attempt Node process restoration",
       );
     }
+  }
+});
+
+function s3FaultHarness({ failAt = null, mutation = {} } = {}) {
+  const calls = [];
+  const issued = new Map();
+  const finalized = [];
+  let faultHealthy = false;
+  let outageInjected = false;
+  let restored = false;
+
+  const fail = (name) => {
+    calls.push(name);
+    if (failAt === name) throw new Error(`private-${name}-failure`);
+  };
+  const issuer = {
+    async issue(proofId, retention) {
+      fail(`issue-${proofId}`);
+      assert.equal(retention, "teacher-review");
+      const value = {
+        sessionId: `private-${proofId}-session`,
+        ticket: `private-${proofId}-ticket`,
+      };
+      issued.set(value.sessionId, proofId);
+      return value;
+    },
+    async finalize(sessionId, report) {
+      fail("finalize-loss");
+      assert.equal(issued.get(sessionId), "s3-accepted-loss");
+      finalized.push(structuredClone(report));
+      return {
+        recordingStatus: "incomplete",
+        clientDroppedChunkCount: 0,
+        clientUncertainChunkCount: 0,
+        serverLostChunkCount: 1,
+        ...(mutation.finalization ?? {}),
+      };
+    },
+  };
+  return {
+    calls,
+    finalized,
+    input: {
+      nodePort: 18_081,
+      faultNodePort: 18_083,
+      origin: probeOrigin,
+      jwtSecret: probeSecret,
+      tenantId: probeTenant,
+      learnerId: probeLearner,
+      timeoutMs: 2_000,
+      issuer,
+      readinessProbe: async ({ port }) => {
+        fail(`readiness-${port}`);
+        if (port === 18_081) {
+          return mutation.primaryReadiness ?? { ready: true, statusCode: 200 };
+        }
+        if (port !== 18_083) throw new Error("private-unexpected-readiness-port");
+        if (!faultHealthy) throw new Error("private-fault-process-not-started");
+        return outageInjected
+          ? mutation.faultOutageReadiness ?? { ready: false, statusCode: 503 }
+          : mutation.faultHealthyReadiness ?? { ready: true, statusCode: 200 };
+      },
+      frameProbe: async ({ port, sessionId, frame, expectedSequence }) => {
+        fail(`frame-${issued.get(sessionId)}`);
+        assert.equal(frame.length, 15_360);
+        assert.equal(expectedSequence, 0);
+        if (port === 18_083 && !faultHealthy) {
+          throw new Error("private-fault-frame-before-start");
+        }
+        return {
+          accepted: mutation.rejectedProof === issued.get(sessionId) ? false : true,
+          ackLatencyMs: 10,
+          sequence: 0,
+        };
+      },
+      outcomeProbe: async ({ sessionId }) => {
+        const proofId = issued.get(sessionId);
+        fail(`outcome-${proofId}`);
+        const stored = {
+          state: "stored",
+          durableLost: 0,
+          durableOrphan: 0,
+          objectPresent: true,
+          indexPresent: true,
+        };
+        const lost = {
+          state: "accepted-lost",
+          durableLost: 1,
+          durableOrphan: 0,
+          objectPresent: false,
+          indexPresent: false,
+        };
+        return {
+          ...(proofId === "s3-accepted-loss" ? lost : stored),
+          ...(mutation.outcome?.[proofId] ?? {}),
+        };
+      },
+      startS3FaultProcess: async () => {
+        fail("start-s3-fault");
+        faultHealthy = true;
+        return {
+          sameCandidateImage: true,
+          configuredNonRoot: true,
+          healthyProductionS3: true,
+          ...(mutation.start ?? {}),
+        };
+      },
+      injectS3Outage: async () => {
+        fail("inject-s3-outage");
+        outageInjected = true;
+        return { unreachableEndpoint: true, ...(mutation.inject ?? {}) };
+      },
+      restoreProductionCandidate: async () => {
+        fail("restore-production-candidate");
+        faultHealthy = false;
+        outageInjected = false;
+        restored = true;
+        return {
+          productionCandidateRestored: true,
+          faultProcessRemoved: true,
+          ...(mutation.restore ?? {}),
+        };
+      },
+    },
+    restored: () => restored,
+  };
+}
+
+test("the S3 fault proves healthy controls, exact accepted loss, and production restoration", async () => {
+  const harness = s3FaultHarness();
+  const result = await runRealtimeS3FaultProbe(harness.input);
+  assert.deepEqual(result, faultProbeResults().s3);
+  assert.deepEqual(harness.finalized, [{
+    version: 1,
+    state: "complete",
+    capturedChunks: 1,
+    acknowledgedChunks: 1,
+    droppedChunks: 0,
+    uncertainChunks: 0,
+    stopReason: "completed",
+  }]);
+  assert.equal(harness.calls.filter((value) => value.startsWith("frame-")).length, 4);
+  assert.equal(harness.calls.includes("outcome-s3-accepted-loss"), true);
+  assert.equal(harness.restored(), true);
+  for (const privateValue of ["private-s3-accepted-loss-session", probeTenant, probeLearner]) {
+    assert.equal(JSON.stringify(result).includes(privateValue), false);
+  }
+});
+
+test("the S3 fault rejects lifecycle, readiness, outcome, finalization, and frame lies", async () => {
+  const cases = [
+    { mutation: { start: { sameCandidateImage: false } } },
+    { mutation: { start: { configuredNonRoot: false } } },
+    { mutation: { faultHealthyReadiness: { ready: false, statusCode: 503 } } },
+    { mutation: { inject: { unreachableEndpoint: false } } },
+    { mutation: { faultOutageReadiness: { ready: true, statusCode: 200 } } },
+    { mutation: { rejectedProof: "s3-accepted-loss" } },
+    { mutation: { outcome: { "s3-accepted-loss": { durableLost: 0 } } } },
+    { mutation: { outcome: { "s3-accepted-loss": { objectPresent: true } } } },
+    { mutation: { outcome: { "s3-primary-before": { indexPresent: false } } } },
+    { mutation: { finalization: { recordingStatus: "complete" } } },
+    { mutation: { finalization: { serverLostChunkCount: 0 } } },
+    { mutation: { restore: { productionCandidateRestored: false } } },
+    { mutation: { primaryReadiness: { ready: false, statusCode: 503 } } },
+    { failAt: "inject-s3-outage" },
+    { failAt: "outcome-s3-accepted-loss" },
+  ];
+  for (const values of cases) {
+    const harness = s3FaultHarness(values);
+    await assert.rejects(
+      () => runRealtimeS3FaultProbe(harness.input),
+      (error) => error.message === "realtime S3 fault probe failed" &&
+        !String(error).includes("private-"),
+    );
+    assert.equal(
+      harness.calls.includes("restore-production-candidate"),
+      true,
+      "S3 failure path did not attempt restoration",
+    );
   }
 });
 

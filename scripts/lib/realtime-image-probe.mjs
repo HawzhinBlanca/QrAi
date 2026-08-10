@@ -2485,6 +2485,291 @@ export async function runRealtimeNodeProcessFaultProbe({
   }
 }
 
+const s3FaultStartFields = Object.freeze([
+  "sameCandidateImage",
+  "configuredNonRoot",
+  "healthyProductionS3",
+]);
+const s3FaultInjectFields = Object.freeze(["unreachableEndpoint"]);
+const s3FaultRestoreFields = Object.freeze([
+  "productionCandidateRestored",
+  "faultProcessRemoved",
+]);
+const s3FaultOutcomeFields = Object.freeze([
+  "state",
+  "durableLost",
+  "durableOrphan",
+  "objectPresent",
+  "indexPresent",
+]);
+
+function validateS3FaultLifecycle(value, fields, label) {
+  if (!exactObjectFields(value, fields, new Set(fields))) {
+    throw new TypeError(`realtime S3 fault ${label} result is invalid`);
+  }
+  for (const field of fields) {
+    if (value[field] !== true) {
+      throw new TypeError(`realtime S3 fault ${label} proof is incomplete`);
+    }
+  }
+  return value;
+}
+
+function validateS3FaultOutcome(value, expectedState) {
+  if (!exactObjectFields(value, s3FaultOutcomeFields, new Set(s3FaultOutcomeFields))) {
+    throw new TypeError("realtime S3 fault durable outcome is invalid");
+  }
+  for (const field of ["durableLost", "durableOrphan"]) {
+    if (!Number.isSafeInteger(value[field]) || value[field] < 0) {
+      throw new TypeError("realtime S3 fault durable outcome count is invalid");
+    }
+  }
+  if (typeof value.objectPresent !== "boolean" || typeof value.indexPresent !== "boolean") {
+    throw new TypeError("realtime S3 fault storage observation is invalid");
+  }
+  const expected = expectedState === "stored"
+    ? {
+        state: "stored",
+        durableLost: 0,
+        durableOrphan: 0,
+        objectPresent: true,
+        indexPresent: true,
+      }
+    : {
+        state: "accepted-lost",
+        durableLost: 1,
+        durableOrphan: 0,
+        objectPresent: false,
+        indexPresent: false,
+      };
+  if (canonicalJson(value) !== canonicalJson(expected)) {
+    throw new TypeError("realtime S3 fault durable outcome did not close");
+  }
+  return value;
+}
+
+/**
+ * Prove a runtime S3-only outage without changing the production server. The exact-image fault
+ * process first stores a control through production S3, then its proof-owned transparent transport
+ * is cut. A frame may still be acknowledged as enqueued, but it counts as lost unless Postgres and
+ * object/index observations close it otherwise. The production candidate is revalidated last.
+ */
+export async function runRealtimeS3FaultProbe({
+  nodePort,
+  faultNodePort,
+  origin,
+  jwtSecret,
+  tenantId,
+  learnerId,
+  timeoutMs,
+  fetchImpl = fetch,
+  issuer = null,
+  nowUnixSeconds = () => Math.floor(Date.now() / 1_000),
+  readinessProbe = probeRealtimeReadiness,
+  frameProbe = probeRealtimeAudioFrame,
+  outcomeProbe,
+  startS3FaultProcess,
+  injectS3Outage,
+  restoreProductionCandidate,
+} = {}) {
+  let restorationRequired = false;
+  try {
+    const selectedNodePort = probePort(nodePort);
+    const selectedFaultPort = probePort(faultNodePort);
+    if (selectedNodePort === selectedFaultPort) {
+      throw new TypeError("realtime S3 fault ports must be distinct");
+    }
+    const selectedOrigin = probeOrigin(origin);
+    const selectedSecret = requiredParityString(jwtSecret, "S3 fault JWT secret", 4_096);
+    if (Buffer.byteLength(selectedSecret) < 32) {
+      throw new TypeError("realtime S3 fault JWT secret must be at least 32 bytes");
+    }
+    const selectedTenant = requiredParityString(tenantId, "S3 fault tenant id");
+    const selectedLearner = requiredParityString(learnerId, "S3 fault learner id");
+    const selectedTimeout = assertProbeTimeout(timeoutMs);
+    for (const adapter of [
+      fetchImpl,
+      nowUnixSeconds,
+      readinessProbe,
+      frameProbe,
+      outcomeProbe,
+      startS3FaultProcess,
+      injectS3Outage,
+      restoreProductionCandidate,
+    ]) {
+      if (typeof adapter !== "function") {
+        throw new TypeError("realtime S3 fault adapters must be functions");
+      }
+    }
+    const selectedIssuer = issuer ?? await createRealtimeProofTicketIssuer({
+      fetchImpl,
+      origin: selectedOrigin,
+      jwtSecret: selectedSecret,
+      tenantId: selectedTenant,
+      learnerId: selectedLearner,
+      timeoutMs: selectedTimeout,
+      nowUnixSeconds,
+    });
+    if (
+      !selectedIssuer ||
+      typeof selectedIssuer.issue !== "function" ||
+      typeof selectedIssuer.finalize !== "function"
+    ) {
+      throw new TypeError("realtime S3 fault issuer is invalid");
+    }
+
+    restorationRequired = true;
+    validateS3FaultLifecycle(
+      await startS3FaultProcess(),
+      s3FaultStartFields,
+      "start",
+    );
+    validatePostgresReadiness(await readinessProbe({
+      port: selectedNodePort,
+      timeoutMs: selectedTimeout,
+      fetchImpl,
+    }), true, 200);
+    validatePostgresReadiness(await readinessProbe({
+      port: selectedFaultPort,
+      timeoutMs: selectedTimeout,
+      fetchImpl,
+    }), true, 200);
+
+    const credentials = [];
+    const sendAndObserve = async ({ proofId, port, fill, expectedState }) => {
+      const issued = validateNodeProcessTicket(
+        await selectedIssuer.issue(proofId, "teacher-review"),
+      );
+      if (credentials.some((value) =>
+        value.sessionId === issued.sessionId || value.ticket === issued.ticket)) {
+        throw new TypeError("realtime S3 fault credentials were reused");
+      }
+      credentials.push(issued);
+      const frame = Buffer.alloc(AUDIO_LIMITS.frameBytes, fill);
+      if (validateFrameProbeResult(await frameProbe({
+        port,
+        sessionId: issued.sessionId,
+        ticket: issued.ticket,
+        origin: selectedOrigin,
+        traceId: null,
+        frame,
+        expectedSequence: 0,
+        timeoutMs: selectedTimeout,
+      })) !== true) {
+        throw new TypeError("realtime S3 fault frame was not acknowledged as enqueued");
+      }
+      validateS3FaultOutcome(await outcomeProbe({
+        tenantId: selectedTenant,
+        learnerId: selectedLearner,
+        sessionId: issued.sessionId,
+        chunkId: `${issued.sessionId}-ws-0000`,
+        audioRetention: "teacher-review",
+        expectedAudioBytes: AUDIO_LIMITS.frameBytes,
+        expectedAudioSha256: createHash("sha256").update(frame).digest("hex"),
+        expectedSampleRate: AUDIO_LIMITS.sampleRate,
+        expectedStartMs: 0,
+        expectedEndMs: AUDIO_LIMITS.chunkDurationMs,
+        timeoutMs: selectedTimeout,
+      }), expectedState);
+      return issued;
+    };
+
+    await sendAndObserve({
+      proofId: "s3-primary-before",
+      port: selectedNodePort,
+      fill: 0x51,
+      expectedState: "stored",
+    });
+    await sendAndObserve({
+      proofId: "s3-fault-before",
+      port: selectedFaultPort,
+      fill: 0x52,
+      expectedState: "stored",
+    });
+
+    validateS3FaultLifecycle(
+      await injectS3Outage(),
+      s3FaultInjectFields,
+      "injection",
+    );
+    validatePostgresReadiness(await readinessProbe({
+      port: selectedFaultPort,
+      timeoutMs: selectedTimeout,
+      fetchImpl,
+    }), false, 503);
+    const lost = await sendAndObserve({
+      proofId: "s3-accepted-loss",
+      port: selectedFaultPort,
+      fill: 0x53,
+      expectedState: "accepted-lost",
+    });
+    const clientCompleteReport = Object.freeze({
+      version: 1,
+      state: "complete",
+      capturedChunks: 1,
+      acknowledgedChunks: 1,
+      droppedChunks: 0,
+      uncertainChunks: 0,
+      stopReason: "completed",
+    });
+    validateNodeFinalization(await selectedIssuer.finalize(
+      lost.sessionId,
+      clientCompleteReport,
+    ), {
+      recordingStatus: "incomplete",
+      clientDroppedChunkCount: 0,
+      clientUncertainChunkCount: 0,
+      serverLostChunkCount: 1,
+    });
+
+    validateS3FaultLifecycle(
+      await restoreProductionCandidate(),
+      s3FaultRestoreFields,
+      "restoration",
+    );
+    restorationRequired = false;
+    validatePostgresReadiness(await readinessProbe({
+      port: selectedNodePort,
+      timeoutMs: selectedTimeout,
+      fetchImpl,
+    }), true, 200);
+    await sendAndObserve({
+      proofId: "s3-primary-after",
+      port: selectedNodePort,
+      fill: 0x54,
+      expectedState: "stored",
+    });
+
+    return Object.freeze({
+      fault: "s3",
+      framesCaptured: 4,
+      framesTransmitted: 4,
+      accepted: 3,
+      rejected: 0,
+      lost: 1,
+      uncertain: 0,
+      durableLost: 1,
+      durableOrphan: 0,
+      unresolvedUncertain: 0,
+      recovered: true,
+      readinessFailedClosed: true,
+      incompleteReportedComplete: 0,
+      proofs: Object.freeze({
+        sameCandidateImage: true,
+        unreachableEndpointUnready: true,
+        acceptedLossRecorded: true,
+        productionCandidateRestored: true,
+      }),
+    });
+  } catch {
+    throw new Error("realtime S3 fault probe failed");
+  } finally {
+    if (restorationRequired && typeof restoreProductionCandidate === "function") {
+      await Promise.resolve().then(() => restoreProductionCandidate()).catch(() => {});
+    }
+  }
+}
+
 function validatePostgresLifecycle(value, field) {
   if (
     !value ||

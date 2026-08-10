@@ -41,6 +41,16 @@ send, retains one second frame behind it, and then kills the process. That contr
 blackout makes sent/no-ack uncertainty deterministic without changing server behavior or claiming
 that the first frame was absent, stored, or durably lost.
 
+The original cold-start S3 fault shape cannot prove accepted loss: `onReady` calls the production
+object store before the listener serves audio, so a process configured with an unreachable endpoint
+exits without accepting any frame. The production-faithful proof therefore needs two distinct
+observations from the same fault process. It first starts healthy through a proof-runner-owned,
+TLS-transparent TCP pass-through to the configured production S3 endpoint. The runner then cuts
+only that pass-through while Postgres and the loopback WebSocket stay reachable. A subsequently
+acknowledged frame must become an exact `accepted-lost` row with no object or playback index, and
+readiness must return 503. The pass-through is proof-process memory only—no proxy service, image,
+package, application fault switch, credential change, or public traffic edge is introduced.
+
 ## Grounded boundary and data flow
 
 - `server/src/realtime/main.mjs::{parseRealtimeConfig,createRealtimeApplication,startRealtimeProcess}`

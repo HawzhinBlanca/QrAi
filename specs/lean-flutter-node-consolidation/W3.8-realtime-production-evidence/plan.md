@@ -52,10 +52,13 @@ artifact hashes and validated outcomes.
    unresolved without inventing a durable server outcome. Establish the ambiguous window by
    suppressing acknowledgement delivery to the proof client only after a real socket send, then
    SIGKILL and restore the same exact container; do not alter server acknowledgement behavior.
-   Then prove Postgres outage and a second same-image
-   fault container whose deliberately
-   unreachable S3 endpoint must stay unready, record accepted loss, and recover only after it is
-   replaced by the production-S3 candidate. Then run outcome/repair: stored orphans must repair
+   Then prove Postgres outage and a second same-image fault container that first boots healthy
+   through a proof-runner-owned TLS-transparent TCP pass-through to the configured production S3
+   endpoint. Cut only that pass-through at runtime: the fault process must become unready, record
+   an acknowledged frame as accepted loss with no object/index, and recover only after it is
+   removed and the production-S3 candidate is revalidated. The pass-through is in-memory proof
+   tooling, never a Compose service, deployable image, application switch, or public edge. Then run
+   outcome/repair: stored orphans must repair
    idempotently, while genuinely absent accepted-loss bytes must remain explicitly actionable and
    the recording incomplete. Then run 100/101 capacity, 25-session
    classroom; 100-session backpressure burst; and 10-session 30-minute soak. Fault evidence must
