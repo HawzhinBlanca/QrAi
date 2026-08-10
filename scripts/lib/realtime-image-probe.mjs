@@ -1633,6 +1633,7 @@ function validateRefusalProbeResult(value, expectedStatus) {
  */
 export async function runRealtimeProtocolParityStage({
   nodePort,
+  secondaryNodePort,
   origin,
   disallowedOrigin,
   jwtSecret,
@@ -1645,8 +1646,15 @@ export async function runRealtimeProtocolParityStage({
   timeoutMs,
 }) {
   const selectedNodePort = probePort(nodePort);
+  const selectedSecondaryNodePort = probePort(secondaryNodePort);
   if (selectedNodePort === rustRealtimePort) {
     throw new TypeError("realtime protocol parity Node port must remain distinct from Rust port 8081");
+  }
+  if (
+    selectedSecondaryNodePort === selectedNodePort ||
+    selectedSecondaryNodePort === rustRealtimePort
+  ) {
+    throw new TypeError("realtime protocol parity secondary Node port must remain distinct");
   }
   const selectedOrigin = probeOrigin(origin);
   const selectedDisallowedOrigin = probeOrigin(disallowedOrigin);
@@ -1675,7 +1683,7 @@ export async function runRealtimeProtocolParityStage({
     timeoutMs: selectedTimeout,
     nowUnixSeconds,
   });
-  const issueTicket = (retention) => issuer.issue(`protocol-${retention}`, retention);
+  const issueTicket = (proofId, retention = "discard") => issuer.issue(`protocol-${proofId}`, retention);
 
   async function sendFrame(port, issued, frame) {
     const result = await frameProbe({
@@ -1706,39 +1714,55 @@ export async function runRealtimeProtocolParityStage({
   let validCases = 0;
   let matchedCases = 0;
   let unexpectedDivergences = 0;
+  const validFrameFills = [0x00, 0x55, 0xaa, 0xff];
   for (const retention of protocolParityRetentions) {
-    const [nodeTicket, rustTicket] = await Promise.all([
-      issueTicket(retention),
-      issueTicket(retention),
-    ]);
-    const [nodeAccepted, rustAccepted] = await Promise.all([
-      sendFrame(selectedNodePort, nodeTicket, Buffer.alloc(AUDIO_LIMITS.frameBytes)),
-      sendFrame(rustRealtimePort, rustTicket, Buffer.alloc(AUDIO_LIMITS.frameBytes)),
-    ]);
-    validCases += 1;
-    if (nodeAccepted && rustAccepted) matchedCases += 1;
-    else unexpectedDivergences += 1;
+    for (const [caseIndex, fill] of validFrameFills.entries()) {
+      const proofId = `valid-${retention}-${caseIndex}`;
+      const [nodeTicket, rustTicket] = await Promise.all([
+        issueTicket(proofId, retention),
+        issueTicket(proofId, retention),
+      ]);
+      const frame = Buffer.alloc(AUDIO_LIMITS.frameBytes, fill);
+      const [nodeAccepted, rustAccepted] = await Promise.all([
+        sendFrame(selectedNodePort, nodeTicket, frame),
+        sendFrame(rustRealtimePort, rustTicket, frame),
+      ]);
+      validCases += 1;
+      if (nodeAccepted && rustAccepted) matchedCases += 1;
+      else unexpectedDivergences += 1;
+    }
   }
   if (unexpectedDivergences !== 0 || matchedCases !== validCases) {
     throw parityError("valid wire behavior diverged");
   }
 
-  const [nodeInvalidTicket, rustInvalidTicket] = await Promise.all([
-    issueTicket("discard"),
-    issueTicket("discard"),
-  ]);
-  const invalidFrame = Buffer.alloc(AUDIO_LIMITS.frameBytes - 1);
-  const [nodeInvalidAccepted, rustInvalidAccepted] = await Promise.all([
-    sendFrame(selectedNodePort, nodeInvalidTicket, invalidFrame),
-    sendFrame(rustRealtimePort, rustInvalidTicket, invalidFrame),
-  ]);
-  if (nodeInvalidAccepted || !rustInvalidAccepted) {
-    throw parityError("deliberate invalid-frame divergence was not proven");
+  const invalidFrameSizes = [
+    1,
+    AUDIO_LIMITS.frameBytes - 1,
+    AUDIO_LIMITS.frameBytes + 1,
+    AUDIO_LIMITS.maxPayloadBytes,
+  ];
+  let nodeInvalidFrameDivergences = 0;
+  for (const [caseIndex, size] of invalidFrameSizes.entries()) {
+    const proofId = `invalid-${caseIndex}`;
+    const [nodeInvalidTicket, rustInvalidTicket] = await Promise.all([
+      issueTicket(proofId),
+      issueTicket(proofId),
+    ]);
+    const invalidFrame = Buffer.alloc(size);
+    const [nodeInvalidAccepted, rustInvalidAccepted] = await Promise.all([
+      sendFrame(selectedNodePort, nodeInvalidTicket, invalidFrame),
+      sendFrame(rustRealtimePort, rustInvalidTicket, invalidFrame),
+    ]);
+    if (nodeInvalidAccepted || !rustInvalidAccepted) {
+      throw parityError("deliberate invalid-frame divergence was not proven");
+    }
+    nodeInvalidFrameDivergences += 1;
   }
 
   let originRefusals = 0;
-  for (const port of [selectedNodePort, rustRealtimePort]) {
-    const issued = await issueTicket("discard");
+  for (const [caseIndex, port] of [selectedNodePort, rustRealtimePort].entries()) {
+    const issued = await issueTicket(`origin-${caseIndex}`);
     await proveRefusal(port, issued, selectedDisallowedOrigin, 403);
     originRefusals += 1;
     if (!await sendFrame(port, issued, Buffer.alloc(AUDIO_LIMITS.frameBytes))) {
@@ -1747,8 +1771,8 @@ export async function runRealtimeProtocolParityStage({
   }
 
   let replayRefusals = 0;
-  for (const port of [selectedNodePort, rustRealtimePort]) {
-    const issued = await issueTicket("discard");
+  for (const [caseIndex, port] of [selectedNodePort, rustRealtimePort].entries()) {
+    const issued = await issueTicket(`replay-${caseIndex}`);
     if (!await sendFrame(port, issued, Buffer.alloc(AUDIO_LIMITS.frameBytes))) {
       throw parityError("replay setup frame was not accepted");
     }
@@ -1756,14 +1780,30 @@ export async function runRealtimeProtocolParityStage({
     replayRefusals += 1;
   }
 
+  const secondaryControl = await issueTicket("secondary-control");
+  if (!await sendFrame(
+    selectedSecondaryNodePort,
+    secondaryControl,
+    Buffer.alloc(AUDIO_LIMITS.frameBytes),
+  )) {
+    throw parityError("secondary Node control frame was not accepted");
+  }
+
+  const crossInstance = await issueTicket("cross-instance-replay");
+  if (!await sendFrame(selectedNodePort, crossInstance, Buffer.alloc(AUDIO_LIMITS.frameBytes))) {
+    throw parityError("cross-instance replay setup frame was not accepted");
+  }
+  await proveRefusal(selectedSecondaryNodePort, crossInstance, selectedOrigin, 401);
+
   return Object.freeze({
     validCases,
     matchedCases,
     unexpectedDivergences,
-    nodeInvalidFrameDivergences: 1,
+    nodeInvalidFrameDivergences,
     ackFieldCount: AUDIO_ACK_FIELDS.length,
     originRefusals,
     replayRefusals,
+    crossInstanceReplayRefusals: 1,
   });
 }
 

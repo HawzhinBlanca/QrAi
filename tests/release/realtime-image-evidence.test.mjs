@@ -116,6 +116,7 @@ function stageMeasurements(name) {
         ackFieldCount: 7,
         originRefusals: 2,
         replayRefusals: 2,
+        crossInstanceReplayRefusals: 1,
       };
     case "hostile-capacity":
       return {
@@ -488,6 +489,14 @@ test("identity, provenance, expiry, topology, storage, and exact-shape mutations
 test("every measured profile is closed-accounting and cannot lower or merely claim its bar", () => {
   const cases = [
     [(copy) => { copy.stages[1].measurements.matchedCases = 11; }, /matched cases/i],
+    [(copy) => {
+      copy.stages[1].measurements.validCases = 13;
+      copy.stages[1].measurements.matchedCases = 13;
+    }, /12 valid cases/i],
+    [(copy) => { copy.stages[1].measurements.nodeInvalidFrameDivergences = 5; }, /four deliberate/i],
+    [(copy) => { copy.stages[1].measurements.originRefusals = 1; }, /both Origin/i],
+    [(copy) => { copy.stages[1].measurements.replayRefusals = 1; }, /both Origin/i],
+    [(copy) => { copy.stages[1].measurements.crossInstanceReplayRefusals = 0; }, /cross-instance/i],
     [(copy) => { copy.stages[1].measurements.ackFieldCount = 8; }, /seven-field/i],
     [(copy) => { copy.stages[2].measurements.lost = 1; }, /accounting|loss/i],
     [(copy) => { copy.stages[2].measurements.ackP95Ms = 250; }, /p95/i],
@@ -961,7 +970,7 @@ test("the protocol parity stage uses server-issued single-use tickets and record
         display: "Al-Fatihah 1:1-7",
       });
       assert.match(body.sourceChecksum, /^declared:w3\.8-realtime-production-proof:/);
-      const sessionId = `private-session-${body.consent.audioRetention}`;
+      const sessionId = `private-session-${body.practicePlanId.replaceAll(".", "-")}`;
       sessions.set(sessionId, body.consent.audioRetention);
       return new Response(JSON.stringify({
         id: sessionId,
@@ -1019,6 +1028,7 @@ test("the protocol parity stage uses server-issued single-use tickets and record
 
   const result = await runRealtimeProtocolParityStage({
     nodePort: 18_081,
+    secondaryNodePort: 18_082,
     origin: probeOrigin,
     disallowedOrigin: "https://disallowed.quran.example.org",
     jwtSecret: probeSecret,
@@ -1032,22 +1042,40 @@ test("the protocol parity stage uses server-issued single-use tickets and record
   });
 
   assert.deepEqual(result, {
-    validCases: 3,
-    matchedCases: 3,
+    validCases: 12,
+    matchedCases: 12,
     unexpectedDivergences: 0,
-    nodeInvalidFrameDivergences: 1,
+    nodeInvalidFrameDivergences: 4,
     ackFieldCount: 7,
     originRefusals: 2,
     replayRefusals: 2,
+    crossInstanceReplayRefusals: 1,
   });
-  assert.equal(sessions.size, 3);
-  assert.deepEqual([...sessions.values()], retentions);
-  assert.equal(ticketCalls.length, 12);
-  assert.equal(requests.filter(({ url }) => url.pathname === "/v1/recitation-sessions").length, 3);
-  assert.equal(frameCalls.length, 12);
-  assert.deepEqual(new Set(frameCalls.map(({ port }) => port)), new Set([18_081, 8081]));
-  assert.equal(refusalCalls.length, 4);
-  assert.deepEqual(refusalCalls.map(({ expectedStatus }) => expectedStatus), [403, 403, 401, 401]);
+  assert.equal(sessions.size, 22);
+  assert.deepEqual(new Set(sessions.values()), new Set(retentions));
+  assert.equal(ticketCalls.length, 38);
+  assert.equal(requests.filter(({ url }) => url.pathname === "/v1/recitation-sessions").length, 22);
+  assert.equal(frameCalls.length, 38);
+  assert.deepEqual(new Set(frameCalls.map(({ port }) => port)), new Set([18_081, 18_082, 8081]));
+  const validFrameCalls = frameCalls.filter(({ sessionId }) => sessionId.includes("protocol-valid-"));
+  assert.equal(validFrameCalls.length, 24);
+  assert.deepEqual(
+    [...new Set(validFrameCalls.map(({ frame }) => frame[0]))].sort((left, right) => left - right),
+    [0x00, 0x55, 0xaa, 0xff],
+  );
+  const invalidFrameCalls = frameCalls.filter(({ sessionId }) => sessionId.includes("protocol-invalid-"));
+  assert.deepEqual(
+    invalidFrameCalls.map(({ frame }) => frame.byteLength),
+    [1, 1, 15_359, 15_359, 15_361, 15_361, 2 * MiB, 2 * MiB],
+  );
+  assert.equal(
+    frameCalls.filter(({ port, sessionId }) =>
+      port === 18_082 && sessionId.includes("protocol-secondary-control")).length,
+    1,
+  );
+  assert.equal(refusalCalls.length, 5);
+  assert.deepEqual(refusalCalls.map(({ expectedStatus }) => expectedStatus), [403, 403, 401, 401, 401]);
+  assert.equal(refusalCalls.at(-1).port, 18_082);
   for (const refusal of refusalCalls) {
     if (refusal.expectedStatus === 401) {
       assert.ok(frameCalls.some(({ ticket }) => ticket === refusal.ticket));
@@ -1076,7 +1104,7 @@ test("the parity stage fails closed on malformed issuance or unexpected wire beh
       const requestBody = JSON.parse(options.body);
       if (url.pathname === "/v1/recitation-sessions") {
         const session = mutateSession({
-          id: `private-session-${requestBody.consent.audioRetention}`,
+          id: `private-session-${requestBody.practicePlanId.replaceAll(".", "-")}`,
           tenantId: probeTenant,
           learnerId: probeLearner,
           consent: requestBody.consent,
@@ -1113,6 +1141,7 @@ test("the parity stage fails closed on malformed issuance or unexpected wire beh
   }
   const base = {
     nodePort: 18_081,
+    secondaryNodePort: 18_082,
     origin: probeOrigin,
     disallowedOrigin: "https://disallowed.quran.example.org",
     jwtSecret: probeSecret,
@@ -1193,6 +1222,14 @@ test("the parity stage fails closed on malformed issuance or unexpected wire beh
     () => runRealtimeProtocolParityStage({
       ...base,
       fetchImpl: invalidResponse,
+      secondaryNodePort: 18_081,
+    }),
+    /secondary.*distinct|port/i,
+  );
+  await assert.rejects(
+    () => runRealtimeProtocolParityStage({
+      ...base,
+      fetchImpl: invalidResponse,
       disallowedOrigin: probeOrigin,
     }),
     /disallowed.*distinct|origin/i,
@@ -1212,6 +1249,18 @@ test("the parity stage fails closed on malformed issuance or unexpected wire beh
       frameProbe: async () => ({ accepted: true, ackLatencyMs: 1, sequence: 0 }),
     }),
     /invalid-frame divergence/i,
+  );
+  await assert.rejects(
+    () => runRealtimeProtocolParityStage({
+      ...base,
+      fetchImpl: validFetch(),
+      frameProbe: async ({ frame, port }) => ({
+        accepted: port !== 18_082 && (frame.byteLength === 15_360 || port === 8081),
+        ackLatencyMs: 1,
+        sequence: 0,
+      }),
+    }),
+    /secondary Node control/i,
   );
   await assert.rejects(
     () => runRealtimeProtocolParityStage({

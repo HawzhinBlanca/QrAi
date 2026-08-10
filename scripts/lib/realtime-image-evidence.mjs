@@ -207,21 +207,25 @@ function assertProtocolMeasurements(value) {
       "ackFieldCount",
       "originRefusals",
       "replayRefusals",
+      "crossInstanceReplayRefusals",
     ],
     "protocol-parity measurements",
   );
   for (const key of Object.keys(value)) assertNonnegativeInteger(value[key], `protocol-parity.${key}`);
-  if (value.validCases < 1 || value.matchedCases !== value.validCases) {
-    throw new TypeError("protocol-parity matched cases must equal every valid case");
+  if (value.validCases !== 12 || value.matchedCases !== value.validCases) {
+    throw new TypeError("protocol-parity matched cases must equal all 12 valid cases");
   }
-  if (value.unexpectedDivergences !== 0 || value.nodeInvalidFrameDivergences < 1) {
-    throw new TypeError("protocol-parity must record only the deliberate Node invalid-frame divergence");
+  if (value.unexpectedDivergences !== 0 || value.nodeInvalidFrameDivergences !== 4) {
+    throw new TypeError("protocol-parity must record exactly four deliberate Node invalid-frame divergences");
   }
   if (value.ackFieldCount !== 7) {
     throw new TypeError("protocol-parity must prove the exact seven-field acknowledgement");
   }
-  if (value.originRefusals < 1 || value.replayRefusals < 1) {
-    throw new TypeError("protocol-parity must prove Origin and replay refusals");
+  if (value.originRefusals !== 2 || value.replayRefusals !== 2) {
+    throw new TypeError("protocol-parity must prove both Origin and replay refusals");
+  }
+  if (value.crossInstanceReplayRefusals !== 1) {
+    throw new TypeError("protocol-parity must prove one cross-instance replay refusal");
   }
 }
 
