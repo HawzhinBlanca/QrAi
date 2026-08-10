@@ -463,6 +463,107 @@ function realtimeProofComposeArguments(projectName) {
   return argumentsWithConfig.slice(0, -expectedTail.length);
 }
 
+/** Bind the Postgres outage probe to one exact isolated Compose container. */
+export function createRealtimePostgresFaultLifecycleRuntime({
+  projectName,
+  env = process.env,
+  commandRunner = runBounded,
+  delayImpl = (milliseconds) => new Promise((resolveDelay) => setTimeout(resolveDelay, milliseconds)),
+  healthAttempts = 40,
+} = {}) {
+  let containerId = null;
+  try {
+    const composeArguments = realtimeProofComposeArguments(projectName);
+    if (
+      !env ||
+      typeof env !== "object" ||
+      Array.isArray(env) ||
+      typeof commandRunner !== "function" ||
+      typeof delayImpl !== "function" ||
+      !Number.isSafeInteger(healthAttempts) ||
+      healthAttempts < 1 ||
+      healthAttempts > 80
+    ) {
+      throw new TypeError("realtime Postgres lifecycle adapters are invalid");
+    }
+
+    const resolveContainer = () => {
+      const ids = commandRunner(
+        "docker",
+        [...composeArguments, "ps", "--all", "--quiet", "postgres"],
+        env,
+      ).trim().split("\n").filter(Boolean);
+      if (ids.length !== 1 || !/^[0-9a-f]{12,64}$/.test(ids[0])) {
+        throw new TypeError("realtime Postgres container resolution failed");
+      }
+      if (containerId !== null && ids[0] !== containerId) {
+        throw new TypeError("realtime Postgres container was replaced during the fault");
+      }
+      containerId = ids[0];
+      return containerId;
+    };
+
+    const inspectContainer = () => {
+      const inspected = JSON.parse(commandRunner("docker", ["inspect", containerId], env));
+      if (
+        !Array.isArray(inspected) ||
+        inspected.length !== 1 ||
+        inspected[0]?.Id !== containerId
+      ) {
+        throw new TypeError("realtime Postgres container inspection failed");
+      }
+      return inspected[0];
+    };
+
+    async function stopPostgres() {
+      try {
+        resolveContainer();
+        const before = inspectContainer();
+        if (before.State?.Running !== true || before.State?.Health?.Status !== "healthy") {
+          throw new TypeError("realtime Postgres was not healthy before the fault");
+        }
+        commandRunner(
+          "docker",
+          [...composeArguments, "stop", "--timeout", "10", "postgres"],
+          env,
+        );
+        const stopped = inspectContainer();
+        if (stopped.State?.Running !== false) {
+          throw new TypeError("realtime Postgres stop was not observed");
+        }
+        return Object.freeze({ stopped: true });
+      } catch {
+        throw new Error("realtime Postgres lifecycle failed");
+      }
+    }
+
+    async function startPostgres() {
+      try {
+        commandRunner("docker", [...composeArguments, "start", "postgres"], env);
+        resolveContainer();
+        for (let attempt = 0; attempt < healthAttempts; attempt += 1) {
+          const restarted = inspectContainer();
+          if (
+            restarted.State?.Running === true &&
+            restarted.State?.Health?.Status === "healthy"
+          ) {
+            return Object.freeze({ healthy: true });
+          }
+          if (attempt === healthAttempts - 1) break;
+          await delayImpl(250);
+        }
+        throw new TypeError("realtime Postgres did not become healthy");
+      } catch {
+        throw new Error("realtime Postgres lifecycle failed");
+      }
+    }
+
+    return Object.freeze({ stopPostgres, startPostgres });
+  } catch {
+    throw new Error("realtime Postgres lifecycle failed");
+  }
+}
+
 function nonRootContainerUser(value) {
   if (typeof value !== "string") return false;
   const user = value.split(":", 1)[0];
@@ -660,6 +761,18 @@ function run(file, args, environment = process.env) {
     env: environment,
     encoding: "utf8",
     stdio: ["ignore", "pipe", "pipe"],
+    maxBuffer: 16 * 1024 * 1024,
+  }).trim();
+}
+
+function runBounded(file, args, environment = process.env) {
+  return execFileSync(file, args, {
+    cwd: repo,
+    env: environment,
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "pipe"],
+    timeout: 15_000,
+    killSignal: "SIGKILL",
     maxBuffer: 16 * 1024 * 1024,
   }).trim();
 }

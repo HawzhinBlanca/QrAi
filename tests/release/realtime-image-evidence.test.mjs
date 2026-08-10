@@ -48,6 +48,7 @@ import {
 } from "../../scripts/lib/realtime-image-probe.mjs";
 import {
   collectRealtimeCandidateRunningImagesRuntime,
+  createRealtimePostgresFaultLifecycleRuntime,
   parseRealtimeImageProofArguments,
   probeRealtimeS3FaultProcessRuntime,
   runRealtimeImageProofStage,
@@ -3077,6 +3078,89 @@ test("the S3 fault process probe fails closed on identity, readiness, exit, clea
       !String(error).includes(privateFailure),
   );
   assert.equal(harness.calls.some(([, args]) => args.includes("rm")), true);
+});
+
+function postgresLifecycleHarness({
+  initial = { running: true, health: "healthy" },
+  stopped = { running: false, health: "unhealthy" },
+  restarted = { running: true, health: "healthy" },
+  replacement = null,
+  missing = false,
+  privateFailure = null,
+} = {}) {
+  const containerId = "b".repeat(64);
+  const calls = [];
+  let inspectCall = 0;
+  let psCall = 0;
+  const states = [initial, stopped, restarted];
+  const commandRunner = (file, args, environment) => {
+    calls.push([file, args]);
+    assert.equal(environment.PRIVATE_POSTGRES_LIFECYCLE, "must-not-leave-lifecycle");
+    if (privateFailure !== null && args.includes("stop")) throw new Error(privateFailure);
+    if (file !== "docker") throw new Error("unexpected Postgres lifecycle command");
+    if (args[0] === "compose" && args.includes("ps")) {
+      psCall += 1;
+      if (missing) return "";
+      return psCall === 1 || replacement === null ? containerId : replacement;
+    }
+    if (args[0] === "inspect") {
+      const state = states[Math.min(inspectCall, states.length - 1)];
+      inspectCall += 1;
+      return JSON.stringify([{
+        Id: containerId,
+        State: {
+          Running: state.running,
+          Health: { Status: state.health },
+        },
+      }]);
+    }
+    if (args[0] === "compose" && args.includes("stop")) return "";
+    if (args[0] === "compose" && args.includes("start")) return "";
+    throw new Error(`unexpected Postgres lifecycle command: ${args.join(" ")}`);
+  };
+  return {
+    calls,
+    input: {
+      projectName: "qrai-realtime-proof",
+      env: { PRIVATE_POSTGRES_LIFECYCLE: "must-not-leave-lifecycle" },
+      commandRunner,
+      delayImpl: async () => {},
+    },
+  };
+}
+
+test("the Compose Postgres lifecycle stops and restores the same exact healthy container", async () => {
+  const harness = postgresLifecycleHarness();
+  const lifecycle = createRealtimePostgresFaultLifecycleRuntime(harness.input);
+  assert.deepEqual(await lifecycle.stopPostgres(), { stopped: true });
+  assert.deepEqual(await lifecycle.startPostgres(), { healthy: true });
+  const rendered = harness.calls.map(([, args]) => args.join(" "));
+  assert.equal(rendered.some((value) => / stop --timeout 10 postgres$/.test(value)), true);
+  assert.equal(rendered.some((value) => / start postgres$/.test(value)), true);
+  assert.equal(rendered.filter((value) => / ps --all --quiet postgres$/.test(value)).length, 2);
+});
+
+test("the Compose Postgres lifecycle rejects missing, running, replaced, unhealthy, and private states", async () => {
+  const cases = [
+    { missing: true },
+    { initial: { running: false, health: "unhealthy" } },
+    { stopped: { running: true, health: "healthy" } },
+    { replacement: "c".repeat(64) },
+    { restarted: { running: true, health: "unhealthy" } },
+    { privateFailure: "private-container private-database-url" },
+  ];
+  for (const mutation of cases) {
+    const harness = postgresLifecycleHarness(mutation);
+    const lifecycle = createRealtimePostgresFaultLifecycleRuntime(harness.input);
+    await assert.rejects(
+      async () => {
+        await lifecycle.stopPostgres();
+        await lifecycle.startPostgres();
+      },
+      (error) => error.message === "realtime Postgres lifecycle failed" &&
+        !String(error).includes("private-"),
+    );
+  }
 });
 
 test("the candidate CLI stage dispatches strict project and selection configuration with identity-only output", async () => {
