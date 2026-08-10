@@ -338,11 +338,14 @@ function assertFaultMeasurements(value) {
   if (value.durableLost !== value.lost || value.durableOrphan !== value.uncertain) {
     throw new TypeError("fault-recovery durable loss/orphan outcomes must match loss accounting");
   }
-  if (value.repaired !== value.durableLost + value.durableOrphan) {
-    throw new TypeError("fault-recovery must repair every durable lost or orphan outcome");
+  if (value.repaired !== value.durableOrphan) {
+    throw new TypeError("fault-recovery must repair every stored orphan and no absent audio");
   }
-  if (value.outstandingActionable !== 0) {
-    throw new TypeError("fault-recovery must leave no outstanding actionable outcome");
+  if (
+    value.outstandingActionable !== value.durableLost ||
+    value.repaired + value.outstandingActionable !== value.durableLost + value.durableOrphan
+  ) {
+    throw new TypeError("fault-recovery must preserve every genuine loss as actionable");
   }
   if (value.incompleteReportedComplete !== 0) {
     throw new TypeError("fault-recovery must never report an incomplete recording complete");

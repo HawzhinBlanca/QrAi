@@ -50,7 +50,9 @@ artifact hashes and validated outcomes.
    durable cross-instance replay; three retention modes and cleanup; clean and ambiguous process
    interruption; Postgres outage; and a second same-image fault container whose deliberately
    unreachable S3 endpoint must stay unready, record accepted loss, and recover only after it is
-   replaced by the production-S3 candidate. Then run outcome/repair, 100/101 capacity, 25-session
+   replaced by the production-S3 candidate. Then run outcome/repair: stored orphans must repair
+   idempotently, while genuinely absent accepted-loss bytes must remain explicitly actionable and
+   the recording incomplete. Then run 100/101 capacity, 25-session
    classroom; 100-session backpressure burst; and 10-session 30-minute soak. Every sent frame must
    land in a closed accepted/rejected/lost/uncertain/durable-outcome accounting equation.
 6. Extend Docker CI with a bounded production-image realtime smoke and workflow path filters. It
@@ -101,6 +103,10 @@ artifact hashes and validated outcomes.
 - Load bars are deliberately fixed before measurement. If the candidate misses them, optimize the
   bounded implementation or capacity policy and rerun a new artifact; never lower a bar after seeing
   results without a new owner-approved plan.
+- “Repair” never means recreating missing learner audio. A durable accepted-loss row with no object
+  remains actionable; only an extant immutable object can be indexed and marked repaired. Evidence
+  closes the equation across repaired plus outstanding states and rejects any claim that such an
+  incomplete recording is complete.
 - Rollback of implementation restores the earlier issuer/runtime contract and removes proof-only
   files. Evidence is external/write-once and requires no database rollback. No destructive schema,
   canonical Quran data, learner feedback, or stored learner record is introduced by this slice.

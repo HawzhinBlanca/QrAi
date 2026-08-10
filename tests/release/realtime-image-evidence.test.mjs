@@ -193,8 +193,8 @@ function stageMeasurements(name) {
         uncertain: 1,
         durableLost: 2,
         durableOrphan: 1,
-        repaired: 3,
-        outstandingActionable: 0,
+        repaired: 1,
+        outstandingActionable: 2,
         incompleteReportedComplete: 0,
         readinessFailedClosed: true,
         repairIdempotent: true,
@@ -2484,15 +2484,15 @@ function faultProbeResults() {
     },
     repair: {
       attempted: 3,
-      repaired: 3,
-      outstandingActionable: 0,
+      repaired: 1,
+      outstandingActionable: 2,
       secondPassRepaired: 0,
       idempotent: true,
     },
   };
 }
 
-test("the fault stage closes Node, Postgres, and same-image S3 failures before idempotent repair", async () => {
+test("the fault stage repairs stored orphans and preserves genuine accepted loss as actionable", async () => {
   const values = faultProbeResults();
   const calls = [];
   const result = await runRealtimeFaultRecoveryStage({
@@ -2536,6 +2536,7 @@ test("the fault stage rejects open accounting, missing safety proofs, incomplete
     [(copy) => { copy.repair.attempted = 2; }],
     [(copy) => { copy.repair.repaired = 2; }],
     [(copy) => { copy.repair.outstandingActionable = 1; }],
+    [(copy) => { copy.repair.repaired = 3; copy.repair.outstandingActionable = 0; }],
     [(copy) => { copy.repair.secondPassRepaired = 1; }],
     [(copy) => { copy.repair.idempotent = false; }],
   ];

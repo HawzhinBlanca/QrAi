@@ -4,6 +4,17 @@
 **Target:** W3.8 / RT-1–RT-4 / release-bound realtime evidence
 **Method:** Serena is unavailable; `rg` caller searches plus exact source inspection were used and
 the fallback is recorded rather than inventing symbol results.
+
+## Implementation finding — loss is not fabricated repair
+
+The production outcome and repair authorities distinguish two materially different states. A
+`stored-unindexed` orphan still has immutable audio bytes and can be indexed idempotently. An
+`accepted-lost` row produced by a definitive object-store failure has no audio bytes to recreate;
+it must remain an actionable loss and the recording must remain incomplete. Therefore W3.8 evidence
+must close the repair equation as `repaired + outstandingActionable = durableLost + durableOrphan`,
+with stored orphans repaired and genuine loss left actionable. Treating every lost frame as repaired
+would fabricate recovery and contradict `server/scripts/repair-audio-index.mjs`.
+
 ## Grounded boundary and data flow
 
 - `server/src/realtime/main.mjs::{parseRealtimeConfig,createRealtimeApplication,startRealtimeProcess}`

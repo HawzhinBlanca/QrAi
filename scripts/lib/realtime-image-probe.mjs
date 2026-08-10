@@ -2929,11 +2929,12 @@ export async function runRealtimeFaultRecoveryStage({
     for (const field of ["attempted", "repaired", "outstandingActionable", "secondPassRepaired"]) {
       faultCount(repair[field], `fault repair.${field}`);
     }
-    const repairable = durableLost + durableOrphan;
+    const actionableOutcomes = durableLost + durableOrphan;
     if (
-      repair.attempted !== repairable ||
-      repair.repaired !== repairable ||
-      repair.outstandingActionable !== 0 ||
+      repair.attempted !== actionableOutcomes ||
+      repair.repaired !== durableOrphan ||
+      repair.outstandingActionable !== durableLost ||
+      repair.repaired + repair.outstandingActionable !== repair.attempted ||
       repair.secondPassRepaired !== 0 ||
       repair.idempotent !== true
     ) {
