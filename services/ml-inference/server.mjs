@@ -128,27 +128,51 @@ async function storeAudioObject(tenantId, learnerId, chunkId, audioBytes) {
   return objectKey;
 }
 
+/**
+ * Erase everything this service holds for one learner.
+ *
+ * Deletes EVERY file in the learner's directory, not just the two extensions it happens to write
+ * today. The old loop unlinked `.bin` and `.meta.json` and silently stepped over anything else, so
+ * a single file of any other name — a temp file, a partial write, a format added later by someone
+ * who did not know to update this list — survived "delete my child's recordings" without a word.
+ * An allowlist is the wrong default for erasure: forgetting to extend it fails towards RETAINING
+ * a learner's data, which is the direction that must never be the quiet one.
+ *
+ * Classified, not lumped: an unrecognised file is still deleted, but reported under
+ * `deletedOtherObjectKeys` rather than being miscounted as audio or as metadata, so the two
+ * existing counts keep meaning exactly what they meant.
+ *
+ * NOT recursive, deliberately. Nothing writes a subdirectory here, and giving erasure the power to
+ * walk a tree rooted at a request-derived path is a much larger blast radius than the gap it would
+ * close. A subdirectory is therefore left in place — and because `rmdirSync` then fails, the caller's
+ * `tombstonedDerivedRecords` post-condition reports false and the residue is loud instead of silent.
+ */
 async function deleteAudioObjects(tenantId, learnerId) {
   tenantId = safeStorageSegment(tenantId, "tenantId");
   learnerId = safeStorageSegment(learnerId, "learnerId");
   const tenantDir = join(AUDIO_STORAGE_DIR, tenantId, learnerId);
   const deletedAudioObjectKeys = [];
   const deletedMetadataObjectKeys = [];
+  const deletedOtherObjectKeys = [];
   if (existsSync(tenantDir)) {
     const { readdirSync, unlinkSync, rmdirSync } = await import("node:fs");
-    const files = readdirSync(tenantDir);
-    for (const file of files) {
-      if (file.endsWith(".bin")) {
-        unlinkSync(join(tenantDir, file));
-        deletedAudioObjectKeys.push(`${tenantId}/${learnerId}/${file}`);
-      } else if (file.endsWith(".meta.json")) {
-        unlinkSync(join(tenantDir, file));
-        deletedMetadataObjectKeys.push(`${tenantId}/${learnerId}/${file}`);
+    for (const entry of readdirSync(tenantDir, { withFileTypes: true })) {
+      // Only files are unlinkable; see the note above on why a directory is left for the
+      // post-condition to surface rather than recursed into.
+      if (!entry.isFile()) continue;
+      const key = `${tenantId}/${learnerId}/${entry.name}`;
+      unlinkSync(join(tenantDir, entry.name));
+      if (entry.name.endsWith(".bin")) {
+        deletedAudioObjectKeys.push(key);
+      } else if (entry.name.endsWith(".meta.json")) {
+        deletedMetadataObjectKeys.push(key);
+      } else {
+        deletedOtherObjectKeys.push(key);
       }
     }
     try { rmdirSync(tenantDir); } catch {}
   }
-  return { deletedAudioObjectKeys, deletedMetadataObjectKeys };
+  return { deletedAudioObjectKeys, deletedMetadataObjectKeys, deletedOtherObjectKeys };
 }
 
 async function listAudioObjects(tenantId, learnerId) {
@@ -341,6 +365,13 @@ function appendAudit(tenantId, action, subjectId, details = {}) {
     action,
     subjectType: action.startsWith("privacy.") ? "privacy" : "ml_prediction",
     subjectId,
+    // WHOSE event this is, as a structured field rather than something a reader has to infer from
+    // subjectId. subjectId is the learner for `privacy.*` but the SESSION for `external-asr.*`, so
+    // "is this row about learner X" was previously unanswerable for session-keyed rows — which is
+    // how a learner-scoped privacy export ended up returning the whole tenant's audit trail. Null
+    // when the caller does not know it; an unattributable row is excluded from every learner's
+    // export rather than shown to all of them.
+    learnerId: typeof details.learnerId === "string" && details.learnerId ? details.learnerId : null,
     details,
     createdAt: new Date().toISOString(),
   };
@@ -483,16 +514,16 @@ async function predictAlignment(requestBody) {
   let externalAsr;
   if (asrAllowed && !childProfile) {
     externalAsr = { called: true, reason: "consent-granted" };
-    appendAudit(tenantId, "privacy.external-asr.called", sessionId, { traceId, reason: "consent-granted" });
+    appendAudit(tenantId, "privacy.external-asr.called", sessionId, { traceId, reason: "consent-granted", learnerId: requestBody.learnerId });
   } else if (asrAllowed && childProfile && guardianApproved) {
     externalAsr = { called: true, reason: "child-profile-guardian-approved" };
-    appendAudit(tenantId, "privacy.external-asr.called", sessionId, { traceId, reason: "child-profile-guardian-approved" });
+    appendAudit(tenantId, "privacy.external-asr.called", sessionId, { traceId, reason: "child-profile-guardian-approved", learnerId: requestBody.learnerId });
   } else if (externalAsrRequested && childProfile && !guardianApproved) {
     externalAsr = { called: false, reason: "child-profile-no-guardian-consent" };
-    appendAudit(tenantId, "privacy.external-asr.denied", sessionId, { traceId, reason: "child-profile-no-guardian-consent" });
+    appendAudit(tenantId, "privacy.external-asr.denied", sessionId, { traceId, reason: "child-profile-no-guardian-consent", learnerId: requestBody.learnerId });
   } else if (externalAsrRequested && !asrAllowed) {
     externalAsr = { called: false, reason: "consent-revoked-or-insufficient" };
-    appendAudit(tenantId, "privacy.external-asr.denied", sessionId, { traceId, reason: "consent-revoked-or-insufficient" });
+    appendAudit(tenantId, "privacy.external-asr.denied", sessionId, { traceId, reason: "consent-revoked-or-insufficient", learnerId: requestBody.learnerId });
   } else {
     externalAsr = { called: false, reason: "not-requested" };
   }
@@ -642,6 +673,7 @@ async function predictAlignment(requestBody) {
   const auditEventId = appendAudit(tenantId, "ml.alignment.predicted", sessionId, {
     modelVersion: MODEL_VERSION,
     traceId,
+    learnerId: requestBody.learnerId,
     confidence,
     wordCount,
     recognizedCount,
@@ -744,6 +776,7 @@ async function predictTajweed(requestBody) {
   const auditEventId = appendAudit(tenantId, "ml.tajweed.predicted", sessionId, {
     modelVersion: MODEL_VERSION,
     traceId,
+    learnerId: requestBody.learnerId,
     findingCount: findings.length,
   });
   findings = findings.map((f) => ({ ...f, auditEventId }));
@@ -836,10 +869,25 @@ async function exportPrivacy(requestBody) {
   const tenantId = safeStorageSegment(requestBody.tenantId, "tenantId");
   const learnerId = safeStorageSegment(requestBody.learnerId, "learnerId");
   const traceId = extractTraceId(requestBody);
-  appendAudit(tenantId, "privacy.export.requested", learnerId, { traceId });
+  appendAudit(tenantId, "privacy.export.requested", learnerId, { traceId, learnerId });
 
   // List audio files for this tenant/learner
   const { audioObjectKeys, metadataObjectKeys } = await listAudioObjects(tenantId, learnerId);
+
+  // Read ONCE. This was three separate readTenantAuditEvents(tenantId) calls building one response
+  // — three synchronous full-file reads and JSON parses of an append-only log that never rotates,
+  // on the single-threaded event loop.
+  //
+  // Scoped to THIS learner, which is the actual fix. The three lists were filtered only by tenant
+  // inside a per-learner export, so learner A's right-of-access packet contained learner B's id and
+  // B's privacy history — including that B had requested erasure. Two ways a row is attributable:
+  // `learnerId` (the structured field appendAudit now records) or `subjectId`, which IS the learner
+  // for `privacy.*` rows and covers rows written before that field existed. A row matching neither
+  // is not attributable to anyone and is omitted — under-reporting one learner's own history is
+  // recoverable, disclosing another learner's is not.
+  const learnerAuditEvents = readTenantAuditEvents(tenantId).filter(
+    (event) => event.learnerId === learnerId || event.subjectId === learnerId,
+  );
 
   return {
     traceId,
@@ -847,13 +895,13 @@ async function exportPrivacy(requestBody) {
     learnerId,
     audioObjectKeys,
     metadataObjectKeys,
-    externalAsrCalls: readTenantAuditEvents(tenantId).filter(
+    externalAsrCalls: learnerAuditEvents.filter(
       (event) => event.action === "privacy.external-asr.called",
     ),
-    deniedExternalAsr: readTenantAuditEvents(tenantId).filter(
+    deniedExternalAsr: learnerAuditEvents.filter(
       (event) => event.action === "privacy.external-asr.denied",
     ),
-    auditEvents: readTenantAuditEvents(tenantId),
+    auditEvents: learnerAuditEvents,
   };
 }
 
@@ -863,7 +911,8 @@ async function deletePrivacy(requestBody) {
   const traceId = extractTraceId(requestBody);
 
   // Delete audio files
-  const { deletedAudioObjectKeys, deletedMetadataObjectKeys } = await deleteAudioObjects(tenantId, learnerId);
+  const { deletedAudioObjectKeys, deletedMetadataObjectKeys, deletedOtherObjectKeys } =
+    await deleteAudioObjects(tenantId, learnerId);
 
   const job = {
     id: `privacy-delete-${randomUUID()}`,
@@ -873,15 +922,30 @@ async function deletePrivacy(requestBody) {
     status: "completed",
     deletedAudioObjectKeys,
     deletedMetadataObjectKeys,
-    tombstonedDerivedRecords: true,
+    deletedOtherObjectKeys,
+    // A real post-condition, not a constant. This was hardcoded `true`, and the only thing
+    // checking it (scripts/smoke-privacy.mjs) asserted that constant equalled true — an assertion
+    // that could not fail, in the smoke whose own deletion reports ZERO removed keys. Now it says
+    // something this service can actually answer: nothing of this learner's is left on its disk.
+    //
+    // It is a genuine check, not a restatement. deleteAudioObjects now removes every FILE, so the
+    // residue it can still leave is a subdirectory — which it deliberately does not recurse into,
+    // and whose presence makes the swallowed rmdir fail. That case reports false here instead of
+    // cheerfully claiming true, which is the whole point of computing it rather than asserting it.
+    //
+    // Scope: alignments and tajweed findings are platform-api's rows in Postgres, erased by its own
+    // privacy cascade. ml-inference never held them, so it never spoke for them.
+    tombstonedDerivedRecords: !existsSync(join(AUDIO_STORAGE_DIR, tenantId, learnerId)),
     completedAt: new Date().toISOString(),
   };
   deletionJobs.set(job.id, job);
   appendAudit(tenantId, "privacy.delete.requested", learnerId, {
     jobId: job.id,
     traceId,
+    learnerId,
     deletedAudioObjectKeys,
     deletedMetadataObjectKeys,
+    deletedOtherObjectKeys,
   });
   return job;
 }
@@ -1095,6 +1159,7 @@ async function storeAudioChunk(requestBody) {
     });
     appendAudit(tenantId, "audio.chunk.overwrite-refused", chunkId, {
       sessionId,
+      learnerId,
       traceId: extractTraceId(requestBody),
       conflict,
     });
@@ -1114,6 +1179,7 @@ async function storeAudioChunk(requestBody) {
 
   appendAudit(tenantId, "audio.chunk.stored", chunkId, {
     sessionId,
+    learnerId,
     traceId: extractTraceId(requestBody),
     audioSize: metadata.audioSize,
   });
@@ -1185,6 +1251,7 @@ async function transcribeSession(requestBody) {
   if (!asrAllowed) {
     appendAudit(tenantId, "privacy.external-asr.denied", sessionId, {
       traceId,
+      learnerId,
       reason: "consent-revoked-or-insufficient",
     });
     return {
@@ -1288,6 +1355,7 @@ async function transcribeSession(requestBody) {
 
   appendAudit(tenantId, "privacy.external-asr.called", sessionId, {
     traceId,
+    learnerId,
     reason: "consent-granted",
     chunkCount: parts.length,
   });
