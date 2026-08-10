@@ -2730,3 +2730,170 @@ export function probeRealtimeCandidateRunningImages({
     }),
   });
 }
+
+function exactFaultKeys(value, expected, label) {
+  assertObject(value, label);
+  if (JSON.stringify(Object.keys(value).sort()) !== JSON.stringify([...expected].sort())) {
+    throw new TypeError(`${label} has an invalid shape`);
+  }
+}
+
+function faultCount(value, label) {
+  if (!Number.isSafeInteger(value) || value < 0) {
+    throw new TypeError(`${label} must be a non-negative safe integer`);
+  }
+  return value;
+}
+
+function validateFaultProbe(value, fault, proofFields) {
+  const commonFields = [
+    "fault",
+    "framesSent",
+    "accepted",
+    "rejected",
+    "lost",
+    "uncertain",
+    "durableLost",
+    "durableOrphan",
+    "recovered",
+    "readinessFailedClosed",
+    "incompleteReportedComplete",
+    "proofs",
+  ];
+  exactFaultKeys(value, commonFields, `${fault} fault result`);
+  if (value.fault !== fault) throw new TypeError(`${fault} fault identity is invalid`);
+  for (const field of [
+    "framesSent",
+    "accepted",
+    "rejected",
+    "lost",
+    "uncertain",
+    "durableLost",
+    "durableOrphan",
+    "incompleteReportedComplete",
+  ]) {
+    faultCount(value[field], `${fault}.${field}`);
+  }
+  if (
+    value.framesSent <= 0 ||
+    value.framesSent !== value.accepted + value.rejected + value.lost + value.uncertain
+  ) {
+    throw new TypeError(`${fault} fault frame accounting is open`);
+  }
+  if (value.durableLost !== value.lost || value.durableOrphan !== value.uncertain) {
+    throw new TypeError(`${fault} durable outcomes do not match frame accounting`);
+  }
+  if (
+    value.recovered !== true ||
+    value.readinessFailedClosed !== true ||
+    value.incompleteReportedComplete !== 0
+  ) {
+    throw new TypeError(`${fault} did not prove fail-closed recovery and honest finalization`);
+  }
+  exactFaultKeys(value.proofs, proofFields, `${fault} fault proofs`);
+  if (proofFields.some((field) => value.proofs[field] !== true)) {
+    throw new TypeError(`${fault} fault proof is incomplete`);
+  }
+  return value;
+}
+
+/**
+ * Execute the three approved dependency/process faults in order and close every frame and durable
+ * repair outcome before producing aggregate evidence. Concrete Docker/S3/Postgres mutations stay
+ * behind the four injected adapters so restoration can be proved separately.
+ */
+export async function runRealtimeFaultRecoveryStage({
+  nodeProcessProbe,
+  postgresProbe,
+  s3Probe,
+  repairProbe,
+} = {}) {
+  if ([nodeProcessProbe, postgresProbe, s3Probe, repairProbe]
+    .some((adapter) => typeof adapter !== "function")) {
+    throw new TypeError("realtime fault-recovery stage requires complete adapters");
+  }
+  try {
+    const nodeProcess = validateFaultProbe(
+      await nodeProcessProbe(),
+      "node-process",
+      ["cleanInterruptionRecovered", "ambiguousFrameNotReplayed", "freshTicketIssued"],
+    );
+    if (nodeProcess.lost < 1 || nodeProcess.uncertain < 1) {
+      throw new TypeError("node-process fault must prove both clean and ambiguous interruption");
+    }
+
+    const postgres = validateFaultProbe(
+      await postgresProbe(),
+      "postgres",
+      ["outageUpgradeRefused", "outageTicketNotConsumed", "freshTicketIssued"],
+    );
+    if (
+      postgres.rejected < 1 ||
+      postgres.lost !== 0 ||
+      postgres.uncertain !== 0 ||
+      postgres.durableLost !== 0 ||
+      postgres.durableOrphan !== 0
+    ) {
+      throw new TypeError("Postgres outage must reject before accepting or losing audio");
+    }
+
+    const s3 = validateFaultProbe(
+      await s3Probe(),
+      "s3",
+      [
+        "sameCandidateImage",
+        "unreachableEndpointUnready",
+        "acceptedLossRecorded",
+        "productionCandidateRestored",
+      ],
+    );
+    if (s3.lost < 1 || s3.uncertain !== 0 || s3.durableOrphan !== 0) {
+      throw new TypeError("S3 fault must record accepted loss without uncertain audio");
+    }
+
+    const durableLost = nodeProcess.durableLost + postgres.durableLost + s3.durableLost;
+    const durableOrphan =
+      nodeProcess.durableOrphan + postgres.durableOrphan + s3.durableOrphan;
+    const repair = await repairProbe(Object.freeze({ durableLost, durableOrphan }));
+    exactFaultKeys(
+      repair,
+      ["attempted", "repaired", "outstandingActionable", "secondPassRepaired", "idempotent"],
+      "fault repair result",
+    );
+    for (const field of ["attempted", "repaired", "outstandingActionable", "secondPassRepaired"]) {
+      faultCount(repair[field], `fault repair.${field}`);
+    }
+    const repairable = durableLost + durableOrphan;
+    if (
+      repair.attempted !== repairable ||
+      repair.repaired !== repairable ||
+      repair.outstandingActionable !== 0 ||
+      repair.secondPassRepaired !== 0 ||
+      repair.idempotent !== true
+    ) {
+      throw new TypeError("fault repair did not close idempotently");
+    }
+
+    const results = [nodeProcess, postgres, s3];
+    return Object.freeze({
+      faultsTested: Object.freeze(results.map(({ fault }) => fault)),
+      framesSent: results.reduce((total, value) => total + value.framesSent, 0),
+      accepted: results.reduce((total, value) => total + value.accepted, 0),
+      rejected: results.reduce((total, value) => total + value.rejected, 0),
+      lost: results.reduce((total, value) => total + value.lost, 0),
+      uncertain: results.reduce((total, value) => total + value.uncertain, 0),
+      durableLost,
+      durableOrphan,
+      repaired: repair.repaired,
+      outstandingActionable: repair.outstandingActionable,
+      incompleteReportedComplete: results.reduce(
+        (total, value) => total + value.incompleteReportedComplete,
+        0,
+      ),
+      readinessFailedClosed: true,
+      repairIdempotent: true,
+    });
+  } catch {
+    throw new Error("realtime fault-recovery stage failed");
+  }
+}

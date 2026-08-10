@@ -37,6 +37,7 @@ import {
   probeRealtimeMetricsSnapshot,
   probeRealtimeUpgradeRefusal,
   runRealtimeHostileCapacityStage,
+  runRealtimeFaultRecoveryStage,
   runRealtimeProtocolParityStage,
   runRealtimeRetentionStage,
   summarizeRealtimeAudioFrameProbes,
@@ -2353,6 +2354,137 @@ test("the hostile-capacity stage refuses false measurements, loss, dirty gauges,
       /hostile-capacity/i,
     );
   }
+});
+
+function faultProbeResults() {
+  return {
+    nodeProcess: {
+      fault: "node-process",
+      framesSent: 4,
+      accepted: 2,
+      rejected: 0,
+      lost: 1,
+      uncertain: 1,
+      durableLost: 1,
+      durableOrphan: 1,
+      recovered: true,
+      readinessFailedClosed: true,
+      incompleteReportedComplete: 0,
+      proofs: {
+        cleanInterruptionRecovered: true,
+        ambiguousFrameNotReplayed: true,
+        freshTicketIssued: true,
+      },
+    },
+    postgres: {
+      fault: "postgres",
+      framesSent: 4,
+      accepted: 2,
+      rejected: 2,
+      lost: 0,
+      uncertain: 0,
+      durableLost: 0,
+      durableOrphan: 0,
+      recovered: true,
+      readinessFailedClosed: true,
+      incompleteReportedComplete: 0,
+      proofs: {
+        outageUpgradeRefused: true,
+        outageTicketNotConsumed: true,
+        freshTicketIssued: true,
+      },
+    },
+    s3: {
+      fault: "s3",
+      framesSent: 4,
+      accepted: 3,
+      rejected: 0,
+      lost: 1,
+      uncertain: 0,
+      durableLost: 1,
+      durableOrphan: 0,
+      recovered: true,
+      readinessFailedClosed: true,
+      incompleteReportedComplete: 0,
+      proofs: {
+        sameCandidateImage: true,
+        unreachableEndpointUnready: true,
+        acceptedLossRecorded: true,
+        productionCandidateRestored: true,
+      },
+    },
+    repair: {
+      attempted: 3,
+      repaired: 3,
+      outstandingActionable: 0,
+      secondPassRepaired: 0,
+      idempotent: true,
+    },
+  };
+}
+
+test("the fault stage closes Node, Postgres, and same-image S3 failures before idempotent repair", async () => {
+  const values = faultProbeResults();
+  const calls = [];
+  const result = await runRealtimeFaultRecoveryStage({
+    nodeProcessProbe: async () => { calls.push("node-process"); return values.nodeProcess; },
+    postgresProbe: async () => { calls.push("postgres"); return values.postgres; },
+    s3Probe: async () => { calls.push("s3"); return values.s3; },
+    repairProbe: async (input) => {
+      calls.push("repair");
+      assert.deepEqual(input, { durableLost: 2, durableOrphan: 1 });
+      return values.repair;
+    },
+  });
+  assert.deepEqual(calls, ["node-process", "postgres", "s3", "repair"]);
+  assert.deepEqual(result, stageMeasurements("fault-recovery"));
+  for (const privateValue of ["private-ticket", "private-session", "private-audio"]) {
+    assert.equal(JSON.stringify(result).includes(privateValue), false);
+  }
+});
+
+test("the fault stage rejects open accounting, missing safety proofs, incomplete claims, and repair drift", async () => {
+  const base = faultProbeResults();
+  const execute = (values) => runRealtimeFaultRecoveryStage({
+    nodeProcessProbe: async () => values.nodeProcess,
+    postgresProbe: async () => values.postgres,
+    s3Probe: async () => values.s3,
+    repairProbe: async () => values.repair,
+  });
+  const cases = [
+    [(copy) => { copy.nodeProcess.framesSent += 1; }],
+    [(copy) => { copy.nodeProcess.uncertain = 0; copy.nodeProcess.accepted += 1; }],
+    [(copy) => { copy.nodeProcess.proofs.ambiguousFrameNotReplayed = false; }],
+    [(copy) => { copy.nodeProcess.incompleteReportedComplete = 1; }],
+    [(copy) => { copy.postgres.readinessFailedClosed = false; }],
+    [(copy) => { copy.postgres.lost = 1; copy.postgres.accepted -= 1; copy.postgres.durableLost = 1; }],
+    [(copy) => { copy.postgres.proofs.outageTicketNotConsumed = false; }],
+    [(copy) => { copy.s3.proofs.sameCandidateImage = false; }],
+    [(copy) => { copy.s3.proofs.unreachableEndpointUnready = false; }],
+    [(copy) => { copy.s3.proofs.acceptedLossRecorded = false; }],
+    [(copy) => { copy.s3.durableLost = 0; }],
+    [(copy) => { copy.s3.recovered = false; }],
+    [(copy) => { copy.repair.attempted = 2; }],
+    [(copy) => { copy.repair.repaired = 2; }],
+    [(copy) => { copy.repair.outstandingActionable = 1; }],
+    [(copy) => { copy.repair.secondPassRepaired = 1; }],
+    [(copy) => { copy.repair.idempotent = false; }],
+  ];
+  for (const [mutate] of cases) {
+    const copy = structuredClone(base);
+    mutate(copy);
+    await assert.rejects(() => execute(copy), /realtime fault-recovery stage failed/i);
+  }
+
+  await assert.rejects(
+    () => runRealtimeFaultRecoveryStage({
+      nodeProcessProbe: async () => { throw new Error("private-ticket private-session"); },
+      postgresProbe: async () => base.postgres,
+      s3Probe: async () => base.s3,
+      repairProbe: async () => base.repair,
+    }),
+    (error) => error.message === "realtime fault-recovery stage failed",
+  );
 });
 
 test("proof CLI arguments reject unsafe paths, ports, projects, actors, acknowledgements, and extra flags", () => {
