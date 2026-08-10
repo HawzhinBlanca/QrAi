@@ -43,3 +43,14 @@ overrides:
   # left the root ajv's copy at 4.1.1, so both forms are here: the selectors catch parents nobody has
   # enumerated, this catches the one the advisory actually points at.
   ajv>fast-uri: '>=4.1.2'
+  # 2026-08-10, the same story a fourth time. GHSA-2v37-7h3g-55p8: nanoid <3.3.17 loops
+  # indefinitely when a custom generator is given size zero. Transitive via
+  # apps/web > vite > postcss > nanoid, so build tooling only — it is absent from the built
+  # bundle (grepped apps/web/dist), which is the ADR-0011 reachability argument, not a guess.
+  # Not shipped, but `pnpm audit` is exit-code CI: it turned every branch red, including main,
+  # the day it published, with nothing in this repo changed. Confirmed on plain origin/main.
+  #
+  # Upper bound per the undici lesson above: a bare '>=3.3.17' would let nanoid resolve to 5.x,
+  # taking a major to satisfy a patch advisory. 3.3.17 is a patch inside the major already in the
+  # tree (3.3.16).
+  nanoid: '>=3.3.17 <4'
