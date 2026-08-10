@@ -1881,6 +1881,158 @@ export async function runRealtimeProtocolParityStage({
   });
 }
 
+const retentionObservationFields = Object.freeze([
+  "objectCount",
+  "indexCount",
+  "metadataMatches",
+  "audioMatches",
+  "playable",
+]);
+const retentionObservationFieldSet = new Set(retentionObservationFields);
+const retentionCleanupFields = Object.freeze([
+  "discardObjects",
+  "teacherReviewObjects",
+  "trainingOptInObjects",
+]);
+const retentionCleanupFieldSet = new Set(retentionCleanupFields);
+
+function retentionStageError(message) {
+  return new Error(`realtime retention stage ${message}`);
+}
+
+function validateRetentionObservation(value, audioRetention) {
+  if (!exactObjectFields(value, retentionObservationFields, retentionObservationFieldSet)) {
+    throw retentionStageError("observation was invalid");
+  }
+  const retained = audioRetention !== "discard";
+  if (
+    !Number.isSafeInteger(value.objectCount) ||
+    value.objectCount !== 1 ||
+    !Number.isSafeInteger(value.indexCount) ||
+    value.indexCount !== (retained ? 1 : 0) ||
+    value.metadataMatches !== true ||
+    value.audioMatches !== true ||
+    value.playable !== retained
+  ) {
+    throw retentionStageError("observation was invalid");
+  }
+}
+
+function validateRetentionCleanup(value) {
+  if (!exactObjectFields(value, retentionCleanupFields, retentionCleanupFieldSet)) {
+    throw retentionStageError("cleanup observation was invalid");
+  }
+  const expected = {
+    discardObjects: 0,
+    teacherReviewObjects: 1,
+    trainingOptInObjects: 1,
+  };
+  for (const field of retentionCleanupFields) {
+    if (!Number.isSafeInteger(value[field]) || value[field] !== expected[field]) {
+      throw retentionStageError("cleanup observation was invalid");
+    }
+  }
+}
+
+/**
+ * Prove claims-derived retention behavior without manufacturing model or teacher-review output.
+ * The observation adapters inspect only the real stored audio/index boundary and return fixed-shape
+ * booleans/counts; all tenant, learner, session, ticket, and object identities stay process-local.
+ */
+export async function runRealtimeRetentionStage({
+  nodePort,
+  origin,
+  jwtSecret,
+  tenantId,
+  learnerId,
+  fetchImpl = fetch,
+  frameProbe = probeRealtimeAudioFrame,
+  observationProbe,
+  cleanupProbe,
+  nowUnixSeconds = () => Math.floor(Date.now() / 1_000),
+  timeoutMs,
+}) {
+  const selectedPort = probePort(nodePort);
+  const selectedOrigin = probeOrigin(origin);
+  const selectedSecret = requiredParityString(jwtSecret, "JWT secret", 4_096);
+  if (Buffer.byteLength(selectedSecret) < 32) {
+    throw new TypeError("realtime retention stage JWT secret must be at least 32 bytes");
+  }
+  const selectedTenant = requiredParityString(tenantId, "tenant id");
+  const selectedLearner = requiredParityString(learnerId, "learner id");
+  const selectedTimeout = assertProbeTimeout(timeoutMs);
+  for (const adapter of [fetchImpl, frameProbe, observationProbe, cleanupProbe, nowUnixSeconds]) {
+    if (typeof adapter !== "function") {
+      throw new TypeError("realtime retention stage adapters must be functions");
+    }
+  }
+
+  try {
+    const issuer = await createRealtimeProofTicketIssuer({
+      fetchImpl,
+      origin: selectedOrigin,
+      jwtSecret: selectedSecret,
+      tenantId: selectedTenant,
+      learnerId: selectedLearner,
+      timeoutMs: selectedTimeout,
+      nowUnixSeconds,
+    });
+    const objects = [];
+    for (const audioRetention of protocolParityRetentions) {
+      const issued = await issuer.issue(`retention-${audioRetention}`, audioRetention);
+      const frame = Buffer.alloc(AUDIO_LIMITS.frameBytes);
+      const result = await frameProbe({
+        port: selectedPort,
+        sessionId: issued.sessionId,
+        ticket: issued.ticket,
+        origin: selectedOrigin,
+        traceId: null,
+        frame,
+        expectedSequence: 0,
+        timeoutMs: selectedTimeout,
+      });
+      if (validateFrameProbeResult(result) !== true) {
+        throw retentionStageError("audio frame was rejected");
+      }
+
+      const object = Object.freeze({
+        tenantId: selectedTenant,
+        learnerId: selectedLearner,
+        sessionId: issued.sessionId,
+        chunkId: `${issued.sessionId}-ws-0000`,
+        audioRetention,
+        expectedAudioBytes: AUDIO_LIMITS.frameBytes,
+        expectedAudioSha256: createHash("sha256").update(frame).digest("hex"),
+        expectedSampleRate: AUDIO_LIMITS.sampleRate,
+        expectedStartMs: 0,
+        expectedEndMs: AUDIO_LIMITS.chunkDurationMs,
+      });
+      validateRetentionObservation(await observationProbe({
+        ...object,
+        timeoutMs: selectedTimeout,
+      }), audioRetention);
+      objects.push(object);
+    }
+
+    validateRetentionCleanup(await cleanupProbe({
+      objects: Object.freeze(objects),
+      timeoutMs: selectedTimeout,
+    }));
+    return Object.freeze({
+      retentionModesTested: protocolParityRetentions.length,
+      discardObjectsAfterCleanup: 0,
+      teacherReviewPlayable: 1,
+      trainingOptInRetained: 1,
+      metadataMismatches: 0,
+      indexMismatches: 0,
+      privacyLeaks: 0,
+    });
+  } catch (error) {
+    if (String(error?.message ?? error).startsWith("realtime retention stage ")) throw error;
+    throw retentionStageError("failed");
+  }
+}
+
 function hostileCapacityError(message) {
   return new Error(`realtime hostile-capacity stage ${message}`);
 }

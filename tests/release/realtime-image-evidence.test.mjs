@@ -36,6 +36,7 @@ import {
   probeRealtimeUpgradeRefusal,
   runRealtimeHostileCapacityStage,
   runRealtimeProtocolParityStage,
+  runRealtimeRetentionStage,
   summarizeRealtimeAudioFrameProbes,
   validateRealtimeProofRenderedTopology,
 } from "../../scripts/lib/realtime-image-probe.mjs";
@@ -1355,6 +1356,193 @@ test("the parity stage fails closed on malformed issuance or unexpected wire beh
     }),
     /refusal was not proven/i,
   );
+});
+
+test("the retention stage proves all three claims-derived modes with scoped cleanup and aggregate-only output", async () => {
+  const sessions = new Map();
+  const requests = [];
+  const frameCalls = [];
+  const observationCalls = [];
+  const cleanupCalls = [];
+  async function fetchImpl(input, options) {
+    const url = new URL(input);
+    const body = JSON.parse(options.body);
+    requests.push({ url, body });
+    if (url.pathname === "/v1/recitation-sessions") {
+      const sessionId = `private-retention-${body.consent.audioRetention}`;
+      sessions.set(sessionId, body.consent.audioRetention);
+      return new Response(JSON.stringify({
+        id: sessionId,
+        tenantId: probeTenant,
+        learnerId: probeLearner,
+        consent: body.consent,
+      }), { status: 200 });
+    }
+    if (url.pathname === "/v1/realtime-session-tickets") {
+      const retention = sessions.get(body.sessionId);
+      const expiresAt = probeNowSeconds + 300;
+      return new Response(JSON.stringify({
+        sessionId: body.sessionId,
+        tenantId: probeTenant,
+        learnerId: probeLearner,
+        expiresAt: String(expiresAt),
+        allowedSampleRates: [16_000],
+        externalAsrProcessing: false,
+        token: issueRealtimeTicket({
+          sessionId: body.sessionId,
+          tenantId: probeTenant,
+          learnerId: probeLearner,
+          externalAsrProcessing: false,
+          audioRetention: retention,
+          expiresAtUnixSeconds: BigInt(expiresAt),
+          nonce: `nonce-${retention}`,
+        }, probeSecret),
+        auditEventId: `private-audit-${retention}`,
+      }), { status: 200 });
+    }
+    return new Response("not found", { status: 404 });
+  }
+
+  const result = await runRealtimeRetentionStage({
+    nodePort: 18_081,
+    origin: probeOrigin,
+    jwtSecret: probeSecret,
+    tenantId: probeTenant,
+    learnerId: probeLearner,
+    fetchImpl,
+    frameProbe: async (input) => {
+      frameCalls.push(input);
+      return { accepted: true, ackLatencyMs: 1, sequence: 0 };
+    },
+    observationProbe: async (input) => {
+      observationCalls.push(input);
+      const retained = input.audioRetention !== "discard";
+      return {
+        objectCount: 1,
+        indexCount: retained ? 1 : 0,
+        metadataMatches: true,
+        audioMatches: true,
+        playable: retained,
+      };
+    },
+    cleanupProbe: async (input) => {
+      cleanupCalls.push(input);
+      return {
+        discardObjects: 0,
+        teacherReviewObjects: 1,
+        trainingOptInObjects: 1,
+      };
+    },
+    nowUnixSeconds: () => probeNowSeconds,
+    timeoutMs: 100,
+  });
+
+  assert.deepEqual(result, {
+    retentionModesTested: 3,
+    discardObjectsAfterCleanup: 0,
+    teacherReviewPlayable: 1,
+    trainingOptInRetained: 1,
+    metadataMismatches: 0,
+    indexMismatches: 0,
+    privacyLeaks: 0,
+  });
+  assert.equal(sessions.size, 3);
+  assert.equal(requests.filter(({ url }) => url.pathname === "/v1/recitation-sessions").length, 3);
+  assert.equal(requests.filter(({ url }) => url.pathname === "/v1/realtime-session-tickets").length, 3);
+  assert.equal(frameCalls.length, 3);
+  assert.ok(frameCalls.every(({ port, frame }) => port === 18_081 && frame.byteLength === 15_360));
+  assert.deepEqual(
+    observationCalls.map(({ audioRetention }) => audioRetention),
+    ["discard", "teacher-review", "training-opt-in"],
+  );
+  assert.ok(observationCalls.every(({ chunkId, expectedAudioSha256 }) =>
+    chunkId.endsWith("-ws-0000") && /^[a-f0-9]{64}$/.test(expectedAudioSha256)));
+  assert.equal(cleanupCalls.length, 1);
+  assert.equal(cleanupCalls[0].objects.length, 3);
+  assert.equal(JSON.stringify(result).includes("private-"), false);
+});
+
+test("the retention stage fails closed on rejected audio, false observations, cleanup lies, and private adapter errors", async () => {
+  const sessions = new Map();
+  let ticketIndex = 0;
+  async function fetchImpl(input, options) {
+    const url = new URL(input);
+    const body = JSON.parse(options.body);
+    if (url.pathname === "/v1/recitation-sessions") {
+      const sessionId = `private-retention-${body.practicePlanId}`;
+      sessions.set(sessionId, body.consent.audioRetention);
+      return new Response(JSON.stringify({
+        id: sessionId,
+        tenantId: probeTenant,
+        learnerId: probeLearner,
+        consent: body.consent,
+      }), { status: 200 });
+    }
+    const retention = sessions.get(body.sessionId);
+    const expiresAt = probeNowSeconds + 300;
+    const nonce = `nonce-retention-failure-${ticketIndex++}`;
+    return new Response(JSON.stringify({
+      sessionId: body.sessionId,
+      tenantId: probeTenant,
+      learnerId: probeLearner,
+      expiresAt: String(expiresAt),
+      allowedSampleRates: [16_000],
+      externalAsrProcessing: false,
+      token: issueRealtimeTicket({
+        sessionId: body.sessionId,
+        tenantId: probeTenant,
+        learnerId: probeLearner,
+        externalAsrProcessing: false,
+        audioRetention: retention,
+        expiresAtUnixSeconds: BigInt(expiresAt),
+        nonce,
+      }, probeSecret),
+      auditEventId: `private-audit-${nonce}`,
+    }), { status: 200 });
+  }
+  const goodObservation = async ({ audioRetention }) => ({
+    objectCount: 1,
+    indexCount: audioRetention === "discard" ? 0 : 1,
+    metadataMatches: true,
+    audioMatches: true,
+    playable: audioRetention !== "discard",
+  });
+  const goodCleanup = async () => ({
+    discardObjects: 0,
+    teacherReviewObjects: 1,
+    trainingOptInObjects: 1,
+  });
+  const base = {
+    nodePort: 18_081,
+    origin: probeOrigin,
+    jwtSecret: probeSecret,
+    tenantId: probeTenant,
+    learnerId: probeLearner,
+    fetchImpl,
+    frameProbe: async () => ({ accepted: true, ackLatencyMs: 1, sequence: 0 }),
+    observationProbe: goodObservation,
+    cleanupProbe: goodCleanup,
+    nowUnixSeconds: () => probeNowSeconds,
+    timeoutMs: 100,
+  };
+  const privateValue = `private-${probeLearner}-${realtimeProbeTicket("retention-error")}`;
+  const cases = [
+    { frameProbe: async () => ({ accepted: false, ackLatencyMs: 1, sequence: 0 }) },
+    { observationProbe: async () => ({ ...(await goodObservation({ audioRetention: "discard" })), objectCount: 2 }) },
+    { observationProbe: async () => ({ ...(await goodObservation({ audioRetention: "teacher-review" })), metadataMatches: false }) },
+    { cleanupProbe: async () => ({ ...(await goodCleanup()), discardObjects: 1 }) },
+    { observationProbe: async () => { throw new Error(privateValue); } },
+  ];
+  for (const overrides of cases) {
+    await assert.rejects(
+      () => runRealtimeRetentionStage({ ...base, ...overrides }),
+      (error) => {
+        assert.match(String(error), /realtime retention stage/i);
+        assert.equal(String(error?.stack ?? error).includes(privateValue), false);
+        return true;
+      },
+    );
+  }
 });
 
 test("the capacity cohort holds 100 exact-profile sessions, refuses 101, and closes every peer", async () => {
