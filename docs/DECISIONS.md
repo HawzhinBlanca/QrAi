@@ -653,10 +653,18 @@ Quran.com ground truth — mean word-START error ~64-100 ms over Al-Fatihah 1:1-
   Rust persists non-zero start_ms/end_ms -> web sends audioBase64. Last-word END drifts into
   trailing silence (measure madd separately).
 
-## ADR-0019 — Interface locale capability gates prevent untranslated UI claims
+## ADR-0038 — Interface locale capability gates prevent untranslated UI claims
 
 **Status:** Accepted through the 2026-07-19 readiness-recovery plan
 **Deciders:** product owner (approved recovery plan), implementation team
+
+> **Renumbered from ADR-0019.** This ADR was written as ADR-0019, a number already held by the
+> pilot-invitations ADR above. Two decisions sharing one number is not merely untidy here:
+> `checkAdr0022` in `scripts/cutover-readiness.mjs` resolves an ADR by `split("## ADR-00NN")[1]`,
+> so a duplicated number silently resolves to whichever section appears first in the file. Nothing
+> reads 0019 today, so nothing was misreported — but the next machine-read of a duplicated number
+> would be wrong with no error. This one moved because nothing cites it by number, while
+> `ADR-0019`'s pilot-invitations meaning is cited in the ADR-0020 context paragraph.
 
 ### Context
 
