@@ -1948,6 +1948,212 @@ export async function runRealtimeProtocolParityStage({
   });
 }
 
+const postgresReadinessFields = Object.freeze(["ready", "statusCode"]);
+
+function validatePostgresReadiness(value, ready, statusCode) {
+  if (
+    !exactObjectFields(value, postgresReadinessFields, new Set(postgresReadinessFields)) ||
+    value.ready !== ready ||
+    value.statusCode !== statusCode
+  ) {
+    throw new TypeError("realtime Postgres readiness observation is invalid");
+  }
+}
+
+/** Read the loopback readiness status without retaining its response body. */
+export async function probeRealtimeReadiness({
+  port,
+  timeoutMs,
+  fetchImpl = fetch,
+} = {}) {
+  const selectedPort = probePort(port);
+  const selectedTimeout = assertProbeTimeout(timeoutMs);
+  if (typeof fetchImpl !== "function") {
+    throw new TypeError("realtime readiness probe fetch implementation must be a function");
+  }
+  try {
+    const response = await fetchImpl(`http://127.0.0.1:${selectedPort}/ready`, {
+      method: "GET",
+      redirect: "manual",
+      signal: AbortSignal.timeout(selectedTimeout),
+    });
+    if (!response || !Number.isSafeInteger(response.status)) {
+      throw new TypeError("realtime readiness response is invalid");
+    }
+    await response.body?.cancel?.();
+    return Object.freeze({
+      ready: response.status === 200,
+      statusCode: response.status,
+    });
+  } catch {
+    throw new Error("realtime readiness probe failed");
+  }
+}
+
+function validatePostgresLifecycle(value, field) {
+  if (
+    !value ||
+    typeof value !== "object" ||
+    Array.isArray(value) ||
+    JSON.stringify(Object.keys(value)) !== JSON.stringify([field]) ||
+    value[field] !== true
+  ) {
+    throw new TypeError(`realtime Postgres lifecycle ${field} proof is invalid`);
+  }
+}
+
+function validatePostgresFaultTicket(value) {
+  const fields = ["sessionId", "ticket"];
+  if (!exactObjectFields(value, fields, new Set(fields))) {
+    throw new TypeError("realtime Postgres fault ticket is invalid");
+  }
+  requiredParityString(value.sessionId, "Postgres fault session id");
+  requiredParityString(value.ticket, "Postgres fault ticket", maximumProbeTicketBytes);
+  return value;
+}
+
+/**
+ * Prove a real Postgres outage is rejected before replay consumption, then restore health and use
+ * both the same ticket and a newly issued ticket. Concrete Compose stop/start stays behind bounded
+ * lifecycle adapters and restoration is always attempted after a stop attempt.
+ */
+export async function runRealtimePostgresFaultProbe({
+  nodePort,
+  origin,
+  jwtSecret,
+  tenantId,
+  learnerId,
+  timeoutMs,
+  fetchImpl = fetch,
+  issuer = null,
+  nowUnixSeconds = () => Math.floor(Date.now() / 1_000),
+  readinessProbe = probeRealtimeReadiness,
+  refusalProbe = probeRealtimeUpgradeRefusal,
+  frameProbe = probeRealtimeAudioFrame,
+  stopPostgres,
+  startPostgres,
+} = {}) {
+  let restorationRequired = false;
+  try {
+    const selectedPort = probePort(nodePort);
+    const selectedOrigin = probeOrigin(origin);
+    const selectedSecret = requiredParityString(jwtSecret, "Postgres fault JWT secret", 4_096);
+    if (Buffer.byteLength(selectedSecret) < 32) {
+      throw new TypeError("realtime Postgres fault JWT secret must be at least 32 bytes");
+    }
+    const selectedTenant = requiredParityString(tenantId, "Postgres fault tenant id");
+    const selectedLearner = requiredParityString(learnerId, "Postgres fault learner id");
+    const selectedTimeout = assertProbeTimeout(timeoutMs);
+    for (const adapter of [
+      fetchImpl,
+      nowUnixSeconds,
+      readinessProbe,
+      refusalProbe,
+      frameProbe,
+      stopPostgres,
+      startPostgres,
+    ]) {
+      if (typeof adapter !== "function") {
+        throw new TypeError("realtime Postgres fault adapters must be functions");
+      }
+    }
+    const selectedIssuer = issuer ?? await createRealtimeProofTicketIssuer({
+      fetchImpl,
+      origin: selectedOrigin,
+      jwtSecret: selectedSecret,
+      tenantId: selectedTenant,
+      learnerId: selectedLearner,
+      timeoutMs: selectedTimeout,
+      nowUnixSeconds,
+    });
+    if (!selectedIssuer || typeof selectedIssuer.issue !== "function") {
+      throw new TypeError("realtime Postgres fault issuer is invalid");
+    }
+
+    validatePostgresReadiness(await readinessProbe({
+      port: selectedPort,
+      timeoutMs: selectedTimeout,
+      fetchImpl,
+    }), true, 200);
+    const preserved = validatePostgresFaultTicket(
+      await selectedIssuer.issue("postgres-outage-unconsumed"),
+    );
+
+    restorationRequired = true;
+    validatePostgresLifecycle(await stopPostgres(), "stopped");
+    validatePostgresReadiness(await readinessProbe({
+      port: selectedPort,
+      timeoutMs: selectedTimeout,
+      fetchImpl,
+    }), false, 503);
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      validateRefusalProbeResult(await refusalProbe({
+        port: selectedPort,
+        sessionId: preserved.sessionId,
+        ticket: preserved.ticket,
+        origin: selectedOrigin,
+        expectedStatus: 503,
+        timeoutMs: selectedTimeout,
+      }), 503);
+    }
+
+    validatePostgresLifecycle(await startPostgres(), "healthy");
+    validatePostgresReadiness(await readinessProbe({
+      port: selectedPort,
+      timeoutMs: selectedTimeout,
+      fetchImpl,
+    }), true, 200);
+    restorationRequired = false;
+
+    const sendAcceptedFrame = async (issued) => {
+      const accepted = validateFrameProbeResult(await frameProbe({
+        port: selectedPort,
+        sessionId: issued.sessionId,
+        ticket: issued.ticket,
+        origin: selectedOrigin,
+        traceId: null,
+        frame: Buffer.alloc(AUDIO_LIMITS.frameBytes),
+        expectedSequence: 0,
+        timeoutMs: selectedTimeout,
+      }));
+      if (!accepted) throw new TypeError("realtime Postgres recovery frame was rejected");
+    };
+    await sendAcceptedFrame(preserved);
+    const fresh = validatePostgresFaultTicket(
+      await selectedIssuer.issue("postgres-outage-fresh"),
+    );
+    if (fresh.sessionId === preserved.sessionId || fresh.ticket === preserved.ticket) {
+      throw new TypeError("realtime Postgres recovery did not issue a fresh ticket");
+    }
+    await sendAcceptedFrame(fresh);
+
+    return Object.freeze({
+      fault: "postgres",
+      framesSent: 4,
+      accepted: 2,
+      rejected: 2,
+      lost: 0,
+      uncertain: 0,
+      durableLost: 0,
+      durableOrphan: 0,
+      recovered: true,
+      readinessFailedClosed: true,
+      incompleteReportedComplete: 0,
+      proofs: Object.freeze({
+        outageUpgradeRefused: true,
+        outageTicketNotConsumed: true,
+        freshTicketIssued: true,
+      }),
+    });
+  } catch {
+    throw new Error("realtime Postgres fault probe failed");
+  } finally {
+    if (restorationRequired && typeof startPostgres === "function") {
+      await Promise.resolve().then(() => startPostgres()).catch(() => {});
+    }
+  }
+}
+
 const retentionObservationFields = Object.freeze([
   "objectCount",
   "indexCount",

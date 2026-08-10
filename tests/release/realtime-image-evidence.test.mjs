@@ -36,9 +36,11 @@ import {
   probeRealtimeCapacityCohort,
   probeRealtimeHostileSweep,
   probeRealtimeMetricsSnapshot,
+  probeRealtimeReadiness,
   probeRealtimeUpgradeRefusal,
   runRealtimeHostileCapacityStage,
   runRealtimeFaultRecoveryStage,
+  runRealtimePostgresFaultProbe,
   runRealtimeProtocolParityStage,
   runRealtimeRetentionStage,
   summarizeRealtimeAudioFrameProbes,
@@ -1501,6 +1503,148 @@ test("the parity stage fails closed on malformed issuance or unexpected wire beh
     }),
     /refusal was not proven/i,
   );
+});
+
+function postgresFaultHarness({ failAt = null, mutation = null } = {}) {
+  const calls = [];
+  let readinessCall = 0;
+  const tickets = [
+    { sessionId: "private-postgres-session", ticket: "private-postgres-ticket" },
+    { sessionId: "private-postgres-fresh-session", ticket: "private-postgres-fresh-ticket" },
+  ];
+  const maybeFail = (name) => {
+    calls.push(name);
+    if (failAt === name) throw new Error(`private-${name}-failure`);
+  };
+  const input = {
+    nodePort: 18_081,
+    origin: probeOrigin,
+    jwtSecret: probeSecret,
+    tenantId: probeTenant,
+    learnerId: probeLearner,
+    timeoutMs: 2_000,
+    issuer: {
+      issue: async (proofId) => {
+        maybeFail(`issue-${proofId}`);
+        return tickets.shift();
+      },
+    },
+    readinessProbe: async ({ port, timeoutMs }) => {
+      maybeFail(`readiness-${readinessCall}`);
+      assert.equal(port, 18_081);
+      assert.equal(timeoutMs, 2_000);
+      const values = [
+        { ready: true, statusCode: 200 },
+        { ready: false, statusCode: 503 },
+        { ready: true, statusCode: 200 },
+      ];
+      return values[readinessCall++];
+    },
+    stopPostgres: async () => {
+      maybeFail("stop-postgres");
+      return mutation?.stop ?? { stopped: true };
+    },
+    startPostgres: async () => {
+      maybeFail("start-postgres");
+      return mutation?.start ?? { healthy: true };
+    },
+    refusalProbe: async ({ ticket }) => {
+      maybeFail("refusal");
+      assert.equal(ticket, "private-postgres-ticket");
+      return mutation?.refusal ?? { refused: true, statusCode: 503 };
+    },
+    frameProbe: async ({ ticket, expectedSequence }) => {
+      maybeFail("frame");
+      assert.equal(expectedSequence, 0);
+      assert.equal(
+        new Set(["private-postgres-ticket", "private-postgres-fresh-ticket"]).has(ticket),
+        true,
+      );
+      return mutation?.frame ?? { accepted: true, ackLatencyMs: 3, sequence: 0 };
+    },
+  };
+  return { calls, input };
+}
+
+test("the Postgres fault refuses upgrades, preserves the ticket, restores health, and accepts fresh work", async () => {
+  const harness = postgresFaultHarness();
+  const result = await runRealtimePostgresFaultProbe(harness.input);
+  assert.deepEqual(result, faultProbeResults().postgres);
+  assert.deepEqual(harness.calls, [
+    "readiness-0",
+    "issue-postgres-outage-unconsumed",
+    "stop-postgres",
+    "readiness-1",
+    "refusal",
+    "refusal",
+    "start-postgres",
+    "readiness-2",
+    "frame",
+    "issue-postgres-outage-fresh",
+    "frame",
+  ]);
+  for (const privateValue of [
+    "private-postgres-session",
+    "private-postgres-ticket",
+    probeTenant,
+    probeLearner,
+  ]) {
+    assert.equal(JSON.stringify(result).includes(privateValue), false);
+  }
+});
+
+test("the readiness probe is loopback-only, bounded, bodyless, and generic on transport failure", async () => {
+  const cancelled = [];
+  const requested = [];
+  for (const status of [200, 503]) {
+    const result = await probeRealtimeReadiness({
+      port: 18_081,
+      timeoutMs: 2_000,
+      fetchImpl: async (url, options) => {
+        requested.push([url, options]);
+        return {
+          status,
+          body: { cancel: async () => { cancelled.push(status); } },
+        };
+      },
+    });
+    assert.deepEqual(result, { ready: status === 200, statusCode: status });
+  }
+  assert.deepEqual(cancelled, [200, 503]);
+  assert.equal(requested.every(([url]) => url === "http://127.0.0.1:18081/ready"), true);
+  assert.equal(requested.every(([, options]) => options.method === "GET"), true);
+  await assert.rejects(
+    () => probeRealtimeReadiness({
+      port: 18_081,
+      timeoutMs: 2_000,
+      fetchImpl: async () => { throw new Error("private-readiness-body"); },
+    }),
+    (error) => error.message === "realtime readiness probe failed" &&
+      !String(error).includes("private-readiness-body"),
+  );
+});
+
+test("the Postgres fault fails closed on lifecycle/probe lies and always attempts restoration", async () => {
+  const mutations = [
+    { mutation: { stop: { stopped: false } } },
+    { mutation: { start: { healthy: false } } },
+    { mutation: { refusal: { refused: true, statusCode: 401 } } },
+    { mutation: { frame: { accepted: false, ackLatencyMs: 3, sequence: 0 } } },
+    { failAt: "refusal" },
+  ];
+  for (const values of mutations) {
+    const harness = postgresFaultHarness(values);
+    await assert.rejects(
+      () => runRealtimePostgresFaultProbe(harness.input),
+      (error) => error.message === "realtime Postgres fault probe failed" &&
+        !String(error).includes("private-"),
+    );
+    assert.equal(
+      harness.calls.filter((value) => value === "start-postgres").length >= 1,
+      true,
+      "failure path did not attempt database restoration",
+    );
+  }
 });
 
 test("the retention stage proves all three claims-derived modes with scoped cleanup and aggregate-only output", async () => {
