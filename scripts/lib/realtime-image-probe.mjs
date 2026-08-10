@@ -18,6 +18,7 @@ import {
   retentionTtlHours,
   sweepExpiredAudio,
 } from "../../server/src/inference/runtime.mjs";
+import { repairAudioIndex } from "../../server/scripts/repair-audio-index.mjs";
 
 const sourceShaPattern = /^[a-f0-9]{40}$/;
 const imageIdPattern = /^sha256:[a-f0-9]{64}$/;
@@ -2809,6 +2810,201 @@ function faultCount(value, label) {
     throw new TypeError(`${label} must be a non-negative safe integer`);
   }
   return value;
+}
+
+const faultOutcomeSnapshotFields = Object.freeze([
+  "lostOutstanding",
+  "orphanOutstanding",
+  "repaired",
+]);
+
+function validateFaultOutcomeSnapshot(value) {
+  exactFaultKeys(value, faultOutcomeSnapshotFields, "fault outcome snapshot");
+  for (const field of faultOutcomeSnapshotFields) {
+    faultCount(value[field], `fault outcome snapshot.${field}`);
+  }
+  return value;
+}
+
+async function inspectRealtimeFaultOutcomes({ db, tenantId }) {
+  return db.withTenant(tenantId, async (tx) => {
+    const [row] = await tx`
+      SELECT
+        COUNT(*) FILTER (
+          WHERE initial_outcome = 'accepted-lost' AND repaired_at IS NULL
+        )::integer AS lost_outstanding,
+        COUNT(*) FILTER (
+          WHERE initial_outcome = 'stored-unindexed' AND repaired_at IS NULL
+        )::integer AS orphan_outstanding,
+        COUNT(*) FILTER (WHERE repaired_at IS NOT NULL)::integer AS repaired
+      FROM realtime_audio_chunk_outcomes
+      WHERE tenant_id = ${tenantId}`;
+    return {
+      lostOutstanding: Number(row?.lost_outstanding),
+      orphanOutstanding: Number(row?.orphan_outstanding),
+      repaired: Number(row?.repaired),
+    };
+  });
+}
+
+const repairSummaryFields = Object.freeze([
+  "mode",
+  "driver",
+  "scanned",
+  "retainedCandidates",
+  "skippedRetention",
+  "wouldRepair",
+  "repaired",
+  "alreadyIndexed",
+  "incompleteObjects",
+  "indexWithoutObject",
+  "refused",
+  "errors",
+]);
+
+function validateFaultRepairSummary(value, expectedRepaired) {
+  exactFaultKeys(value, repairSummaryFields, "fault repair summary");
+  if (value.mode !== "apply" || value.driver !== "s3" || !Array.isArray(value.errors)) {
+    throw new TypeError("fault repair summary authority is invalid");
+  }
+  for (const field of repairSummaryFields.slice(2, -1)) {
+    faultCount(value[field], `fault repair summary.${field}`);
+  }
+  if (
+    value.repaired !== expectedRepaired ||
+    value.wouldRepair !== 0 ||
+    value.incompleteObjects !== 0 ||
+    value.indexWithoutObject !== 0 ||
+    value.refused !== 0 ||
+    value.errors.length !== 0
+  ) {
+    throw new TypeError("fault repair summary did not close safely");
+  }
+}
+
+/**
+ * Bind the production repair command to exact tenant-RLS outcome deltas. The adapter is created
+ * before fault injection, so a non-zero baseline refuses contaminated staging evidence. It repairs
+ * only stored orphans; accepted loss with no immutable object remains explicitly actionable.
+ */
+export async function createRealtimeFaultRepairProbe({
+  db,
+  store,
+  databaseUrl,
+  tenantId,
+  env = process.env,
+  outcomeSnapshot = inspectRealtimeFaultOutcomes,
+  repair = repairAudioIndex,
+} = {}) {
+  let closed = false;
+  let used = false;
+
+  async function close() {
+    if (closed) return;
+    closed = true;
+    const outcomes = await Promise.allSettled([store?.close?.(), db?.end?.()]);
+    if (outcomes.some((outcome) => outcome.status === "rejected")) {
+      throw new Error("realtime fault repair probe failed");
+    }
+  }
+
+  try {
+    const selectedDatabaseUrl = requiredParityString(
+      databaseUrl,
+      "fault repair database URL",
+      16 * 1_024,
+    );
+    const selectedTenant = requiredParityString(tenantId, "fault repair tenant id");
+    if (
+      !db ||
+      typeof db.withTenant !== "function" ||
+      typeof db.assertRestrictedRole !== "function" ||
+      typeof db.end !== "function" ||
+      !store ||
+      store.driver !== "s3" ||
+      typeof store.inventory !== "function" ||
+      typeof store.get !== "function" ||
+      typeof store.close !== "function" ||
+      !env ||
+      typeof env !== "object" ||
+      Array.isArray(env) ||
+      typeof outcomeSnapshot !== "function" ||
+      typeof repair !== "function"
+    ) {
+      throw new TypeError("realtime fault repair adapters are incomplete");
+    }
+    await db.assertRestrictedRole();
+    const baseline = validateFaultOutcomeSnapshot(await outcomeSnapshot({
+      db,
+      tenantId: selectedTenant,
+    }));
+    if (faultOutcomeSnapshotFields.some((field) => baseline[field] !== 0)) {
+      throw new TypeError("realtime fault repair staging baseline is contaminated");
+    }
+
+    async function repairProbe({ durableLost, durableOrphan } = {}) {
+      try {
+        faultCount(durableLost, "fault repair durableLost");
+        faultCount(durableOrphan, "fault repair durableOrphan");
+        if (used || durableLost < 1 || durableOrphan < 1) {
+          throw new TypeError("fault repair invocation is invalid");
+        }
+        used = true;
+        const before = validateFaultOutcomeSnapshot(await outcomeSnapshot({
+          db,
+          tenantId: selectedTenant,
+        }));
+        if (
+          before.lostOutstanding !== durableLost ||
+          before.orphanOutstanding !== durableOrphan ||
+          before.repaired !== 0
+        ) {
+          throw new TypeError("fault repair outcome delta is invalid");
+        }
+        const repairOptions = {
+          databaseUrl: selectedDatabaseUrl,
+          audioObjectStore: store,
+          apply: true,
+          tenantIds: [selectedTenant],
+          env,
+        };
+        validateFaultRepairSummary(await repair(repairOptions), durableOrphan);
+        const after = validateFaultOutcomeSnapshot(await outcomeSnapshot({
+          db,
+          tenantId: selectedTenant,
+        }));
+        if (
+          after.lostOutstanding !== durableLost ||
+          after.orphanOutstanding !== 0 ||
+          after.repaired !== durableOrphan
+        ) {
+          throw new TypeError("fault repair first pass outcome is invalid");
+        }
+        validateFaultRepairSummary(await repair(repairOptions), 0);
+        const second = validateFaultOutcomeSnapshot(await outcomeSnapshot({
+          db,
+          tenantId: selectedTenant,
+        }));
+        if (JSON.stringify(second) !== JSON.stringify(after)) {
+          throw new TypeError("fault repair second pass changed durable state");
+        }
+        return Object.freeze({
+          attempted: durableLost + durableOrphan,
+          repaired: durableOrphan,
+          outstandingActionable: durableLost,
+          secondPassRepaired: 0,
+          idempotent: true,
+        });
+      } catch {
+        throw new Error("realtime fault repair probe failed");
+      }
+    }
+
+    return Object.freeze({ repairProbe, close });
+  } catch {
+    await close().catch(() => {});
+    throw new Error("realtime fault repair probe failed");
+  }
 }
 
 function validateFaultProbe(value, fault, proofFields) {

@@ -27,6 +27,7 @@ import {
   createReleaseDeploymentSelection,
 } from "../../scripts/lib/release-deployment.mjs";
 import {
+  createRealtimeFaultRepairProbe,
   createRealtimeProofPreflight,
   probeRealtimeCandidateRunningImages,
   createRealtimeRetentionProofAdapters,
@@ -2555,6 +2556,138 @@ test("the fault stage rejects open accounting, missing safety proofs, incomplete
     }),
     (error) => error.message === "realtime fault-recovery stage failed",
   );
+});
+
+function repairSummary(repaired) {
+  return {
+    mode: "apply",
+    driver: "s3",
+    scanned: 3,
+    retainedCandidates: 3,
+    skippedRetention: 0,
+    wouldRepair: 0,
+    repaired,
+    alreadyIndexed: 2,
+    incompleteObjects: 0,
+    indexWithoutObject: 0,
+    refused: 0,
+    errors: [],
+  };
+}
+
+function faultRepairHarness({ snapshots, summaries } = {}) {
+  const closeCalls = [];
+  const repairCalls = [];
+  const remainingSnapshots = structuredClone(snapshots ?? [
+    { lostOutstanding: 0, orphanOutstanding: 0, repaired: 0 },
+    { lostOutstanding: 2, orphanOutstanding: 1, repaired: 0 },
+    { lostOutstanding: 2, orphanOutstanding: 0, repaired: 1 },
+    { lostOutstanding: 2, orphanOutstanding: 0, repaired: 1 },
+  ]);
+  const remainingSummaries = structuredClone(summaries ?? [repairSummary(1), repairSummary(0)]);
+  const db = {
+    withTenant: async () => {},
+    assertRestrictedRole: async () => {},
+    end: async () => { closeCalls.push("db"); },
+  };
+  const store = {
+    driver: "s3",
+    inventory: async () => [],
+    get: async () => null,
+    close: async () => { closeCalls.push("store"); },
+  };
+  return {
+    closeCalls,
+    repairCalls,
+    input: {
+      db,
+      store,
+      databaseUrl: "postgresql://private-repair-database",
+      tenantId: probeTenant,
+      env: { PRIVATE_REPAIR_SECRET: "must-not-leave-repair" },
+      outcomeSnapshot: async ({ db: selectedDb, tenantId }) => {
+        assert.equal(selectedDb, db);
+        assert.equal(tenantId, probeTenant);
+        return remainingSnapshots.shift();
+      },
+      repair: async (options) => {
+        repairCalls.push(options);
+        assert.equal(options.databaseUrl, "postgresql://private-repair-database");
+        assert.equal(options.audioObjectStore, store);
+        assert.equal(options.apply, true);
+        assert.deepEqual(options.tenantIds, [probeTenant]);
+        return remainingSummaries.shift();
+      },
+    },
+  };
+}
+
+test("the repair observer proves RLS deltas, repairs only stored orphans, and is idempotent", async () => {
+  const harness = faultRepairHarness();
+  const adapter = await createRealtimeFaultRepairProbe(harness.input);
+  const result = await adapter.repairProbe({ durableLost: 2, durableOrphan: 1 });
+  assert.deepEqual(result, {
+    attempted: 3,
+    repaired: 1,
+    outstandingActionable: 2,
+    secondPassRepaired: 0,
+    idempotent: true,
+  });
+  assert.equal(harness.repairCalls.length, 2);
+  for (const privateValue of [
+    "private-repair-database",
+    "must-not-leave-repair",
+    probeTenant,
+  ]) {
+    assert.equal(JSON.stringify(result).includes(privateValue), false);
+  }
+  await adapter.close();
+  await adapter.close();
+  assert.deepEqual(harness.closeCalls.sort(), ["db", "store"]);
+});
+
+test("the repair observer fails closed on contamination, drift, repair lies, and reuse", async () => {
+  const cases = [
+    { snapshots: [
+      { lostOutstanding: 1, orphanOutstanding: 0, repaired: 0 },
+    ] },
+    { snapshots: [
+      { lostOutstanding: 0, orphanOutstanding: 0, repaired: 0 },
+      { lostOutstanding: 1, orphanOutstanding: 1, repaired: 0 },
+    ] },
+    { summaries: [{ ...repairSummary(1), refused: 1, errors: [{ reason: "private" }] }] },
+    { summaries: [repairSummary(2)] },
+    { snapshots: [
+      { lostOutstanding: 0, orphanOutstanding: 0, repaired: 0 },
+      { lostOutstanding: 2, orphanOutstanding: 1, repaired: 0 },
+      { lostOutstanding: 1, orphanOutstanding: 0, repaired: 1 },
+    ] },
+    { summaries: [repairSummary(1), repairSummary(1)] },
+  ];
+  for (const mutation of cases) {
+    const harness = faultRepairHarness(mutation);
+    let adapter = null;
+    try {
+      adapter = await createRealtimeFaultRepairProbe(harness.input);
+      await assert.rejects(
+        () => adapter.repairProbe({ durableLost: 2, durableOrphan: 1 }),
+        (error) => error.message === "realtime fault repair probe failed",
+      );
+    } catch (error) {
+      assert.equal(error.message, "realtime fault repair probe failed");
+    } finally {
+      await adapter?.close();
+    }
+  }
+
+  const harness = faultRepairHarness();
+  const adapter = await createRealtimeFaultRepairProbe(harness.input);
+  await adapter.repairProbe({ durableLost: 2, durableOrphan: 1 });
+  await assert.rejects(
+    () => adapter.repairProbe({ durableLost: 2, durableOrphan: 1 }),
+    (error) => error.message === "realtime fault repair probe failed",
+  );
+  await adapter.close();
 });
 
 test("proof CLI arguments reject unsafe paths, ports, projects, actors, acknowledgements, and extra flags", () => {
