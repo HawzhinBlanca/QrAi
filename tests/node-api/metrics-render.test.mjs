@@ -9,7 +9,10 @@
  * shared expectations rather than by hope.
  */
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 import test from "node:test";
+import { fileURLToPath } from "node:url";
 
 import { LATENCY_BUCKETS_MS, createMetrics, escape, metricsAccessAllowed } from "../../server/src/lib/metrics.mjs";
 
@@ -92,4 +95,55 @@ test("an EMPTY token string is treated as unset, not as a token equal to ''", ()
   // docker-compose passes variables through as `"${FOO:-}"`. If "" counted as configured, the gate
   // would compare against the empty string and open for anyone sending no header at all.
   assert.equal(metricsAccessAllowed({ metricsToken: "", metricsDevOpen: false }, {}), false);
+});
+
+// --- the alert rules and the exposition must agree ---
+
+test("every metric monitoring/alerts.yml alerts on is one the service actually exports", () => {
+  // P5.5's engineering half is delivered — scrape config, alert rules, dashboard, kill-switch — and
+  // nothing checks the single assumption all of it rests on: that the names in the rules are the
+  // names the services emit. Rename `http_requests_total` and every alert keeps parsing, keeps
+  // evaluating, and silently never fires again. A monitoring stack that has gone blind looks
+  // exactly like one with nothing wrong.
+  //
+  // This cannot prove an alert reaches a human — that needs a deployed Prometheus and an on-call
+  // rota, and it is why the P5.5 ledger row stays open. It proves the rules are still pointed at
+  // reality, which is the part that rots silently between drills.
+  const repoRoot = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
+  const alerts = readFileSync(join(repoRoot, "monitoring/alerts.yml"), "utf8");
+
+  // Metric selectors in PromQL expressions: bare identifiers before `{`, `[`, whitespace or an
+  // operator. Suffixes (_bucket/_count/_sum) are how a histogram is queried, so they resolve back
+  // to the base metric the renderer declares in its # TYPE line.
+  const referenced = new Set(
+    (alerts.match(/\b[a-z_][a-z0-9_]*_(?:total|bucket|count|sum|seconds)\b/g) ?? []).map((m) =>
+      m.replace(/_(bucket|count|sum)$/, ""),
+    ),
+  );
+  assert.ok(referenced.size > 0, "no metric selectors found — the parser, not the rules, is broken");
+
+  const rendered = createMetrics().render();
+  const exported = new Set(
+    (rendered.match(/^# TYPE ([a-z_][a-z0-9_]*)/gm) ?? []).map((l) => l.replace("# TYPE ", "")),
+  );
+
+  // This repository deliberately still scrapes the Rust realtime gateway as the public oracle
+  // until W3.9/W7.6. Alerts with job="realtime-gateway" therefore resolve against its renderer,
+  // not the Node HTTP renderer above. The Rust suite separately executes render_prometheus and
+  // asserts these exact names; this guard joins that exporter vocabulary to the shared rules.
+  const gatewaySource = readFileSync(
+    join(repoRoot, "services/realtime-gateway/src/lib.rs"),
+    "utf8",
+  );
+  for (const match of gatewaySource.matchAll(/"(realtime_gateway_[a-z0-9_]+)"/g)) {
+    exported.add(match[1]);
+  }
+
+  const missing = [...referenced].filter((m) => !exported.has(m));
+  assert.deepEqual(
+    missing,
+    [],
+    `monitoring/alerts.yml alerts on metrics nothing exports, so those alerts can never fire:\n  ${missing.join("\n  ")}\n` +
+      `exported: ${[...exported].join(", ")}`,
+  );
 });

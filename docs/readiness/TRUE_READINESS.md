@@ -1,11 +1,61 @@
 # TRUE READINESS SHEET — QrAi
 
-**Commit:** `e0f37c1` (branch `main`) · **Compiled:** 2026-07-24 · **Author of this audit:** Claude (Anthropic), first-hand verified
+**Pass 1:** `e0f37c1` · 2026-07-24 — **Pass 2:** `817d684` · 2026-08-10. Both first-hand verified by Claude (Anthropic).
+**Read pass 2 first:** it re-ran the software-integrity rows against a live Postgres and corrects two that pass 1 understated.
 
 > This sheet exists to end "take my framing on faith." Every ✅ has a command or `file:line`
 > you can re-run right now. Every 🧑 names the *specific human role* that must act — no code
 > closes it. Every ⬜ is stated plainly, **including the ones I previously overstated.**
 > If any line here disagrees with something I said in chat, **this sheet wins.**
+
+## Audit pass 2 — `817d684`, 2026-08-10, first-hand
+
+Pass 1 was compiled at `e0f37c1` (2026-07-24). `main` has moved several hundred commits since, and
+pass 1 had gone wrong in the **understating** direction. This pass re-verified the software-integrity
+rows by running them, on a real Postgres, at the commit named above.
+
+### What I ran, and what it returned
+
+| Command | Result |
+|---|---|
+| `bash scripts/verify.sh` **with a live Postgres** | `VERIFY OK` |
+| `cargo test --manifest-path services/platform-api/Cargo.toml -- --include-ignored` | **97 passed · 0 failed · 0 ignored** |
+| 26 `infra/sql/*.sql` migrations + `rls-app-role.sql`, applied to an empty database | all applied clean, 22 tables |
+| `packages/quran-data/scripts/seed-full-quran-to-db.sh` | 6236 ayahs · 114 surahs · 82456 words, verified against the canonical reference |
+
+The 97 matters most. Every previous run in this environment reported `24 passed / 73 ignored` —
+the DB-gated suite (RLS, cross-tenant isolation, the privacy export/delete cascade, the teacher
+review gate) had never actually executed here. It has now, from a database built from scratch by
+the committed migrations, and it is green.
+
+### Rows pass 1 got wrong, corrected here
+
+| Pass 1 | Corrected |
+|---|---|
+| **P5.4** ⬜ "Never load-tested" | Load, burst, long-audio, reconnect and partial-loss drills all have logs in `specs/dr-rehearsal/evidence/`. The k6 numbers are cited in `services/ml-inference/server.mjs` (73.8% error at 10 VUs, 78.1% at 50 — the per-IP limiter answering, not the service failing), which is why `ML_TRUSTED_RATE_LIMIT_MAX` exists. |
+| **P5.6** ⬜ "NOT done" | `P5.6-encrypted-backup-verification.log` and `T1-restore-drill.log` exist; `specs/dr-rehearsal/tasks.md` records T1 as **DONE, drill PASSED with controls**. |
+
+### What this pass did NOT verify, and will not claim
+
+- **Flutter** — `SKIP — no flutter on PATH`. The client is unverified here, in either pass.
+- **`apps/mobile` UI/native path** — still never run (pass 1's B5 stands).
+- **P5.5 live proof** — the engineering is delivered (`monitoring/`: scrape config, alert rules,
+  dashboard, kill-switch, runbook) and `metrics-render.test.mjs` now pins the rules to the metric
+  names the services actually export, so they cannot rot silently. None of that is a deployed
+  Prometheus, an alert firing, or an owner receiving it. **No code closes this row.**
+- **T4 rollback rehearsal** — BLOCKED. Re-tested on this host: `docker` has no daemon
+  (`/var/run/docker.sock` absent), the same class of block `T1-drill-BLOCKED.md` recorded.
+- **T5 rollback timing** — UNMEASURED, downstream of T4.
+- **P3.4 / P3.5 model accuracy** — no held-out eval. Unchanged and still the largest product risk:
+  nothing published shows the engine is accurate enough to teach from.
+- Every **🧑 NEEDS-HUMAN** row. A signature is not something an audit pass can supply.
+
+### The honest delta
+
+Pass 1's one-sentence truth still holds. What changed is the evidence under it: the software-integrity
+claim is no longer "verify.sh is green with the DB tests skipped" — it is green **with them run**.
+
+---
 
 ## The one-sentence truth
 

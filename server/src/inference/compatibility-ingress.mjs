@@ -1,5 +1,7 @@
 import { createIncomingRequestDeadline, isDeadlineError } from "../lib/deadline.mjs";
 import {
+  clampAuditLimit,
+  clampAuditOffset,
   deletePrivacy,
   exportPrivacy,
   getAuditEvents,
@@ -151,7 +153,13 @@ export function createCompatibilityIngress({
         if (!tenantId) {
           throw Object.assign(new Error("tenantId query parameter is required"), { status: 400 });
         }
-        result = getAuditEvents(tenantId);
+        const all = getAuditEvents(tenantId).reverse();
+        const limit = clampAuditLimit(url.searchParams.get("limit"));
+        const offset = clampAuditOffset(url.searchParams.get("offset"));
+        const page = all.slice(offset, offset + limit);
+        response.setHeader("x-total-count", String(all.length));
+        response.setHeader("x-truncated", String(offset + page.length < all.length));
+        result = page;
       } else {
         const requestBody = await readJson(request);
         switch (url.pathname) {

@@ -1593,6 +1593,25 @@ export async function storeAudioChunk(
 export function getAuditEvents(tenantId) {
   return tenantId ? readTenantAuditEvents(tenantId) : [];
 }
+
+/**
+ * Bounds for the compatibility `GET /v1/audit-events` page. The default mirrors the public API's
+ * existing `LIMIT 200`; the ceiling prevents a caller from restoring an unbounded response.
+ */
+const AUDIT_PAGE_DEFAULT = 200;
+const AUDIT_PAGE_MAX = 1000;
+
+export function clampAuditLimit(raw) {
+  const n = Number.parseInt(raw ?? "", 10);
+  if (!Number.isFinite(n) || n <= 0) return AUDIT_PAGE_DEFAULT;
+  return Math.min(n, AUDIT_PAGE_MAX);
+}
+
+export function clampAuditOffset(raw) {
+  const n = Number.parseInt(raw ?? "", 10);
+  if (!Number.isFinite(n) || n <= 0) return 0;
+  return n;
+}
 export { predictAlignment, predictTajweed, transcribeSession, safeStorageSegment };
 
 

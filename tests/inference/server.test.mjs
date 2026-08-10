@@ -46,10 +46,14 @@ function mockResponse() {
   const res = Object.assign(new EventEmitter(), {
     status: null,
     body: null,
+    headers: new Map(),
     headersSent: false,
     destroyed: false,
     writableEnded: false,
   });
+  res.setHeader = (name, value) => {
+    res.headers.set(String(name).toLowerCase(), String(value));
+  };
   res.writeHead = (status) => {
     res.status = status;
     res.headersSent = true;

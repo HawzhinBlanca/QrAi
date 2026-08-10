@@ -333,3 +333,55 @@ test("tombstonedDerivedRecords follows the storage post-condition instead of ass
     else process.env.AUDIO_STORAGE_DIR = previousStorageDir;
   }
 });
+
+test("GET /v1/audit-events is bounded, newest-first, and never truncates silently", async () => {
+  // The route returned the whole per-tenant JSONL, which nothing rotates (ADR-0040): the response
+  // and the synchronous read behind it grew without limit, on a single-threaded service where that
+  // read blocks every other request. 200 mirrors platform-api's own `ORDER BY created_at DESC
+  // LIMIT 200` rather than inventing a number.
+  //
+  // The assertion that matters is X-Truncated. A cap a caller cannot detect is how "we have the
+  // audit trail" quietly becomes "we have the first page of it".
+  const TENANT_BIG = "tenant-audit-paging";
+  const total = 205; // over the 200 default, deliberately
+  for (let i = 0; i < total; i++) {
+    await post("/v1/privacy/export", { tenantId: TENANT_BIG, learnerId: `learner-${i}` });
+  }
+
+  const get = (qs) =>
+    fetch(`http://127.0.0.1:${port}/v1/audit-events?tenantId=${TENANT_BIG}${qs}`, {
+      headers: { "x-ml-api-key": KEY },
+    });
+
+  const first = await get("");
+  const page = await first.json();
+  assert.equal(page.length, 200, `default page must be bounded at 200, got ${page.length}`);
+  assert.equal(first.headers.get("x-total-count"), String(total), "the true total must be reported");
+  assert.equal(first.headers.get("x-truncated"), "true", "a capped response must say so");
+
+  // Newest first: the LAST export requested must be on page one, and the first must not be.
+  assert.equal(page[0].subjectId, `learner-${total - 1}`, "newest event must lead the page");
+  assert.ok(
+    !page.some((e) => e.subjectId === "learner-0"),
+    "the oldest event cannot be on the first page of a newest-first list",
+  );
+
+  // The tail is reachable rather than lost, and the last page reports itself as complete.
+  const tail = await get("&offset=200");
+  const tailPage = await tail.json();
+  assert.equal(tailPage.length, total - 200, "offset must reach the remainder");
+  assert.equal(tail.headers.get("x-truncated"), "false", "the final page is not truncated");
+
+  // A caller cannot re-open the unbounded read that this replaced. Asserted on the clamp itself:
+  // proving it over HTTP would need >1000 seeded events, and a test that fires 1000 requests to
+  // check one boundary is a slow test pretending to be a thorough one.
+  const { clampAuditLimit } = await import("../../server/src/inference/runtime.mjs");
+  assert.equal(clampAuditLimit("999999"), 1000, "limit must be capped at AUDIT_PAGE_MAX");
+  assert.equal(clampAuditLimit("50"), 50, "a sane limit is honoured");
+  assert.equal(clampAuditLimit("-1"), 200, "a nonsense limit falls back to the default, not to all");
+  assert.equal(clampAuditLimit(null), 200, "an absent limit is the default, never unbounded");
+
+  // And over HTTP the oversized limit returns everything available here (205), not an error.
+  const huge = await get("&limit=999999");
+  assert.equal((await huge.json()).length, total, "an oversized limit still returns a valid page");
+});
