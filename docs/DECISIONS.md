@@ -653,10 +653,18 @@ Quran.com ground truth — mean word-START error ~64-100 ms over Al-Fatihah 1:1-
   Rust persists non-zero start_ms/end_ms -> web sends audioBase64. Last-word END drifts into
   trailing silence (measure madd separately).
 
-## ADR-0019 — Interface locale capability gates prevent untranslated UI claims
+## ADR-0038 — Interface locale capability gates prevent untranslated UI claims
 
 **Status:** Accepted through the 2026-07-19 readiness-recovery plan
 **Deciders:** product owner (approved recovery plan), implementation team
+
+> **Renumbered from ADR-0019.** This ADR was written as ADR-0019, a number already held by the
+> pilot-invitations ADR above. Two decisions sharing one number is not merely untidy here:
+> `checkAdr0022` in `scripts/cutover-readiness.mjs` resolves an ADR by `split("## ADR-00NN")[1]`,
+> so a duplicated number silently resolves to whichever section appears first in the file. Nothing
+> reads 0019 today, so nothing was misreported — but the next machine-read of a duplicated number
+> would be wrong with no error. This one moved because nothing cites it by number, while
+> `ADR-0019`'s pilot-invitations meaning is cited in the ADR-0020 context paragraph.
 
 ### Context
 
@@ -1843,3 +1851,62 @@ qualified reviewer confirms hamza-on-carrier ASR variance should be scored as fu
 conversely, that even partial credit is inappropriate and it must score as a full penalty —
 `substitutionCost()` in `services/ml-inference/alignment.js` is the single place to change, with
 `alignment.test.mjs` updated to match.
+---
+
+## ADR-0040 — The ml-inference audit log grows without bound and survives erasure; retention is a human decision
+
+**Date:** 2026-08-09 · **Status:** Proposed — needs an owner/DPO decision, NOT an engineering one
+**Related:** ADR-0003 (ml-inference reached only via platform-api), the cross-learner export fix
+
+### Context
+
+`services/ml-inference` writes one append-only JSONL per tenant under `AUDIO_STORAGE_DIR/audit-log/`.
+Three properties of it were found while fixing the learner-scoped privacy export, and none of them
+can be settled by an agent:
+
+1. **It never rotates.** Nothing truncates, ages out, or caps the file. Audio has a full
+   consent-based retention sweep (`retentionTtlHours`, honouring `discard` / `teacher-review`), so
+   the recording is deleted on schedule while the record *of* the recording accumulates forever.
+2. **It is read whole, synchronously, on the request path.** `readTenantAuditEvents` does
+   `readFileSync` + `JSON.parse` over the entire file. `GET /v1/audit-events?tenantId=` returns
+   every row with no pagination or cap. On a single-threaded Node service both cost grows linearly
+   and blocks every other request. platform-api's own audit endpoint — a different store, its
+   Postgres `audit_events` table — is Admin/Ops-gated and already `LIMIT 200`; ml-inference's is
+   behind `ML_API_KEY` and internal, so this is a reliability question, not an exposure one.
+3. **Erasure does not touch it.** `deletePrivacy` removes the learner's audio and chunk metadata and
+   appends `privacy.delete.requested` — an event whose `subjectId` *is* the learner's id. So a
+   learner who asks to be forgotten leaves behind every audit row naming them, plus a new one
+   recording the request. Their identifier is arguably more durable after erasure than before.
+
+Point 3 is the same shape as the gap ADR-0027's lineage closed in `agent_runs`, but it is **not**
+the same decision. An audit trail frequently has an independent lawful basis to persist, and
+purging it can itself be the violation — destroying the evidence that a deletion was honoured. That
+is a data-protection judgement about competing obligations, not a bug with an obvious fix.
+
+### What is NOT being decided here
+
+No retention period, no rotation scheme, and no purge-on-erasure behaviour is being introduced by
+this ADR. Choosing any of them silently would be an agent inventing a compliance policy.
+
+### The question for the owner / DPO
+
+1. **Retention period.** How long must an ml-inference audit row be kept, and on what basis? Once
+   answered, rotation is mechanical and should reuse the existing consent-retention sweep rather
+   than growing a second scheduler.
+2. **Erasure interaction.** On a verified erasure request, must the learner's prior audit rows be
+   (a) kept intact, (b) pseudonymised — the identifier replaced, the event and its timestamp kept,
+   which preserves provability while dropping the identifier, or (c) deleted outright? (b) is the
+   usual reconciliation, and is a real option here because `learnerId` is now a discrete field on
+   every row rather than something buried in free text.
+3. **Read bound.** Is mirroring platform-api's `LIMIT 200` + explicit pagination on
+   `GET /v1/audit-events` acceptable, given a caller today receives everything? This is the one part
+   that is purely engineering, and it is held back only because changing what an endpoint returns
+   should not be bundled into a decision the rest of this ADR defers.
+
+### Consequences until it is answered
+
+The log grows unbounded for the life of a deployment, every full read of it gets linearly slower on
+the event loop, and an erased learner's identifier persists in it. That is the current, honest state
+— written down so it is a known open item with a named owner rather than something rediscovered
+later. `learnerId` being a first-class field on each row means whichever of (a)/(b)/(c) is chosen can
+be implemented without re-parsing history.

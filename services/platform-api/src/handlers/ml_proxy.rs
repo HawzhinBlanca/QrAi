@@ -122,6 +122,16 @@ async fn proxy_ml(
                 "audioRetention": audio_retention,
             }),
         );
+        // Forward WHOSE session this is, from the same row the authz check above just read, for the
+        // same reason `consent` is overwritten rather than trusted: this is the server's answer, not
+        // the client's claim. ml-inference keys its external-ASR audit rows by sessionId, so without
+        // a learner on the request those rows are attributable to nobody -- and a learner-scoped
+        // privacy export has to drop them. Sending it here is what keeps a learner's own ASR history
+        // in their export while another learner's stays out of it.
+        obj.insert(
+            "learnerId".to_owned(),
+            serde_json::Value::String(session_learner_id.clone()),
+        );
     }
 
     let response = state

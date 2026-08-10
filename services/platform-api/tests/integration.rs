@@ -214,8 +214,8 @@ async fn quran_ref_word_start_and_word_end_round_trip_through_create_and_get() {
     );
 }
 
+// NOT DB-gated: the body is rejected by validation before any INSERT is attempted.
 #[tokio::test]
-#[ignore = "requires live Postgres"]
 async fn create_session_rejects_an_unsupported_language_code() {
     let router = platform_router_with_rate_limit(test_state(), false);
     let response = send_json(
@@ -1546,8 +1546,10 @@ async fn privacy_job_for_unknown_learner_is_not_found() {
 /// learner ids exist by reading 404-vs-403 — the check added to fix a 500 would have created an
 /// information leak. Cross-tenant is included because RLS scopes the lookup, so a real id in another
 /// tenant would otherwise be the same probe by a different route.
+// NOT DB-gated, deliberately: what this test asserts is that `require_self_or_any` answers BEFORE
+// the existence lookup runs. A test for "the database is never reached" cannot need a database —
+// gating it behind one is what kept this information-leak regression out of every local gate run.
 #[tokio::test]
-#[ignore = "requires live Postgres"]
 async fn privacy_job_answers_forbidden_before_not_found() {
     let state = test_state();
     let router = platform_router_with_rate_limit(state.clone(), false);
@@ -2589,8 +2591,10 @@ async fn ml_proxy_overwrites_client_consent_with_the_stored_session_consent() {
     );
 }
 
+// NOT DB-gated: drives a mock upstream and sends no session id, so the proxy issues no query.
+// (Its sibling `ml_proxy_refuses_analysis_for_a_session_that_does_not_exist` DOES send one and so
+// stays gated — the difference is the session lookup, not the route.)
 #[tokio::test]
-#[ignore = "requires live Postgres"]
 async fn ml_proxy_passes_through_a_successful_upstream_response() {
     let mock_ml = spawn_mock_upstream_200(
         "/v1/alignments:predict",
@@ -2614,8 +2618,8 @@ async fn ml_proxy_passes_through_a_successful_upstream_response() {
     assert_eq!(body["modelVersion"], "model-v0.3");
 }
 
+// NOT DB-gated: mock upstream, no session id, no query.
 #[tokio::test]
-#[ignore = "requires live Postgres"]
 async fn ml_proxy_allows_approved_model_version() {
     let mock_ml = spawn_mock_upstream_200(
         "/v1/alignments:predict",
@@ -2638,8 +2642,8 @@ async fn ml_proxy_allows_approved_model_version() {
     assert_eq!(response.status(), StatusCode::OK);
 }
 
+// NOT DB-gated: the model-version allowlist rejects the request before any query.
 #[tokio::test]
-#[ignore = "requires live Postgres"]
 async fn ml_proxy_rejects_unapproved_model_version() {
     let state = test_state();
     let router = platform_router_with_rate_limit(state, false);
@@ -2659,8 +2663,8 @@ async fn ml_proxy_rejects_unapproved_model_version() {
     assert!(body["error"].as_str().unwrap().contains("not approved"));
 }
 
+// NOT DB-gated: mock upstream, no session id, no query.
 #[tokio::test]
-#[ignore = "requires live Postgres"]
 async fn asr_transcribe_proxy_passes_through_a_successful_upstream_response() {
     let mock_asr = spawn_mock_upstream_200("/v1/transcribe", json!({"text": "بِسْمِ اللَّهِ"})).await;
     let state = test_state().with_asr_inference_url(mock_asr);
@@ -2680,8 +2684,8 @@ async fn asr_transcribe_proxy_passes_through_a_successful_upstream_response() {
     assert_eq!(body["text"], "بِسْمِ اللَّهِ");
 }
 
+// NOT DB-gated: mock upstream plus an auth check that answers before any query.
 #[tokio::test]
-#[ignore = "requires live Postgres"]
 async fn asr_force_align_proxy_forwards_and_requires_auth() {
     let mock_asr = spawn_mock_upstream_200(
         "/v1/force-align",
@@ -2718,8 +2722,8 @@ async fn asr_force_align_proxy_forwards_and_requires_auth() {
     assert_eq!(body["words"][0]["word"], "بِسْمِ");
 }
 
+// NOT DB-gated: mock upstream returns 500; nothing here queries Postgres.
 #[tokio::test]
-#[ignore = "requires live Postgres"]
 async fn ml_proxy_maps_upstream_error_status_to_bad_gateway() {
     let mock_ml = spawn_mock_upstream_500("/v1/alignments:predict").await;
     let state = test_state().with_ml_inference_url(mock_ml);
@@ -2741,8 +2745,8 @@ async fn ml_proxy_maps_upstream_error_status_to_bad_gateway() {
     );
 }
 
+// NOT DB-gated: mock upstream returns 500; nothing here queries Postgres.
 #[tokio::test]
-#[ignore = "requires live Postgres"]
 async fn asr_transcribe_proxy_maps_upstream_error_status_to_bad_gateway() {
     let mock_asr = spawn_mock_upstream_500("/v1/transcribe").await;
     let state = test_state().with_asr_inference_url(mock_asr);
@@ -3846,8 +3850,8 @@ async fn pilot_bootstrap_rejects_expired_invitation() {
     );
 }
 
+// NOT DB-gated: a role check that must answer before any query, so no query is ever issued.
 #[tokio::test]
-#[ignore = "requires live Postgres"]
 async fn pilot_non_admin_cannot_mint_invitation() {
     let router = platform_router_with_rate_limit(test_state(), false);
     for role in ["learner", "teacher", "scholar"] {
@@ -5341,6 +5345,7 @@ async fn seed_session_for(router: &axum::Router, checksum: &str) -> String {
 /// becomes visible is silent: the learner is shown a judgement about their recitation that a teacher
 /// looked at and refused.
 #[tokio::test]
+#[ignore = "requires live Postgres"]
 async fn a_finding_becomes_visible_to_the_learner_only_when_a_teacher_accepts_it() {
     let state = test_state();
     let router = platform_router_with_rate_limit(test_state(), false);

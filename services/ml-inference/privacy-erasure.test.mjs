@@ -212,3 +212,112 @@ test("erasing a learner twice is a no-op, not an error", async () => {
   );
   assert.deepEqual(filesFor("learner-twice"), [], "the audio came back");
 });
+
+test("a learner's privacy export contains only their own audit trail, never another learner's", async () => {
+  // Scope again, on the OTHER privacy right. `exportPrivacy` filtered its audit lists by tenant
+  // while the export itself is per-learner, so a right-of-access packet handed to one learner
+  // carried every other learner's rows in the same tenant.
+  //
+  // The two rows this stages are the worst case rather than a generic one: `privacy.export.requested`
+  // and `privacy.delete.requested` both key subjectId to the LEARNER, so what leaked was another
+  // child's identifier attached to the fact that they had asked to be erased. GDPR Art. 15(4) — a
+  // copy provided under the right of access "shall not adversely affect the rights and freedoms of
+  // others" — and erasure means their id should be getting rarer, not copied into someone else's file.
+  const OTHER = "learner-with-their-own-privacy-history";
+  const SUBJECT = "learner-requesting-an-export";
+
+  // The other learner exercises both privacy rights, writing two audit rows that name them.
+  await post("/v1/privacy/export", { tenantId: TENANT, learnerId: OTHER, traceId: "other-export" });
+  await post("/v1/privacy/delete", { tenantId: TENANT, learnerId: OTHER, traceId: "other-delete" });
+
+  const res = await post("/v1/privacy/export", {
+    tenantId: TENANT,
+    learnerId: SUBJECT,
+    traceId: "subject-export",
+  });
+  // Read the body ONCE: an `await res.text()` inside an assertion message is evaluated eagerly and
+  // would consume the stream before res.json() could run.
+  const raw = await res.text();
+  assert.equal(res.status, 200, `the export failed: ${raw}`);
+  const body = JSON.parse(raw);
+
+  // Without this the test passes on an export that returns nothing at all — "no other learner's
+  // rows" is trivially true of an empty list, and would stay true if scoping were implemented by
+  // dropping the audit trail entirely.
+  assert.ok(
+    body.auditEvents.some((e) => e.subjectId === SUBJECT || e.learnerId === SUBJECT),
+    `the export carried none of the subject's OWN audit rows, so this proves nothing: ${JSON.stringify(body.auditEvents)}`,
+  );
+
+  const foreign = body.auditEvents.filter(
+    (e) => e.subjectId === OTHER || e.learnerId === OTHER,
+  );
+  assert.deepEqual(
+    foreign,
+    [],
+    `another learner's audit rows were disclosed in this learner's export: ${JSON.stringify(foreign, null, 2)}`,
+  );
+
+  // Belt and braces: the id must not survive anywhere in the payload, including the two derived
+  // lists that were filtered the same tenant-wide way.
+  assert.ok(
+    !JSON.stringify(body).includes(OTHER),
+    "another learner's id appears somewhere in the export payload",
+  );
+});
+
+test("erasure removes a file of an unrecognised type, and reports it as neither audio nor metadata", async () => {
+  // The erasure loop used to unlink only `.bin` and `.meta.json` and step silently over anything
+  // else, so one file of any other name survived "delete my child's recordings". An allowlist is
+  // the wrong default here: forgetting to extend it fails towards RETAINING learner data.
+  const STRAY = "learner-with-an-unexpected-file";
+  await storeChunk(STRAY, "chunk-stray");
+  const { writeFileSync } = await import("node:fs");
+  writeFileSync(join(storageDir, TENANT, STRAY, "leftover.tmp"), "not a .bin and not a .meta.json");
+  assert.ok(filesFor(STRAY).includes("leftover.tmp"), "the stray file was never written");
+
+  const res = await post("/v1/privacy/delete", { tenantId: TENANT, learnerId: STRAY });
+  const body = JSON.parse(await res.text());
+
+  assert.deepEqual(filesFor(STRAY), [], "a file erasure does not recognise survived the erasure");
+  assert.ok(
+    body.deletedOtherObjectKeys.some((k) => k.endsWith("/leftover.tmp")),
+    `the stray file was deleted but not reported: ${JSON.stringify(body.deletedOtherObjectKeys)}`,
+  );
+  // Counted separately on purpose: an unrecognised file must not inflate either of the two counts
+  // that already mean something specific.
+  assert.ok(
+    !JSON.stringify(body.deletedAudioObjectKeys).includes("leftover.tmp") &&
+      !JSON.stringify(body.deletedMetadataObjectKeys).includes("leftover.tmp"),
+    "the stray file was miscounted as audio or as metadata",
+  );
+  assert.equal(body.tombstonedDerivedRecords, true, "nothing was left, so this should be true");
+});
+
+test("tombstonedDerivedRecords can still report false — it is computed, not asserted", async () => {
+  // The field was a hardcoded `true` whose only check compared that literal to true. Now that
+  // erasure removes every FILE, the residue it can still leave is a SUBDIRECTORY, which it
+  // deliberately does not recurse into. That is the remaining honest false, and it has to be
+  // reachable or the field is back to being a constant with extra steps.
+  const NESTED = "learner-with-a-subdirectory";
+  await storeChunk(NESTED, "chunk-nested");
+  const { mkdirSync, writeFileSync } = await import("node:fs");
+  const sub = join(storageDir, TENANT, NESTED, "unexpected-subdir");
+  mkdirSync(sub, { recursive: true });
+  writeFileSync(join(sub, "inner.bin"), "nested");
+
+  const res = await post("/v1/privacy/delete", { tenantId: TENANT, learnerId: NESTED });
+  const body = JSON.parse(await res.text());
+
+  assert.equal(
+    body.tombstonedDerivedRecords,
+    false,
+    `something of this learner's remains on disk, so the delete must not claim otherwise: ${JSON.stringify(body)}`,
+  );
+  // The flat files still went, so this is a partial erasure being reported honestly rather than a
+  // delete that gave up.
+  assert.ok(
+    body.deletedAudioObjectKeys.length > 0,
+    "the learner's own top-level audio should still have been erased",
+  );
+});
