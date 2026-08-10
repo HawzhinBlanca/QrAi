@@ -401,6 +401,11 @@ function appendAudit(tenantId, action, subjectId, details = {}) {
   const file = auditFileFor(tenantId);
   if (file) {
     try {
+      // Recreate the directory if it has gone. Defence in depth rather than the fix: the sweep no
+      // longer removes it, but this write is best-effort by design, so ANY future cause of a missing
+      // directory would again lose the trail with nothing but a log line to show for it. mkdir is a
+      // no-op once it exists.
+      mkdirSync(AUDIT_LOG_DIR, { recursive: true });
       appendFileSync(file, `${JSON.stringify(event)}\n`);
     } catch (err) {
       console.error(`[audit] failed to persist event for tenant ${tenantId}: ${err.message}`);
@@ -1684,7 +1689,13 @@ export function retentionTtlHours(retention) {
   return retention === "teacher-review" ? AUDIO_TTL_REVIEW_HOURS : AUDIO_TTL_DISCARD_HOURS;
 }
 
-setInterval(async () => {
+/**
+ * The hourly audio-retention sweep, EXPORTED so a test can execute it — the same reason
+ * `retentionTtlHours` above is extracted. It used to live only inside `setInterval`, which meant the
+ * one behaviour that mattered (what it deletes) could not be asserted, and it silently deleted the
+ * audit-log directory for as long as that was true.
+ */
+export async function runRetentionSweep() {
   try {
     const now = Date.now();
     const fs = await import("node:fs");
@@ -1695,6 +1706,15 @@ setInterval(async () => {
       const entries = fs.readdirSync(dir, { withFileTypes: true });
       for (const entry of entries) {
         const fullPath = join(dir, entry.name);
+        // The audit log lives under AUDIO_STORAGE_DIR but is NOT audio and has no retention TTL —
+        // this sweep must neither walk it nor tidy it away. It did: `audit-log/` is empty on a fresh
+        // deployment, the empty-directory cleanup below removed it within the first hour, nothing
+        // recreated it (mkdir runs once at module load), and from then on every appendAudit()
+        // failed ENOENT. Because that write is deliberately best-effort so it cannot break the
+        // request being audited, the failure was invisible: requests kept returning 200 while the
+        // compliance trail stayed permanently empty — including privacy.delete.requested, the row
+        // that evidences an erasure was honoured (ADR-0040).
+        if (fullPath === AUDIT_LOG_DIR) continue;
         if (entry.isDirectory()) {
           cleanDir(fullPath);
           // Clean up empty directories
@@ -1741,7 +1761,9 @@ setInterval(async () => {
   } catch (err) {
     log("error", "Failed running periodic audio storage cleanup", { error: String(err) });
   }
-}, 60 * 60 * 1000).unref(); // run every hour; .unref() so a test import doesn't block loop exit
+}
+
+setInterval(runRetentionSweep, 60 * 60 * 1000).unref(); // run every hour; .unref() so a test import doesn't block loop exit
 
 const bindHost = process.env.ML_INFERENCE_HOST ?? "127.0.0.1";
 const bindPort = Number(process.env.ML_INFERENCE_PORT ?? 8090);
