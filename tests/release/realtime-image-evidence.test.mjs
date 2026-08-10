@@ -29,6 +29,7 @@ import {
 import {
   createRealtimeFaultRepairProbe,
   createRealtimeProofPreflight,
+  createRealtimeS3FaultOutcomeProbe,
   probeRealtimeCandidateRunningImages,
   createRealtimeRetentionProofAdapters,
   parseRealtimeProofPort,
@@ -59,6 +60,7 @@ import {
 } from "../../scripts/realtime-image-proof.mjs";
 import { issueRealtimeTicket } from "../../server/src/lib/ticket.mjs";
 import { createRealtimeApplication } from "../../server/src/realtime/main.mjs";
+import { AudioObjectNotFoundError } from "../../server/src/storage/audio-object-store.mjs";
 
 const MiB = 1024 * 1024;
 const candidateSha = "0123456789abcdef0123456789abcdef01234567";
@@ -3302,6 +3304,161 @@ function repairSummary(repaired) {
     errors: [],
   };
 }
+
+function s3OutcomeObservationHarness({ mutation = {}, failAt = null } = {}) {
+  const calls = [];
+  const inputs = new Map();
+  const fail = (name) => {
+    calls.push(name);
+    if (failAt === name) throw new Error(`private-${name}-failure`);
+  };
+  const makeInput = (state, fill) => {
+    const sessionId = `private-s3-observer-${state}`;
+    const chunkId = `${sessionId}-ws-0000`;
+    const audioBytes = Buffer.alloc(15_360, fill);
+    const input = {
+      expectedState: state,
+      tenantId: probeTenant,
+      learnerId: probeLearner,
+      sessionId,
+      chunkId,
+      audioRetention: "teacher-review",
+      expectedAudioBytes: audioBytes.length,
+      expectedAudioSha256: createHash("sha256").update(audioBytes).digest("hex"),
+      expectedSampleRate: 16_000,
+      expectedStartMs: 0,
+      expectedEndMs: 480,
+      timeoutMs: 100,
+    };
+    inputs.set(sessionId, { input, audioBytes });
+    return input;
+  };
+  const storedInput = makeInput("stored", 0x61);
+  const lostInput = makeInput("accepted-lost", 0x62);
+  const storedDocument = (input, audioBytes) => ({
+    tenantId: input.tenantId,
+    learnerId: input.learnerId,
+    sessionId: input.sessionId,
+    chunkId: input.chunkId,
+    startMs: input.expectedStartMs,
+    endMs: input.expectedEndMs,
+    sampleRate: input.expectedSampleRate,
+    audioRetention: input.audioRetention,
+    audioSize: input.expectedAudioBytes,
+    audioSha256: input.expectedAudioSha256,
+    objectKey: `audio/v1/${input.tenantId}/${input.learnerId}/${input.sessionId}/${input.chunkId}.pcm`,
+    storedAt: "2026-08-10T00:00:00.000Z",
+    audioBytes,
+    ...(mutation.storedDocument ?? {}),
+  });
+  const store = {
+    driver: "s3",
+    async listSession(input) {
+      fail(`list-${input.expectedState}`);
+      if (input.expectedState === "accepted-lost") {
+        return mutation.lostObjectPresent ? [{ chunkId: input.chunkId }] : [];
+      }
+      return mutation.storedList ?? [{ chunkId: input.chunkId }];
+    },
+    async get(input) {
+      fail(`get-${input.expectedState}`);
+      const values = inputs.get(input.sessionId);
+      if (input.expectedState === "accepted-lost" && !mutation.lostObjectPresent) {
+        throw new AudioObjectNotFoundError();
+      }
+      return storedDocument(input, values.audioBytes);
+    },
+  };
+  const db = { withTenant: async () => {} };
+  let clock = 0;
+  return {
+    calls,
+    lostInput,
+    probe: createRealtimeS3FaultOutcomeProbe({
+      db,
+      store,
+      inspectIndex: async ({ input }) => {
+        fail(`index-${input.sessionId.endsWith("accepted-lost") ? "accepted-lost" : "stored"}`);
+        return {
+          status: input.sessionId.endsWith("accepted-lost") || mutation.storedIndexMissing
+            ? "missing"
+            : "already-indexed",
+        };
+      },
+      inspectOutcome: async ({ sessionId }) => {
+        const state = sessionId.endsWith("accepted-lost") ? "accepted-lost" : "stored";
+        fail(`database-${state}`);
+        const value = state === "accepted-lost"
+          ? {
+              initialOutcome: "accepted-lost",
+              reasonCode: "store-failed",
+              repaired: false,
+              sessionLostChunkCount: 1,
+            }
+          : {
+              initialOutcome: null,
+              reasonCode: null,
+              repaired: false,
+              sessionLostChunkCount: 0,
+            };
+        return { ...value, ...(mutation.database?.[state] ?? {}) };
+      },
+      nowMs: () => {
+        clock += 25;
+        return clock;
+      },
+      delayImpl: async () => {},
+    }),
+    storedInput,
+  };
+}
+
+test("the S3 outcome observer proves exact stored bytes/index and exact accepted-loss absence", async () => {
+  const harness = s3OutcomeObservationHarness();
+  assert.deepEqual(await harness.probe(harness.storedInput), {
+    state: "stored",
+    durableLost: 0,
+    durableOrphan: 0,
+    objectPresent: true,
+    indexPresent: true,
+  });
+  assert.deepEqual(await harness.probe(harness.lostInput), {
+    state: "accepted-lost",
+    durableLost: 1,
+    durableOrphan: 0,
+    objectPresent: false,
+    indexPresent: false,
+  });
+  assert.equal(harness.calls.includes("get-accepted-lost"), true);
+});
+
+test("the S3 outcome observer rejects phantom loss, storage/index drift, repaired rows, and private failures", async () => {
+  const cases = [
+    { mutation: { lostObjectPresent: true } },
+    { mutation: { storedIndexMissing: true } },
+    { mutation: { storedList: [] } },
+    { mutation: { storedDocument: { audioSha256: "0".repeat(64) } } },
+    { mutation: { database: { "accepted-lost": { reasonCode: "private-reason" } } } },
+    { mutation: { database: { "accepted-lost": { repaired: true } } } },
+    { mutation: { database: { "accepted-lost": { sessionLostChunkCount: 0 } } } },
+    { failAt: "database-accepted-lost" },
+    { failAt: "get-stored" },
+  ];
+  for (const values of cases) {
+    const harness = s3OutcomeObservationHarness(values);
+    const input = values.mutation?.storedIndexMissing ||
+      values.mutation?.storedList ||
+      values.mutation?.storedDocument ||
+      values.failAt === "get-stored"
+      ? harness.storedInput
+      : harness.lostInput;
+    await assert.rejects(
+      () => harness.probe(input),
+      (error) => error.message === "realtime S3 fault outcome observation failed" &&
+        !String(error).includes("private-"),
+    );
+  }
+});
 
 function faultRepairHarness({ snapshots, summaries } = {}) {
   const closeCalls = [];

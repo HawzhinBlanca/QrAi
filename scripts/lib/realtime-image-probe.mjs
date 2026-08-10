@@ -11,6 +11,7 @@ import { AUDIO_LIMITS } from "../../server/src/realtime/audio.mjs";
 import { AUDIO_ACK_FIELDS, parseAudioAck } from "../../server/src/realtime/protocol.mjs";
 import { createRealtimeRecoveryController } from "./realtime-recovery-client.mjs";
 import {
+  AudioObjectNotFoundError,
   createAudioObjectStoreFromEnv,
   deriveAudioObjectKey,
 } from "../../server/src/storage/audio-object-store.mjs";
@@ -2659,6 +2660,7 @@ export async function runRealtimeS3FaultProbe({
         throw new TypeError("realtime S3 fault frame was not acknowledged as enqueued");
       }
       validateS3FaultOutcome(await outcomeProbe({
+        expectedState,
         tenantId: selectedTenant,
         learnerId: selectedLearner,
         sessionId: issued.sessionId,
@@ -3812,6 +3814,237 @@ function validateFaultOutcomeSnapshot(value) {
     faultCount(value[field], `fault outcome snapshot.${field}`);
   }
   return value;
+}
+
+const s3FaultDatabaseObservationFields = Object.freeze([
+  "initialOutcome",
+  "reasonCode",
+  "repaired",
+  "sessionLostChunkCount",
+]);
+const s3FaultDatabaseObservationFieldSet = new Set(s3FaultDatabaseObservationFields);
+
+function validateS3FaultDatabaseObservation(value) {
+  if (!exactObjectFields(
+    value,
+    s3FaultDatabaseObservationFields,
+    s3FaultDatabaseObservationFieldSet,
+  )) {
+    throw new TypeError("realtime S3 fault database observation is invalid");
+  }
+  if (
+    value.initialOutcome !== null && value.initialOutcome !== "accepted-lost" ||
+    value.reasonCode !== null && !new Set(["store-failed", "store-aborted"]).has(value.reasonCode) ||
+    typeof value.repaired !== "boolean" ||
+    !Number.isSafeInteger(value.sessionLostChunkCount) ||
+    value.sessionLostChunkCount < 0
+  ) {
+    throw new TypeError("realtime S3 fault database observation is invalid");
+  }
+  return value;
+}
+
+async function inspectRealtimeS3FaultOutcome({ db, tenantId, sessionId, chunkId }) {
+  return db.withTenant(tenantId, async (tx) => {
+    const [row] = await tx`
+      SELECT o.initial_outcome, o.reason_code, o.repaired_at,
+             s.lost_chunk_count
+      FROM recitation_sessions s
+      LEFT JOIN realtime_audio_chunk_outcomes o
+        ON o.tenant_id = s.tenant_id
+       AND o.session_id = s.id
+       AND o.chunk_id = ${chunkId}
+      WHERE s.tenant_id = ${tenantId} AND s.id = ${sessionId}`;
+    if (!row) throw new TypeError("realtime S3 fault session was not found");
+    return {
+      initialOutcome: row.initial_outcome ?? null,
+      reasonCode: row.reason_code ?? null,
+      repaired: row.repaired_at !== null && row.repaired_at !== undefined,
+      sessionLostChunkCount: Number(row.lost_chunk_count),
+    };
+  });
+}
+
+function validateS3FaultOutcomeInput(input) {
+  if (
+    !input ||
+    typeof input !== "object" ||
+    Array.isArray(input) ||
+    !new Set(["stored", "accepted-lost"]).has(input.expectedState) ||
+    input.audioRetention !== "teacher-review" ||
+    !Number.isSafeInteger(input.expectedAudioBytes) ||
+    input.expectedAudioBytes !== AUDIO_LIMITS.frameBytes ||
+    !/^[0-9a-f]{64}$/.test(input.expectedAudioSha256 ?? "") ||
+    input.expectedSampleRate !== AUDIO_LIMITS.sampleRate ||
+    input.expectedStartMs !== 0 ||
+    input.expectedEndMs !== AUDIO_LIMITS.chunkDurationMs
+  ) {
+    throw new TypeError("realtime S3 fault outcome input is invalid");
+  }
+  requiredParityString(input.tenantId, "S3 fault outcome tenant id");
+  requiredParityString(input.learnerId, "S3 fault outcome learner id");
+  requiredParityString(input.sessionId, "S3 fault outcome session id");
+  requiredParityString(input.chunkId, "S3 fault outcome chunk id");
+  if (input.chunkId !== `${input.sessionId}-ws-0000`) {
+    throw new TypeError("realtime S3 fault outcome chunk identity is invalid");
+  }
+  deriveAudioObjectKey(input);
+  assertProbeTimeout(input.timeoutMs);
+  return input;
+}
+
+function expectedS3FaultDatabaseObservation(state) {
+  return state === "stored"
+    ? {
+        initialOutcome: null,
+        reasonCode: null,
+        repaired: false,
+        sessionLostChunkCount: 0,
+      }
+    : {
+        initialOutcome: "accepted-lost",
+        reasonCode: "store-failed",
+        repaired: false,
+        sessionLostChunkCount: 1,
+      };
+}
+
+/**
+ * Observe one post-ack frame through independent production S3 and tenant-RLS authorities. The
+ * result is deliberately aggregate; caller identities, object keys, audio, hashes, and reason text
+ * never leave this boundary.
+ */
+export function createRealtimeS3FaultOutcomeProbe({
+  db,
+  store,
+  inspectIndex = inspectAudioChunkIndex,
+  inspectOutcome = inspectRealtimeS3FaultOutcome,
+  nowMs = () => performance.now(),
+  delayImpl = (milliseconds) => new Promise((resolveDelay) =>
+    setTimeout(resolveDelay, milliseconds)),
+} = {}) {
+  if (
+    !db ||
+    typeof db.withTenant !== "function" ||
+    store?.driver !== "s3" ||
+    typeof store.listSession !== "function" ||
+    typeof store.get !== "function" ||
+    typeof inspectIndex !== "function" ||
+    typeof inspectOutcome !== "function" ||
+    typeof nowMs !== "function" ||
+    typeof delayImpl !== "function"
+  ) {
+    throw new TypeError("realtime S3 fault outcome adapters are incomplete");
+  }
+
+  return async function outcomeProbe(rawInput) {
+    try {
+      const input = validateS3FaultOutcomeInput(rawInput);
+      const deadline = nowMs() + input.timeoutMs;
+      if (!Number.isFinite(deadline)) {
+        throw new TypeError("realtime S3 fault outcome clock is invalid");
+      }
+      while (nowMs() <= deadline) {
+        const signal = retentionAdapterSignal(input.timeoutMs);
+        let objects = null;
+        let stored = null;
+        let objectMissing = false;
+        let index = null;
+        let database = null;
+        try {
+          [objects, index, database] = await Promise.all([
+            store.listSession(input, { signal }),
+            inspectIndex({
+              db,
+              input: {
+                tenantId: input.tenantId,
+                learnerId: input.learnerId,
+                sessionId: input.sessionId,
+                chunkId: input.chunkId,
+                startMs: input.expectedStartMs,
+                endMs: input.expectedEndMs,
+                sampleRate: input.expectedSampleRate,
+                audioRetention: input.audioRetention,
+              },
+            }),
+            inspectOutcome({
+              db,
+              tenantId: input.tenantId,
+              sessionId: input.sessionId,
+              chunkId: input.chunkId,
+            }),
+          ]);
+          if (!Array.isArray(objects)) {
+            throw new TypeError("realtime S3 fault object listing is invalid");
+          }
+          const exactObject = objects.length === 1 && objects[0]?.chunkId === input.chunkId;
+          if (objects.length === 0) {
+            try {
+              await store.get(input, { signal });
+            } catch (error) {
+              if (error instanceof AudioObjectNotFoundError) objectMissing = true;
+              else throw error;
+            }
+          } else if (exactObject) {
+            stored = await store.get(input, { signal });
+          }
+        } catch {
+          if (nowMs() > deadline) break;
+          await delayImpl(25);
+          continue;
+        }
+
+        const indexPresent = retentionIndexCount(index) === 1;
+        const observation = validateS3FaultDatabaseObservation(database);
+        const storedClosed =
+          objects.length === 1 &&
+          objects[0]?.chunkId === input.chunkId &&
+          indexPresent &&
+          retentionMetadataMatches(stored, input) &&
+          retentionAudioMatches(stored, input) &&
+          canonicalJson(observation) === canonicalJson(
+            expectedS3FaultDatabaseObservation("stored"),
+          );
+        const lostReasonClosed =
+          observation.initialOutcome === "accepted-lost" &&
+          new Set(["store-failed", "store-aborted"]).has(observation.reasonCode) &&
+          observation.repaired === false &&
+          observation.sessionLostChunkCount === 1;
+        const lostClosed =
+          objects.length === 0 && objectMissing && !indexPresent && lostReasonClosed;
+
+        if (input.expectedState === "stored" && storedClosed) {
+          return Object.freeze({
+            state: "stored",
+            durableLost: 0,
+            durableOrphan: 0,
+            objectPresent: true,
+            indexPresent: true,
+          });
+        }
+        if (input.expectedState === "accepted-lost" && lostClosed) {
+          return Object.freeze({
+            state: "accepted-lost",
+            durableLost: 1,
+            durableOrphan: 0,
+            objectPresent: false,
+            indexPresent: false,
+          });
+        }
+        if (
+          input.expectedState === "stored" && (lostClosed || objects.length > 0 || indexPresent) ||
+          input.expectedState === "accepted-lost" &&
+            (storedClosed || objects.length > 0 || indexPresent || observation.initialOutcome !== null)
+        ) {
+          throw new TypeError("realtime S3 fault outcome contradicted the expected state");
+        }
+        await delayImpl(25);
+      }
+      throw new TypeError("realtime S3 fault outcome observation timed out");
+    } catch {
+      throw new Error("realtime S3 fault outcome observation failed");
+    }
+  };
 }
 
 async function inspectRealtimeFaultOutcomes({ db, tenantId }) {
