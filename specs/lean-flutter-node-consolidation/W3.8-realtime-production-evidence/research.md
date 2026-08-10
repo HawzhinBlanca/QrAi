@@ -56,6 +56,11 @@ while the proof process binds the bounded pass-through to the private RFC1918 ga
 default bridge (never `0.0.0.0` or a public interface). The default proof port is 19443 and may be
 overridden only with another validated non-service port; endpoint credentials, paths, loopback/IP
 targets, public bind addresses, wrong image identity, and residual containers all fail closed.
+The `fault-recovery` operator stage now composes the already-tested Node SIGKILL, Postgres stop,
+and S3 cut lifecycles from one preserved release selection. One restricted Postgres pool and one
+production S3 authority are created before injection, reject a contaminated outcome baseline, and
+remain shared by the independent durable observer and idempotent repair command until the stage's
+mandatory close. The CLI emits only the fixed aggregate measurement shape.
 
 ## Grounded boundary and data flow
 

@@ -7,13 +7,18 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 
 import { realtimeImageCommandPlan } from "./lib/realtime-image-evidence.mjs";
 import {
+  createRealtimeFaultRecoveryProofAdaptersFromEnvironment,
   createRealtimeProofPreflight,
   createRealtimeRetentionProofAdaptersFromEnvironment,
   parseRealtimeProofPort,
   probeRealtimeCandidateRunningImages,
+  runRealtimeFaultRecoveryStage,
   runRealtimeHostileCapacityStage,
+  runRealtimeNodeProcessFaultProbe,
+  runRealtimePostgresFaultProbe,
   runRealtimeProtocolParityStage,
   runRealtimeRetentionStage,
+  runRealtimeS3FaultProbe,
 } from "./lib/realtime-image-probe.mjs";
 import {
   assertReleaseDeploymentSelection,
@@ -28,6 +33,7 @@ const enabledProbeStages = new Set([
   "protocol-parity",
   "hostile-capacity",
   "retention",
+  "fault-recovery",
 ]);
 const allowedFlags = new Set([
   "--selection",
@@ -246,6 +252,160 @@ function hostileCapacityStageConfiguration(env) {
   }
 }
 
+function faultRecoveryStageConfiguration(env) {
+  try {
+    const base = retentionStageConfiguration(env);
+    const selectionPath = stageString(env, "REALTIME_PROOF_SELECTION_PATH");
+    if (!isAbsolute(selectionPath)) {
+      fail("realtime proof fault selection path must be absolute");
+    }
+    const projectName = stageString(env, "REALTIME_PROOF_PROJECT_NAME", 128);
+    realtimeImageCommandPlan({ projectName });
+    const faultNodePort = parseRealtimeProofPort(
+      stageString(env, "REALTIME_PROOF_FAULT_NODE_PORT", 5),
+    );
+    if (faultNodePort === base.nodePort) {
+      fail("realtime proof fault ports must be distinct");
+    }
+    return Object.freeze({
+      selectionPath,
+      projectName,
+      nodePort: base.nodePort,
+      faultNodePort,
+      origin: base.origin,
+      jwtSecret: base.jwtSecret,
+      tenantId: base.tenantId,
+      learnerId: base.learnerId,
+      timeoutMs: base.timeoutMs,
+    });
+  } catch {
+    throw new TypeError("realtime proof stage fault-recovery configuration is invalid");
+  }
+}
+
+/** Bind the fault stage to one release selection, three Docker lifecycles, and one durable authority. */
+export async function createRealtimeFaultRecoveryRuntimeAdapters({
+  configuration,
+  env = process.env,
+  selectionReader = readSelection,
+  nodeProcessLifecycleFactory = createRealtimeNodeProcessFaultLifecycleRuntime,
+  postgresLifecycleFactory = createRealtimePostgresFaultLifecycleRuntime,
+  s3LifecycleFactory = createRealtimeS3FaultLifecycleRuntime,
+  proofAdaptersFactory = createRealtimeFaultRecoveryProofAdaptersFromEnvironment,
+  nodeProcessProbeRunner = runRealtimeNodeProcessFaultProbe,
+  postgresProbeRunner = runRealtimePostgresFaultProbe,
+  s3ProbeRunner = runRealtimeS3FaultProbe,
+} = {}) {
+  let proofAdapters = null;
+  try {
+    const fields = [
+      "faultNodePort",
+      "jwtSecret",
+      "learnerId",
+      "nodePort",
+      "origin",
+      "projectName",
+      "selectionPath",
+      "tenantId",
+      "timeoutMs",
+    ];
+    if (
+      !configuration ||
+      typeof configuration !== "object" ||
+      Array.isArray(configuration) ||
+      JSON.stringify(Object.keys(configuration).sort()) !== JSON.stringify(fields) ||
+      typeof selectionReader !== "function" ||
+      typeof nodeProcessLifecycleFactory !== "function" ||
+      typeof postgresLifecycleFactory !== "function" ||
+      typeof s3LifecycleFactory !== "function" ||
+      typeof proofAdaptersFactory !== "function" ||
+      typeof nodeProcessProbeRunner !== "function" ||
+      typeof postgresProbeRunner !== "function" ||
+      typeof s3ProbeRunner !== "function"
+    ) {
+      throw new TypeError("realtime fault recovery runtime adapters are invalid");
+    }
+    const expectedConfiguration = faultRecoveryStageConfiguration(env);
+    if (fields.some((field) => configuration[field] !== expectedConfiguration[field])) {
+      throw new TypeError("realtime fault recovery configuration changed after validation");
+    }
+    const selection = selectionReader(configuration.selectionPath);
+    const nodeLifecycle = nodeProcessLifecycleFactory({
+      selection,
+      projectName: configuration.projectName,
+      env,
+    });
+    const postgresLifecycle = postgresLifecycleFactory({
+      projectName: configuration.projectName,
+      env,
+    });
+    const s3Lifecycle = s3LifecycleFactory({
+      selection,
+      projectName: configuration.projectName,
+      nodePort: configuration.nodePort,
+      faultNodePort: configuration.faultNodePort,
+      env,
+    });
+    if (
+      typeof nodeLifecycle?.killNodeProcess !== "function" ||
+      typeof nodeLifecycle?.startNodeProcess !== "function" ||
+      typeof postgresLifecycle?.stopPostgres !== "function" ||
+      typeof postgresLifecycle?.startPostgres !== "function" ||
+      typeof s3Lifecycle?.startS3FaultProcess !== "function" ||
+      typeof s3Lifecycle?.injectS3Outage !== "function" ||
+      typeof s3Lifecycle?.restoreProductionCandidate !== "function"
+    ) {
+      throw new TypeError("realtime fault recovery lifecycles are incomplete");
+    }
+    proofAdapters = await proofAdaptersFactory({
+      env,
+      tenantId: configuration.tenantId,
+    });
+    if (
+      typeof proofAdapters?.outcomeProbe !== "function" ||
+      typeof proofAdapters?.repairProbe !== "function" ||
+      typeof proofAdapters?.close !== "function"
+    ) {
+      throw new TypeError("realtime fault recovery proof adapters are incomplete");
+    }
+    const common = Object.freeze({
+      nodePort: configuration.nodePort,
+      origin: configuration.origin,
+      jwtSecret: configuration.jwtSecret,
+      tenantId: configuration.tenantId,
+      learnerId: configuration.learnerId,
+      timeoutMs: configuration.timeoutMs,
+    });
+    return Object.freeze({
+      nodeProcessProbe: () => nodeProcessProbeRunner({
+        ...common,
+        killNodeProcess: nodeLifecycle.killNodeProcess,
+        startNodeProcess: nodeLifecycle.startNodeProcess,
+      }),
+      postgresProbe: () => postgresProbeRunner({
+        ...common,
+        stopPostgres: postgresLifecycle.stopPostgres,
+        startPostgres: postgresLifecycle.startPostgres,
+      }),
+      s3Probe: () => s3ProbeRunner({
+        ...common,
+        faultNodePort: configuration.faultNodePort,
+        outcomeProbe: proofAdapters.outcomeProbe,
+        startS3FaultProcess: s3Lifecycle.startS3FaultProcess,
+        injectS3Outage: s3Lifecycle.injectS3Outage,
+        restoreProductionCandidate: s3Lifecycle.restoreProductionCandidate,
+      }),
+      repairProbe: proofAdapters.repairProbe,
+      close: proofAdapters.close,
+    });
+  } catch {
+    if (typeof proofAdapters?.close === "function") {
+      await Promise.resolve().then(() => proofAdapters.close()).catch(() => {});
+    }
+    throw new Error("realtime fault recovery runtime adapters failed");
+  }
+}
+
 async function runAggregateStage(stage, configuration, runner) {
   if (typeof runner !== "function") {
     throw new TypeError(`realtime proof stage ${stage} adapter is invalid`);
@@ -289,6 +449,8 @@ export async function runRealtimeImageProofStage({
   hostileCapacityStage = runRealtimeHostileCapacityStage,
   retentionAdaptersFactory = createRealtimeRetentionProofAdaptersFromEnvironment,
   retentionStage = runRealtimeRetentionStage,
+  faultRecoveryAdaptersFactory = createRealtimeFaultRecoveryRuntimeAdapters,
+  faultRecoveryStage = runRealtimeFaultRecoveryStage,
 } = {}) {
   if (!enabledProbeStages.has(stage)) {
     throw new TypeError("realtime proof stage is not enabled");
@@ -314,6 +476,59 @@ export async function runRealtimeImageProofStage({
       hostileCapacityStageConfiguration(env),
       hostileCapacityStage,
     );
+  }
+  if (stage === "fault-recovery") {
+    const configuration = faultRecoveryStageConfiguration(env);
+    if (
+      typeof faultRecoveryAdaptersFactory !== "function" ||
+      typeof faultRecoveryStage !== "function"
+    ) {
+      throw new TypeError("realtime proof stage fault-recovery adapters are invalid");
+    }
+    let adapters = null;
+    let measurements = null;
+    let failure = null;
+    try {
+      adapters = await faultRecoveryAdaptersFactory({ configuration, env });
+      if (
+        !adapters ||
+        typeof adapters !== "object" ||
+        Array.isArray(adapters) ||
+        JSON.stringify(Object.keys(adapters).sort()) !== JSON.stringify([
+          "close",
+          "nodeProcessProbe",
+          "postgresProbe",
+          "repairProbe",
+          "s3Probe",
+        ]) ||
+        [
+          adapters.nodeProcessProbe,
+          adapters.postgresProbe,
+          adapters.s3Probe,
+          adapters.repairProbe,
+          adapters.close,
+        ].some((adapter) => typeof adapter !== "function")
+      ) {
+        throw new TypeError("fault-recovery adapters were incomplete");
+      }
+      measurements = await faultRecoveryStage({
+        nodeProcessProbe: adapters.nodeProcessProbe,
+        postgresProbe: adapters.postgresProbe,
+        s3Probe: adapters.s3Probe,
+        repairProbe: adapters.repairProbe,
+      });
+    } catch {
+      failure = new Error("realtime proof stage fault-recovery failed");
+    }
+    if (adapters !== null && typeof adapters.close === "function") {
+      try {
+        await adapters.close();
+      } catch {
+        failure = new Error("realtime proof stage fault-recovery failed");
+      }
+    }
+    if (failure) throw failure;
+    return Object.freeze({ status: "passed", stage, measurements });
   }
   const configuration = retentionStageConfiguration(env);
   if (typeof retentionAdaptersFactory !== "function" || typeof retentionStage !== "function") {
@@ -1145,7 +1360,7 @@ export function createRealtimeS3FaultLifecycleRuntime({
         state = "restored";
         restored = Object.freeze({
           faultProcessRemoved: true,
-          productionCandidateReady: true,
+          productionCandidateRestored: true,
         });
         return restored;
       } catch {

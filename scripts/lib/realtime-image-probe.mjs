@@ -4161,6 +4161,7 @@ export async function createRealtimeFaultRepairProbe({
   env = process.env,
   outcomeSnapshot = inspectRealtimeFaultOutcomes,
   repair = repairAudioIndex,
+  closeResources = true,
 } = {}) {
   let closed = false;
   let used = false;
@@ -4168,6 +4169,7 @@ export async function createRealtimeFaultRepairProbe({
   async function close() {
     if (closed) return;
     closed = true;
+    if (!closeResources) return;
     const outcomes = await Promise.allSettled([store?.close?.(), db?.end?.()]);
     if (outcomes.some((outcome) => outcome.status === "rejected")) {
       throw new Error("realtime fault repair probe failed");
@@ -4195,7 +4197,8 @@ export async function createRealtimeFaultRepairProbe({
       typeof env !== "object" ||
       Array.isArray(env) ||
       typeof outcomeSnapshot !== "function" ||
-      typeof repair !== "function"
+      typeof repair !== "function" ||
+      typeof closeResources !== "boolean"
     ) {
       throw new TypeError("realtime fault repair adapters are incomplete");
     }
@@ -4270,6 +4273,92 @@ export async function createRealtimeFaultRepairProbe({
   } catch {
     await close().catch(() => {});
     throw new Error("realtime fault repair probe failed");
+  }
+}
+
+/** Construct one shared restricted-Postgres and production-S3 authority for fault observation and repair. */
+export async function createRealtimeFaultRecoveryProofAdaptersFromEnvironment({
+  env = process.env,
+  tenantId,
+  dbFactory = createDb,
+  storeFactory = createAudioObjectStoreFromEnv,
+  outcomeProbeFactory = createRealtimeS3FaultOutcomeProbe,
+  repairProbeFactory = createRealtimeFaultRepairProbe,
+} = {}) {
+  let db = null;
+  let store = null;
+  let repairAdapters = null;
+  let closed = false;
+
+  async function close() {
+    if (closed) return;
+    closed = true;
+    const outcomes = await Promise.allSettled([
+      repairAdapters?.close?.(),
+      store?.close?.(),
+      db?.end?.(),
+    ]);
+    if (outcomes.some((outcome) => outcome.status === "rejected")) {
+      throw new Error("realtime fault recovery production adapters failed");
+    }
+  }
+
+  try {
+    const databaseUrl = requiredParityString(
+      env?.DATABASE_URL,
+      "fault recovery database URL",
+      16 * 1_024,
+    );
+    const selectedTenant = requiredParityString(tenantId, "fault recovery tenant id");
+    if (
+      !env ||
+      typeof env !== "object" ||
+      Array.isArray(env) ||
+      typeof dbFactory !== "function" ||
+      typeof storeFactory !== "function" ||
+      typeof outcomeProbeFactory !== "function" ||
+      typeof repairProbeFactory !== "function"
+    ) {
+      throw new TypeError("realtime fault recovery production adapters are invalid");
+    }
+    store = storeFactory({ env, production: true });
+    db = dbFactory(databaseUrl, {
+      statementTimeoutMs: maximumProbeTimeoutMs,
+      closeTimeoutMs: maximumProbeTimeoutMs,
+    });
+    if (
+      typeof store?.assertReady !== "function" ||
+      typeof store?.close !== "function" ||
+      typeof db?.assertRestrictedRole !== "function" ||
+      typeof db?.end !== "function"
+    ) {
+      throw new TypeError("realtime fault recovery production authorities are incomplete");
+    }
+    await Promise.all([db.assertRestrictedRole(), store.assertReady()]);
+    repairAdapters = await repairProbeFactory({
+      db,
+      store,
+      databaseUrl,
+      tenantId: selectedTenant,
+      env,
+      closeResources: false,
+    });
+    const outcomeProbe = outcomeProbeFactory({ db, store });
+    if (
+      typeof outcomeProbe !== "function" ||
+      typeof repairAdapters?.repairProbe !== "function" ||
+      typeof repairAdapters?.close !== "function"
+    ) {
+      throw new TypeError("realtime fault recovery production adapters are incomplete");
+    }
+    return Object.freeze({
+      outcomeProbe,
+      repairProbe: repairAdapters.repairProbe,
+      close,
+    });
+  } catch {
+    await close().catch(() => {});
+    throw new Error("realtime fault recovery production adapters failed");
   }
 }
 

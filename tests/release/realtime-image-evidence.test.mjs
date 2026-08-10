@@ -28,6 +28,7 @@ import {
   createReleaseDeploymentSelection,
 } from "../../scripts/lib/release-deployment.mjs";
 import {
+  createRealtimeFaultRecoveryProofAdaptersFromEnvironment,
   createRealtimeFaultRepairProbe,
   createRealtimeProofPreflight,
   createRealtimeS3FaultOutcomeProbe,
@@ -53,6 +54,7 @@ import {
 } from "../../scripts/lib/realtime-image-probe.mjs";
 import {
   collectRealtimeCandidateRunningImagesRuntime,
+  createRealtimeFaultRecoveryRuntimeAdapters,
   createRealtimeNodeProcessFaultLifecycleRuntime,
   createRealtimePostgresFaultLifecycleRuntime,
   createRealtimeS3FaultLifecycleRuntime,
@@ -3306,6 +3308,97 @@ test("the fault stage rejects open accounting, missing safety proofs, incomplete
   );
 });
 
+test("fault production adapters share one restricted database and S3 authority and close exactly once", async () => {
+  const calls = [];
+  const privateDatabase = "postgresql://private-fault-authority";
+  const env = {
+    DATABASE_URL: privateDatabase,
+    AUDIO_STORAGE_DRIVER: "s3",
+  };
+  const db = {
+    async assertRestrictedRole() { calls.push("db-ready"); },
+    async end() { calls.push("db-close"); },
+  };
+  const store = {
+    driver: "s3",
+    async assertReady() { calls.push("store-ready"); },
+    async close() { calls.push("store-close"); },
+  };
+  const outcomeProbe = async () => {};
+  const repairProbe = async () => {};
+  const adapters = await createRealtimeFaultRecoveryProofAdaptersFromEnvironment({
+    env,
+    tenantId: probeTenant,
+    dbFactory: (databaseUrl, options) => {
+      calls.push("db-create");
+      assert.equal(databaseUrl, privateDatabase);
+      assert.deepEqual(options, { statementTimeoutMs: 30_000, closeTimeoutMs: 30_000 });
+      return db;
+    },
+    storeFactory: (input) => {
+      calls.push("store-create");
+      assert.deepEqual(input, { env, production: true });
+      return store;
+    },
+    outcomeProbeFactory: (input) => {
+      calls.push("outcome-create");
+      assert.deepEqual(input, { db, store });
+      return outcomeProbe;
+    },
+    repairProbeFactory: async (input) => {
+      calls.push("repair-create");
+      assert.equal(input.db, db);
+      assert.equal(input.store, store);
+      assert.equal(input.databaseUrl, privateDatabase);
+      assert.equal(input.tenantId, probeTenant);
+      assert.equal(input.env, env);
+      assert.equal(input.closeResources, false);
+      return {
+        repairProbe,
+        async close() {
+          calls.push("adapter-close");
+        },
+      };
+    },
+  });
+  assert.deepEqual(adapters, { outcomeProbe, repairProbe, close: adapters.close });
+  await adapters.close();
+  assert.deepEqual(calls, [
+    "store-create",
+    "db-create",
+    "db-ready",
+    "store-ready",
+    "repair-create",
+    "outcome-create",
+    "adapter-close",
+    "store-close",
+    "db-close",
+  ]);
+  assert.equal(JSON.stringify(adapters).includes(privateDatabase), false);
+});
+
+test("fault production adapter construction fails closed, cleans resources, and redacts private errors", async () => {
+  const calls = [];
+  const privateFailure = "private-fault-authority-secret";
+  await assert.rejects(
+    () => createRealtimeFaultRecoveryProofAdaptersFromEnvironment({
+      env: { DATABASE_URL: "postgresql://private-fault-authority" },
+      tenantId: probeTenant,
+      dbFactory: () => ({
+        async assertRestrictedRole() { throw new Error(privateFailure); },
+        async end() { calls.push("db-close"); },
+      }),
+      storeFactory: () => ({
+        async assertReady() { calls.push("store-ready"); },
+        async close() { calls.push("store-close"); },
+      }),
+    }),
+    (error) => error.message === "realtime fault recovery production adapters failed" &&
+      !String(error?.stack ?? error).includes(privateFailure),
+  );
+  assert.deepEqual(calls.sort(), ["db-close", "store-close", "store-ready"]);
+});
+
 function repairSummary(repaired) {
   return {
     mode: "apply",
@@ -3659,7 +3752,12 @@ test("proof CLI arguments reject unsafe paths, ports, projects, actors, acknowle
     command: "probe",
     stage: "retention",
   });
-  for (const stage of ["candidate-running-images", "protocol-parity", "hostile-capacity"]) {
+  for (const stage of [
+    "candidate-running-images",
+    "protocol-parity",
+    "hostile-capacity",
+    "fault-recovery",
+  ]) {
     assert.deepEqual(parseRealtimeImageProofArguments(["probe", "--stage", stage]), {
       command: "probe",
       stage,
@@ -3922,11 +4020,11 @@ test("the same-image S3 fault lifecycle starts healthy, cuts only S3, and restor
   );
   assert.deepEqual(await lifecycle.restoreProductionCandidate(), {
     faultProcessRemoved: true,
-    productionCandidateReady: true,
+    productionCandidateRestored: true,
   });
   assert.deepEqual(await lifecycle.restoreProductionCandidate(), {
     faultProcessRemoved: true,
-    productionCandidateReady: true,
+    productionCandidateRestored: true,
   });
   assert.deepEqual(harness.proxyCalls[0], ["create", {
     targetHost: "s3.example.com",
@@ -4000,6 +4098,133 @@ test("the S3 fault lifecycle fails closed on endpoint, bind, identity, readiness
   );
   await lifecycle.restoreProductionCandidate().catch(() => {});
   assert.equal(harness.proxyCalls.some(([name]) => name === "close"), true);
+});
+
+test("the fault runtime adapters bind one selection, three exact lifecycles, durable observation, and cleanup", async () => {
+  const calls = [];
+  const value = selection();
+  const values = faultProbeResults();
+  const privateSelectionPath = "/tmp/private-runtime-fault-selection.json";
+  const env = {
+    DATABASE_URL: "postgresql://private-runtime-fault",
+    AUDIO_STORAGE_S3_ENDPOINT: "https://s3.example.com",
+    JWT_SECRET: probeSecret,
+    REALTIME_PROOF_SELECTION_PATH: privateSelectionPath,
+    REALTIME_PROOF_PROJECT_NAME: "qrai-realtime-proof",
+    REALTIME_PROOF_NODE_PORT: "18081",
+    REALTIME_PROOF_FAULT_NODE_PORT: "18083",
+    REALTIME_PROOF_ORIGIN: probeOrigin,
+    REALTIME_PROOF_TENANT_ID: probeTenant,
+    REALTIME_PROOF_LEARNER_ID: probeLearner,
+    REALTIME_PROOF_TIMEOUT_MS: "10000",
+  };
+  const configuration = {
+    selectionPath: privateSelectionPath,
+    projectName: "qrai-realtime-proof",
+    nodePort: 18_081,
+    faultNodePort: 18_083,
+    origin: probeOrigin,
+    jwtSecret: probeSecret,
+    tenantId: probeTenant,
+    learnerId: probeLearner,
+    timeoutMs: 10_000,
+  };
+  const lifecycle = {
+    killNodeProcess: async () => ({ killed: true }),
+    startNodeProcess: async () => ({ healthy: true }),
+    stopPostgres: async () => ({ stopped: true }),
+    startPostgres: async () => ({ healthy: true }),
+    startS3FaultProcess: async () => ({
+      sameCandidateImage: true,
+      configuredNonRoot: true,
+      healthyProductionS3: true,
+    }),
+    injectS3Outage: async () => ({ unreachableEndpoint: true }),
+    restoreProductionCandidate: async () => ({
+      faultProcessRemoved: true,
+      productionCandidateRestored: true,
+    }),
+  };
+  const adapters = await createRealtimeFaultRecoveryRuntimeAdapters({
+    configuration,
+    env,
+    selectionReader: (path) => {
+      calls.push("selection");
+      assert.equal(path, privateSelectionPath);
+      return value;
+    },
+    nodeProcessLifecycleFactory: (input) => {
+      calls.push("node-lifecycle");
+      assert.equal(input.selection, value);
+      assert.equal(input.projectName, configuration.projectName);
+      assert.equal(input.env, env);
+      return lifecycle;
+    },
+    postgresLifecycleFactory: (input) => {
+      calls.push("postgres-lifecycle");
+      assert.equal(input.projectName, configuration.projectName);
+      assert.equal(input.env, env);
+      return lifecycle;
+    },
+    s3LifecycleFactory: (input) => {
+      calls.push("s3-lifecycle");
+      assert.equal(input.selection, value);
+      assert.equal(input.nodePort, configuration.nodePort);
+      assert.equal(input.faultNodePort, configuration.faultNodePort);
+      assert.equal(input.env, env);
+      return lifecycle;
+    },
+    proofAdaptersFactory: async (input) => {
+      calls.push("proof-adapters");
+      assert.equal(input.env, env);
+      assert.equal(input.tenantId, probeTenant);
+      return {
+        outcomeProbe: async () => {},
+        repairProbe: async () => values.repair,
+        async close() { calls.push("close"); },
+      };
+    },
+    nodeProcessProbeRunner: async (input) => {
+      calls.push("node-probe");
+      assert.equal(input.nodePort, configuration.nodePort);
+      assert.equal(input.killNodeProcess, lifecycle.killNodeProcess);
+      assert.equal(input.startNodeProcess, lifecycle.startNodeProcess);
+      return values.nodeProcess;
+    },
+    postgresProbeRunner: async (input) => {
+      calls.push("postgres-probe");
+      assert.equal(input.nodePort, configuration.nodePort);
+      assert.equal(input.stopPostgres, lifecycle.stopPostgres);
+      assert.equal(input.startPostgres, lifecycle.startPostgres);
+      return values.postgres;
+    },
+    s3ProbeRunner: async (input) => {
+      calls.push("s3-probe");
+      assert.equal(input.nodePort, configuration.nodePort);
+      assert.equal(input.faultNodePort, configuration.faultNodePort);
+      assert.equal(input.startS3FaultProcess, lifecycle.startS3FaultProcess);
+      assert.equal(input.injectS3Outage, lifecycle.injectS3Outage);
+      assert.equal(input.restoreProductionCandidate, lifecycle.restoreProductionCandidate);
+      assert.equal(typeof input.outcomeProbe, "function");
+      return values.s3;
+    },
+  });
+  assert.deepEqual(await adapters.nodeProcessProbe(), values.nodeProcess);
+  assert.deepEqual(await adapters.postgresProbe(), values.postgres);
+  assert.deepEqual(await adapters.s3Probe(), values.s3);
+  assert.deepEqual(await adapters.repairProbe(), values.repair);
+  await adapters.close();
+  assert.deepEqual(calls, [
+    "selection",
+    "node-lifecycle",
+    "postgres-lifecycle",
+    "s3-lifecycle",
+    "proof-adapters",
+    "node-probe",
+    "postgres-probe",
+    "s3-probe",
+    "close",
+  ]);
 });
 
 function nodeProcessLifecycleHarness({
@@ -4377,6 +4602,112 @@ test("the retention CLI stage validates environment, closes real adapters, and e
         retentionStage: async () => measurements,
       }),
       /realtime proof stage retention (configuration|failed)/i,
+    );
+  }
+});
+
+test("the fault-recovery CLI stage validates exact configuration, closes adapters, and redacts private inputs", async () => {
+  const calls = [];
+  const privateSelectionPath = "/tmp/private-fault-release-selection.json";
+  const privateDatabase = "postgresql://private-user:private-password@private-db/proof";
+  const privateLearner = "private-fault-proof-learner";
+  const env = {
+    DATABASE_URL: privateDatabase,
+    JWT_SECRET: probeSecret,
+    REALTIME_PROOF_SELECTION_PATH: privateSelectionPath,
+    REALTIME_PROOF_PROJECT_NAME: "qrai-realtime-proof",
+    REALTIME_PROOF_NODE_PORT: "18081",
+    REALTIME_PROOF_FAULT_NODE_PORT: "18083",
+    REALTIME_PROOF_ORIGIN: probeOrigin,
+    REALTIME_PROOF_TENANT_ID: probeTenant,
+    REALTIME_PROOF_LEARNER_ID: privateLearner,
+    REALTIME_PROOF_TIMEOUT_MS: "10000",
+    AUDIO_STORAGE_DRIVER: "s3",
+    AUDIO_STORAGE_S3_ENDPOINT: "https://s3.example.com",
+  };
+  const measurements = stageMeasurements("fault-recovery");
+  const result = await runRealtimeImageProofStage({
+    stage: "fault-recovery",
+    env,
+    faultRecoveryAdaptersFactory: async ({ configuration, env: selectedEnv }) => {
+      calls.push("create");
+      assert.equal(selectedEnv, env);
+      assert.deepEqual(configuration, {
+        selectionPath: privateSelectionPath,
+        projectName: "qrai-realtime-proof",
+        nodePort: 18_081,
+        faultNodePort: 18_083,
+        origin: probeOrigin,
+        jwtSecret: probeSecret,
+        tenantId: probeTenant,
+        learnerId: privateLearner,
+        timeoutMs: 10_000,
+      });
+      return {
+        nodeProcessProbe: async () => {},
+        postgresProbe: async () => {},
+        s3Probe: async () => {},
+        repairProbe: async () => {},
+        async close() { calls.push("close"); },
+      };
+    },
+    faultRecoveryStage: async (adapters) => {
+      calls.push("run");
+      assert.deepEqual(
+        Object.keys(adapters).sort(),
+        ["nodeProcessProbe", "postgresProbe", "repairProbe", "s3Probe"],
+      );
+      return measurements;
+    },
+  });
+  assert.deepEqual(calls, ["create", "run", "close"]);
+  assert.deepEqual(result, { status: "passed", stage: "fault-recovery", measurements });
+  const serialized = JSON.stringify(result);
+  for (const privateValue of [
+    privateSelectionPath,
+    privateDatabase,
+    privateLearner,
+    probeSecret,
+    probeTenant,
+  ]) {
+    assert.equal(serialized.includes(privateValue), false);
+  }
+
+  const privateFailure = `private-fault-stage-${privateDatabase}`;
+  await assert.rejects(
+    () => runRealtimeImageProofStage({
+      stage: "fault-recovery",
+      env,
+      faultRecoveryAdaptersFactory: async () => ({
+        nodeProcessProbe: async () => {},
+        postgresProbe: async () => {},
+        s3Probe: async () => {},
+        repairProbe: async () => {},
+        async close() { calls.push("fault-close"); },
+      }),
+      faultRecoveryStage: async () => { throw new Error(privateFailure); },
+    }),
+    (error) => error.message === "realtime proof stage fault-recovery failed" &&
+      !String(error?.stack ?? error).includes(privateFailure),
+  );
+  assert.equal(calls.at(-1), "fault-close");
+
+  for (const [key, value] of [
+    ["REALTIME_PROOF_SELECTION_PATH", "relative.json"],
+    ["REALTIME_PROOF_PROJECT_NAME", "../unsafe"],
+    ["REALTIME_PROOF_FAULT_NODE_PORT", "18081"],
+    ["REALTIME_PROOF_ORIGIN", "http://private.invalid"],
+    ["JWT_SECRET", "short"],
+    ["REALTIME_PROOF_TIMEOUT_MS", "0"],
+  ]) {
+    await assert.rejects(
+      () => runRealtimeImageProofStage({
+        stage: "fault-recovery",
+        env: { ...env, [key]: value },
+        faultRecoveryAdaptersFactory: async () => { throw new Error("must not construct"); },
+        faultRecoveryStage: async () => measurements,
+      }),
+      /realtime proof stage fault-recovery (configuration|failed)/i,
     );
   }
 });
