@@ -6,8 +6,18 @@ import {
   composeImageEnvironment,
 } from "./release-deployment.mjs";
 import { createHttpCanaryActorAuthorization } from "./http-canary-probe.mjs";
+import { createDb } from "../../server/src/lib/db.mjs";
 import { AUDIO_LIMITS } from "../../server/src/realtime/audio.mjs";
 import { AUDIO_ACK_FIELDS, parseAudioAck } from "../../server/src/realtime/protocol.mjs";
+import {
+  createAudioObjectStoreFromEnv,
+  deriveAudioObjectKey,
+} from "../../server/src/storage/audio-object-store.mjs";
+import { inspectAudioChunkIndex } from "../../server/src/storage/audio-index.mjs";
+import {
+  retentionTtlHours,
+  sweepExpiredAudio,
+} from "../../server/src/inference/runtime.mjs";
 
 const sourceShaPattern = /^[a-f0-9]{40}$/;
 const expectedOwnerPattern = /^\d{12}$/;
@@ -1931,6 +1941,211 @@ function validateRetentionCleanup(value) {
     if (!Number.isSafeInteger(value[field]) || value[field] !== expected[field]) {
       throw retentionStageError("cleanup observation was invalid");
     }
+  }
+}
+
+function assertRetentionAdapterDependencies({ store, db, inspectIndex, sweep }) {
+  for (const method of ["listSession", "get", "deleteObject", "close"]) {
+    if (typeof store?.[method] !== "function") {
+      throw new TypeError(`realtime retention proof store requires ${method}`);
+    }
+  }
+  if (
+    !db ||
+    typeof db.withTenant !== "function" ||
+    typeof db.end !== "function" ||
+    typeof inspectIndex !== "function" ||
+    typeof sweep !== "function"
+  ) {
+    throw new TypeError("realtime retention proof requires restricted database adapters");
+  }
+}
+
+function retentionAdapterSignal(timeoutMs) {
+  const timeout = assertProbeTimeout(timeoutMs);
+  return AbortSignal.timeout(timeout);
+}
+
+function retentionIndexCount(value) {
+  if (value?.status === "already-indexed") return 1;
+  if (value?.status === "missing") return 0;
+  throw new TypeError("realtime retention proof index returned an unknown status");
+}
+
+function retentionMetadataMatches(stored, input) {
+  return Boolean(
+    stored &&
+    stored.tenantId === input.tenantId &&
+    stored.learnerId === input.learnerId &&
+    stored.sessionId === input.sessionId &&
+    stored.chunkId === input.chunkId &&
+    stored.startMs === input.expectedStartMs &&
+    stored.endMs === input.expectedEndMs &&
+    stored.sampleRate === input.expectedSampleRate &&
+    stored.audioRetention === input.audioRetention &&
+    stored.audioSize === input.expectedAudioBytes &&
+    stored.audioSha256 === input.expectedAudioSha256 &&
+    stored.objectKey === deriveAudioObjectKey(input) &&
+    typeof stored.storedAt === "string" &&
+    Number.isFinite(Date.parse(stored.storedAt))
+  );
+}
+
+function retentionAudioMatches(stored, input) {
+  if (
+    !stored ||
+    (!Buffer.isBuffer(stored.audioBytes) && !(stored.audioBytes instanceof Uint8Array))
+  ) {
+    return false;
+  }
+  const audioBytes = Buffer.from(stored.audioBytes);
+  return (
+    audioBytes.length === input.expectedAudioBytes &&
+    createHash("sha256").update(audioBytes).digest("hex") === input.expectedAudioSha256
+  );
+}
+
+function assertRetentionCleanupObjects(value) {
+  if (!Array.isArray(value) || value.length !== protocolParityRetentions.length) {
+    throw new TypeError("realtime retention proof cleanup requires exactly three objects");
+  }
+  const byRetention = new Map();
+  for (const object of value) {
+    if (
+      !object ||
+      typeof object !== "object" ||
+      Array.isArray(object) ||
+      !protocolParityRetentions.includes(object.audioRetention) ||
+      byRetention.has(object.audioRetention)
+    ) {
+      throw new TypeError("realtime retention proof cleanup object set is invalid");
+    }
+    deriveAudioObjectKey(object);
+    byRetention.set(object.audioRetention, object);
+  }
+  return byRetention;
+}
+
+/** Build privacy-scoped production-bound observation adapters for the retention stage. */
+export function createRealtimeRetentionProofAdapters({
+  store,
+  db,
+  inspectIndex = inspectAudioChunkIndex,
+  sweep = sweepExpiredAudio,
+} = {}) {
+  assertRetentionAdapterDependencies({ store, db, inspectIndex, sweep });
+  let closed = false;
+
+  async function observationProbe(input) {
+    const signal = retentionAdapterSignal(input?.timeoutMs);
+    const objects = await store.listSession(input, { signal });
+    if (!Array.isArray(objects)) {
+      throw new TypeError("realtime retention proof storage listing was invalid");
+    }
+    const exactObject = objects.length === 1 && objects[0]?.chunkId === input.chunkId
+      ? objects[0]
+      : null;
+    const stored = exactObject ? await store.get(input, { signal }) : null;
+    const indexCount = retentionIndexCount(await inspectIndex({
+      db,
+      input: {
+        tenantId: input.tenantId,
+        learnerId: input.learnerId,
+        sessionId: input.sessionId,
+        chunkId: input.chunkId,
+        startMs: input.expectedStartMs,
+        endMs: input.expectedEndMs,
+        sampleRate: input.expectedSampleRate,
+        audioRetention: input.audioRetention,
+      },
+    }));
+    const metadataMatches = retentionMetadataMatches(stored, input);
+    const audioMatches = retentionAudioMatches(stored, input);
+    const retained = input.audioRetention !== "discard";
+    return Object.freeze({
+      objectCount: objects.length,
+      indexCount,
+      metadataMatches,
+      audioMatches,
+      playable: retained && objects.length === 1 && indexCount === 1 &&
+        metadataMatches && audioMatches,
+    });
+  }
+
+  async function cleanupProbe({ objects, timeoutMs }) {
+    const byRetention = assertRetentionCleanupObjects(objects);
+    const discard = byRetention.get("discard");
+    const signal = retentionAdapterSignal(timeoutMs);
+    const stored = await store.get(discard, { signal });
+    const storedAt = Date.parse(stored.storedAt);
+    if (!Number.isFinite(storedAt)) {
+      throw new TypeError("realtime retention proof cleanup requires stored timestamp");
+    }
+    const scopedStore = Object.freeze({
+      listAll: async () => [discard],
+      get: (value, options) => store.get(value, options),
+      deleteObject: (value, options) => store.deleteObject(value, options),
+    });
+    const cleanup = await sweep({
+      store: scopedStore,
+      now: storedAt + retentionTtlHours("discard") * 60 * 60 * 1_000 + 1,
+      signal,
+    });
+    if (
+      cleanup?.scannedCount !== 1 ||
+      cleanup.deletedCount !== 1 ||
+      cleanup.unreadableCount !== 0
+    ) {
+      throw new TypeError("realtime retention proof cleanup result was invalid");
+    }
+    const counts = {};
+    for (const audioRetention of protocolParityRetentions) {
+      const listed = await store.listSession(byRetention.get(audioRetention), { signal });
+      if (!Array.isArray(listed)) {
+        throw new TypeError("realtime retention proof cleanup listing was invalid");
+      }
+      counts[audioRetention] = listed.length;
+    }
+    return Object.freeze({
+      discardObjects: counts.discard,
+      teacherReviewObjects: counts["teacher-review"],
+      trainingOptInObjects: counts["training-opt-in"],
+    });
+  }
+
+  async function close() {
+    if (closed) return;
+    closed = true;
+    const results = await Promise.allSettled([store.close(), db.end()]);
+    if (results.some((result) => result.status === "rejected")) {
+      throw new Error("realtime retention proof adapters failed to close");
+    }
+  }
+
+  return Object.freeze({ observationProbe, cleanupProbe, close });
+}
+
+/** Construct the real restricted-Postgres and production-S3 retention proof boundary. */
+export async function createRealtimeRetentionProofAdaptersFromEnvironment({
+  env = process.env,
+} = {}) {
+  const databaseUrl = requiredParityString(env.DATABASE_URL, "database URL", 16 * 1_024);
+  let db = null;
+  let store = null;
+  try {
+    store = createAudioObjectStoreFromEnv({ env, production: true });
+    db = createDb(databaseUrl, {
+      statementTimeoutMs: maximumProbeTimeoutMs,
+      closeTimeoutMs: maximumProbeTimeoutMs,
+    });
+    await Promise.all([db.assertRestrictedRole(), store.assertReady()]);
+    return createRealtimeRetentionProofAdapters({ store, db });
+  } catch {
+    await Promise.allSettled([
+      store?.close?.(),
+      db?.end?.(),
+    ]);
+    throw retentionStageError("production adapters were not ready");
   }
 }
 

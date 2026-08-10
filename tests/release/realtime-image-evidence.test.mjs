@@ -28,6 +28,7 @@ import {
 } from "../../scripts/lib/release-deployment.mjs";
 import {
   createRealtimeProofPreflight,
+  createRealtimeRetentionProofAdapters,
   parseRealtimeProofPort,
   probeRealtimeAudioFrame,
   probeRealtimeCapacityCohort,
@@ -1543,6 +1544,184 @@ test("the retention stage fails closed on rejected audio, false observations, cl
       },
     );
   }
+});
+
+test("retention proof adapters inspect exact S3 bytes and RLS index truth, then scope cleanup to discard", async () => {
+  const records = new Map();
+  const deleted = [];
+  const closed = [];
+  const modes = ["discard", "teacher-review", "training-opt-in"];
+  for (const audioRetention of modes) {
+    const sessionId = `private-adapter-${audioRetention}`;
+    const chunkId = `${sessionId}-ws-0000`;
+    const audioBytes = Buffer.alloc(15_360);
+    records.set(chunkId, {
+      tenantId: probeTenant,
+      learnerId: probeLearner,
+      sessionId,
+      chunkId,
+      startMs: 0,
+      endMs: 480,
+      sampleRate: 16_000,
+      audioRetention,
+      audioSize: audioBytes.length,
+      audioSha256: createHash("sha256").update(audioBytes).digest("hex"),
+      objectKey: `audio/v1/${probeTenant}/${probeLearner}/${sessionId}/${chunkId}.pcm`,
+      storedAt: "2026-08-10T00:00:00.000Z",
+      audioBytes,
+    });
+  }
+  const store = {
+    async listSession({ sessionId }) {
+      return [...records.values()]
+        .filter((record) => record.sessionId === sessionId)
+        .map(({ tenantId, learnerId, sessionId: id, chunkId, objectKey }) => ({
+          tenantId,
+          learnerId,
+          sessionId: id,
+          chunkId,
+          objectKey,
+        }));
+    },
+    async get({ chunkId }) {
+      const value = records.get(chunkId);
+      if (!value) throw new Error("private missing object");
+      return value;
+    },
+    async deleteObject({ chunkId }) {
+      deleted.push(chunkId);
+      records.delete(chunkId);
+    },
+    async close() { closed.push("store"); },
+  };
+  const db = {
+    withTenant() {},
+    async end() { closed.push("db"); },
+  };
+  const inspected = [];
+  const adapters = createRealtimeRetentionProofAdapters({
+    store,
+    db,
+    inspectIndex: async ({ db: selectedDb, input }) => {
+      assert.equal(selectedDb, db);
+      inspected.push(input);
+      return { status: input.audioRetention === "discard" ? "missing" : "already-indexed" };
+    },
+    sweep: async ({ store: scopedStore }) => {
+      const candidates = await scopedStore.listAll();
+      assert.equal(candidates.length, 1);
+      assert.equal(candidates[0].audioRetention, "discard");
+      await scopedStore.deleteObject(candidates[0]);
+      return { scannedCount: 1, deletedCount: 1, unreadableCount: 0 };
+    },
+  });
+  const descriptors = [];
+  for (const audioRetention of modes) {
+    const sessionId = `private-adapter-${audioRetention}`;
+    const input = {
+      tenantId: probeTenant,
+      learnerId: probeLearner,
+      sessionId,
+      chunkId: `${sessionId}-ws-0000`,
+      audioRetention,
+      expectedAudioBytes: 15_360,
+      expectedAudioSha256: createHash("sha256").update(Buffer.alloc(15_360)).digest("hex"),
+      expectedSampleRate: 16_000,
+      expectedStartMs: 0,
+      expectedEndMs: 480,
+      timeoutMs: 100,
+    };
+    descriptors.push(Object.fromEntries(Object.entries(input).filter(([key]) => key !== "timeoutMs")));
+    assert.deepEqual(await adapters.observationProbe(input), {
+      objectCount: 1,
+      indexCount: audioRetention === "discard" ? 0 : 1,
+      metadataMatches: true,
+      audioMatches: true,
+      playable: audioRetention !== "discard",
+    });
+  }
+  assert.equal(inspected.length, 3);
+  assert.deepEqual(await adapters.cleanupProbe({ objects: descriptors, timeoutMs: 100 }), {
+    discardObjects: 0,
+    teacherReviewObjects: 1,
+    trainingOptInObjects: 1,
+  });
+  assert.deepEqual(deleted, ["private-adapter-discard-ws-0000"]);
+  await adapters.close();
+  await adapters.close();
+  assert.deepEqual(closed.sort(), ["db", "store"]);
+});
+
+test("retention proof adapters fail their measurements on extra objects, metadata drift, index drift, or cleanup lies", async () => {
+  const record = {
+    tenantId: probeTenant,
+    learnerId: probeLearner,
+    sessionId: "private-adapter-failure",
+    chunkId: "private-adapter-failure-ws-0000",
+    startMs: 0,
+    endMs: 480,
+    sampleRate: 16_000,
+    audioRetention: "teacher-review",
+    audioSize: 15_360,
+    audioSha256: createHash("sha256").update(Buffer.alloc(15_360)).digest("hex"),
+    objectKey: `audio/v1/${probeTenant}/${probeLearner}/private-adapter-failure/private-adapter-failure-ws-0000.pcm`,
+    storedAt: "2026-08-10T00:00:00.000Z",
+    audioBytes: Buffer.alloc(15_360),
+  };
+  const input = {
+    tenantId: probeTenant,
+    learnerId: probeLearner,
+    sessionId: record.sessionId,
+    chunkId: record.chunkId,
+    audioRetention: record.audioRetention,
+    expectedAudioBytes: 15_360,
+    expectedAudioSha256: record.audioSha256,
+    expectedSampleRate: 16_000,
+    expectedStartMs: 0,
+    expectedEndMs: 480,
+    timeoutMs: 100,
+  };
+  const db = { withTenant() {}, async end() {} };
+  function adapters(overrides = {}) {
+    return createRealtimeRetentionProofAdapters({
+      store: {
+        listSession: async () => [record],
+        get: async () => record,
+        deleteObject: async () => {},
+        close: async () => {},
+        ...overrides.store,
+      },
+      db,
+      inspectIndex: overrides.inspectIndex ?? (async () => ({ status: "already-indexed" })),
+      sweep: overrides.sweep ?? (async () => ({ scannedCount: 1, deletedCount: 1, unreadableCount: 0 })),
+    });
+  }
+  assert.equal((await adapters({
+    store: { listSession: async () => [record, { ...record, chunkId: "extra" }] },
+  }).observationProbe(input)).objectCount, 2);
+  assert.equal((await adapters({
+    store: { get: async () => ({ ...record, sampleRate: 24_000 }) },
+  }).observationProbe(input)).metadataMatches, false);
+  assert.equal((await adapters({
+    store: { get: async () => ({ ...record, audioBytes: Buffer.alloc(15_360, 1) }) },
+  }).observationProbe(input)).audioMatches, false);
+  await assert.rejects(
+    () => adapters({ inspectIndex: async () => ({ status: "invented" }) }).observationProbe(input),
+    /index/i,
+  );
+  await assert.rejects(
+    () => adapters({ sweep: async () => ({ scannedCount: 1, deletedCount: 0, unreadableCount: 0 }) })
+      .cleanupProbe({
+        objects: ["discard", "teacher-review", "training-opt-in"].map((audioRetention) => ({
+          ...input,
+          sessionId: `${record.sessionId}-${audioRetention}`,
+          chunkId: `${record.chunkId}-${audioRetention}`,
+          audioRetention,
+        })),
+        timeoutMs: 100,
+      }),
+    /cleanup/i,
+  );
 });
 
 test("the capacity cohort holds 100 exact-profile sessions, refuses 101, and closes every peer", async () => {
