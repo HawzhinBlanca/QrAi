@@ -135,6 +135,21 @@ if [[ "$FAST" != "yes" ]]; then
   # the .ts directly. Same explicit-path style as the node services line above.
   run "test: mobile"              "node --experimental-strip-types --test apps/mobile/lib/session.test.ts"
 
+  # The two smokes that need NOTHING but Node. Every other step of `pnpm smoke:all` wants Postgres,
+  # Docker or a browser, but smoke-ml and smoke-privacy each spawn their OWN ml-inference
+  # (`startMlService`) and talk to nothing else — so they are as hermetic as everything above, and
+  # were excluded only because they happen to live under scripts/smoke-*.
+  #
+  # That exclusion cost real coverage, measured rather than assumed: scoping ml-inference's privacy
+  # export to one learner broke smoke-privacy's `externalAsrCalls` assertion, and the entire
+  # hermetic suite stayed green through the break. Running this file was the only thing that saw it.
+  # A test that catches what nothing else catches belongs in the gate. Cost: ~1s.
+  #
+  # Artifacts go to a temp dir instead of the default `out/smoke/<timestamp>`, because this now runs
+  # on every verify and `out/` is a protected path nobody wants filling with per-run directories.
+  run "smoke: self-contained (ml + privacy)" \
+    "SMOKE_ARTIFACT_DIR=\$(mktemp -d) node scripts/smoke-ml.mjs >/dev/null && SMOKE_ARTIFACT_DIR=\$(mktemp -d) node scripts/smoke-privacy.mjs >/dev/null"
+
   # FL1/FL2 — the Flutter client. SKIPPED, loudly, when the SDK is absent: it is a 2.1 GB user-space
   # install and neither CI nor a fresh clone has it, so making it mandatory would turn every other
   # machine's verify.sh red for a reason unrelated to the change under test. `--fatal-infos` is
