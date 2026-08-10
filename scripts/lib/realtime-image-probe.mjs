@@ -9,6 +9,7 @@ import { createHttpCanaryActorAuthorization } from "./http-canary-probe.mjs";
 import { createDb } from "../../server/src/lib/db.mjs";
 import { AUDIO_LIMITS } from "../../server/src/realtime/audio.mjs";
 import { AUDIO_ACK_FIELDS, parseAudioAck } from "../../server/src/realtime/protocol.mjs";
+import { createRealtimeRecoveryController } from "./realtime-recovery-client.mjs";
 import {
   createAudioObjectStoreFromEnv,
   deriveAudioObjectKey,
@@ -76,6 +77,12 @@ const ticketResponseFields = Object.freeze([
   "auditEventId",
 ]);
 const ticketResponseFieldSet = new Set(ticketResponseFields);
+const recoveryFinalizationFields = Object.freeze([
+  "recordingStatus",
+  "clientDroppedChunkCount",
+  "clientUncertainChunkCount",
+  "serverLostChunkCount",
+]);
 const realtimeMetricSeries = Object.freeze({
   activeSessions: "realtime_audio_active_sessions",
   retainedChunks: "realtime_audio_retained_chunks",
@@ -1653,6 +1660,24 @@ function validateIssuedTicket(value, { sessionId, tenantId, learnerId, nowUnixSe
   return value.token;
 }
 
+function validateRecoveryFinalization(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw parityError("recovery finalization failed");
+  }
+  const status = value.recordingStatus;
+  if (status !== "complete" && status !== "incomplete") {
+    throw parityError("recovery finalization failed");
+  }
+  for (const field of recoveryFinalizationFields.slice(1)) {
+    if (!Number.isSafeInteger(value[field]) || value[field] < 0) {
+      throw parityError("recovery finalization failed");
+    }
+  }
+  return Object.freeze(Object.fromEntries(
+    recoveryFinalizationFields.map((field) => [field, value[field]]),
+  ));
+}
+
 async function createRealtimeProofTicketIssuer({
   fetchImpl,
   origin,
@@ -1669,6 +1694,7 @@ async function createRealtimeProofTicketIssuer({
     role: "learner",
   });
   const sessions = new Map();
+  const ownedSessions = new Set();
 
   async function sessionFor(proofId, retention) {
     const cacheKey = `${proofId}\n${retention}`;
@@ -1715,6 +1741,7 @@ async function createRealtimeProofTicketIssuer({
         ) {
           throw parityError("session issuance failed");
         }
+        ownedSessions.add(body.id);
         return body.id;
       })());
     }
@@ -1747,7 +1774,24 @@ async function createRealtimeProofTicketIssuer({
     });
   }
 
-  return Object.freeze({ issue });
+  async function finalize(sessionId, recoveryReport) {
+    const selectedSession = requiredParityString(sessionId, "recovery session id");
+    if (!ownedSessions.has(selectedSession)) {
+      throw parityError("recovery finalization failed");
+    }
+    const body = await postParityJson({
+      fetchImpl,
+      path: `/v1/recitation-sessions/${encodeURIComponent(selectedSession)}/finalize`,
+      authorization,
+      origin,
+      timeoutMs,
+      label: "recovery finalization",
+      body: { recoveryReport },
+    });
+    return validateRecoveryFinalization(body);
+  }
+
+  return Object.freeze({ finalize, issue });
 }
 
 function validateFrameProbeResult(value) {
@@ -1987,6 +2031,457 @@ export async function probeRealtimeReadiness({
     });
   } catch {
     throw new Error("realtime readiness probe failed");
+  }
+}
+
+/** Preserve the operational distinction between an unhealthy listener and a killed process. */
+export async function probeRealtimeProcessReadiness({
+  port,
+  timeoutMs,
+  fetchImpl = fetch,
+} = {}) {
+  const selectedPort = probePort(port);
+  const selectedTimeout = assertProbeTimeout(timeoutMs);
+  if (typeof fetchImpl !== "function") {
+    throw new TypeError("realtime process readiness fetch implementation must be a function");
+  }
+  let response;
+  try {
+    response = await fetchImpl(`http://127.0.0.1:${selectedPort}/ready`, {
+      method: "GET",
+      redirect: "manual",
+      signal: AbortSignal.timeout(selectedTimeout),
+    });
+  } catch {
+    return Object.freeze({ ready: false, reachable: false, statusCode: null });
+  }
+  if (!response || !Number.isSafeInteger(response.status)) {
+    throw new Error("realtime process readiness probe failed");
+  }
+  try {
+    await response.body?.cancel?.();
+  } catch {
+    throw new Error("realtime process readiness probe failed");
+  }
+  return Object.freeze({
+    ready: response.status === 200,
+    reachable: true,
+    statusCode: response.status,
+  });
+}
+
+const nodeProcessReadinessFields = Object.freeze(["ready", "reachable", "statusCode"]);
+const nodeProcessReadinessFieldSet = new Set(nodeProcessReadinessFields);
+
+function validateNodeProcessReadiness(value, { ready, reachable, statusCode }) {
+  if (
+    !exactObjectFields(value, nodeProcessReadinessFields, nodeProcessReadinessFieldSet) ||
+    value.ready !== ready ||
+    value.reachable !== reachable ||
+    value.statusCode !== statusCode
+  ) {
+    throw new TypeError("realtime Node process readiness observation is invalid");
+  }
+  return value;
+}
+
+function validateNodeProcessLifecycle(value, field) {
+  if (
+    !value ||
+    typeof value !== "object" ||
+    Array.isArray(value) ||
+    JSON.stringify(Object.keys(value)) !== JSON.stringify([field]) ||
+    value[field] !== true
+  ) {
+    throw new TypeError(`realtime Node process lifecycle ${field} proof is invalid`);
+  }
+}
+
+function validateNodeProcessTicket(value) {
+  const fields = ["sessionId", "ticket"];
+  if (!exactObjectFields(value, fields, new Set(fields))) {
+    throw new TypeError("realtime Node process ticket is invalid");
+  }
+  requiredParityString(value.sessionId, "Node process session id");
+  requiredParityString(value.ticket, "Node process ticket", maximumProbeTicketBytes);
+  return value;
+}
+
+function realtimeRecoveryUrl(port, issued) {
+  const endpoint = new URL(`ws://127.0.0.1:${port}`);
+  endpoint.pathname =
+    `/v1/recitation-sessions/${encodeURIComponent(issued.sessionId)}/audio`;
+  endpoint.searchParams.set("ticket", issued.ticket);
+  return endpoint.toString();
+}
+
+function createRealtimeProcessSocketBoundary({ origin }) {
+  const selectedOrigin = probeOrigin(origin);
+  if (typeof globalThis.WebSocket !== "function") {
+    throw new TypeError("realtime Node process probe requires the Node WebSocket runtime");
+  }
+  const peers = new Set();
+  let suppressAcknowledgements = false;
+  let transmitted = 0;
+
+  function openSocket(url, handlers) {
+    let socket;
+    let terminal = false;
+    try {
+      socket = new globalThis.WebSocket(url, { headers: { Origin: selectedOrigin } });
+    } catch {
+      throw new Error("realtime Node process socket failed");
+    }
+    peers.add(socket);
+    const finish = (kind) => {
+      if (terminal) return;
+      terminal = true;
+      peers.delete(socket);
+      handlers[kind]();
+    };
+    socket.binaryType = "arraybuffer";
+    socket.onopen = () => handlers.onOpen();
+    socket.onmessage = (event) => {
+      if (suppressAcknowledgements) return;
+      const payload = acknowledgementInput(event.data);
+      handlers.onMessage(payload);
+    };
+    socket.onerror = () => finish("onError");
+    socket.onclose = () => finish("onClose");
+    return Object.freeze({
+      close() {
+        try {
+          socket.close();
+        } catch {
+          // The process lifecycle and controller terminal state remain authoritative.
+        }
+      },
+      send(bytes) {
+        socket.send(bytes);
+        transmitted += 1;
+      },
+    });
+  }
+
+  return Object.freeze({
+    closeAll() {
+      for (const peer of peers) {
+        try {
+          peer.close();
+        } catch {
+          // Best-effort cleanup cannot replace the bounded controller/process lifecycle.
+        }
+      }
+    },
+    openSocket,
+    snapshot: () => Object.freeze({ transmitted }),
+    suppressAcknowledgements() {
+      suppressAcknowledgements = true;
+    },
+  });
+}
+
+function validateSocketBoundary(value) {
+  for (const field of ["closeAll", "openSocket", "snapshot", "suppressAcknowledgements"]) {
+    if (typeof value?.[field] !== "function") {
+      throw new TypeError("realtime Node process socket boundary is invalid");
+    }
+  }
+  return value;
+}
+
+function socketTransmitted(boundary) {
+  const snapshot = boundary.snapshot();
+  if (
+    !snapshot ||
+    typeof snapshot !== "object" ||
+    Array.isArray(snapshot) ||
+    JSON.stringify(Object.keys(snapshot)) !== JSON.stringify(["transmitted"]) ||
+    !Number.isSafeInteger(snapshot.transmitted) ||
+    snapshot.transmitted < 0
+  ) {
+    throw new TypeError("realtime Node process transmission observation is invalid");
+  }
+  return snapshot.transmitted;
+}
+
+async function waitForRealtimeProcessCondition(predicate, timeoutMs) {
+  const deadline = performance.now() + timeoutMs;
+  while (performance.now() < deadline) {
+    if (predicate()) return;
+    await new Promise((resolveDelay) => setTimeout(resolveDelay, 10));
+  }
+  throw new TypeError("realtime Node process recovery condition timed out");
+}
+
+function validateNodeRecoveryReport(value, expected) {
+  if (canonicalJson(value) !== canonicalJson(expected)) {
+    throw new TypeError("realtime Node process recovery report is invalid");
+  }
+  return value;
+}
+
+function validateNodeFinalization(value, expected) {
+  if (
+    !exactObjectFields(
+      value,
+      recoveryFinalizationFields,
+      new Set(recoveryFinalizationFields),
+    ) ||
+    canonicalJson(value) !== canonicalJson(expected)
+  ) {
+    throw new TypeError("realtime Node process finalization is invalid");
+  }
+  return value;
+}
+
+/**
+ * Exercise clean and acknowledgement-ambiguous interruption through the frozen recovery
+ * controller. The deliberate acknowledgement blackout creates a deterministic sent/no-ack
+ * window; it does not relabel the unresolved frame as a server-side durable loss.
+ */
+export async function runRealtimeNodeProcessFaultProbe({
+  nodePort,
+  origin,
+  jwtSecret,
+  tenantId,
+  learnerId,
+  timeoutMs,
+  fetchImpl = fetch,
+  issuer = null,
+  nowUnixSeconds = () => Math.floor(Date.now() / 1_000),
+  readinessProbe = probeRealtimeProcessReadiness,
+  createSocketBoundary = createRealtimeProcessSocketBoundary,
+  schedule = setTimeout,
+  cancelSchedule = clearTimeout,
+  random = Math.random,
+  waitForCondition = null,
+  killNodeProcess,
+  startNodeProcess,
+} = {}) {
+  const controllers = [];
+  const boundaries = [];
+  let restorationRequired = false;
+  try {
+    const selectedPort = probePort(nodePort);
+    const selectedOrigin = probeOrigin(origin);
+    const selectedSecret = requiredParityString(jwtSecret, "Node process fault JWT secret", 4_096);
+    if (Buffer.byteLength(selectedSecret) < 32) {
+      throw new TypeError("realtime Node process fault JWT secret must be at least 32 bytes");
+    }
+    const selectedTenant = requiredParityString(tenantId, "Node process fault tenant id");
+    const selectedLearner = requiredParityString(learnerId, "Node process fault learner id");
+    const selectedTimeout = assertProbeTimeout(timeoutMs);
+    for (const adapter of [
+      fetchImpl,
+      nowUnixSeconds,
+      readinessProbe,
+      createSocketBoundary,
+      schedule,
+      cancelSchedule,
+      random,
+      killNodeProcess,
+      startNodeProcess,
+    ]) {
+      if (typeof adapter !== "function") {
+        throw new TypeError("realtime Node process fault adapters must be functions");
+      }
+    }
+    if (waitForCondition !== null && typeof waitForCondition !== "function") {
+      throw new TypeError("realtime Node process fault waiter must be a function");
+    }
+    const waitUntil = waitForCondition ??
+      ((predicate) => waitForRealtimeProcessCondition(predicate, selectedTimeout));
+    const selectedIssuer = issuer ?? await createRealtimeProofTicketIssuer({
+      fetchImpl,
+      origin: selectedOrigin,
+      jwtSecret: selectedSecret,
+      tenantId: selectedTenant,
+      learnerId: selectedLearner,
+      timeoutMs: selectedTimeout,
+      nowUnixSeconds,
+    });
+    if (
+      !selectedIssuer ||
+      typeof selectedIssuer.issue !== "function" ||
+      typeof selectedIssuer.finalize !== "function"
+    ) {
+      throw new TypeError("realtime Node process fault issuer is invalid");
+    }
+
+    const observeReady = async (expected) => validateNodeProcessReadiness(
+      await readinessProbe({ port: selectedPort, timeoutMs: selectedTimeout, fetchImpl }),
+      expected,
+    );
+    await observeReady({ ready: true, reachable: true, statusCode: 200 });
+
+    const createScenario = async (proofId) => {
+      const first = validateNodeProcessTicket(await selectedIssuer.issue(proofId));
+      const tickets = new Set([first.ticket]);
+      const states = [];
+      let firstPending = true;
+      let finalization = null;
+      const boundary = validateSocketBoundary(createSocketBoundary({ origin: selectedOrigin }));
+      boundaries.push(boundary);
+      const controller = createRealtimeRecoveryController({
+        sessionId: first.sessionId,
+        getUrl: async () => {
+          const usesFirstTicket = firstPending;
+          const issued = usesFirstTicket
+            ? first
+            : validateNodeProcessTicket(await selectedIssuer.issue(proofId));
+          firstPending = false;
+          if (issued.sessionId !== first.sessionId || !usesFirstTicket && tickets.has(issued.ticket)) {
+            throw new TypeError("realtime Node process recovery ticket was not fresh");
+          }
+          tickets.add(issued.ticket);
+          return realtimeRecoveryUrl(selectedPort, issued);
+        },
+        openSocket: boundary.openSocket,
+        schedule,
+        cancelSchedule,
+        random,
+        stopCapture: async () => {},
+        finalize: async (report) => {
+          finalization = await selectedIssuer.finalize(first.sessionId, report);
+        },
+        onError: () => {},
+        onStateChange: (state) => states.push(state),
+      });
+      controllers.push(controller);
+      return {
+        boundary,
+        controller,
+        finalization: () => finalization,
+        states,
+        tickets,
+      };
+    };
+
+    const clean = await createScenario("node-process-clean");
+    await clean.controller.start();
+    await waitUntil(() => clean.controller.snapshot().state === "connected");
+    if (!clean.controller.capture(Buffer.alloc(AUDIO_LIMITS.frameBytes, 0x31))) {
+      throw new TypeError("realtime Node process clean capture was refused");
+    }
+    await waitUntil(() => clean.controller.snapshot().acknowledgedChunks === 1);
+    restorationRequired = true;
+    validateNodeProcessLifecycle(await killNodeProcess(), "killed");
+    await observeReady({ ready: false, reachable: false, statusCode: null });
+    validateNodeProcessLifecycle(await startNodeProcess(), "healthy");
+    await observeReady({ ready: true, reachable: true, statusCode: 200 });
+    restorationRequired = false;
+    await waitUntil(() =>
+      clean.tickets.size >= 2 && clean.controller.snapshot().state === "connected");
+    if (!clean.controller.capture(Buffer.alloc(AUDIO_LIMITS.frameBytes, 0x32))) {
+      throw new TypeError("realtime Node process recovered capture was refused");
+    }
+    await waitUntil(() => clean.controller.snapshot().acknowledgedChunks === 2);
+    const cleanReport = validateNodeRecoveryReport(await clean.controller.stop(), {
+      version: 1,
+      state: "complete",
+      capturedChunks: 2,
+      acknowledgedChunks: 2,
+      droppedChunks: 0,
+      uncertainChunks: 0,
+      stopReason: "completed",
+    });
+    await waitUntil(() => clean.finalization() !== null);
+    validateNodeFinalization(clean.finalization(), {
+      recordingStatus: "complete",
+      clientDroppedChunkCount: 0,
+      clientUncertainChunkCount: 0,
+      serverLostChunkCount: 0,
+    });
+    if (!clean.states.includes("reconnecting") || socketTransmitted(clean.boundary) !== 2) {
+      throw new TypeError("realtime Node process clean interruption did not recover");
+    }
+
+    const ambiguous = await createScenario("node-process-ambiguous");
+    await ambiguous.controller.start();
+    await waitUntil(() => ambiguous.controller.snapshot().state === "connected");
+    ambiguous.boundary.suppressAcknowledgements();
+    if (!ambiguous.controller.capture(Buffer.alloc(AUDIO_LIMITS.frameBytes, 0x41))) {
+      throw new TypeError("realtime Node process ambiguous capture was refused");
+    }
+    await waitUntil(() => socketTransmitted(ambiguous.boundary) === 1);
+    if (!ambiguous.controller.capture(Buffer.alloc(AUDIO_LIMITS.frameBytes, 0x42))) {
+      throw new TypeError("realtime Node process retained-tail capture was refused");
+    }
+    const ambiguousBeforeKill = ambiguous.controller.snapshot();
+    if (
+      ambiguousBeforeKill.capturedChunks !== 2 ||
+      ambiguousBeforeKill.inFlight !== true ||
+      ambiguousBeforeKill.bufferedChunks !== 1
+    ) {
+      throw new TypeError("realtime Node process ambiguous window was not established");
+    }
+    restorationRequired = true;
+    validateNodeProcessLifecycle(await killNodeProcess(), "killed");
+    await observeReady({ ready: false, reachable: false, statusCode: null });
+    validateNodeProcessLifecycle(await startNodeProcess(), "healthy");
+    await observeReady({ ready: true, reachable: true, statusCode: 200 });
+    restorationRequired = false;
+    const ambiguousReport = validateNodeRecoveryReport(await ambiguous.controller.done, {
+      version: 1,
+      state: "degraded",
+      capturedChunks: 2,
+      acknowledgedChunks: 0,
+      droppedChunks: 1,
+      uncertainChunks: 1,
+      stopReason: "ack-ambiguous",
+    });
+    await waitUntil(() => ambiguous.finalization() !== null);
+    validateNodeFinalization(ambiguous.finalization(), {
+      recordingStatus: "incomplete",
+      clientDroppedChunkCount: 1,
+      clientUncertainChunkCount: 1,
+      serverLostChunkCount: 0,
+    });
+    if (ambiguous.tickets.size !== 1 || socketTransmitted(ambiguous.boundary) !== 1) {
+      throw new TypeError("realtime Node process ambiguous frame was replayed");
+    }
+
+    const framesCaptured = cleanReport.capturedChunks + ambiguousReport.capturedChunks;
+    const accepted = cleanReport.acknowledgedChunks + ambiguousReport.acknowledgedChunks;
+    const lost = cleanReport.droppedChunks + ambiguousReport.droppedChunks;
+    const uncertain = cleanReport.uncertainChunks + ambiguousReport.uncertainChunks;
+    return Object.freeze({
+      fault: "node-process",
+      framesCaptured,
+      framesTransmitted:
+        socketTransmitted(clean.boundary) + socketTransmitted(ambiguous.boundary),
+      accepted,
+      rejected: 0,
+      lost,
+      uncertain,
+      durableLost: 0,
+      durableOrphan: 0,
+      unresolvedUncertain: uncertain,
+      recovered: true,
+      readinessFailedClosed: true,
+      incompleteReportedComplete: 0,
+      proofs: Object.freeze({
+        cleanInterruptionRecovered: true,
+        ambiguousFrameNotReplayed: true,
+        freshTicketIssued: true,
+      }),
+    });
+  } catch {
+    throw new Error("realtime Node process fault probe failed");
+  } finally {
+    for (const controller of controllers) {
+      const state = controller.snapshot().state;
+      if (state !== "complete" && state !== "degraded") {
+        await controller.failCapture().catch(() => {});
+      }
+    }
+    for (const boundary of boundaries) {
+      await Promise.resolve().then(() => boundary.closeAll()).catch(() => {});
+    }
+    if (restorationRequired && typeof startNodeProcess === "function") {
+      await Promise.resolve().then(() => startNodeProcess()).catch(() => {});
+    }
   }
 }
 

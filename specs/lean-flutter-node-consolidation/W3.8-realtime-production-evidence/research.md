@@ -33,6 +33,14 @@ closes across accepted, rejected, lost, and uncertain; transmission accounting c
 accepted, rejected, durable accepted-loss, and uncertain. The unsent client-dropped tail belongs
 only to the first equation. Calling all captured audio “sent” would overstate transport evidence.
 
+The Node process probe uses the production recovery controller and a real SIGKILL twice. Its clean
+case observes an acknowledgement, kills the idle process, restores the same container, obtains a
+fresh single-use ticket, and observes a second acknowledgement. Its ambiguous case deliberately
+suppresses delivery of the server acknowledgement to the proof client only after the real socket
+send, retains one second frame behind it, and then kills the process. That controlled observation
+blackout makes sent/no-ack uncertainty deterministic without changing server behavior or claiming
+that the first frame was absent, stored, or durably lost.
+
 ## Grounded boundary and data flow
 
 - `server/src/realtime/main.mjs::{parseRealtimeConfig,createRealtimeApplication,startRealtimeProcess}`

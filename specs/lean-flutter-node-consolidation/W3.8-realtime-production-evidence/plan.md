@@ -49,7 +49,10 @@ artifact hashes and validated outcomes.
 5. Implement probe stages behind testable adapters: valid Rust/Node parity; hostile tickets/frames;
    durable cross-instance replay; three retention modes and cleanup; clean and ambiguous process
    interruption, counting an unsent retained tail as client-dropped and sent/no-ack audio as
-   unresolved without inventing a durable server outcome; Postgres outage; and a second same-image
+   unresolved without inventing a durable server outcome. Establish the ambiguous window by
+   suppressing acknowledgement delivery to the proof client only after a real socket send, then
+   SIGKILL and restore the same exact container; do not alter server acknowledgement behavior.
+   Then prove Postgres outage and a second same-image
    fault container whose deliberately
    unreachable S3 endpoint must stay unready, record accepted loss, and recover only after it is
    replaced by the production-S3 candidate. Then run outcome/repair: stored orphans must repair

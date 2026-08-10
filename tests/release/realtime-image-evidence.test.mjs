@@ -36,10 +36,12 @@ import {
   probeRealtimeCapacityCohort,
   probeRealtimeHostileSweep,
   probeRealtimeMetricsSnapshot,
+  probeRealtimeProcessReadiness,
   probeRealtimeReadiness,
   probeRealtimeUpgradeRefusal,
   runRealtimeHostileCapacityStage,
   runRealtimeFaultRecoveryStage,
+  runRealtimeNodeProcessFaultProbe,
   runRealtimePostgresFaultProbe,
   runRealtimeProtocolParityStage,
   runRealtimeRetentionStage,
@@ -1516,6 +1518,360 @@ test("the parity stage fails closed on malformed issuance or unexpected wire beh
   );
 });
 
+function nodeProcessFaultHarness({ failAt = null, mutation = {} } = {}) {
+  const calls = [];
+  const timers = [];
+  const boundaries = [];
+  const issuedByProof = new Map();
+  const reports = [];
+  let healthy = true;
+  let killCount = 0;
+  let readinessCount = 0;
+  let startCount = 0;
+
+  const fail = (name) => {
+    calls.push(name);
+    if (failAt === name) throw new Error(`private-${name}-failure`);
+  };
+  const sessionFor = (proofId) => proofId.includes("ambiguous")
+    ? "private-node-ambiguous-session"
+    : "private-node-clean-session";
+
+  const issuer = {
+    async issue(proofId) {
+      fail(`issue-${proofId}`);
+      const count = (issuedByProof.get(proofId) ?? 0) + 1;
+      issuedByProof.set(proofId, count);
+      return {
+        sessionId: sessionFor(proofId),
+        ticket: mutation.duplicateCleanTicket && proofId === "node-process-clean"
+          ? `private-${proofId}-ticket-1`
+          : `private-${proofId}-ticket-${count}`,
+      };
+    },
+    async finalize(sessionId, report) {
+      fail(`finalize-${report.state}`);
+      reports.push(structuredClone(report));
+      const expected = report.state === "complete"
+        ? {
+            recordingStatus: "complete",
+            clientDroppedChunkCount: 0,
+            clientUncertainChunkCount: 0,
+            serverLostChunkCount: 0,
+          }
+        : {
+            recordingStatus: "incomplete",
+            clientDroppedChunkCount: 1,
+            clientUncertainChunkCount: 1,
+            serverLostChunkCount: 0,
+          };
+      assert.equal(sessionId, report.state === "complete"
+        ? "private-node-clean-session"
+        : "private-node-ambiguous-session");
+      return { ...expected, ...(mutation.finalization?.[report.state] ?? {}) };
+    },
+  };
+
+  const createSocketBoundary = ({ origin }) => {
+    assert.equal(origin, probeOrigin);
+    let suppressed = false;
+    let transmitted = 0;
+    let acknowledged = 0;
+    const peers = new Set();
+    const boundary = {
+      openSocket(url, handlers) {
+        fail("open-socket");
+        if (!healthy) throw new Error("private-node-process-unavailable");
+        const endpoint = new URL(url);
+        const parts = endpoint.pathname.split("/").filter(Boolean);
+        const sessionId = decodeURIComponent(parts[2]);
+        const peer = {
+          closed: false,
+          close() {
+            if (peer.closed) return;
+            peer.closed = true;
+            peers.delete(peer);
+          },
+          send() {
+            fail("send-frame");
+            transmitted += 1;
+            if (suppressed) return;
+            const sequence = acknowledged;
+            acknowledged += 1;
+            handlers.onMessage(JSON.stringify({
+              kind: "audio.ack",
+              session_id: sessionId,
+              chunk_id: `${sessionId}-ws-${String(sequence).padStart(4, "0")}`,
+              sequence,
+              accepted: true,
+              trace_id: null,
+              message: "accepted",
+            }));
+          },
+          drop() {
+            if (peer.closed) return;
+            peer.closed = true;
+            peers.delete(peer);
+            handlers.onClose();
+          },
+        };
+        peers.add(peer);
+        handlers.onOpen();
+        return peer;
+      },
+      suppressAcknowledgements() {
+        suppressed = true;
+      },
+      snapshot() {
+        return mutation.socketSnapshot ?? { transmitted };
+      },
+      closeAll() {
+        for (const peer of [...peers]) peer.close();
+      },
+      dropAll() {
+        for (const peer of [...peers]) peer.drop();
+      },
+    };
+    boundaries.push(boundary);
+    return boundary;
+  };
+
+  const schedule = (fn, delayMs) => {
+    const timer = { fn, delayMs, active: true };
+    timers.push(timer);
+    return timer;
+  };
+  const cancelSchedule = (timer) => {
+    timer.active = false;
+  };
+  const runScheduled = () => {
+    for (const timer of timers.filter((value) => value.active)) {
+      timer.active = false;
+      timer.fn();
+    }
+  };
+
+  return {
+    boundaries,
+    calls,
+    issuedByProof,
+    reports,
+    input: {
+      nodePort: 18_081,
+      origin: probeOrigin,
+      jwtSecret: probeSecret,
+      tenantId: probeTenant,
+      learnerId: probeLearner,
+      timeoutMs: 2_000,
+      issuer,
+      createSocketBoundary,
+      schedule,
+      cancelSchedule,
+      random: () => 0,
+      waitForCondition: async (predicate) => {
+        for (let attempt = 0; attempt < 100; attempt += 1) {
+          if (predicate()) return;
+          await new Promise((resolve) => setImmediate(resolve));
+        }
+        throw new Error("private-node-condition-timeout");
+      },
+      readinessProbe: async () => {
+        fail("readiness");
+        const fallback = healthy
+          ? { ready: true, reachable: true, statusCode: 200 }
+          : { ready: false, reachable: false, statusCode: null };
+        const result = mutation.readiness?.[readinessCount] ?? fallback;
+        readinessCount += 1;
+        return result;
+      },
+      killNodeProcess: async () => {
+        killCount += 1;
+        fail(`kill-node-${killCount}`);
+        healthy = false;
+        for (const boundary of boundaries) boundary.dropAll();
+        return mutation.kill ?? { killed: true };
+      },
+      startNodeProcess: async () => {
+        startCount += 1;
+        fail(`start-node-${startCount}`);
+        healthy = true;
+        runScheduled();
+        return mutation.start ?? { healthy: true };
+      },
+    },
+  };
+}
+
+test("the Node process fault proves clean reconnect and an unreplayed ambiguous tail", async () => {
+  const harness = nodeProcessFaultHarness();
+  const result = await runRealtimeNodeProcessFaultProbe(harness.input);
+  assert.deepEqual(result, faultProbeResults().nodeProcess);
+  assert.equal(harness.calls.filter((value) => value.startsWith("kill-node-")).length, 2);
+  assert.equal(harness.calls.filter((value) => value.startsWith("start-node-")).length, 2);
+  assert.equal(harness.issuedByProof.get("node-process-clean") >= 2, true);
+  assert.equal(harness.issuedByProof.get("node-process-ambiguous"), 1);
+  assert.deepEqual(harness.reports, [
+    {
+      version: 1,
+      state: "complete",
+      capturedChunks: 2,
+      acknowledgedChunks: 2,
+      droppedChunks: 0,
+      uncertainChunks: 0,
+      stopReason: "completed",
+    },
+    {
+      version: 1,
+      state: "degraded",
+      capturedChunks: 2,
+      acknowledgedChunks: 0,
+      droppedChunks: 1,
+      uncertainChunks: 1,
+      stopReason: "ack-ambiguous",
+    },
+  ]);
+  assert.deepEqual(harness.boundaries.map((value) => value.snapshot().transmitted), [2, 1]);
+  for (const privateValue of [
+    "private-node-clean-session",
+    "private-node-ambiguous-session",
+    "private-node-process-clean-ticket",
+    probeTenant,
+    probeLearner,
+  ]) {
+    assert.equal(JSON.stringify(result).includes(privateValue), false);
+  }
+});
+
+test("the Node process fault obtains fresh API tickets and submits both exact recovery reports", async () => {
+  const harness = nodeProcessFaultHarness();
+  const requests = [];
+  const sessions = new Map();
+  let nextSession = 0;
+  let nextTicket = 0;
+  delete harness.input.issuer;
+  harness.input.nowUnixSeconds = () => probeNowSeconds;
+  harness.input.fetchImpl = async (input, options) => {
+    const url = new URL(input);
+    const body = JSON.parse(options.body);
+    requests.push({ url, options, body });
+    if (url.pathname === "/v1/recitation-sessions") {
+      const proofId = body.sourceChecksum.split(":").at(-1);
+      const sessionId = `private-api-node-session-${++nextSession}`;
+      sessions.set(sessionId, proofId);
+      return new Response(JSON.stringify({
+        id: sessionId,
+        tenantId: probeTenant,
+        learnerId: probeLearner,
+        consent: { audioRetention: "discard" },
+      }));
+    }
+    if (url.pathname === "/v1/realtime-session-tickets") {
+      assert.equal(sessions.has(body.sessionId), true);
+      nextTicket += 1;
+      return new Response(JSON.stringify({
+        sessionId: body.sessionId,
+        tenantId: probeTenant,
+        learnerId: probeLearner,
+        expiresAt: String(probeNowSeconds + 300),
+        allowedSampleRates: [16_000],
+        externalAsrProcessing: false,
+        token: `rt_v2.a.b.c.d.e.f.${nextTicket}.h`,
+        auditEventId: `private-audit-${nextTicket}`,
+      }));
+    }
+    if (/^\/v1\/recitation-sessions\/[^/]+\/finalize$/.test(url.pathname)) {
+      const sessionId = decodeURIComponent(url.pathname.split("/")[3]);
+      assert.equal(sessions.has(sessionId), true);
+      const report = body.recoveryReport;
+      return new Response(JSON.stringify({
+        finalized: false,
+        recordingStatus: report.state === "complete" ? "complete" : "incomplete",
+        clientDroppedChunkCount: report.droppedChunks,
+        clientUncertainChunkCount: report.uncertainChunks,
+        serverLostChunkCount: 0,
+      }));
+    }
+    assert.fail(`unexpected process-fault API path ${url.pathname}`);
+  };
+
+  const result = await runRealtimeNodeProcessFaultProbe(harness.input);
+  assert.deepEqual(result, faultProbeResults().nodeProcess);
+  assert.equal(requests.filter(({ url }) => url.pathname === "/v1/recitation-sessions").length, 2);
+  assert.equal(requests.filter(({ url }) => url.pathname === "/v1/realtime-session-tickets").length >= 3, true);
+  const finalizations = requests.filter(({ url }) => url.pathname.endsWith("/finalize"));
+  assert.deepEqual(finalizations.map(({ body }) => body.recoveryReport), [
+    {
+      version: 1,
+      state: "complete",
+      capturedChunks: 2,
+      acknowledgedChunks: 2,
+      droppedChunks: 0,
+      uncertainChunks: 0,
+      stopReason: "completed",
+    },
+    {
+      version: 1,
+      state: "degraded",
+      capturedChunks: 2,
+      acknowledgedChunks: 0,
+      droppedChunks: 1,
+      uncertainChunks: 1,
+      stopReason: "ack-ambiguous",
+    },
+  ]);
+  assert.equal(finalizations.length, 2);
+  assert.equal(requests.every(({ options }) => /^Bearer [^.]+\.[^.]+\.[^.]+$/.test(
+    options.headers.authorization,
+  )), true);
+});
+
+test("the Node process fault fails closed on lifecycle, readiness, finalization, and transport lies", async () => {
+  const cases = [
+    { mutation: { kill: { killed: false } }, restorationExpected: true },
+    { mutation: { start: { healthy: false } }, restorationExpected: true },
+    {
+      mutation: { finalization: { complete: { recordingStatus: "incomplete" } } },
+      restorationExpected: true,
+    },
+    {
+      mutation: { finalization: { degraded: { recordingStatus: "complete" } } },
+      restorationExpected: true,
+    },
+    {
+      mutation: { finalization: { degraded: { serverLostChunkCount: 1 } } },
+      restorationExpected: true,
+    },
+    {
+      mutation: {
+        readiness: {
+          1: { ready: false, reachable: true, statusCode: 503 },
+        },
+      },
+      restorationExpected: true,
+    },
+    { mutation: { duplicateCleanTicket: true }, restorationExpected: true },
+    { mutation: { socketSnapshot: { transmitted: -1 } }, restorationExpected: true },
+    { failAt: "readiness", restorationExpected: false },
+    { failAt: "kill-node-1", restorationExpected: true },
+    { failAt: "send-frame", restorationExpected: false },
+  ];
+  for (const values of cases) {
+    const harness = nodeProcessFaultHarness(values);
+    await assert.rejects(
+      () => runRealtimeNodeProcessFaultProbe(harness.input),
+      (error) => error.message === "realtime Node process fault probe failed" &&
+        !String(error).includes("private-"),
+    );
+    if (values.restorationExpected) {
+      assert.equal(
+        harness.calls.some((value) => value.startsWith("start-node-")),
+        true,
+        "failure path did not attempt Node process restoration",
+      );
+    }
+  }
+});
+
 function postgresFaultHarness({ failAt = null, mutation = null } = {}) {
   const calls = [];
   let readinessCall = 0;
@@ -1632,6 +1988,34 @@ test("the readiness probe is loopback-only, bounded, bodyless, and generic on tr
     }),
     (error) => error.message === "realtime readiness probe failed" &&
       !String(error).includes("private-readiness-body"),
+  );
+});
+
+test("the process readiness probe distinguishes a reachable refusal from a killed endpoint", async () => {
+  assert.deepEqual(
+    await probeRealtimeProcessReadiness({
+      port: 18_081,
+      timeoutMs: 2_000,
+      fetchImpl: async () => ({ status: 503, body: { cancel: async () => {} } }),
+    }),
+    { ready: false, reachable: true, statusCode: 503 },
+  );
+  assert.deepEqual(
+    await probeRealtimeProcessReadiness({
+      port: 18_081,
+      timeoutMs: 2_000,
+      fetchImpl: async () => { throw new Error("private-killed-process"); },
+    }),
+    { ready: false, reachable: false, statusCode: null },
+  );
+  await assert.rejects(
+    () => probeRealtimeProcessReadiness({
+      port: 18_081,
+      timeoutMs: 2_000,
+      fetchImpl: async () => ({ status: "private-invalid-status" }),
+    }),
+    (error) => error.message === "realtime process readiness probe failed" &&
+      !String(error).includes("private-"),
   );
 });
 
