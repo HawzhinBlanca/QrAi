@@ -1155,6 +1155,11 @@ describe("Quran AI app smoke", () => {
         return Promise.resolve(new Response(JSON.stringify([
           {
             id: "finding-1",
+            // The queue now attributes findings by sessionId, because wordId is the CANONICAL id and
+            // is shared by every learner reciting this passage — matching on it showed one learner's
+            // findings under another's session. This mock models the real response, which carries
+            // the owning session.
+            sessionId: "practice-offline-smoke",
             wordId: "1:1:2",
             rule: "Ghunnah",
             severity: "warning",

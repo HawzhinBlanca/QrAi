@@ -448,7 +448,7 @@ export async function listTajweedFindings(req, reply, ctx) {
   let totalAwaiting = 0;
   const body = await ctx.db.withTenant(actor.tenantId, async (tx) => {
     const rows = await tx`
-      SELECT tf.id, tf.alignment_id, wa.word_id, wa.transcript_source, tf.analysis_basis,
+      SELECT tf.id, tf.alignment_id, wa.session_id, wa.word_id, wa.transcript_source, tf.analysis_basis,
              tf.rule, tf.severity,
              tf.confidence::float8 AS confidence, tf.explanation, tf.review_status, tf.source_refs,
              cr.audio_retention,
@@ -515,6 +515,10 @@ export async function listTajweedFindings(req, reply, ctx) {
       id: r.id ?? "",
       reviewStatus: r.review_status ?? "",
       rule: r.rule ?? "",
+      // Alphabetical: this list is the WIRE ORDER and review-parity.test.mjs pins it key for key.
+      // Rust serialises through a BTreeMap and sorts for free; here the literal order IS the output
+      // order, so a key appended at the end is a parity failure rather than a cosmetic one.
+      sessionId: r.session_id ?? "",
       severity: r.severity ?? "",
       // Untyped jsonb passed straight through, so BTreeMap key ordering applies.
       sources: sortKeysDeep(r.source_refs ?? []),
