@@ -7,6 +7,34 @@
 > closes it. Every ⬜ is stated plainly, **including the ones I previously overstated.**
 > If any line here disagrees with something I said in chat, **this sheet wins.**
 
+## ⚠️ This sheet is STALE — read this first
+
+**Compiled at `e0f37c1` (2026-07-24). `main` has moved a long way since, and several ⬜ rows below
+are now wrong in the *understating* direction.** Evidence that has landed since this audit:
+
+| Row this sheet marks ⬜ | What now exists |
+|---|---|
+| **P5.4** "Never load-tested" | `specs/dr-rehearsal/evidence/P5.4-load-burst.log`, `-long-audio.log`, `-reconnect-drill.log`, `-partial-loss-recovery.log`. The k6 run is also cited in `services/ml-inference/server.mjs` (73.8% error at 10 VUs, 78.1% at 50 — the per-IP limiter answering, not the service failing), which is *why* the trusted-caller budget `ML_TRUSTED_RATE_LIMIT_MAX` exists. |
+| **P5.6** "NOT done" | `P5.6-encrypted-backup-verification.log`, `T1-restore-drill.log`; `specs/dr-rehearsal/tasks.md` records T1 as **DONE, drill PASSED with controls**. |
+| Kill switch | `T3-killswitch-drill.log` — DONE, native binary over real HTTP. |
+
+**The marks below are deliberately NOT flipped here.** This sheet's authority comes from every ✅
+having been first-hand verified by its author; re-marking rows from second-hand evidence would
+destroy exactly that property. It needs a fresh audit pass, not an edit.
+
+**What is genuinely still open** (per `specs/dr-rehearsal/tasks.md`, which IS current):
+- **T4 rollback artifact** — ADR proposed, rehearsal **BLOCKED**
+- **T5 runbook** — T1/T3 numbers measured and filled in; **rollback still UNMEASURED**
+- **P5.5 live proof** — the engineering is delivered (`monitoring/`: scrape config, alert rules,
+  dashboard, kill-switch, runbook). What is missing is a deployed Prometheus, an alert actually
+  firing, and an owner actually receiving it. No code closes that.
+
+Understating is safer than overstating, and this repo is right to prefer it — but a status sheet
+that is wrong in either direction stops being usable for deciding what to work on next. That is the
+cost being flagged here.
+
+---
+
 ## The one-sentence truth
 
 > **The software is complete, secure, and tested (`verify.sh` green). It is NOT usable-for-learning
