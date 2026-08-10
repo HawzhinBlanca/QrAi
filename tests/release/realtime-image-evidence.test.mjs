@@ -41,7 +41,10 @@ import {
   summarizeRealtimeAudioFrameProbes,
   validateRealtimeProofRenderedTopology,
 } from "../../scripts/lib/realtime-image-probe.mjs";
-import { parseRealtimeImageProofArguments } from "../../scripts/realtime-image-proof.mjs";
+import {
+  parseRealtimeImageProofArguments,
+  runRealtimeImageProofStage,
+} from "../../scripts/realtime-image-proof.mjs";
 import { issueRealtimeTicket } from "../../server/src/lib/ticket.mjs";
 import { createRealtimeApplication } from "../../server/src/realtime/main.mjs";
 
@@ -2317,6 +2320,103 @@ test("proof CLI arguments reject unsafe paths, ports, projects, actors, acknowle
   ];
   for (const [argv, pattern] of cases) {
     assert.throws(() => parseRealtimeImageProofArguments(argv), pattern);
+  }
+
+  assert.deepEqual(parseRealtimeImageProofArguments(["probe", "--stage", "retention"]), {
+    command: "probe",
+    stage: "retention",
+  });
+  for (const argv of [
+    ["probe"],
+    ["probe", "--stage"],
+    ["probe", "--stage", "unknown"],
+    ["probe", "--stage", "retention", "--skip", "yes"],
+  ]) {
+    assert.throws(() => parseRealtimeImageProofArguments(argv), /stage|argument|exact/i);
+  }
+});
+
+test("the retention CLI stage validates environment, closes real adapters, and emits only aggregate evidence", async () => {
+  const calls = [];
+  const privateDatabase = "postgresql://private-user:private-password@private-db/proof";
+  const privateLearner = "private-proof-learner";
+  const env = {
+    DATABASE_URL: privateDatabase,
+    JWT_SECRET: probeSecret,
+    REALTIME_PROOF_NODE_PORT: "18081",
+    REALTIME_PROOF_ORIGIN: probeOrigin,
+    REALTIME_PROOF_TENANT_ID: probeTenant,
+    REALTIME_PROOF_LEARNER_ID: privateLearner,
+    REALTIME_PROOF_TIMEOUT_MS: "10000",
+  };
+  const measurements = stageMeasurements("retention");
+  const result = await runRealtimeImageProofStage({
+    stage: "retention",
+    env,
+    retentionAdaptersFactory: async ({ env: selectedEnv }) => {
+      assert.equal(selectedEnv, env);
+      calls.push("create");
+      return {
+        observationProbe: async () => {},
+        cleanupProbe: async () => {},
+        async close() { calls.push("close"); },
+      };
+    },
+    retentionStage: async (input) => {
+      calls.push("run");
+      assert.equal(input.nodePort, 18_081);
+      assert.equal(input.origin, probeOrigin);
+      assert.equal(input.jwtSecret, probeSecret);
+      assert.equal(input.tenantId, probeTenant);
+      assert.equal(input.learnerId, privateLearner);
+      assert.equal(input.timeoutMs, 10_000);
+      assert.equal(typeof input.observationProbe, "function");
+      assert.equal(typeof input.cleanupProbe, "function");
+      return measurements;
+    },
+  });
+  assert.deepEqual(calls, ["create", "run", "close"]);
+  assert.deepEqual(result, { status: "passed", stage: "retention", measurements });
+  const serialized = JSON.stringify(result);
+  for (const privateValue of [privateDatabase, privateLearner, probeSecret, probeTenant]) {
+    assert.equal(serialized.includes(privateValue), false);
+  }
+
+  const privateFailure = `private-stage-failure-${privateDatabase}`;
+  await assert.rejects(
+    () => runRealtimeImageProofStage({
+      stage: "retention",
+      env,
+      retentionAdaptersFactory: async () => ({
+        observationProbe: async () => {},
+        cleanupProbe: async () => {},
+        async close() { calls.push("failure-close"); },
+      }),
+      retentionStage: async () => { throw new Error(privateFailure); },
+    }),
+    (error) => {
+      assert.match(String(error), /realtime proof stage retention failed/i);
+      assert.equal(String(error?.stack ?? error).includes(privateFailure), false);
+      return true;
+    },
+  );
+  assert.equal(calls.at(-1), "failure-close");
+
+  for (const [key, value] of [
+    ["REALTIME_PROOF_NODE_PORT", "8081"],
+    ["REALTIME_PROOF_ORIGIN", "http://private.invalid"],
+    ["JWT_SECRET", "short"],
+    ["REALTIME_PROOF_TIMEOUT_MS", "0"],
+  ]) {
+    await assert.rejects(
+      () => runRealtimeImageProofStage({
+        stage: "retention",
+        env: { ...env, [key]: value },
+        retentionAdaptersFactory: async () => { throw new Error("must not construct"); },
+        retentionStage: async () => measurements,
+      }),
+      /realtime proof stage retention (configuration|failed)/i,
+    );
   }
 });
 

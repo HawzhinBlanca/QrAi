@@ -7,7 +7,9 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { realtimeImageCommandPlan } from "./lib/realtime-image-evidence.mjs";
 import {
   createRealtimeProofPreflight,
+  createRealtimeRetentionProofAdaptersFromEnvironment,
   parseRealtimeProofPort,
+  runRealtimeRetentionStage,
 } from "./lib/realtime-image-probe.mjs";
 import {
   assertReleaseDeploymentSelection,
@@ -16,6 +18,8 @@ import {
 
 const repo = resolve(fileURLToPath(new URL("..", import.meta.url)));
 const providerPattern = /^[a-z0-9][a-z0-9._-]{1,127}$/;
+const proofIdentityPattern = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
+const enabledProbeStages = new Set(["retention"]);
 const allowedFlags = new Set([
   "--selection",
   "--project-name",
@@ -51,8 +55,18 @@ function parsePairs(argv) {
 
 export function parseRealtimeImageProofArguments(argv) {
   const [command, ...rest] = argv;
+  if (command === "probe") {
+    if (
+      rest.length !== 2 ||
+      rest[0] !== "--stage" ||
+      !enabledProbeStages.has(rest[1])
+    ) {
+      fail("probe requires exactly one enabled --stage argument");
+    }
+    return { command, stage: rest[1] };
+  }
   if (command !== "preflight") {
-    fail("proof command must be preflight until the measured stage runner is enabled");
+    fail("proof command must be preflight or an enabled probe stage");
   }
   const values = parsePairs(rest);
   if (!isAbsolute(values["--selection"])) fail("--selection must be an absolute path");
@@ -78,6 +92,125 @@ export function parseRealtimeImageProofArguments(argv) {
     nodePort,
     secondaryNodePort,
   };
+}
+
+function stageString(env, name, maximumBytes = 4_096) {
+  const value = env[name];
+  if (
+    typeof value !== "string" ||
+    value.trim() === "" ||
+    value !== value.trim() ||
+    Buffer.byteLength(value) > maximumBytes
+  ) {
+    fail(`realtime proof stage configuration requires ${name}`);
+  }
+  return value;
+}
+
+function stageIdentity(env, name) {
+  const value = stageString(env, name, 128);
+  if (!proofIdentityPattern.test(value) || value.includes("..")) {
+    fail(`realtime proof stage configuration rejects ${name}`);
+  }
+  return value;
+}
+
+function stageOrigin(env) {
+  const value = stageString(env, "REALTIME_PROOF_ORIGIN", 2_048);
+  let parsed;
+  try {
+    parsed = new URL(value);
+  } catch {
+    fail("realtime proof stage configuration requires an exact HTTPS origin");
+  }
+  if (
+    parsed.protocol !== "https:" ||
+    parsed.username !== "" ||
+    parsed.password !== "" ||
+    parsed.pathname !== "/" ||
+    parsed.search !== "" ||
+    parsed.hash !== "" ||
+    parsed.origin !== value
+  ) {
+    fail("realtime proof stage configuration requires an exact HTTPS origin");
+  }
+  return value;
+}
+
+function stageTimeout(env) {
+  const value = stageString(env, "REALTIME_PROOF_TIMEOUT_MS", 5);
+  if (!/^[0-9]+$/.test(value)) {
+    fail("realtime proof stage configuration timeout is invalid");
+  }
+  const timeoutMs = Number(value);
+  if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 50 || timeoutMs > 30_000) {
+    fail("realtime proof stage configuration timeout is invalid");
+  }
+  return timeoutMs;
+}
+
+function retentionStageConfiguration(env) {
+  try {
+    const jwtSecret = stageString(env, "JWT_SECRET");
+    if (Buffer.byteLength(jwtSecret) < 32) {
+      fail("realtime proof stage configuration JWT secret is too short");
+    }
+    return Object.freeze({
+      nodePort: parseRealtimeProofPort(stageString(env, "REALTIME_PROOF_NODE_PORT", 5)),
+      origin: stageOrigin(env),
+      jwtSecret,
+      tenantId: stageIdentity(env, "REALTIME_PROOF_TENANT_ID"),
+      learnerId: stageIdentity(env, "REALTIME_PROOF_LEARNER_ID"),
+      timeoutMs: stageTimeout(env),
+    });
+  } catch {
+    throw new TypeError("realtime proof stage retention configuration is invalid");
+  }
+}
+
+export async function runRealtimeImageProofStage({
+  stage,
+  env = process.env,
+  retentionAdaptersFactory = createRealtimeRetentionProofAdaptersFromEnvironment,
+  retentionStage = runRealtimeRetentionStage,
+} = {}) {
+  if (stage !== "retention") {
+    throw new TypeError("realtime proof stage is not enabled");
+  }
+  const configuration = retentionStageConfiguration(env);
+  if (typeof retentionAdaptersFactory !== "function" || typeof retentionStage !== "function") {
+    throw new TypeError("realtime proof stage retention adapters are invalid");
+  }
+
+  let adapters = null;
+  let measurements = null;
+  let failure = null;
+  try {
+    adapters = await retentionAdaptersFactory({ env });
+    if (
+      typeof adapters?.observationProbe !== "function" ||
+      typeof adapters?.cleanupProbe !== "function" ||
+      typeof adapters?.close !== "function"
+    ) {
+      throw new TypeError("retention adapters were incomplete");
+    }
+    measurements = await retentionStage({
+      ...configuration,
+      observationProbe: adapters.observationProbe,
+      cleanupProbe: adapters.cleanupProbe,
+    });
+  } catch {
+    failure = new Error("realtime proof stage retention failed");
+  }
+  if (adapters !== null) {
+    try {
+      await adapters.close();
+    } catch {
+      failure = new Error("realtime proof stage retention failed");
+    }
+  }
+  if (failure) throw failure;
+  return Object.freeze({ status: "passed", stage, measurements });
 }
 
 function readSelection(path) {
@@ -107,6 +240,13 @@ function safeError(error) {
 
 async function main() {
   const options = parseRealtimeImageProofArguments(process.argv.slice(2));
+  if (options.command === "probe") {
+    console.log(JSON.stringify(await runRealtimeImageProofStage({
+      stage: options.stage,
+      env: process.env,
+    })));
+    return;
+  }
   const selection = readSelection(options.selectionPath);
   const sourceState = {
     headSha: run("git", ["rev-parse", "HEAD"]),
