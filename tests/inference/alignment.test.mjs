@@ -6,6 +6,7 @@ import { test } from "node:test";
 
 import {
   normalizeArabic,
+  levenshtein,
   similarity,
   alignWords,
   calculateConfidence,
@@ -22,6 +23,36 @@ test("normalizeArabic strips tashkeel and unifies alef/ya variants", () => {
 test("normalizeArabic unifies taa marbuta (ة) with haa (ه) — the common ASR transcription variant", () => {
   assert.equal(normalizeArabic("رحمة"), normalizeArabic("رحمه"));
   assert.equal(normalizeArabic("الجنة"), normalizeArabic("الجنه"));
+});
+
+test("similarity gives partial (not full) credit for a hamza-on-carrier ASR substitution", () => {
+  // Regression for the gap flagged alongside the taa-marbuta/haa fix (PR #56): ؤ/ئ vs the bare
+  // carrier و/ي is a documented ASR transcription ambiguity, but hamza articulation is itself a
+  // real tajweed correctness point -- unlike taa-marbuta/haa, there is no scholar ruling that this
+  // is a confirmed acoustic equivalence. So this must NOT normalize to a full 1.0 match (that would
+  // risk masking a genuine dropped/mispronounced hamza as "matched"), but a single-character ASR
+  // substitution also must not score low enough to land in "misread" at the review-threshold edge
+  // (previously as low as 0.667, adjacent to the 0.65 missed/review boundary) purely from this
+  // ambiguity. Partial credit (0.5 of a normal substitution) lands squarely in between.
+  const muminSim = similarity("مؤمن", "مومن");
+  assert.equal(muminSim, 0.875);
+
+  const suilaSim = similarity("سئل", "سيل");
+  assert.equal(suilaSim, 1 - 0.5 / 3);
+
+  assert.equal(levenshtein("\u0624", "\u0648"), 0.5);
+  assert.equal(levenshtein("\u0648", "\u0624"), 0.5);
+  assert.equal(levenshtein("\u0626", "\u064A"), 0.5);
+  assert.equal(levenshtein("\u064A", "\u0626"), 0.5);
+  assert.equal(levenshtein("\u0624", "\u064A"), 1, "unapproved substitutions keep full cost");
+});
+
+test("similarity still fully penalizes an outright DROPPED hamza (not a carrier substitution)", () => {
+  // "شيء" -> "شي" deletes the final hamza entirely (an indel, not a same-position substitution) —
+  // a real, correctable recitation error (dropped hamzat al-qat'), not an orthographic ambiguity.
+  // This must NOT get partial credit, or a genuine mispronunciation would be masked as near-matched.
+  const s = similarity("شيء", "شي");
+  assert.ok(s < 0.7, `a dropped hamza must stay clearly flagged as an error, got ${s}`);
 });
 
 test("similarity is 1.0 for identical (post-normalization) words and lower for edits", () => {
