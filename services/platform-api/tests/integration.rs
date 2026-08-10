@@ -5859,6 +5859,7 @@ async fn seed_session_for(router: &axum::Router, checksum: &str) -> String {
 /// becomes visible is silent: the learner is shown a judgement about their recitation that a teacher
 /// looked at and refused.
 #[tokio::test]
+#[ignore = "requires live Postgres"]
 async fn teacher_approval_cannot_override_fixture_evidence_or_missing_retained_audio() {
     let state = test_state();
     let router = platform_router_with_rate_limit(test_state(), false);
