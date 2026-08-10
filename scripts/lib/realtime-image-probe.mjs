@@ -811,6 +811,513 @@ export async function probeRealtimeUpgradeRefusal({
   });
 }
 
+function hostileError(message) {
+  return new Error(`realtime hostile probe ${message}`);
+}
+
+function hostilePeer(value, label) {
+  if (
+    !value ||
+    typeof value !== "object" ||
+    Array.isArray(value) ||
+    Object.keys(value).length !== 2 ||
+    !Object.hasOwn(value, "sessionId") ||
+    !Object.hasOwn(value, "ticket")
+  ) {
+    throw new TypeError(`realtime hostile probe ${label} must contain exactly sessionId and ticket`);
+  }
+  return Object.freeze({
+    sessionId: requiredProbeString(value.sessionId, `${label} session id`, maximumProbeSessionBytes),
+    ticket: requiredProbeString(value.ticket, `${label} ticket`, maximumProbeTicketBytes),
+  });
+}
+
+function hostileTimeout(deadline) {
+  const remaining = Math.floor(deadline - performance.now());
+  if (remaining < minimumProbeTimeoutMs) throw hostileError("timed out");
+  return Math.min(maximumProbeTimeoutMs, remaining);
+}
+
+function exactProbeResult(value, expected, label) {
+  if (
+    !value ||
+    typeof value !== "object" ||
+    Array.isArray(value) ||
+    Object.keys(value).length !== Object.keys(expected).length ||
+    Object.entries(expected).some(([key, expectedValue]) => value[key] !== expectedValue)
+  ) {
+    throw hostileError(`${label} was not proven`);
+  }
+}
+
+function rawHostileTicketRefusal({ port, sessionId, ticket, origin, timeoutMs }) {
+  const query = new URLSearchParams({ ticket });
+  const path = `/v1/recitation-sessions/${encodeURIComponent(sessionId)}/audio?${query}`;
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    let request;
+    let timeout;
+    const finish = (error) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeout);
+      request?.destroy();
+      if (error) reject(error);
+      else resolve();
+    };
+    try {
+      request = httpRequest({
+        host: "127.0.0.1",
+        port,
+        method: "GET",
+        path,
+        headers: {
+          Connection: "Upgrade",
+          Origin: origin,
+          Upgrade: "websocket",
+          "Sec-WebSocket-Key": randomBytes(16).toString("base64"),
+          "Sec-WebSocket-Version": "13",
+        },
+      });
+    } catch {
+      finish(hostileError("ticket transport failed"));
+      return;
+    }
+    timeout = setTimeout(() => finish(hostileError("ticket refusal timed out")), timeoutMs);
+    request.once("upgrade", (_response, socket) => {
+      socket.destroy();
+      finish(hostileError("malformed ticket unexpectedly upgraded"));
+    });
+    request.once("response", (response) => {
+      let bodyBytes = 0;
+      response.on("data", (chunk) => {
+        bodyBytes += Buffer.byteLength(chunk);
+        if (bodyBytes > 0) finish(hostileError("ticket refusal was not bodyless"));
+      });
+      response.once("end", () => {
+        const contentLength = response.headers["content-length"];
+        if (
+          response.statusCode !== 401 ||
+          bodyBytes !== 0 ||
+          (contentLength !== undefined && contentLength !== "0")
+        ) {
+          finish(hostileError("ticket refusal boundary was invalid"));
+          return;
+        }
+        finish(null);
+      });
+      response.once("aborted", () => finish(hostileError("ticket transport failed")));
+      response.once("error", () => finish(hostileError("ticket transport failed")));
+    });
+    request.once("error", () => finish(hostileError("ticket transport failed")));
+    request.end();
+  });
+}
+
+async function defaultHostileTicketProbe({ port, peer, origin, timeoutMs }) {
+  const parts = peer.ticket.split(".");
+  const negativeExpiry = [...parts];
+  if (negativeExpiry.length > 6) negativeExpiry[6] = "-1";
+  const cases = [
+    "",
+    "hello",
+    "rt_v2.a.b",
+    `${peer.ticket}.extra`,
+    peer.ticket.replace(/^rt_v2\./, "rt_v1."),
+    negativeExpiry.join("."),
+    `rt_v2.${"x".repeat(8 * 1024)}`,
+  ];
+  const outcomes = await Promise.allSettled(cases.map((ticket) => rawHostileTicketRefusal({
+    port,
+    sessionId: peer.sessionId,
+    ticket,
+    origin,
+    timeoutMs,
+  })));
+  const failed = outcomes.find(({ status }) => status === "rejected");
+  if (failed) throw failed.reason;
+  return Object.freeze({ refused: cases.length });
+}
+
+function defaultHostileTransportProbe({ port, peer, origin, traceId, frame, timeoutMs }) {
+  const endpoint = capacityEndpoint(port, peer, traceId);
+  return new Promise((resolve, reject) => {
+    let socket;
+    let settled = false;
+    let receivedMessage = false;
+    let timeout;
+    const finish = (error, value = null) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeout);
+      try {
+        socket?.close();
+      } catch {
+        // The transport-limit close already owns cleanup.
+      }
+      if (error) reject(error);
+      else resolve(Object.freeze(value));
+    };
+    try {
+      socket = new globalThis.WebSocket(endpoint, { headers: { Origin: origin } });
+    } catch {
+      finish(hostileError("transport-limit connection failed"));
+      return;
+    }
+    timeout = setTimeout(() => finish(hostileError("transport-limit close timed out")), timeoutMs);
+    socket.onopen = () => {
+      try {
+        socket.send(frame);
+      } catch {
+        finish(hostileError("transport-limit send failed"));
+      }
+    };
+    socket.onmessage = () => {
+      receivedMessage = true;
+      finish(hostileError("transport-over frame received an acknowledgement"));
+    };
+    socket.onclose = (event) => {
+      if (receivedMessage || event.code !== 1009) {
+        finish(hostileError("transport-over frame close was invalid"));
+        return;
+      }
+      finish(null, { rejected: true, closeCode: 1009 });
+    };
+    socket.onerror = () => {
+      // A WebSocket protocol error may precede the authoritative 1009 close event.
+    };
+  });
+}
+
+function defaultHostileTextProbe({ port, peer, origin, traceId, timeoutMs }) {
+  const endpoint = capacityEndpoint(port, peer, traceId);
+  return new Promise((resolve, reject) => {
+    let socket;
+    let settled = false;
+    let silenceProven = false;
+    let silenceTimer;
+    let timeout;
+    const finish = (error, value = null) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeout);
+      clearTimeout(silenceTimer);
+      try {
+        socket?.close();
+      } catch {
+        // The peer may already have completed the close handshake.
+      }
+      if (error) reject(error);
+      else resolve(Object.freeze(value));
+    };
+    try {
+      socket = new globalThis.WebSocket(endpoint, { headers: { Origin: origin } });
+    } catch {
+      finish(hostileError("text connection failed"));
+      return;
+    }
+    timeout = setTimeout(() => finish(hostileError("text probe timed out")), timeoutMs);
+    socket.onopen = () => {
+      try {
+        socket.send("text is not realtime audio");
+      } catch {
+        finish(hostileError("text send failed"));
+        return;
+      }
+      silenceTimer = setTimeout(() => {
+        silenceProven = true;
+        try {
+          socket.close();
+        } catch {
+          finish(hostileError("text cleanup failed"));
+        }
+      }, duplicateAckWindowMs);
+    };
+    socket.onmessage = () => finish(hostileError("text frame received an acknowledgement"));
+    socket.onclose = () => {
+      if (!silenceProven) {
+        finish(hostileError("text frame disturbed the session"));
+        return;
+      }
+      finish(null, { ignored: true });
+    };
+    socket.onerror = () => {
+      if (!silenceProven) finish(hostileError("text transport failed"));
+    };
+  });
+}
+
+function defaultHostileDuplicateProbe({ port, primary, secondary, origin, traceId, timeoutMs }) {
+  const primaryEndpoint = capacityEndpoint(port, primary, traceId);
+  const secondaryEndpoint = capacityEndpoint(port, secondary, traceId);
+  return new Promise((resolve, reject) => {
+    let primarySocket;
+    let secondarySocket;
+    let settled = false;
+    let refusalAck = false;
+    let secondaryProven = false;
+    let timeout;
+    const finish = (error, value = null) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeout);
+      for (const socket of [primarySocket, secondarySocket]) {
+        try {
+          socket?.close();
+        } catch {
+          // The peer may already have completed its close handshake.
+        }
+      }
+      if (error) reject(error);
+      else resolve(Object.freeze(value));
+    };
+    try {
+      primarySocket = new globalThis.WebSocket(primaryEndpoint, { headers: { Origin: origin } });
+    } catch {
+      finish(hostileError("duplicate primary connection failed"));
+      return;
+    }
+    timeout = setTimeout(() => finish(hostileError("duplicate refusal timed out")), timeoutMs);
+    primarySocket.onopen = () => {
+      try {
+        secondarySocket = new globalThis.WebSocket(secondaryEndpoint, {
+          headers: { Origin: origin },
+        });
+      } catch {
+        finish(hostileError("duplicate secondary connection failed"));
+        return;
+      }
+      secondarySocket.binaryType = "arraybuffer";
+      secondarySocket.onmessage = (event) => {
+        if (refusalAck) {
+          finish(hostileError("duplicate session received multiple acknowledgements"));
+          return;
+        }
+        const ack = parseAudioAck(acknowledgementInput(event.data));
+        if (
+          ack === null ||
+          ack.session_id !== secondary.sessionId ||
+          ack.chunk_id !== "session-start" ||
+          ack.sequence !== 0 ||
+          ack.accepted !== false ||
+          ack.trace_id !== traceId ||
+          ack.message !== "recitation session already active"
+        ) {
+          finish(hostileError("duplicate session acknowledgement was invalid"));
+          return;
+        }
+        refusalAck = true;
+      };
+      secondarySocket.onclose = (event) => {
+        if (!refusalAck || event.code !== 1013 || event.reason !== "try again later") {
+          finish(hostileError("duplicate session refusal was invalid"));
+          return;
+        }
+        secondaryProven = true;
+        try {
+          primarySocket.close();
+        } catch {
+          finish(hostileError("duplicate primary cleanup failed"));
+        }
+      };
+      secondarySocket.onerror = () => {
+        // The close event carries the bounded refusal code and remains authoritative.
+      };
+    };
+    primarySocket.onmessage = () => finish(hostileError("duplicate primary received a message"));
+    primarySocket.onclose = () => {
+      if (secondaryProven) finish(null, { refused: true });
+      else if (!settled) finish(hostileError("duplicate primary closed early"));
+    };
+    primarySocket.onerror = () => {
+      if (!settled) finish(hostileError("duplicate primary transport failed"));
+    };
+  });
+}
+
+async function defaultHostileHealthProbe({ port, timeoutMs }) {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const response = await fetch(`http://127.0.0.1:${port}/health`, {
+      redirect: "manual",
+      signal: controller.signal,
+    });
+    const alive = response.status === 200;
+    await response.body?.cancel?.();
+    return Object.freeze({ alive });
+  } catch {
+    throw hostileError("health check failed");
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+/** Exercise the closed hostile wire matrix and return only fixed aggregate outcome counts. */
+export async function probeRealtimeHostileSweep({
+  port,
+  peers,
+  origin,
+  traceId,
+  timeoutMs,
+  frameProbe = probeRealtimeAudioFrame,
+  ticketProbe = defaultHostileTicketProbe,
+  transportProbe = defaultHostileTransportProbe,
+  textProbe = defaultHostileTextProbe,
+  duplicateProbe = defaultHostileDuplicateProbe,
+  healthProbe = defaultHostileHealthProbe,
+}) {
+  const selectedPort = probePort(port);
+  const selectedOrigin = probeOrigin(origin);
+  if (
+    traceId !== null &&
+    (
+      typeof traceId !== "string" ||
+      traceId.trim() === "" ||
+      traceId !== traceId.trim() ||
+      Buffer.byteLength(traceId) > maximumProbeTraceBytes
+    )
+  ) {
+    throw new TypeError("realtime hostile probe trace id must be null or a non-empty string");
+  }
+  const selectedTimeout = assertProbeTimeout(timeoutMs);
+  if (
+    !peers ||
+    typeof peers !== "object" ||
+    Array.isArray(peers) ||
+    JSON.stringify(Object.keys(peers).sort()) !==
+      JSON.stringify(["duplicate", "frames", "text", "ticket", "transport"])
+  ) {
+    throw new TypeError("realtime hostile probe peers must have the exact closed shape");
+  }
+  if (!Array.isArray(peers.frames) || peers.frames.length !== 7) {
+    throw new TypeError("realtime hostile probe requires exactly seven frame peers");
+  }
+  if (!Array.isArray(peers.duplicate) || peers.duplicate.length !== 2) {
+    throw new TypeError("realtime hostile probe requires exactly two duplicate peers");
+  }
+  const selectedPeers = {
+    ticket: hostilePeer(peers.ticket, "ticket peer"),
+    frames: peers.frames.map((peer) => hostilePeer(peer, "frame peer")),
+    transport: hostilePeer(peers.transport, "transport peer"),
+    text: hostilePeer(peers.text, "text peer"),
+    duplicate: peers.duplicate.map((peer) => hostilePeer(peer, "duplicate peer")),
+  };
+  if (selectedPeers.duplicate[0].sessionId !== selectedPeers.duplicate[1].sessionId) {
+    throw new TypeError("realtime hostile probe duplicate peers must share one session");
+  }
+  if (selectedPeers.duplicate[0].ticket === selectedPeers.duplicate[1].ticket) {
+    throw new TypeError("realtime hostile probe duplicate peer tickets must be distinct");
+  }
+  const ordinaryPeers = [
+    selectedPeers.ticket,
+    ...selectedPeers.frames,
+    selectedPeers.transport,
+    selectedPeers.text,
+    selectedPeers.duplicate[0],
+  ];
+  const sessionIds = ordinaryPeers.map(({ sessionId }) => sessionId);
+  const tickets = [...ordinaryPeers, selectedPeers.duplicate[1]].map(({ ticket }) => ticket);
+  if (new Set(sessionIds).size !== sessionIds.length || new Set(tickets).size !== tickets.length) {
+    throw new TypeError("realtime hostile probe peer identities and tickets must be unique");
+  }
+  for (const adapter of [frameProbe, ticketProbe, transportProbe, textProbe, duplicateProbe, healthProbe]) {
+    if (typeof adapter !== "function") {
+      throw new TypeError("realtime hostile probe adapters must be functions");
+    }
+  }
+  if (typeof globalThis.WebSocket !== "function") {
+    throw new TypeError("realtime hostile probe requires the Node WebSocket runtime");
+  }
+
+  const deadline = performance.now() + selectedTimeout;
+  try {
+    const ticketResult = await ticketProbe({
+      port: selectedPort,
+      peer: selectedPeers.ticket,
+      origin: selectedOrigin,
+      timeoutMs: hostileTimeout(deadline),
+    });
+    exactProbeResult(ticketResult, { refused: 7 }, "malformed ticket corpus");
+
+    const frameSizes = [
+      0,
+      1,
+      AUDIO_LIMITS.frameBytes - 1,
+      AUDIO_LIMITS.frameBytes + 1,
+      AUDIO_LIMITS.maxPayloadBytes,
+      AUDIO_LIMITS.maxPayloadBytes + 1,
+      AUDIO_LIMITS.maxTransportBytes,
+    ];
+    const phaseTimeout = hostileTimeout(deadline);
+    const phaseResults = await Promise.allSettled([
+      ...selectedPeers.frames.map((peer, index) => frameProbe({
+        port: selectedPort,
+        sessionId: peer.sessionId,
+        ticket: peer.ticket,
+        origin: selectedOrigin,
+        traceId,
+        frame: Buffer.alloc(frameSizes[index]),
+        expectedSequence: 0,
+        timeoutMs: phaseTimeout,
+      })),
+      transportProbe({
+        port: selectedPort,
+        peer: selectedPeers.transport,
+        origin: selectedOrigin,
+        traceId,
+        frame: Buffer.alloc(AUDIO_LIMITS.maxTransportBytes + 1),
+        timeoutMs: phaseTimeout,
+      }),
+      textProbe({
+        port: selectedPort,
+        peer: selectedPeers.text,
+        origin: selectedOrigin,
+        traceId,
+        timeoutMs: phaseTimeout,
+      }),
+      duplicateProbe({
+        port: selectedPort,
+        primary: selectedPeers.duplicate[0],
+        secondary: selectedPeers.duplicate[1],
+        origin: selectedOrigin,
+        traceId,
+        timeoutMs: phaseTimeout,
+      }),
+    ]);
+    const failedPhase = phaseResults.find(({ status }) => status === "rejected");
+    if (failedPhase) throw failedPhase.reason;
+    const values = phaseResults.map(({ value }) => value);
+    const frameResults = values.slice(0, selectedPeers.frames.length);
+    const [transportResult, textResult, duplicateResult] = values.slice(selectedPeers.frames.length);
+    for (const frameResult of frameResults) {
+      if (validateFrameProbeResult(frameResult) !== false) {
+        throw hostileError("an in-ceiling hostile frame was accepted");
+      }
+    }
+    exactProbeResult(transportResult, { rejected: true, closeCode: 1009 }, "transport limit");
+    exactProbeResult(textResult, { ignored: true }, "text-frame silence");
+    exactProbeResult(duplicateResult, { refused: true }, "duplicate session refusal");
+    const healthResult = await healthProbe({
+      port: selectedPort,
+      timeoutMs: hostileTimeout(deadline),
+    });
+    exactProbeResult(healthResult, { alive: true }, "post-hostile liveness");
+    return Object.freeze({
+      binaryFramesSent: frameResults.length + 1,
+      accepted: 0,
+      rejected: frameResults.length + 1,
+      hostileTicketRefusals: ticketResult.refused,
+      textFramesIgnored: 1,
+      duplicateSessionsRefused: 1,
+      processAlive: true,
+    });
+  } catch (error) {
+    if (error instanceof Error && error.message.startsWith("realtime hostile probe ")) throw error;
+    throw hostileError("failed");
+  }
+}
+
 function exactObjectFields(value, fields, fieldSet) {
   if (!value || typeof value !== "object" || Array.isArray(value)) return false;
   const keys = Object.keys(value);

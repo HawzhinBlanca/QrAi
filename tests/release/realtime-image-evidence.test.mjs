@@ -31,6 +31,7 @@ import {
   parseRealtimeProofPort,
   probeRealtimeAudioFrame,
   probeRealtimeCapacityCohort,
+  probeRealtimeHostileSweep,
   probeRealtimeUpgradeRefusal,
   runRealtimeProtocolParityStage,
   summarizeRealtimeAudioFrameProbes,
@@ -333,6 +334,24 @@ function realtimeProbeTicket(nonce = "nonce-w3-8-proof", sessionId = probeSessio
     expiresAtUnixSeconds: probeNowSeconds + 300,
     nonce,
   }, probeSecret);
+}
+
+function realtimeHostilePeers(prefix = "private-hostile") {
+  const peer = (suffix, sessionId = `${prefix}-session-${suffix}`) => ({
+    sessionId,
+    ticket: realtimeProbeTicket(`${prefix}-nonce-${suffix}`, sessionId),
+  });
+  const duplicateSessionId = `${prefix}-session-duplicate`;
+  return {
+    ticket: peer("ticket"),
+    frames: Array.from({ length: 7 }, (_, index) => peer(`frame-${index}`)),
+    transport: peer("transport"),
+    text: peer("text"),
+    duplicate: [
+      peer("duplicate-primary", duplicateSessionId),
+      peer("duplicate-secondary", duplicateSessionId),
+    ],
+  };
 }
 
 function realtimeProbeAppOptions(handleAdmittedSocket, overrides = {}) {
@@ -1286,6 +1305,177 @@ test("the capacity cohort rejects unsafe inputs and never reflects credential-be
     sessions[0].ticket,
     base.refusedSession.sessionId,
     base.refusedSession.ticket,
+  ]) {
+    assert.equal(error.message.includes(privateValue), false);
+  }
+});
+
+test("the hostile sweep refuses every frozen boundary, ignores text, rejects duplicates, and stays alive", async () => {
+  const peers = realtimeHostilePeers();
+  await withRealtimeProbeApp(null, async (port, app) => {
+    const result = await probeRealtimeHostileSweep({
+      port,
+      peers,
+      origin: probeOrigin,
+      traceId: "private-hostile-trace",
+      timeoutMs: 10_000,
+    });
+    assert.deepEqual(result, {
+      binaryFramesSent: 8,
+      accepted: 0,
+      rejected: 8,
+      hostileTicketRefusals: 7,
+      textFramesIgnored: 1,
+      duplicateSessionsRefused: 1,
+      processAlive: true,
+    });
+
+    let metrics;
+    const drainDeadline = performance.now() + 2_000;
+    do {
+      metrics = await app.inject({ method: "GET", url: "/metrics" });
+      if (/realtime_audio_active_sessions 0(?:\n|$)/.test(metrics.body)) break;
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    } while (performance.now() < drainDeadline);
+    assert.equal(metrics.statusCode, 200);
+    assert.match(metrics.body, /realtime_audio_active_sessions 0(?:\n|$)/);
+    assert.match(metrics.body, /realtime_audio_retained_chunks 0(?:\n|$)/);
+    assert.match(metrics.body, /realtime_audio_retained_bytes 0(?:\n|$)/);
+    assert.match(metrics.body, /realtime_audio_ingress_total\{outcome="empty"\} 1(?:\n|$)/);
+    assert.match(metrics.body, /realtime_audio_ingress_total\{outcome="invalid_format"\} 4(?:\n|$)/);
+    assert.match(metrics.body, /realtime_audio_ingress_total\{outcome="oversized"\} 2(?:\n|$)/);
+    assert.match(metrics.body, /realtime_audio_sessions_total\{outcome="duplicate"\} 1(?:\n|$)/);
+    assert.match(metrics.body, /realtime_audio_store_total\{outcome="stored"\} 0(?:\n|$)/);
+
+    const serialized = JSON.stringify(result);
+    for (const privateValue of [
+      probeTenant,
+      probeLearner,
+      "private-hostile-trace",
+      peers.ticket.sessionId,
+      peers.ticket.ticket,
+      ...peers.frames.flatMap(({ sessionId, ticket }) => [sessionId, ticket]),
+      peers.transport.ticket,
+      peers.text.ticket,
+      ...peers.duplicate.flatMap(({ sessionId, ticket }) => [sessionId, ticket]),
+    ]) {
+      assert.equal(serialized.includes(privateValue), false);
+    }
+  });
+});
+
+test("the hostile sweep uses the exact closed case matrix and fails closed on adapter lies", async () => {
+  const peers = realtimeHostilePeers("private-hostile-adapter");
+  const frameCalls = [];
+  const ticketCalls = [];
+  const transportCalls = [];
+  const textCalls = [];
+  const duplicateCalls = [];
+  const healthCalls = [];
+  const base = {
+    port: 18_081,
+    peers,
+    origin: probeOrigin,
+    traceId: null,
+    timeoutMs: 2_000,
+    frameProbe: async (input) => {
+      frameCalls.push(input);
+      return { accepted: false, ackLatencyMs: 1, sequence: 0 };
+    },
+    ticketProbe: async (input) => {
+      ticketCalls.push(input);
+      return { refused: 7 };
+    },
+    transportProbe: async (input) => {
+      transportCalls.push(input);
+      return { rejected: true, closeCode: 1009 };
+    },
+    textProbe: async (input) => {
+      textCalls.push(input);
+      return { ignored: true };
+    },
+    duplicateProbe: async (input) => {
+      duplicateCalls.push(input);
+      return { refused: true };
+    },
+    healthProbe: async (input) => {
+      healthCalls.push(input);
+      return { alive: true };
+    },
+  };
+
+  assert.deepEqual(await probeRealtimeHostileSweep(base), {
+    binaryFramesSent: 8,
+    accepted: 0,
+    rejected: 8,
+    hostileTicketRefusals: 7,
+    textFramesIgnored: 1,
+    duplicateSessionsRefused: 1,
+    processAlive: true,
+  });
+  assert.deepEqual(frameCalls.map(({ frame }) => frame.byteLength), [
+    0,
+    1,
+    15_359,
+    15_361,
+    2 * MiB,
+    2 * MiB + 1,
+    2 * MiB + 64 * 1024,
+  ]);
+  assert.equal(ticketCalls.length, 1);
+  assert.equal(transportCalls.length, 1);
+  assert.equal(transportCalls[0].frame.byteLength, 2 * MiB + 64 * 1024 + 1);
+  assert.equal(textCalls.length, 1);
+  assert.equal(duplicateCalls.length, 1);
+  assert.equal(healthCalls.length, 1);
+  assert.ok(frameCalls.every(({ expectedSequence }) => expectedSequence === 0));
+
+  const adapterLies = [
+    { frameProbe: async () => ({ accepted: true, ackLatencyMs: 1, sequence: 0 }) },
+    { ticketProbe: async () => ({ refused: 6 }) },
+    { transportProbe: async () => ({ rejected: false, closeCode: 1009 }) },
+    { textProbe: async () => ({ ignored: false }) },
+    { duplicateProbe: async () => ({ refused: false }) },
+    { healthProbe: async () => ({ alive: false }) },
+  ];
+  for (const overrides of adapterLies) {
+    await assert.rejects(() => probeRealtimeHostileSweep({ ...base, ...overrides }), /hostile/i);
+  }
+});
+
+test("the hostile sweep rejects peer-shape mutations before transport and keeps failures private", async () => {
+  const peers = realtimeHostilePeers("private-hostile-mutation");
+  const base = {
+    port: 65_534,
+    peers,
+    origin: probeOrigin,
+    traceId: null,
+    timeoutMs: 100,
+  };
+  const cases = [
+    [{ ...base, peers: { ...peers, frames: peers.frames.slice(1) } }, /seven|7/i],
+    [{ ...base, peers: { ...peers, duplicate: [peers.duplicate[0], peers.duplicate[0]] } }, /ticket|distinct|unique/i],
+    [{ ...base, peers: { ...peers, extra: "forbidden" } }, /exact/i],
+    [{ ...base, timeoutMs: 49 }, /timeout/i],
+  ];
+  for (const [input, pattern] of cases) {
+    await assert.rejects(() => probeRealtimeHostileSweep(input), pattern);
+  }
+
+  let error;
+  try {
+    await probeRealtimeHostileSweep(base);
+  } catch (value) {
+    error = value;
+  }
+  assert.ok(error instanceof Error);
+  for (const privateValue of [
+    probeTenant,
+    probeLearner,
+    peers.ticket.sessionId,
+    peers.ticket.ticket,
+    peers.frames[0].sessionId,
+    peers.frames[0].ticket,
   ]) {
     assert.equal(error.message.includes(privateValue), false);
   }
