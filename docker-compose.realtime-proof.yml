@@ -83,9 +83,10 @@ services:
       retries: 3
     stop_grace_period: "${NODE_REALTIME_STOP_GRACE_PERIOD:-10s}"
 
-  # Opt-in fault process of the same immutable Node image. The loopback S3 endpoint is deliberately
-  # unreachable from inside this container, so production startup must fail closed before serving
-  # audio. Its profile keeps normal candidate `up --wait` healthy; only the fault stage starts it.
+  # Opt-in fault process of the same immutable Node image. It boots against the real production S3
+  # hostname through a proof-runner-owned TLS-transparent TCP pass-through on the private Docker
+  # gateway. The runner cuts only that pass-through after a healthy control. No public service
+  # depends on this profile and no TLS, credential, request, or audio content is terminated here.
   node-realtime-proof-s3-fault:
     profiles: ["realtime-proof-fault"]
     restart: "no"
@@ -113,11 +114,13 @@ services:
       AUDIO_STORAGE_DIR: "/data/audio-storage"
       AUDIO_STORAGE_S3_BUCKET: "${AUDIO_STORAGE_S3_BUCKET:?AUDIO_STORAGE_S3_BUCKET is required for realtime release proof}"
       AUDIO_STORAGE_S3_REGION: "${AUDIO_STORAGE_S3_REGION:?AUDIO_STORAGE_S3_REGION is required for realtime release proof}"
-      AUDIO_STORAGE_S3_ENDPOINT: "http://127.0.0.1:9"
+      AUDIO_STORAGE_S3_ENDPOINT: "https://${REALTIME_PROOF_S3_ENDPOINT_HOST:?REALTIME_PROOF_S3_ENDPOINT_HOST is required}:${REALTIME_PROOF_S3_PROXY_PORT:-19443}"
       AUDIO_STORAGE_S3_FORCE_PATH_STYLE: "1"
       AUDIO_STORAGE_S3_EXPECTED_OWNER: "${AUDIO_STORAGE_S3_EXPECTED_OWNER:?AUDIO_STORAGE_S3_EXPECTED_OWNER is required for realtime release proof}"
       AUDIO_STORAGE_S3_ENCRYPTION: "${AUDIO_STORAGE_S3_ENCRYPTION:-AES256}"
       AUDIO_STORAGE_S3_KMS_KEY_ID: "${AUDIO_STORAGE_S3_KMS_KEY_ID:-}"
+    extra_hosts:
+      - "${REALTIME_PROOF_S3_ENDPOINT_HOST:?REALTIME_PROOF_S3_ENDPOINT_HOST is required}:host-gateway"
     expose:
       - "8081"
     ports:

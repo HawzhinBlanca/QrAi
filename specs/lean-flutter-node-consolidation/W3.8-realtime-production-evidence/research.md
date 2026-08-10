@@ -50,6 +50,12 @@ only that pass-through while Postgres and the loopback WebSocket stay reachable.
 acknowledged frame must become an exact `accepted-lost` row with no object or playback index, and
 readiness must return 503. The pass-through is proof-process memory only—no proxy service, image,
 package, application fault switch, credential change, or public traffic edge is introduced.
+The implemented lifecycle requires an explicit, pathless HTTPS S3 endpoint so it can preserve the
+real TLS hostname and SNI. The fault container maps only that hostname to Docker's `host-gateway`,
+while the proof process binds the bounded pass-through to the private RFC1918 gateway of Docker's
+default bridge (never `0.0.0.0` or a public interface). The default proof port is 19443 and may be
+overridden only with another validated non-service port; endpoint credentials, paths, loopback/IP
+targets, public bind addresses, wrong image identity, and residual containers all fail closed.
 
 ## Grounded boundary and data flow
 

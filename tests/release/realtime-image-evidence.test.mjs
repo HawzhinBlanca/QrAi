@@ -9,6 +9,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { connect, createServer } from "node:net";
 import test from "node:test";
 import { parse as parseYaml } from "yaml";
 
@@ -54,8 +55,9 @@ import {
   collectRealtimeCandidateRunningImagesRuntime,
   createRealtimeNodeProcessFaultLifecycleRuntime,
   createRealtimePostgresFaultLifecycleRuntime,
+  createRealtimeS3FaultLifecycleRuntime,
+  createTlsTransparentTcpPassThrough,
   parseRealtimeImageProofArguments,
-  probeRealtimeS3FaultProcessRuntime,
   runRealtimeImageProofStage,
 } from "../../scripts/realtime-image-proof.mjs";
 import { issueRealtimeTicket } from "../../server/src/lib/ticket.mjs";
@@ -341,6 +343,8 @@ function renderedProofTopology(
     AUDIO_STORAGE_FILESYSTEM_ACKNOWLEDGED_DEV_ONLY: "0",
     AUDIO_STORAGE_S3_BUCKET: "qrai-production-private-audio",
     AUDIO_STORAGE_S3_REGION: "eu-central-1",
+    AUDIO_STORAGE_S3_ENDPOINT: "https://s3.example.com",
+    AUDIO_STORAGE_S3_FORCE_PATH_STYLE: "1",
     AUDIO_STORAGE_S3_EXPECTED_OWNER: "123456789012",
     AUDIO_STORAGE_S3_ENCRYPTION: "AES256",
   };
@@ -389,9 +393,10 @@ function renderedProofTopology(
         environment: {
           ...storage,
           ...realtimeAuthority,
-          AUDIO_STORAGE_S3_ENDPOINT: "http://127.0.0.1:9",
+          AUDIO_STORAGE_S3_ENDPOINT: "https://s3.example.com:19443",
           AUDIO_STORAGE_S3_FORCE_PATH_STYLE: "1",
         },
+        extra_hosts: ["s3.example.com=host-gateway"],
         ports: [{
           mode: "ingress",
           target: 8081,
@@ -726,8 +731,15 @@ test("the proof overlay exposes healthy peers plus one opt-in same-image S3 faul
   assert.deepEqual(fault?.command, ["node", "server/src/realtime/main.mjs"]);
   assert.deepEqual(fault?.profiles, ["realtime-proof-fault"]);
   assert.equal(fault?.restart, "no");
-  assert.equal(fault?.environment?.AUDIO_STORAGE_S3_ENDPOINT, "http://127.0.0.1:9");
+  assert.equal(
+    fault?.environment?.AUDIO_STORAGE_S3_ENDPOINT,
+    "https://${REALTIME_PROOF_S3_ENDPOINT_HOST:?REALTIME_PROOF_S3_ENDPOINT_HOST is required}:${REALTIME_PROOF_S3_PROXY_PORT:-19443}",
+  );
   assert.equal(fault?.environment?.AUDIO_STORAGE_S3_FORCE_PATH_STYLE, "1");
+  assert.deepEqual(
+    fault?.extra_hosts,
+    ["${REALTIME_PROOF_S3_ENDPOINT_HOST:?REALTIME_PROOF_S3_ENDPOINT_HOST is required}:host-gateway"],
+  );
   assert.equal(overlay.services?.["realtime-gateway"], undefined);
 
   for (const service of [
@@ -807,7 +819,13 @@ test("rendered proof preflight binds exact images, topology, storage, and clean 
     [(copy) => { copy.services["node-realtime-proof-peer"].environment.REALTIME_GATEWAY_TICKET_SECRET = "other"; }, /ticket authority/i],
     [(copy) => { copy.services["node-realtime-proof-peer"].environment.GATEWAY_TENANT_ID = "other"; }, /tenant authority/i],
     [(copy) => { copy.services["node-realtime-proof-s3-fault"].environment.DATABASE_URL = "postgresql://other"; }, /database authority/i],
-    [(copy) => { copy.services["node-realtime-proof-s3-fault"].environment.AUDIO_STORAGE_S3_ENDPOINT = "https://s3.example.com"; }, /unreachable S3/i],
+    [(copy) => { copy.services["node-realtime"].environment.AUDIO_STORAGE_S3_ENDPOINT = ""; }, /explicit.*(?:S3|TLS).*endpoint/i],
+    [(copy) => { copy.services["node-realtime"].environment.AUDIO_STORAGE_S3_ENDPOINT = "https://user:secret@s3.example.com"; }, /same-host|production S3 endpoint/i],
+    [(copy) => { copy.services["node-realtime-proof-s3-fault"].environment.AUDIO_STORAGE_S3_ENDPOINT = "https://other.example.com:19443"; }, /same-host|pass-through.*host/i],
+    [(copy) => { copy.services["node-realtime-proof-s3-fault"].environment.AUDIO_STORAGE_S3_ENDPOINT = "http://s3.example.com:19443"; }, /TLS.*pass-through/i],
+    [(copy) => { copy.services["node-realtime-proof-s3-fault"].environment.AUDIO_STORAGE_S3_ENDPOINT = "https://s3.example.com"; }, /pass-through.*port/i],
+    [(copy) => { copy.services["node-realtime-proof-s3-fault"].environment.AUDIO_STORAGE_S3_FORCE_PATH_STYLE = "0"; }, /path-style/i],
+    [(copy) => { copy.services["node-realtime-proof-s3-fault"].extra_hosts = ["s3.example.com=127.0.0.1"]; }, /host-gateway/i],
     [(copy) => { copy.services["node-realtime-proof-s3-fault"].profiles = []; }, /fault profile/i],
     [(copy) => { copy.services["node-realtime"].ports.push(copy.services["node-realtime"].ports[0]); }, /exactly one/i],
   ];
@@ -3703,7 +3721,10 @@ test("candidate runtime collection inspects exact Compose containers, local dige
     nodePort: 18_081,
     secondaryNodePort: 18_082,
     faultNodePort: 18_083,
-    env: { PRIVATE_RUNTIME_SECRET: "must-not-leave-collector" },
+    env: {
+      AUDIO_STORAGE_S3_ENDPOINT: "https://s3.example.com",
+      PRIVATE_RUNTIME_SECRET: "must-not-leave-collector",
+    },
     commandRunner,
   });
   assert.deepEqual(result, {
@@ -3716,30 +3737,91 @@ test("candidate runtime collection inspects exact Compose containers, local dige
   assert.equal(JSON.stringify(result).includes("must-not-leave-collector"), false);
 });
 
-function s3FaultProcessHarness({
+function listen(server, host = "127.0.0.1", port = 0) {
+  return new Promise((resolveListen, rejectListen) => {
+    server.once("error", rejectListen);
+    server.listen(port, host, () => {
+      server.off("error", rejectListen);
+      resolveListen(server.address());
+    });
+  });
+}
+
+function closeServer(server) {
+  if (!server.listening) return Promise.resolve();
+  return new Promise((resolveClose) => server.close(() => resolveClose()));
+}
+
+function roundTripTcp(port, bytes) {
+  return new Promise((resolveRoundTrip, rejectRoundTrip) => {
+    const chunks = [];
+    const socket = connect({ host: "127.0.0.1", port });
+    socket.once("error", rejectRoundTrip);
+    socket.on("data", (chunk) => chunks.push(chunk));
+    socket.once("end", () => resolveRoundTrip(Buffer.concat(chunks)));
+    socket.once("connect", () => socket.end(bytes));
+  });
+}
+
+test("the proof-owned TCP pass-through is byte-transparent, bounded, and cuts live connections", async (t) => {
+  const target = createServer((socket) => socket.pipe(socket));
+  const targetAddress = await listen(target);
+  const proxy = createTlsTransparentTcpPassThrough({
+    targetHost: "127.0.0.1",
+    targetPort: targetAddress.port,
+    listenHost: "127.0.0.1",
+    listenPort: 0,
+  });
+  t.after(async () => {
+    await proxy.close();
+    await closeServer(target);
+  });
+  const proxyAddress = await proxy.start();
+  assert.equal(proxyAddress.listenHost, "127.0.0.1");
+  assert.equal(Number.isSafeInteger(proxyAddress.listenPort), true);
+  const bytes = Buffer.from("opaque TLS bytes stay untouched\u0000\u00ff", "latin1");
+  assert.deepEqual(await roundTripTcp(proxyAddress.listenPort, bytes), bytes);
+  assert.deepEqual(await proxy.cut(), { cut: true });
+  await assert.rejects(() => roundTripTcp(proxyAddress.listenPort, bytes));
+  assert.deepEqual(await proxy.close(), { closed: true });
+});
+
+function s3FaultLifecycleHarness({
+  gateway = "172.28.0.1",
+  endpoint = "https://s3.example.com",
   containerOverride = {},
   imageOverride = {},
-  readiness = { reachable: false, statusCode: null },
+  startReadiness = { reachable: true, statusCode: 200 },
+  restoredReadiness = { reachable: true, statusCode: 200 },
+  proxyStartOverride = null,
   residual = "",
   privateFailure = null,
 } = {}) {
   const value = selection();
   const observation = candidateRunningObservations(value)["node-realtime"];
   const calls = [];
-  let psCalls = 0;
+  const proxyCalls = [];
+  let removed = false;
+  let cut = false;
   const commandRunner = (file, args, environment) => {
     calls.push([file, args]);
     assert.equal(
       environment.NODE_BACKEND_IMAGE,
       composeImageEnvironment(value, "candidate").NODE_BACKEND_IMAGE,
     );
-    assert.equal(environment.REALTIME_PROOF_FAULT_NODE_PORT, "18083");
-    if (privateFailure !== null && args.includes("up")) throw new Error(privateFailure);
     if (file !== "docker") throw new Error("unexpected S3 fault command");
-    if (args[0] === "compose" && args.includes("up")) return "";
+    if (args[0] === "network" && args[1] === "inspect") {
+      return JSON.stringify([{ IPAM: { Config: [{ Gateway: gateway }] } }]);
+    }
+    if (privateFailure !== null && args.includes("up")) throw new Error(privateFailure);
+    if (args[0] === "compose" && args.includes("up")) {
+      assert.equal(environment.REALTIME_PROOF_FAULT_NODE_PORT, "18083");
+      assert.equal(environment.REALTIME_PROOF_S3_ENDPOINT_HOST, "s3.example.com");
+      assert.equal(environment.REALTIME_PROOF_S3_PROXY_PORT, "19443");
+      return "";
+    }
     if (args[0] === "compose" && args.includes("ps")) {
-      psCalls += 1;
-      return psCalls === 1 ? observation.containerId : residual;
+      return removed ? residual : observation.containerId;
     }
     if (args[0] === "inspect") {
       return JSON.stringify([{
@@ -3750,9 +3832,9 @@ function s3FaultProcessHarness({
           User: observation.configuredUser,
         },
         State: {
-          Running: false,
-          ExitCode: 2,
-          Health: { Status: "unhealthy" },
+          Running: true,
+          ExitCode: 0,
+          Health: { Status: "healthy" },
         },
         ...containerOverride,
       }]);
@@ -3765,81 +3847,159 @@ function s3FaultProcessHarness({
         ...imageOverride,
       }]);
     }
-    if (args[0] === "compose" && args.includes("rm")) return "";
+    if (args[0] === "compose" && args.includes("rm")) {
+      removed = true;
+      return "";
+    }
     throw new Error(`unexpected S3 fault command: ${args.join(" ")}`);
+  };
+  const passThroughFactory = (configuration) => {
+    proxyCalls.push(["create", configuration]);
+    return {
+      async start() {
+        proxyCalls.push(["start"]);
+        return proxyStartOverride ?? {
+          listenHost: configuration.listenHost,
+          listenPort: configuration.listenPort,
+        };
+      },
+      async cut() {
+        cut = true;
+        proxyCalls.push(["cut"]);
+        return { cut: true };
+      },
+      async close() {
+        proxyCalls.push(["close"]);
+        return { closed: true };
+      },
+    };
   };
   return {
     value,
     calls,
+    proxyCalls,
     input: {
       selection: value,
       projectName: "qrai-realtime-proof",
+      nodePort: 18_081,
       faultNodePort: 18_083,
-      env: { PRIVATE_RUNTIME_SECRET: "must-not-leave-fault-probe" },
+      env: {
+        AUDIO_STORAGE_S3_ENDPOINT: endpoint,
+        REALTIME_PROOF_S3_PROXY_PORT: "19443",
+        PRIVATE_RUNTIME_SECRET: "must-not-leave-fault-probe",
+      },
       commandRunner,
+      passThroughFactory,
       delayImpl: async () => {},
       readinessProbe: async ({ port, timeoutMs }) => {
-        assert.equal(port, 18_083);
         assert.equal(timeoutMs, 2_000);
-        return readiness;
+        if (port === 18_083) {
+          return cut ? { reachable: true, statusCode: 503 } : startReadiness;
+        }
+        assert.equal(port, 18_081);
+        return restoredReadiness;
       },
     },
   };
 }
 
-test("the same-image S3 fault process stays unready, non-root, bounded, and is always removed", async () => {
-  const harness = s3FaultProcessHarness();
-  const result = await probeRealtimeS3FaultProcessRuntime(harness.input);
-  assert.deepEqual(result, {
+test("the same-image S3 fault lifecycle starts healthy, cuts only S3, and restores idempotently", async () => {
+  const harness = s3FaultLifecycleHarness();
+  const lifecycle = createRealtimeS3FaultLifecycleRuntime(harness.input);
+  assert.deepEqual(await lifecycle.startS3FaultProcess(), {
     sameCandidateImage: true,
     configuredNonRoot: true,
-    unreachableEndpointUnready: true,
-    removed: true,
+    healthyProductionS3: true,
   });
+  await assert.rejects(
+    () => lifecycle.startS3FaultProcess(),
+    /realtime S3 fault lifecycle failed/,
+  );
+  assert.deepEqual(await lifecycle.injectS3Outage(), { unreachableEndpoint: true });
+  await assert.rejects(
+    () => lifecycle.injectS3Outage(),
+    /realtime S3 fault lifecycle failed/,
+  );
+  assert.deepEqual(await lifecycle.restoreProductionCandidate(), {
+    faultProcessRemoved: true,
+    productionCandidateReady: true,
+  });
+  assert.deepEqual(await lifecycle.restoreProductionCandidate(), {
+    faultProcessRemoved: true,
+    productionCandidateReady: true,
+  });
+  assert.deepEqual(harness.proxyCalls[0], ["create", {
+    targetHost: "s3.example.com",
+    targetPort: 443,
+    listenHost: "172.28.0.1",
+    listenPort: 19_443,
+  }]);
+  assert.equal(harness.proxyCalls.filter(([name]) => name === "cut").length, 1);
+  assert.equal(harness.proxyCalls.filter(([name]) => name === "close").length, 1);
   const renderedCalls = harness.calls.map(([, args]) => args.join(" "));
-  assert.match(renderedCalls[0], /--profile realtime-proof-fault up -d --no-build --no-deps node-realtime-proof-s3-fault$/);
+  assert.match(renderedCalls[0], /^network inspect bridge$/);
+  assert.match(renderedCalls[1], /--profile realtime-proof-fault up -d --no-build --no-deps node-realtime-proof-s3-fault$/);
   assert.match(renderedCalls.at(-2), /--profile realtime-proof-fault rm --stop --force node-realtime-proof-s3-fault$/);
   assert.match(renderedCalls.at(-1), /--profile realtime-proof-fault ps --all --quiet node-realtime-proof-s3-fault$/);
+  const summary = await lifecycle.restoreProductionCandidate();
   for (const privateValue of [
     "must-not-leave-fault-probe",
     candidateRunningObservations(harness.value)["node-realtime"].containerId,
   ]) {
-    assert.equal(JSON.stringify(result).includes(privateValue), false);
+    assert.equal(JSON.stringify(summary).includes(privateValue), false);
   }
 });
 
-test("the S3 fault process probe fails closed on identity, readiness, exit, cleanup, and private errors", async () => {
+test("the S3 fault lifecycle fails closed on endpoint, bind, identity, readiness, proxy, and cleanup drift", async () => {
   const value = selection();
   const nodeReference = composeImageEnvironment(value, "candidate").NODE_BACKEND_IMAGE;
   const mutations = [
-    { containerOverride: { State: { Running: true, ExitCode: 0, Health: { Status: "healthy" } } } },
-    { containerOverride: { State: { Running: false, ExitCode: 0, Health: { Status: "unhealthy" } } } },
+    { endpoint: "http://s3.example.com" },
+    { endpoint: "https://user:secret@s3.example.com" },
+    { endpoint: "https://s3.example.com/private" },
+    { endpoint: "https://127.0.0.1" },
+    { gateway: "127.0.0.1" },
+    { gateway: "203.0.113.10" },
+    { proxyStartOverride: { listenHost: "172.28.0.2", listenPort: 19_443 } },
+    { proxyStartOverride: { listenHost: "172.28.0.1", listenPort: 19_444 } },
+    { containerOverride: { State: { Running: false, ExitCode: 2, Health: { Status: "unhealthy" } } } },
     { containerOverride: { Config: { Image: "qrai/node:mutable", User: "node" } } },
     { containerOverride: { Config: { Image: nodeReference, User: "root" } } },
     { imageOverride: { Id: `sha256:${"9".repeat(64)}` } },
     { imageOverride: { RepoDigests: [] } },
     { imageOverride: { Config: { User: "0" } } },
-    { readiness: { reachable: true, statusCode: 200 } },
-    { readiness: { reachable: false, statusCode: 503 } },
+    { startReadiness: { reachable: true, statusCode: 503 } },
+    { restoredReadiness: { reachable: false, statusCode: null } },
     { residual: "private-residual-container" },
   ];
   for (const mutation of mutations) {
-    const harness = s3FaultProcessHarness(mutation);
-    await assert.rejects(
-      () => probeRealtimeS3FaultProcessRuntime(harness.input),
-      (error) => error.message === "realtime S3 fault process probe failed",
-    );
-    assert.equal(harness.calls.some(([, args]) => args.includes("rm")), true);
+    const harness = s3FaultLifecycleHarness(mutation);
+    let lifecycle;
+    try {
+      lifecycle = createRealtimeS3FaultLifecycleRuntime(harness.input);
+      await lifecycle.startS3FaultProcess();
+      if (mutation.restoredReadiness || mutation.residual) {
+        await lifecycle.injectS3Outage();
+        await lifecycle.restoreProductionCandidate();
+      }
+      assert.fail("S3 fault lifecycle mutation was accepted");
+    } catch (error) {
+      assert.equal(error.message, "realtime S3 fault lifecycle failed");
+    } finally {
+      await lifecycle?.restoreProductionCandidate().catch(() => {});
+    }
   }
 
   const privateFailure = "private-container private-image private-ticket";
-  const harness = s3FaultProcessHarness({ privateFailure });
+  const harness = s3FaultLifecycleHarness({ privateFailure });
+  const lifecycle = createRealtimeS3FaultLifecycleRuntime(harness.input);
   await assert.rejects(
-    () => probeRealtimeS3FaultProcessRuntime(harness.input),
-    (error) => error.message === "realtime S3 fault process probe failed" &&
+    () => lifecycle.startS3FaultProcess(),
+    (error) => error.message === "realtime S3 fault lifecycle failed" &&
       !String(error).includes(privateFailure),
   );
-  assert.equal(harness.calls.some(([, args]) => args.includes("rm")), true);
+  await lifecycle.restoreProductionCandidate().catch(() => {});
+  assert.equal(harness.proxyCalls.some(([name]) => name === "close"), true);
 });
 
 function nodeProcessLifecycleHarness({

@@ -57,8 +57,12 @@ artifact hashes and validated outcomes.
    endpoint. Cut only that pass-through at runtime: the fault process must become unready, record
    an acknowledged frame as accepted loss with no object/index, and recover only after it is
    removed and the production-S3 candidate is revalidated. The pass-through is in-memory proof
-   tooling, never a Compose service, deployable image, application switch, or public edge. Then run
-   outcome/repair: stored orphans must repair
+   tooling, never a Compose service, deployable image, application switch, or public edge. Require
+   an explicit pathless HTTPS endpoint, preserve its hostname/SNI through the fault
+   container's sole `host-gateway` mapping, and bind the bounded listener only to Docker's private
+   RFC1918 host-gateway interface (default port 19443, validated and distinct from service ports).
+   Never bind `0.0.0.0`, terminate TLS, inspect bytes, or serialize endpoint/credential material.
+   Then run outcome/repair: stored orphans must repair
    idempotently, while genuinely absent accepted-loss bytes must remain explicitly actionable and
    the recording incomplete. Then run 100/101 capacity, 25-session
    classroom; 100-session backpressure burst; and 10-session 30-minute soak. Fault evidence must

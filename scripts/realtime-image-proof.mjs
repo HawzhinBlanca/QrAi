@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
+import { connect, createServer, isIP } from "node:net";
 import { isAbsolute, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
@@ -367,6 +368,7 @@ export function collectRealtimeCandidateRunningImagesRuntime({
   const commandEnvironment = {
     ...env,
     ...composeImageEnvironment(selected, "candidate"),
+    ...realtimeS3ProxyComposeEnvironment(env),
     REALTIME_PROOF_NODE_PORT: String(nodePort),
     REALTIME_PROOF_SECONDARY_NODE_PORT: String(secondaryNodePort),
     REALTIME_PROOF_FAULT_NODE_PORT: String(faultNodePort),
@@ -729,6 +731,430 @@ function nonRootContainerUser(value) {
   return user !== "" && user !== "root" && user !== "0";
 }
 
+function tcpPort(value, { allowZero = false } = {}) {
+  if (!Number.isSafeInteger(value) || value < (allowZero ? 0 : 1) || value > 65_535) {
+    throw new TypeError("TCP pass-through port is invalid");
+  }
+  return value;
+}
+
+/**
+ * Forward opaque TCP bytes without terminating TLS. Safety policy (production endpoint and private
+ * Docker bind) is enforced by createRealtimeS3FaultLifecycleRuntime; this small primitive stays
+ * independently executable so its byte transparency and connection destruction can be tested.
+ */
+export function createTlsTransparentTcpPassThrough({
+  targetHost,
+  targetPort,
+  listenHost,
+  listenPort,
+  maximumConnections = 16,
+} = {}) {
+  if (
+    typeof targetHost !== "string" || targetHost.trim() === "" || targetHost !== targetHost.trim() ||
+    typeof listenHost !== "string" || listenHost.trim() === "" || listenHost !== listenHost.trim() ||
+    !Number.isSafeInteger(maximumConnections) || maximumConnections < 1 || maximumConnections > 64
+  ) {
+    throw new TypeError("TLS-transparent TCP pass-through configuration is invalid");
+  }
+  tcpPort(targetPort);
+  tcpPort(listenPort, { allowZero: true });
+
+  const sockets = new Set();
+  let server = null;
+  let state = "idle";
+  let stopPromise = null;
+
+  const destroySocket = (socket) => {
+    sockets.delete(socket);
+    socket.destroy();
+  };
+
+  const stop = async () => {
+    if (stopPromise !== null) return stopPromise;
+    stopPromise = (async () => {
+      state = "closed";
+      for (const socket of [...sockets]) destroySocket(socket);
+      if (server?.listening) {
+        await new Promise((resolveClose, rejectClose) => {
+          server.close((error) => error ? rejectClose(error) : resolveClose());
+        });
+      }
+    })();
+    return stopPromise;
+  };
+
+  return Object.freeze({
+    async start() {
+      if (state !== "idle") throw new TypeError("TLS-transparent TCP pass-through cannot restart");
+      state = "starting";
+      server = createServer({ allowHalfOpen: true, pauseOnConnect: true }, (downstream) => {
+        if (state !== "listening" || sockets.size / 2 >= maximumConnections) {
+          downstream.destroy();
+          return;
+        }
+        const upstream = connect({ allowHalfOpen: true, host: targetHost, port: targetPort });
+        sockets.add(downstream);
+        sockets.add(upstream);
+        const destroyPair = () => {
+          destroySocket(downstream);
+          destroySocket(upstream);
+        };
+        downstream.once("error", destroyPair);
+        upstream.once("error", destroyPair);
+        downstream.once("close", () => sockets.delete(downstream));
+        upstream.once("close", () => sockets.delete(upstream));
+        upstream.once("connect", () => {
+          if (state !== "listening") {
+            destroyPair();
+            return;
+          }
+          downstream.pipe(upstream);
+          upstream.pipe(downstream);
+          downstream.resume();
+        });
+      });
+      try {
+        await new Promise((resolveListen, rejectListen) => {
+          const onError = (error) => {
+            server.off("listening", onListening);
+            rejectListen(error);
+          };
+          const onListening = () => {
+            server.off("error", onError);
+            resolveListen();
+          };
+          server.once("error", onError);
+          server.once("listening", onListening);
+          server.listen(listenPort, listenHost);
+        });
+        state = "listening";
+        const address = server.address();
+        if (!address || typeof address === "string") {
+          throw new TypeError("TLS-transparent TCP pass-through address is invalid");
+        }
+        return Object.freeze({ listenHost: address.address, listenPort: address.port });
+      } catch {
+        await stop().catch(() => {});
+        throw new Error("TLS-transparent TCP pass-through failed");
+      }
+    },
+    async cut() {
+      if (state !== "listening") {
+        throw new Error("TLS-transparent TCP pass-through failed");
+      }
+      try {
+        await stop();
+        return Object.freeze({ cut: true });
+      } catch {
+        throw new Error("TLS-transparent TCP pass-through failed");
+      }
+    },
+    async close() {
+      try {
+        await stop();
+        return Object.freeze({ closed: true });
+      } catch {
+        throw new Error("TLS-transparent TCP pass-through failed");
+      }
+    },
+  });
+}
+
+function privateIpv4(value) {
+  if (isIP(value) !== 4) return false;
+  const [first, second] = value.split(".").map(Number);
+  return first === 10 ||
+    first === 172 && second >= 16 && second <= 31 ||
+    first === 192 && second === 168;
+}
+
+function productionS3ProxyTarget(env) {
+  const raw = env?.AUDIO_STORAGE_S3_ENDPOINT;
+  if (typeof raw !== "string" || raw.trim() === "" || raw !== raw.trim()) {
+    throw new TypeError("realtime S3 fault requires an explicit production endpoint");
+  }
+  let endpoint;
+  try {
+    endpoint = new URL(raw);
+  } catch {
+    throw new TypeError("realtime S3 fault production endpoint is invalid");
+  }
+  if (
+    endpoint.protocol !== "https:" ||
+    endpoint.username !== "" ||
+    endpoint.password !== "" ||
+    endpoint.pathname !== "/" ||
+    endpoint.search !== "" ||
+    endpoint.hash !== "" ||
+    isIP(endpoint.hostname) !== 0 ||
+    !/^[a-z0-9](?:[a-z0-9.-]{0,251}[a-z0-9])?$/i.test(endpoint.hostname) ||
+    /(?:^|\.)(?:localhost|local)$|minio/i.test(endpoint.hostname)
+  ) {
+    throw new TypeError("realtime S3 fault production endpoint is invalid");
+  }
+  return Object.freeze({
+    host: endpoint.hostname,
+    port: tcpPort(endpoint.port === "" ? 443 : Number(endpoint.port)),
+  });
+}
+
+function realtimeS3ProxyComposeEnvironment(env) {
+  const target = productionS3ProxyTarget(env);
+  const proxyPort = parseRealtimeProofPort(
+    String(env?.REALTIME_PROOF_S3_PROXY_PORT ?? "19443"),
+  );
+  return {
+    REALTIME_PROOF_S3_ENDPOINT_HOST: target.host,
+    REALTIME_PROOF_S3_PROXY_PORT: String(proxyPort),
+  };
+}
+
+function exactReadiness(value, reachable, statusCode) {
+  return value &&
+    typeof value === "object" &&
+    !Array.isArray(value) &&
+    JSON.stringify(Object.keys(value).sort()) === JSON.stringify(["reachable", "statusCode"]) &&
+    value.reachable === reachable &&
+    value.statusCode === statusCode;
+}
+
+/**
+ * Construct the proof-only S3 runtime fault lifecycle. It starts the exact candidate healthy via a
+ * private Docker-gateway pass-through, cuts only those TCP connections, and always removes the
+ * fault process before confirming the untouched production candidate is ready.
+ */
+export function createRealtimeS3FaultLifecycleRuntime({
+  selection,
+  projectName,
+  nodePort,
+  faultNodePort,
+  env = process.env,
+  commandRunner = runBounded,
+  passThroughFactory = createTlsTransparentTcpPassThrough,
+  readinessProbe = defaultS3FaultReadinessProbe,
+  fetchImpl = globalThis.fetch,
+  delayImpl = (milliseconds) => new Promise((resolveDelay) => setTimeout(resolveDelay, milliseconds)),
+  timeoutMs = 2_000,
+  healthAttempts = 40,
+} = {}) {
+  const serviceName = "node-realtime-proof-s3-fault";
+  let passThrough = null;
+  let commandEnvironment = null;
+  let composeArguments = null;
+  let containerId = null;
+  let processMayExist = false;
+  let faultRemoved = false;
+  let passThroughClosed = false;
+  let state = "idle";
+  let restored = null;
+
+  const fail = () => new Error("realtime S3 fault lifecycle failed");
+
+  const closePassThrough = async () => {
+    if (passThrough === null || passThroughClosed) return;
+    const result = await passThrough.close();
+    if (JSON.stringify(result) !== JSON.stringify({ closed: true })) throw fail();
+    passThroughClosed = true;
+  };
+
+  const removeFaultProcess = async () => {
+    if (!processMayExist || faultRemoved) return;
+    const withProfile = [...composeArguments, "--profile", "realtime-proof-fault"];
+    commandRunner(
+      "docker",
+      [...withProfile, "rm", "--stop", "--force", serviceName],
+      commandEnvironment,
+    );
+    const remaining = commandRunner(
+      "docker",
+      [...withProfile, "ps", "--all", "--quiet", serviceName],
+      commandEnvironment,
+    ).trim();
+    if (remaining !== "") throw fail();
+    faultRemoved = true;
+  };
+
+  const inspectHealthyCandidate = (expectedImage) => {
+    const inspected = JSON.parse(commandRunner(
+      "docker",
+      ["inspect", containerId],
+      commandEnvironment,
+    ));
+    if (!Array.isArray(inspected) || inspected.length !== 1) throw fail();
+    const container = inspected[0];
+    if (
+      container?.State?.Running !== true ||
+      container?.State?.Health?.Status !== "healthy" ||
+      container?.Config?.Image !== expectedImage ||
+      !nonRootContainerUser(container?.Config?.User) ||
+      typeof container?.Image !== "string" ||
+      !/^sha256:[0-9a-f]{64}$/.test(container.Image)
+    ) {
+      throw fail();
+    }
+    const inspectedImages = JSON.parse(commandRunner(
+      "docker",
+      ["image", "inspect", container.Config.Image],
+      commandEnvironment,
+    ));
+    if (!Array.isArray(inspectedImages) || inspectedImages.length !== 1) throw fail();
+    const image = inspectedImages[0];
+    if (
+      image?.Id !== container.Image ||
+      !Array.isArray(image?.RepoDigests) ||
+      !image.RepoDigests.includes(expectedImage) ||
+      !nonRootContainerUser(image?.Config?.User) ||
+      image.Config.User !== container.Config.User
+    ) {
+      throw fail();
+    }
+  };
+
+  return Object.freeze({
+    async startS3FaultProcess() {
+      if (state !== "idle") throw fail();
+      state = "starting";
+      try {
+        const selected = assertReleaseDeploymentSelection(selection);
+        const selectedImages = composeImageEnvironment(selected, "candidate");
+        const selectedNodePort = parseRealtimeProofPort(String(nodePort));
+        const selectedFaultPort = parseRealtimeProofPort(String(faultNodePort));
+        const proxyPort = parseRealtimeProofPort(
+          String(env?.REALTIME_PROOF_S3_PROXY_PORT ?? "19443"),
+        );
+        if (new Set([selectedNodePort, selectedFaultPort, proxyPort]).size !== 3) throw fail();
+        if (
+          !env || typeof env !== "object" || Array.isArray(env) ||
+          typeof commandRunner !== "function" ||
+          typeof passThroughFactory !== "function" ||
+          typeof readinessProbe !== "function" ||
+          typeof fetchImpl !== "function" ||
+          typeof delayImpl !== "function" ||
+          !Number.isSafeInteger(timeoutMs) || timeoutMs < 100 || timeoutMs > 5_000 ||
+          !Number.isSafeInteger(healthAttempts) || healthAttempts < 1 || healthAttempts > 80
+        ) {
+          throw fail();
+        }
+        const target = productionS3ProxyTarget(env);
+        composeArguments = realtimeProofComposeArguments(projectName);
+        const networks = JSON.parse(commandRunner(
+          "docker",
+          ["network", "inspect", "bridge"],
+          { ...env, ...selectedImages },
+        ));
+        const gateways = networks?.[0]?.IPAM?.Config
+          ?.map(({ Gateway }) => Gateway)
+          .filter((value) => typeof value === "string" && value !== "") ?? [];
+        if (networks.length !== 1 || gateways.length !== 1 || !privateIpv4(gateways[0])) throw fail();
+        const listenHost = gateways[0];
+        passThrough = passThroughFactory({
+          targetHost: target.host,
+          targetPort: target.port,
+          listenHost,
+          listenPort: proxyPort,
+        });
+        if (
+          typeof passThrough?.start !== "function" ||
+          typeof passThrough?.cut !== "function" ||
+          typeof passThrough?.close !== "function"
+        ) {
+          throw fail();
+        }
+        const listening = await passThrough.start();
+        if (
+          !listening ||
+          JSON.stringify(Object.keys(listening).sort()) !==
+            JSON.stringify(["listenHost", "listenPort"]) ||
+          listening.listenHost !== listenHost ||
+          listening.listenPort !== proxyPort
+        ) {
+          throw fail();
+        }
+        commandEnvironment = {
+          ...env,
+          ...selectedImages,
+          REALTIME_PROOF_FAULT_NODE_PORT: String(selectedFaultPort),
+          REALTIME_PROOF_S3_ENDPOINT_HOST: target.host,
+          REALTIME_PROOF_S3_PROXY_PORT: String(proxyPort),
+        };
+        const withProfile = [...composeArguments, "--profile", "realtime-proof-fault"];
+        processMayExist = true;
+        commandRunner(
+          "docker",
+          [...withProfile, "up", "-d", "--no-build", "--no-deps", serviceName],
+          commandEnvironment,
+        );
+        const ids = commandRunner(
+          "docker",
+          [...withProfile, "ps", "--all", "--quiet", serviceName],
+          commandEnvironment,
+        ).trim().split("\n").filter(Boolean);
+        if (ids.length !== 1 || !/^[0-9a-f]{12,64}$/.test(ids[0])) throw fail();
+        containerId = ids[0];
+        let healthy = false;
+        for (let attempt = 0; attempt < healthAttempts; attempt += 1) {
+          try {
+            inspectHealthyCandidate(selectedImages.NODE_BACKEND_IMAGE);
+            healthy = true;
+            break;
+          } catch {
+            if (attempt === healthAttempts - 1) break;
+            await delayImpl(250);
+          }
+        }
+        if (!healthy) throw fail();
+        const readiness = await readinessProbe({
+          port: selectedFaultPort,
+          timeoutMs,
+          fetchImpl,
+        });
+        if (!exactReadiness(readiness, true, 200)) throw fail();
+        state = "healthy";
+        return Object.freeze({
+          sameCandidateImage: true,
+          configuredNonRoot: true,
+          healthyProductionS3: true,
+        });
+      } catch {
+        await removeFaultProcess().catch(() => {});
+        await closePassThrough().catch(() => {});
+        state = "failed";
+        throw fail();
+      }
+    },
+    async injectS3Outage() {
+      if (state !== "healthy") throw fail();
+      try {
+        const result = await passThrough.cut();
+        if (JSON.stringify(result) !== JSON.stringify({ cut: true })) throw fail();
+        state = "cut";
+        return Object.freeze({ unreachableEndpoint: true });
+      } catch {
+        throw fail();
+      }
+    },
+    async restoreProductionCandidate() {
+      if (restored !== null) return restored;
+      try {
+        await removeFaultProcess();
+        await closePassThrough();
+        const selectedNodePort = parseRealtimeProofPort(String(nodePort));
+        const readiness = await readinessProbe({ port: selectedNodePort, timeoutMs, fetchImpl });
+        if (!exactReadiness(readiness, true, 200)) throw fail();
+        state = "restored";
+        restored = Object.freeze({
+          faultProcessRemoved: true,
+          productionCandidateReady: true,
+        });
+        return restored;
+      } catch {
+        throw fail();
+      }
+    },
+  });
+}
+
 async function defaultS3FaultReadinessProbe({ port, timeoutMs, fetchImpl }) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
@@ -745,163 +1171,6 @@ async function defaultS3FaultReadinessProbe({ port, timeoutMs, fetchImpl }) {
   } finally {
     clearTimeout(timer);
   }
-}
-
-/** Prove the opt-in same-image process fails closed against its fixed unreachable S3 endpoint. */
-export async function probeRealtimeS3FaultProcessRuntime({
-  selection,
-  projectName,
-  faultNodePort,
-  env = process.env,
-  commandRunner = run,
-  readinessProbe = defaultS3FaultReadinessProbe,
-  fetchImpl = globalThis.fetch,
-  delayImpl = (milliseconds) => new Promise((resolveDelay) => setTimeout(resolveDelay, milliseconds)),
-  timeoutMs = 2_000,
-} = {}) {
-  const serviceName = "node-realtime-proof-s3-fault";
-  let failure = null;
-  let result = null;
-  let composeArguments = null;
-  let commandEnvironment = null;
-  try {
-    const selected = assertReleaseDeploymentSelection(selection);
-    const selectedImages = composeImageEnvironment(selected, "candidate");
-    const port = parseRealtimeProofPort(String(faultNodePort));
-    if (
-      typeof commandRunner !== "function" ||
-      typeof readinessProbe !== "function" ||
-      typeof fetchImpl !== "function" ||
-      typeof delayImpl !== "function" ||
-      !Number.isSafeInteger(timeoutMs) ||
-      timeoutMs < 100 ||
-      timeoutMs > 5_000
-    ) {
-      throw new TypeError("realtime S3 fault process adapters are invalid");
-    }
-    composeArguments = realtimeProofComposeArguments(projectName);
-    commandEnvironment = {
-      ...env,
-      ...selectedImages,
-      REALTIME_PROOF_FAULT_NODE_PORT: String(port),
-    };
-    const withFaultProfile = [...composeArguments, "--profile", "realtime-proof-fault"];
-    commandRunner(
-      "docker",
-      [
-        ...withFaultProfile,
-        "up",
-        "-d",
-        "--no-build",
-        "--no-deps",
-        serviceName,
-      ],
-      commandEnvironment,
-    );
-    const containerIds = commandRunner(
-      "docker",
-      [...withFaultProfile, "ps", "--all", "--quiet", serviceName],
-      commandEnvironment,
-    ).trim().split("\n").filter(Boolean);
-    if (containerIds.length !== 1 || !/^[0-9a-f]{12,64}$/.test(containerIds[0])) {
-      throw new TypeError("realtime S3 fault process container resolution failed");
-    }
-    const containerId = containerIds[0];
-    let container = null;
-    for (let attempt = 0; attempt < 40; attempt += 1) {
-      const inspected = JSON.parse(commandRunner(
-        "docker",
-        ["inspect", containerId],
-        commandEnvironment,
-      ));
-      if (!Array.isArray(inspected) || inspected.length !== 1) {
-        throw new TypeError("realtime S3 fault process inspection failed");
-      }
-      container = inspected[0];
-      if (container?.State?.Running === false) break;
-      if (attempt === 39) throw new TypeError("realtime S3 fault process did not stop");
-      await delayImpl(250);
-    }
-    const inspectedImages = JSON.parse(commandRunner(
-      "docker",
-      ["image", "inspect", container?.Config?.Image],
-      commandEnvironment,
-    ));
-    if (!Array.isArray(inspectedImages) || inspectedImages.length !== 1) {
-      throw new TypeError("realtime S3 fault image inspection failed");
-    }
-    const image = inspectedImages[0];
-    if (
-      container?.State?.Running !== false ||
-      !Number.isSafeInteger(container?.State?.ExitCode) ||
-      container.State.ExitCode === 0 ||
-      container.State.Health?.Status === "healthy"
-    ) {
-      throw new TypeError("realtime S3 fault process did not fail closed");
-    }
-    if (
-      container?.Config?.Image !== selectedImages.NODE_BACKEND_IMAGE ||
-      typeof container?.Image !== "string" ||
-      !/^sha256:[0-9a-f]{64}$/.test(container.Image) ||
-      image?.Id !== container.Image ||
-      !Array.isArray(image?.RepoDigests) ||
-      !image.RepoDigests.includes(selectedImages.NODE_BACKEND_IMAGE)
-    ) {
-      throw new TypeError("realtime S3 fault process image identity failed");
-    }
-    if (
-      !nonRootContainerUser(container.Config.User) ||
-      !nonRootContainerUser(image?.Config?.User) ||
-      container.Config.User !== image.Config.User
-    ) {
-      throw new TypeError("realtime S3 fault process must preserve the image non-root user");
-    }
-    const readiness = await readinessProbe({ port, timeoutMs, fetchImpl });
-    if (
-      !readiness ||
-      JSON.stringify(Object.keys(readiness).sort()) !==
-        JSON.stringify(["reachable", "statusCode"]) ||
-      readiness.reachable !== false ||
-      readiness.statusCode !== null
-    ) {
-      throw new TypeError("realtime S3 fault process became reachable");
-    }
-    result = {
-      sameCandidateImage: true,
-      configuredNonRoot: true,
-      unreachableEndpointUnready: true,
-      removed: true,
-    };
-  } catch {
-    failure = new Error("realtime S3 fault process probe failed");
-  } finally {
-    if (composeArguments !== null && commandEnvironment !== null) {
-      const withFaultProfile = [
-        ...composeArguments,
-        "--profile",
-        "realtime-proof-fault",
-      ];
-      try {
-        commandRunner(
-          "docker",
-          [...withFaultProfile, "rm", "--stop", "--force", serviceName],
-          commandEnvironment,
-        );
-        const remaining = commandRunner(
-          "docker",
-          [...withFaultProfile, "ps", "--all", "--quiet", serviceName],
-          commandEnvironment,
-        ).trim();
-        if (remaining !== "") throw new TypeError("realtime S3 fault process cleanup failed");
-      } catch {
-        failure = new Error("realtime S3 fault process probe failed");
-      }
-    }
-  }
-  if (failure !== null || result === null) {
-    throw failure ?? new Error("realtime S3 fault process probe failed");
-  }
-  return Object.freeze(result);
 }
 
 function readSelection(path) {
@@ -958,6 +1227,7 @@ async function main() {
   const commandEnvironment = {
     ...process.env,
     ...composeImageEnvironment(selection, "candidate"),
+    ...realtimeS3ProxyComposeEnvironment(process.env),
     REALTIME_PROOF_NODE_PORT: String(options.nodePort),
     REALTIME_PROOF_SECONDARY_NODE_PORT: String(options.secondaryNodePort),
     REALTIME_PROOF_FAULT_NODE_PORT: String(options.faultNodePort),

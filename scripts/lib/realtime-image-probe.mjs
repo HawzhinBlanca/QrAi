@@ -294,13 +294,45 @@ function assertS3FaultTopology(primary, fault) {
   assertSharedRealtimeAuthority(primary, fault);
   const environment = fault.environment;
   assertObject(environment, "S3 fault process environment");
+  const primaryEndpointValue = primary.environment?.AUDIO_STORAGE_S3_ENDPOINT;
+  const faultEndpointValue = environment.AUDIO_STORAGE_S3_ENDPOINT;
+  let primaryEndpoint;
+  let faultEndpoint;
+  try {
+    primaryEndpoint = new URL(primaryEndpointValue);
+    faultEndpoint = new URL(faultEndpointValue);
+  } catch {
+    throw new TypeError("S3 fault process requires an explicit TLS pass-through endpoint");
+  }
   if (
     environment.AUDIO_STORAGE_DRIVER !== "s3" ||
     environment.AUDIO_STORAGE_FILESYSTEM_ACKNOWLEDGED_DEV_ONLY !== "0" ||
-    environment.AUDIO_STORAGE_S3_ENDPOINT !== "http://127.0.0.1:9" ||
+    primaryEndpoint.protocol !== "https:" ||
+    faultEndpoint.protocol !== "https:" ||
+    primaryEndpoint.username !== "" ||
+    primaryEndpoint.password !== "" ||
+    primaryEndpoint.pathname !== "/" ||
+    primaryEndpoint.search !== "" ||
+    primaryEndpoint.hash !== "" ||
+    faultEndpoint.username !== "" ||
+    faultEndpoint.password !== "" ||
+    faultEndpoint.hostname !== primaryEndpoint.hostname ||
+    faultEndpoint.port === "" ||
+    faultEndpoint.port === primaryEndpoint.port ||
+    faultEndpoint.pathname !== "/" ||
+    faultEndpoint.search !== "" ||
+    faultEndpoint.hash !== "" ||
     environment.AUDIO_STORAGE_S3_FORCE_PATH_STYLE !== "1"
   ) {
-    throw new TypeError("S3 fault process must use the fixed unreachable S3 endpoint");
+    throw new TypeError("S3 fault process must use the same-host TLS pass-through port in path-style mode");
+  }
+  const extraHosts = fault.extra_hosts;
+  if (
+    !Array.isArray(extraHosts) ||
+    JSON.stringify(extraHosts) !==
+      JSON.stringify([`${primaryEndpoint.hostname}=host-gateway`])
+  ) {
+    throw new TypeError("S3 fault process must map only the production endpoint host to host-gateway");
   }
   for (const key of [
     "AUDIO_STORAGE_S3_BUCKET",
@@ -368,11 +400,23 @@ function storageConfiguration(rendered) {
       nonblank(environment.AUDIO_STORAGE_S3_KMS_KEY_ID, `${serviceName} S3 KMS key`);
     }
     const endpoint = environment.AUDIO_STORAGE_S3_ENDPOINT?.trim() || null;
+    let parsedEndpoint = null;
+    try {
+      parsedEndpoint = new URL(endpoint);
+    } catch {}
     if (
-      endpoint &&
-      (!endpoint.startsWith("https://") || /(?:localhost|127\.0\.0\.1|minio|\.local)(?:[:/]|$)/i.test(endpoint))
+      endpoint === null ||
+      parsedEndpoint?.protocol !== "https:" ||
+      parsedEndpoint.username !== "" ||
+      parsedEndpoint.password !== "" ||
+      parsedEndpoint.pathname !== "/" ||
+      parsedEndpoint.search !== "" ||
+      parsedEndpoint.hash !== "" ||
+      /(?:localhost|127\.0\.0\.1|minio|\.local)(?:[:/]|$)/i.test(endpoint)
     ) {
-      throw new TypeError(`${serviceName} S3 endpoint must be a non-loopback HTTPS production endpoint`);
+      throw new TypeError(
+        `${serviceName} requires an explicit non-loopback HTTPS production S3 endpoint`,
+      );
     }
     const currentIdentity = canonicalJson({ bucket, region, owner, selectedEncryption, endpoint });
     if (identity !== null && currentIdentity !== identity) {
@@ -424,6 +468,7 @@ function renderedTopologyDigest(rendered) {
       entrypoint: value.entrypoint ?? null,
       environmentKeys: topologyEnvironmentKeys(value, serviceName),
       expose: value.expose ?? null,
+      extraHosts: value.extra_hosts ?? null,
       healthPolicy: topologyHealthPolicy(value),
       image: value.image ?? null,
       init: value.init ?? null,
