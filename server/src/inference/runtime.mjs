@@ -236,6 +236,14 @@ function appendAudit(tenantId, action, subjectId, details = {}) {
     action,
     subjectType: action.startsWith("privacy.") ? "privacy" : "ml_prediction",
     subjectId,
+    // `subjectId` is a learner for privacy rows but a session/chunk for most inference rows. Keep
+    // the learner as a separate structured attribution so an export can select one person's rows
+    // without exposing the tenant-wide audit trail. Unknown attribution stays null and is omitted
+    // from every learner export rather than being disclosed to all of them.
+    learnerId:
+      typeof details.learnerId === "string" && details.learnerId.trim() !== ""
+        ? details.learnerId
+        : null,
     details,
     createdAt: new Date().toISOString(),
   };
@@ -903,16 +911,32 @@ async function predictAlignment(requestBody, deadline = createDeadline(UPSTREAM_
   let externalAsr;
   if (asrAllowed && !childProfile) {
     externalAsr = { called: true, reason: "consent-granted" };
-    appendAudit(tenantId, "privacy.external-asr.called", sessionId, { traceId, reason: "consent-granted" });
+    appendAudit(tenantId, "privacy.external-asr.called", sessionId, {
+      traceId,
+      reason: "consent-granted",
+      learnerId: requestBody.learnerId,
+    });
   } else if (asrAllowed && childProfile && guardianApproved) {
     externalAsr = { called: true, reason: "child-profile-guardian-approved" };
-    appendAudit(tenantId, "privacy.external-asr.called", sessionId, { traceId, reason: "child-profile-guardian-approved" });
+    appendAudit(tenantId, "privacy.external-asr.called", sessionId, {
+      traceId,
+      reason: "child-profile-guardian-approved",
+      learnerId: requestBody.learnerId,
+    });
   } else if (externalAsrRequested && childProfile && !guardianApproved) {
     externalAsr = { called: false, reason: "child-profile-no-guardian-consent" };
-    appendAudit(tenantId, "privacy.external-asr.denied", sessionId, { traceId, reason: "child-profile-no-guardian-consent" });
+    appendAudit(tenantId, "privacy.external-asr.denied", sessionId, {
+      traceId,
+      reason: "child-profile-no-guardian-consent",
+      learnerId: requestBody.learnerId,
+    });
   } else if (externalAsrRequested && !asrAllowed) {
     externalAsr = { called: false, reason: "consent-revoked-or-insufficient" };
-    appendAudit(tenantId, "privacy.external-asr.denied", sessionId, { traceId, reason: "consent-revoked-or-insufficient" });
+    appendAudit(tenantId, "privacy.external-asr.denied", sessionId, {
+      traceId,
+      reason: "consent-revoked-or-insufficient",
+      learnerId: requestBody.learnerId,
+    });
   } else {
     externalAsr = { called: false, reason: "not-requested" };
   }
@@ -1143,6 +1167,7 @@ async function predictAlignment(requestBody, deadline = createDeadline(UPSTREAM_
     modelVersion: MODEL_VERSION,
     modelAttribution,
     traceId,
+    learnerId: requestBody.learnerId,
     confidence,
     wordCount,
     recognizedCount,
@@ -1245,6 +1270,7 @@ async function predictTajweed(
   const auditEventId = appendAudit(tenantId, "ml.tajweed.predicted", sessionId, {
     modelVersion: MODEL_VERSION,
     traceId,
+    learnerId: requestBody.learnerId,
     annotationCount: annotations.length,
     findingCount: 0,
     acousticShadow,
@@ -1277,12 +1303,20 @@ export async function exportPrivacy(
   const tenantId = safeStorageSegment(requestBody.tenantId, "tenantId");
   const learnerId = safeStorageSegment(requestBody.learnerId, "learnerId");
   const traceId = extractTraceId(requestBody);
-  appendAudit(tenantId, "privacy.export.requested", learnerId, { traceId });
+  appendAudit(tenantId, "privacy.export.requested", learnerId, { traceId, learnerId });
 
   const audioObjectKeys = (await store.listLearner(
     { tenantId, learnerId },
     { signal: deadline.signal },
   )).map((item) => item.objectKey);
+
+  // Read once, then scope every derived view to this learner. `learnerId` covers session/chunk
+  // events written by current code; `subjectId` retains the learner-keyed privacy rows and old
+  // records from before structured attribution existed. Unattributed rows are withheld: omitting a
+  // row is recoverable, disclosing another learner's privacy history is not.
+  const learnerAuditEvents = readTenantAuditEvents(tenantId).filter(
+    (event) => event.learnerId === learnerId || event.subjectId === learnerId,
+  );
 
   return {
     traceId,
@@ -1292,13 +1326,13 @@ export async function exportPrivacy(
     // V1 metadata is bound to the object itself (S3 user metadata or a private filesystem sidecar),
     // so there is no separately addressable metadata inventory to disclose.
     metadataObjectKeys: [],
-    externalAsrCalls: readTenantAuditEvents(tenantId).filter(
+    externalAsrCalls: learnerAuditEvents.filter(
       (event) => event.action === "privacy.external-asr.called",
     ),
-    deniedExternalAsr: readTenantAuditEvents(tenantId).filter(
+    deniedExternalAsr: learnerAuditEvents.filter(
       (event) => event.action === "privacy.external-asr.denied",
     ),
-    auditEvents: readTenantAuditEvents(tenantId),
+    auditEvents: learnerAuditEvents,
   };
 }
 
@@ -1311,7 +1345,11 @@ export async function deletePrivacy(
   const learnerId = safeStorageSegment(requestBody.learnerId, "learnerId");
   const traceId = extractTraceId(requestBody);
 
-  const { deletedObjectKeys: deletedAudioObjectKeys } = await store.deleteLearner(
+  const {
+    deletedObjectKeys: deletedAudioObjectKeys,
+    deletedOtherObjectKeys = [],
+    fullyErased,
+  } = await store.deleteLearner(
     { tenantId, learnerId },
     { signal: deadline.signal },
   );
@@ -1325,15 +1363,20 @@ export async function deletePrivacy(
     status: "completed",
     deletedAudioObjectKeys,
     deletedMetadataObjectKeys,
-    tombstonedDerivedRecords: true,
+    deletedOtherObjectKeys,
+    // This is a post-condition from the storage authority, not a success literal. A partial delete
+    // must remain visible even when every recognized audio object was removed.
+    tombstonedDerivedRecords: fullyErased === true,
     completedAt: new Date().toISOString(),
   };
   deletionJobs.set(job.id, job);
   appendAudit(tenantId, "privacy.delete.requested", learnerId, {
     jobId: job.id,
     traceId,
+    learnerId,
     deletedAudioObjectKeys,
     deletedMetadataObjectKeys,
+    deletedOtherObjectKeys,
   });
   return job;
 }
@@ -1523,6 +1566,7 @@ export async function storeAudioChunk(
     });
     appendAudit(tenantId, "audio.chunk.overwrite-refused", chunkId, {
       sessionId,
+      learnerId,
       traceId: extractTraceId(requestBody),
       conflict,
     });
@@ -1536,6 +1580,7 @@ export async function storeAudioChunk(
 
   appendAudit(tenantId, "audio.chunk.stored", chunkId, {
     sessionId,
+    learnerId,
     traceId: extractTraceId(requestBody),
     audioSize: stored.size,
   });
@@ -1760,6 +1805,7 @@ async function transcribeSession(
   if (!asrAllowed) {
     appendAudit(tenantId, "privacy.external-asr.denied", sessionId, {
       traceId,
+      learnerId,
       reason: "consent-revoked-or-insufficient",
     });
     return {
@@ -1935,6 +1981,7 @@ async function transcribeSession(
 
   appendAudit(tenantId, "privacy.external-asr.called", sessionId, {
     traceId,
+    learnerId,
     reason: "consent-granted",
     chunkCount: chunkCount,
     windowCount: windows.length,

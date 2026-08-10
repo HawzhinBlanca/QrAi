@@ -2776,3 +2776,64 @@ they disagree, something is wrong and the safe answer is to refuse.
 - `tests/e2e/teacher-audio-index.test.mjs` proves real WebSocket storage → database index → audited
   teacher playback, then forces an index outage and proves metric, repair, idempotence, and an
   ownership-mismatch refusal.
+
+---
+
+## ADR-0054 — The inference audit log grows without bound and survives erasure; retention is a human decision
+
+**Date:** 2026-08-09 · **Status:** Proposed — needs an owner/DPO decision, NOT an engineering one
+**Related:** ADR-0003 (inference is internal), ADR-0050 (one Node backend), the cross-learner export fix
+
+### Context
+
+`server/src/inference/runtime.mjs` writes one append-only JSONL per tenant under
+`AUDIO_STORAGE_DIR/audit-log/`.
+Three properties of it were found while fixing the learner-scoped privacy export, and none of them
+can be settled by an agent:
+
+1. **It never rotates.** Nothing truncates, ages out, or caps the file. Audio has a full
+   consent-based retention sweep (`retentionTtlHours`, honouring `discard` / `teacher-review`), so
+   the recording is deleted on schedule while the record *of* the recording accumulates forever.
+2. **It is read whole, synchronously, on the request path.** `readTenantAuditEvents` does
+   `readFileSync` + `JSON.parse` over the entire file. `GET /v1/audit-events?tenantId=` returns
+   every row with no pagination or cap. On a single-threaded Node service both cost grows linearly
+   and blocks every other request. The platform audit endpoint — a different store, its Postgres
+   `audit_events` table — is Admin/Ops-gated and already `LIMIT 200`; the compatibility inference
+   endpoint is key-gated and internal, so this is a reliability question, not an exposure one.
+3. **Erasure does not touch it.** `deletePrivacy` removes the learner's audio and chunk metadata and
+   appends `privacy.delete.requested` — an event whose `subjectId` *is* the learner's id. So a
+   learner who asks to be forgotten leaves behind every audit row naming them, plus a new one
+   recording the request. Their identifier is arguably more durable after erasure than before.
+
+Point 3 is the same shape as the gap ADR-0027's lineage closed in `agent_runs`, but it is **not**
+the same decision. An audit trail frequently has an independent lawful basis to persist, and
+purging it can itself be the violation — destroying the evidence that a deletion was honoured. That
+is a data-protection judgement about competing obligations, not a bug with an obvious fix.
+
+### What is NOT being decided here
+
+No retention period, no rotation scheme, and no purge-on-erasure behaviour is being introduced by
+this ADR. Choosing any of them silently would be an agent inventing a compliance policy.
+
+### The question for the owner / DPO
+
+1. **Retention period.** How long must an inference audit row be kept, and on what basis? Once
+   answered, rotation is mechanical and should reuse the existing consent-retention sweep rather
+   than growing a second scheduler.
+2. **Erasure interaction.** On a verified erasure request, must the learner's prior audit rows be
+   (a) kept intact, (b) pseudonymised — the identifier replaced, the event and its timestamp kept,
+   which preserves provability while dropping the identifier, or (c) deleted outright? (b) is the
+   usual reconciliation, and is a real option here because `learnerId` is now a discrete field on
+   every row rather than something buried in free text.
+3. **Read bound.** Is mirroring platform-api's `LIMIT 200` + explicit pagination on
+   `GET /v1/audit-events` acceptable, given a caller today receives everything? This is the one part
+   that is purely engineering, and it is held back only because changing what an endpoint returns
+   should not be bundled into a decision the rest of this ADR defers.
+
+### Consequences until it is answered
+
+The log grows unbounded for the life of a deployment, every full read of it gets linearly slower on
+the event loop, and an erased learner's identifier persists in it. That is the current, honest state
+— written down so it is a known open item with a named owner rather than something rediscovered
+later. `learnerId` being a first-class field on each row means whichever of (a)/(b)/(c) is chosen can
+be implemented without re-parsing history.

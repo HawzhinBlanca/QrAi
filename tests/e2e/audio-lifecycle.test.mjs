@@ -172,8 +172,16 @@ test("filesystem put/read is create-only, hash-idempotent, isolated, and integri
     audioBytes: Buffer.from("other learner"),
   });
   assert.deepEqual((await store.listLearner(IDENTITY)).map((item) => item.objectKey), [first.objectKey]);
-  assert.deepEqual(await store.deleteLearner(IDENTITY), { deletedObjectKeys: [first.objectKey] });
-  assert.deepEqual(await store.deleteLearner(IDENTITY), { deletedObjectKeys: [] });
+  assert.deepEqual(await store.deleteLearner(IDENTITY), {
+    deletedObjectKeys: [first.objectKey],
+    deletedOtherObjectKeys: [],
+    fullyErased: true,
+  });
+  assert.deepEqual(await store.deleteLearner(IDENTITY), {
+    deletedObjectKeys: [],
+    deletedOtherObjectKeys: [],
+    fullyErased: true,
+  });
   assert.equal((await store.listLearner({ ...IDENTITY, learnerId: "learner-b" })).length, 1);
 
   const corruptIdentity = { ...IDENTITY, learnerId: "learner-b", chunkId: "chunk-b" };
@@ -290,7 +298,20 @@ test("S3 delete inspects HTTP-200 per-key errors and never claims partial erasur
   assert.equal(client.objects.has(client.deleteErrorKey), true, "the failed key vanished from the fake store");
   client.deleteErrorKey = null;
   assert.equal((await store.deleteLearner(IDENTITY)).deletedObjectKeys.length, 1);
-  assert.deepEqual(await store.deleteLearner(IDENTITY), { deletedObjectKeys: [] });
+  const unknownKey = "audio/v1/tenant-a/learner-a/interrupted-upload.tmp";
+  client.objects.set(unknownKey, { bytes: Buffer.from("partial"), checksum: null, metadata: {} });
+  const unknownDeletion = await store.deleteLearner(IDENTITY);
+  assert.deepEqual(unknownDeletion, {
+    deletedObjectKeys: [],
+    deletedOtherObjectKeys: [unknownKey],
+    fullyErased: true,
+  });
+  assert.equal(client.objects.has(unknownKey), false, "an unknown learner object survived S3 erasure");
+  assert.deepEqual(await store.deleteLearner(IDENTITY), {
+    deletedObjectKeys: [],
+    deletedOtherObjectKeys: [],
+    fullyErased: true,
+  });
 });
 
 test("production configuration refuses filesystem fallback and incomplete S3 settings", () => {

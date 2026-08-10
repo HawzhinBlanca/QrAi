@@ -24,7 +24,7 @@
  */
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { existsSync, mkdtempSync, readdirSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -217,4 +217,119 @@ test("erasing a learner twice is a no-op, not an error", async () => {
       `request could never complete: ${await second.text()}`,
   );
   assert.deepEqual(filesFor("learner-twice"), [], "the audio came back");
+});
+
+test("a learner's privacy export contains only their own audit trail, never another learner's", async () => {
+  // Scope again, on the OTHER privacy right. `exportPrivacy` filtered its audit lists by tenant
+  // while the export itself is per-learner, so a right-of-access packet handed to one learner
+  // carried every other learner's rows in the same tenant.
+  //
+  // The two rows this stages are the worst case rather than a generic one: `privacy.export.requested`
+  // and `privacy.delete.requested` both key subjectId to the LEARNER, so what leaked was another
+  // child's identifier attached to the fact that they had asked to be erased. GDPR Art. 15(4) — a
+  // copy provided under the right of access "shall not adversely affect the rights and freedoms of
+  // others" — and erasure means their id should be getting rarer, not copied into someone else's file.
+  const OTHER = "learner-with-their-own-privacy-history";
+  const SUBJECT = "learner-requesting-an-export";
+
+  // The other learner exercises both privacy rights, writing two audit rows that name them.
+  await post("/v1/privacy/export", { tenantId: TENANT, learnerId: OTHER, traceId: "other-export" });
+  await post("/v1/privacy/delete", { tenantId: TENANT, learnerId: OTHER, traceId: "other-delete" });
+
+  const res = await post("/v1/privacy/export", {
+    tenantId: TENANT,
+    learnerId: SUBJECT,
+    traceId: "subject-export",
+  });
+  // Read the body ONCE: an `await res.text()` inside an assertion message is evaluated eagerly and
+  // would consume the stream before res.json() could run.
+  const raw = await res.text();
+  assert.equal(res.status, 200, `the export failed: ${raw}`);
+  const body = JSON.parse(raw);
+
+  // Without this the test passes on an export that returns nothing at all — "no other learner's
+  // rows" is trivially true of an empty list, and would stay true if scoping were implemented by
+  // dropping the audit trail entirely.
+  assert.ok(
+    body.auditEvents.some((e) => e.subjectId === SUBJECT || e.learnerId === SUBJECT),
+    `the export carried none of the subject's OWN audit rows, so this proves nothing: ${JSON.stringify(body.auditEvents)}`,
+  );
+
+  const foreign = body.auditEvents.filter(
+    (e) => e.subjectId === OTHER || e.learnerId === OTHER,
+  );
+  assert.deepEqual(
+    foreign,
+    [],
+    `another learner's audit rows were disclosed in this learner's export: ${JSON.stringify(foreign, null, 2)}`,
+  );
+
+  // Belt and braces: the id must not survive anywhere in the payload, including the two derived
+  // lists that were filtered the same tenant-wide way.
+  assert.ok(
+    !JSON.stringify(body).includes(OTHER),
+    "another learner's id appears somewhere in the export payload",
+  );
+});
+
+test("erasure removes a file of an unrecognised type, and reports it as neither audio nor metadata", async () => {
+  // The erasure loop used to unlink only `.bin` and `.meta.json` and step silently over anything
+  // else, so one file of any other name survived "delete my child's recordings". An allowlist is
+  // the wrong default here: forgetting to extend it fails towards RETAINING learner data.
+  const STRAY = "learner-with-an-unexpected-file";
+  await storeChunk(STRAY, "chunk-stray");
+  const strayDir = join(storageDir, "audio", "v1", TENANT, STRAY, "unexpected-session");
+  mkdirSync(strayDir, { recursive: true });
+  writeFileSync(join(strayDir, "leftover.tmp"), "not a .pcm and not a .meta.json");
+  assert.ok(
+    filesFor(STRAY).some((file) => file.endsWith("/leftover.tmp")),
+    "the stray file was never written",
+  );
+
+  const res = await post("/v1/privacy/delete", { tenantId: TENANT, learnerId: STRAY });
+  const body = JSON.parse(await res.text());
+
+  assert.deepEqual(filesFor(STRAY), [], "a file erasure does not recognise survived the erasure");
+  assert.ok(
+    body.deletedOtherObjectKeys.some((k) => k.endsWith("/leftover.tmp")),
+    `the stray file was deleted but not reported: ${JSON.stringify(body.deletedOtherObjectKeys)}`,
+  );
+  // Counted separately on purpose: an unrecognised file must not inflate either of the two counts
+  // that already mean something specific.
+  assert.ok(
+    !JSON.stringify(body.deletedAudioObjectKeys).includes("leftover.tmp") &&
+      !JSON.stringify(body.deletedMetadataObjectKeys).includes("leftover.tmp"),
+    "the stray file was miscounted as audio or as metadata",
+  );
+  assert.equal(body.tombstonedDerivedRecords, true, "nothing was left, so this should be true");
+});
+
+test("tombstonedDerivedRecords follows the storage post-condition instead of asserting success", async () => {
+  // The real filesystem/S3 stores erase every key in the validated learner prefix. Inject the one
+  // state that must still be representable: the storage authority completed its call but reports a
+  // residual object. A hardcoded `true` passes every happy path and fails this negative control.
+  const previousStorageDir = process.env.AUDIO_STORAGE_DIR;
+  process.env.AUDIO_STORAGE_DIR = storageDir;
+  try {
+    const { deletePrivacy } = await import(
+      `../../server/src/inference/runtime.mjs?privacy-postcondition=${Date.now()}`
+    );
+    const body = await deletePrivacy(
+      { tenantId: TENANT, learnerId: "learner-with-residue", traceId: "partial-erasure" },
+      undefined,
+      {
+        async deleteLearner() {
+          return {
+            deletedObjectKeys: ["audio/v1/tenant/learner/session/chunk.pcm"],
+            deletedOtherObjectKeys: ["audio/v1/tenant/learner/session/residue.tmp"],
+            fullyErased: false,
+          };
+        },
+      },
+    );
+    assert.equal(body.tombstonedDerivedRecords, false);
+  } finally {
+    if (previousStorageDir === undefined) delete process.env.AUDIO_STORAGE_DIR;
+    else process.env.AUDIO_STORAGE_DIR = previousStorageDir;
+  }
 });

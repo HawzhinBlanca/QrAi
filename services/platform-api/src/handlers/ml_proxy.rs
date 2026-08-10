@@ -172,11 +172,16 @@ async fn proxy_ml(
                 "audioRetention": audio_retention,
             }),
         );
+        // Forward WHOSE session this is from the row the authorization check just read. This is
+        // server-authored for the same reason consent is overwritten above: allowing the caller to
+        // choose it would file audit history under another learner. Alignment and tajweed audit
+        // rows are session-keyed, so the inference runtime needs this attribution to build a
+        // learner-scoped privacy export without exposing the rest of the tenant.
+        obj.insert(
+            "learnerId".to_owned(),
+            serde_json::Value::String(session_learner_id.clone()),
+        );
         if label == "tajweed" {
-            obj.insert(
-                "learnerId".to_owned(),
-                serde_json::Value::String(session_learner_id),
-            );
             obj.insert("quranRef".to_owned(), stored_quran_ref);
             obj.insert(
                 "sourceChecksum".to_owned(),

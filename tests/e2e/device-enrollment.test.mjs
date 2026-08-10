@@ -59,7 +59,9 @@ async function liveFixture(t, prefix) {
   const audioObjectStore = {
     async get() { return null; },
     async listLearner() { return []; },
-    async deleteLearner() { return { deletedObjectKeys: [] }; },
+    async deleteLearner() {
+      return { deletedObjectKeys: [], deletedOtherObjectKeys: [], fullyErased: true };
+    },
     async assertReady() {},
     async close() {},
   };

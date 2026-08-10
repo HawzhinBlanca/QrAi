@@ -44,8 +44,11 @@ async function eraseLearnerAudio(ctx, tenantId, learnerId, traceId) {
       { tenantId, learnerId },
       { signal: ctx.deadline?.signal },
     );
+    if (result.fullyErased !== true) {
+      throw new Error("audio object storage reported an incomplete learner erasure");
+    }
     console.info(
-      `privacy delete: erased ${result.deletedObjectKeys.length} audio object(s) trace=${JSON.stringify(traceId)}`,
+      `privacy delete: erased ${result.deletedObjectKeys.length} audio object(s) and ${result.deletedOtherObjectKeys.length} other object(s) trace=${JSON.stringify(traceId)}`,
     );
     return result.deletedObjectKeys;
   } catch {

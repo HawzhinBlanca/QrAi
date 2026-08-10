@@ -166,6 +166,10 @@ function predictionRequest(overrides = {}) {
   return {
     tenantId: "tenant-smoke",
     traceId: smokeTraceId,
+    // platform-api resolves this from the session row and forwards it (handlers/ml_proxy.rs); the
+    // smoke posts to ml-inference directly, so it has to model that or the external-ASR audit rows
+    // it later asserts on would be attributable to no learner and correctly excluded from the export.
+    learnerId: "learner-smoke",
     sessionId: `session-privacy-${Date.now()}`,
     quranRef: {
       surahNumber: 1,

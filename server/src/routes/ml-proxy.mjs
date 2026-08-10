@@ -283,10 +283,15 @@ async function proxyMl(req, reply, ctx, label, path) {
       audioRetention: row.audio_retention,
     };
 
+    // Server-authoritative LEARNER, from the same session row the ownership check just approved.
+    // Alignment and tajweed audit rows are keyed by sessionId, so the inference runtime needs this
+    // attribution to include the learner's own history while excluding every other tenant member.
+    // It must never come from `body.learnerId`, which is rejected above.
+    forwarded.learnerId = row.learner_id;
+
     if (label === "tajweed") {
       // These four values identify the retained bytes and the only measured spans the acoustic
       // worker may observe. Every caller-supplied value is discarded at this boundary.
-      forwarded.learnerId = row.learner_id;
       forwarded.quranRef = row.quran_ref;
       forwarded.sourceChecksum = row.source_checksum;
       forwarded.acousticSegments = acousticSegments;

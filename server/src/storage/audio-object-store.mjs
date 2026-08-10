@@ -1,8 +1,10 @@
 import { createHash, timingSafeEqual } from "node:crypto";
 import {
   mkdir,
+  lstat,
   readFile,
   readdir,
+  rmdir,
   stat,
   unlink,
   writeFile,
@@ -290,6 +292,66 @@ async function listFilesRecursively(root, relative = "") {
   return files;
 }
 
+/**
+ * Delete one already-validated learner subtree without ever following links outside it.
+ *
+ * Directory entries are traversed explicitly: regular files, links, sockets, and other leaf
+ * entries are unlinked; directories are entered and then removed bottom-up. A concurrent writer or
+ * an entry that cannot be removed leaves the root present, which is returned as `fullyErased=false`
+ * instead of being hidden behind a success literal.
+ */
+async function eraseFilesystemTree(root, relativeRoot, signal) {
+  const deletedFiles = [];
+
+  async function eraseDirectory(relative) {
+    throwIfAborted(signal);
+    let rootDetails;
+    try {
+      rootDetails = await lstat(join(root, relative));
+    } catch (error) {
+      if (isCode(error, "ENOENT")) return;
+      throw error;
+    }
+    if (!rootDetails.isDirectory()) {
+      // In particular, unlink a learner-root symlink itself; never let readdir follow it.
+      await unlink(join(root, relative));
+      deletedFiles.push(relative);
+      return;
+    }
+    let entries;
+    try {
+      entries = await readdir(join(root, relative), { withFileTypes: true });
+    } catch (error) {
+      if (isCode(error, "ENOENT")) return;
+      throw error;
+    }
+    for (const entry of entries) {
+      const child = `${relative}/${entry.name}`;
+      if (entry.isDirectory()) {
+        await eraseDirectory(child);
+        continue;
+      }
+      await unlink(join(root, child)).catch((error) => {
+        if (!isCode(error, "ENOENT")) throw error;
+      });
+      deletedFiles.push(child);
+    }
+    await rmdir(join(root, relative)).catch((error) => {
+      if (!isCode(error, "ENOENT") && !isCode(error, "ENOTEMPTY")) throw error;
+    });
+  }
+
+  await eraseDirectory(relativeRoot);
+  let fullyErased = false;
+  try {
+    await lstat(join(root, relativeRoot));
+  } catch (error) {
+    if (isCode(error, "ENOENT")) fullyErased = true;
+    else throw error;
+  }
+  return { deletedFiles, fullyErased };
+}
+
 export function createFilesystemAudioObjectStore({ rootDir }) {
   if (typeof rootDir !== "string" || rootDir.trim() === "") {
     throw new TypeError("AUDIO_STORAGE_DIR is required for filesystem storage");
@@ -562,13 +624,34 @@ export function createFilesystemAudioObjectStore({ rootDir }) {
       return { objectKey };
     },
     async deleteLearner(value, { signal } = {}) {
-      const objects = await this.listLearner(value, { signal });
+      throwIfAborted(signal);
+      const tenantId = safeSegment(value?.tenantId, "tenantId");
+      const learnerId = safeSegment(value?.learnerId, "learnerId");
+      const v1Root = deriveAudioLearnerPrefix({ tenantId, learnerId }).slice(0, -1);
+      const legacyRoot = `${tenantId}/${learnerId}`;
       const deletedObjectKeys = [];
-      for (const object of objects) {
-        await this.deleteObject(object, { signal });
-        deletedObjectKeys.push(object.objectKey);
+      const deletedOtherObjectKeys = [];
+      let fullyErased = true;
+
+      for (const relativeRoot of [v1Root, legacyRoot]) {
+        const erased = await eraseFilesystemTree(root, relativeRoot, signal);
+        fullyErased &&= erased.fullyErased;
+        for (const file of erased.deletedFiles) {
+          const isV1Audio = file.startsWith(`${v1Root}/`) && file.endsWith(".pcm");
+          const isLegacyAudio = file.startsWith(`${legacyRoot}/`) && file.endsWith(".bin");
+          const isPrivateSidecar =
+            file.endsWith(".pcm.meta.json") ||
+            (file.startsWith(`${legacyRoot}/`) && file.endsWith(".meta.json"));
+          if (isV1Audio || isLegacyAudio) deletedObjectKeys.push(file);
+          else if (!isPrivateSidecar) deletedOtherObjectKeys.push(file);
+        }
       }
-      return { deletedObjectKeys };
+
+      return {
+        deletedObjectKeys: deletedObjectKeys.sort(),
+        deletedOtherObjectKeys: deletedOtherObjectKeys.sort(),
+        fullyErased,
+      };
     },
     async assertReady({ signal } = {}) {
       throwIfAborted(signal);
@@ -674,7 +757,7 @@ export function createS3AudioObjectStore({
     }
   }
 
-  async function listPrefix(prefix, signal) {
+  async function listRawPrefix(prefix, signal) {
     const objects = [];
     let continuationToken;
     const seenTokens = new Set();
@@ -690,8 +773,7 @@ export function createS3AudioObjectStore({
         if (typeof item.Key !== "string" || !item.Key.startsWith(prefix)) {
           throw new AudioObjectIntegrityError();
         }
-        const identity = parseAudioObjectKey(item.Key);
-        objects.push({ ...identity, objectKey: item.Key, size: Number(item.Size ?? 0) });
+        objects.push({ objectKey: item.Key, size: Number(item.Size ?? 0) });
       }
       if (!result.IsTruncated) break;
       continuationToken = result.NextContinuationToken;
@@ -701,6 +783,13 @@ export function createS3AudioObjectStore({
       seenTokens.add(continuationToken);
     } while (true);
     return objects.sort((left, right) => left.objectKey.localeCompare(right.objectKey));
+  }
+
+  async function listPrefix(prefix, signal) {
+    return (await listRawPrefix(prefix, signal)).map((item) => ({
+      ...parseAudioObjectKey(item.objectKey),
+      ...item,
+    }));
   }
 
   async function listLearner(value, { signal } = {}) {
@@ -822,8 +911,13 @@ export function createS3AudioObjectStore({
       throw new AudioObjectStoreError("object storage deletion was incomplete");
     },
     async deleteLearner(value, { signal } = {}) {
-      const objects = await listLearner(value, { signal });
+      const prefix = deriveAudioLearnerPrefix(value);
+      // Erasure lists raw keys under the exact validated learner prefix. Ordinary reads stay strict
+      // and parse only schema-valid PCM objects, but deletion must not retain an unknown/temp object
+      // merely because a newer writer or interrupted upload used a name this build does not know.
+      const objects = await listRawPrefix(prefix, signal);
       const deletedObjectKeys = [];
+      const deletedOtherObjectKeys = [];
       for (let index = 0; index < objects.length; index += 1_000) {
         const keys = objects.slice(index, index + 1_000).map((item) => ({ Key: item.objectKey }));
         const result = await client.send(
@@ -835,11 +929,22 @@ export function createS3AudioObjectStore({
         if ((result.Errors ?? []).length > 0) {
           throw new AudioObjectStoreError("object storage deletion was incomplete");
         }
-        deletedObjectKeys.push(...keys.map(({ Key }) => Key));
+        for (const { Key } of keys) {
+          try {
+            parseAudioObjectKey(Key);
+            deletedObjectKeys.push(Key);
+          } catch {
+            deletedOtherObjectKeys.push(Key);
+          }
+        }
       }
-      const remaining = await listLearner(value, { signal });
+      const remaining = await listRawPrefix(prefix, signal);
       if (remaining.length > 0) throw new AudioObjectStoreError("object storage deletion was incomplete");
-      return { deletedObjectKeys };
+      return {
+        deletedObjectKeys,
+        deletedOtherObjectKeys,
+        fullyErased: true,
+      };
     },
     async assertReady({ signal } = {}) {
       await client.send(

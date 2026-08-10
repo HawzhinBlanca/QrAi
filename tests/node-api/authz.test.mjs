@@ -1,5 +1,8 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 import test from "node:test";
+import { fileURLToPath } from "node:url";
 
 import { SignJWT } from "jose";
 
@@ -212,7 +215,6 @@ test("a Bearer token wins over dev headers when both are present", async () => {
 //
 // It was covered only by A/B parity, which compares the shell to Rust and is blind to a change
 // applied to both — the hole this whole session opened with.
-import { readFileSync } from "node:fs";
 
 import { clearsLearnerGate } from "../../server/src/routes/ml-proxy.mjs";
 
@@ -250,4 +252,42 @@ test("the ml-proxy learner gate agrees with the shared corpus on every case", ()
       `ml-proxy disagrees with the shared corpus.\n  case: ${c.name}\n  input: ${JSON.stringify(input)}`,
     );
   }
+});
+
+// --- the same row, forwarded as well as checked ---
+
+const repoRoot = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
+const read = (rel) => readFileSync(join(repoRoot, rel), "utf8");
+
+test("both ml_proxy implementations forward the learner from the row they authorised against", () => {
+  // The ownership gate above reads `learner_id` off the session row. That same value must also be
+  // FORWARDED to the consolidated inference runtime, because it keys external-ASR and prediction rows
+  // by sessionId: with no learner on the request those rows are attributable to nobody, and a
+  // learner-scoped privacy export has to drop them. The Rust side sends it; the Node port did not,
+  // so a cutover to node-api would have silently reverted it — the drift ADR-0034 exists for.
+  //
+  // A source check, deliberately: the Node proxy needs a live Postgres to reach that branch, so a
+  // behavioural test of it is DB-gated and would not run in this hermetic step. Weaker than driving
+  // the code, and still enough to catch one implementation losing the line.
+  const node = read("server/src/routes/ml-proxy.mjs");
+  const rust = read("services/platform-api/src/handlers/ml_proxy.rs");
+
+  assert.match(
+    node,
+    /forwarded\.learnerId\s*=\s*row\.learner_id/,
+    "the Node ML proxy does not forward the session row's learner to inference",
+  );
+  assert.match(
+    rust,
+    /"learnerId"\.to_owned\(\)/,
+    "platform-api's ML proxy does not forward the session row's learner to ml-inference",
+  );
+
+  // Server-authoritative, not client-echoed. Taking it from the request body would let a caller
+  // file their audit rows under another learner, which is the failure the DB lookup exists to avoid.
+  assert.doesNotMatch(
+    node,
+    /forwarded\.learnerId\s*=\s*body\.learnerId/,
+    "the forwarded learner must come from the session row, never from the caller's body",
+  );
 });
