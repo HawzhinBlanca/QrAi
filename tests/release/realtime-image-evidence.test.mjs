@@ -48,6 +48,7 @@ import {
 } from "../../scripts/lib/realtime-image-probe.mjs";
 import {
   collectRealtimeCandidateRunningImagesRuntime,
+  createRealtimeNodeProcessFaultLifecycleRuntime,
   createRealtimePostgresFaultLifecycleRuntime,
   parseRealtimeImageProofArguments,
   probeRealtimeS3FaultProcessRuntime,
@@ -3107,6 +3108,167 @@ test("the S3 fault process probe fails closed on identity, readiness, exit, clea
       !String(error).includes(privateFailure),
   );
   assert.equal(harness.calls.some(([, args]) => args.includes("rm")), true);
+});
+
+function nodeProcessLifecycleHarness({
+  initial = {
+    running: true,
+    health: "healthy",
+    pid: 321,
+    startedAt: "2026-08-10T00:00:00.000000000Z",
+    exitCode: 0,
+    restartPolicy: "unless-stopped",
+  },
+  stopped = {
+    running: false,
+    health: "unhealthy",
+    pid: 0,
+    startedAt: "2026-08-10T00:00:00.000000000Z",
+    exitCode: 137,
+    restartPolicy: "no",
+  },
+  restarted = {
+    running: true,
+    health: "healthy",
+    pid: 654,
+    startedAt: "2026-08-10T00:01:00.000000000Z",
+    exitCode: 0,
+    restartPolicy: "unless-stopped",
+  },
+  configuredImage = null,
+  replacement = null,
+  missing = false,
+  privateFailure = null,
+  ignoreRestoredPolicy = false,
+} = {}) {
+  const value = selection();
+  const expectedImage = composeImageEnvironment(value, "candidate").NODE_BACKEND_IMAGE;
+  const containerId = "d".repeat(64);
+  const imageId = `sha256:${"5".repeat(64)}`;
+  const calls = [];
+  let state = { ...initial };
+  let psCalls = 0;
+  const commandRunner = (file, args, environment) => {
+    calls.push([file, args]);
+    assert.equal(environment.NODE_BACKEND_IMAGE, expectedImage);
+    assert.equal(environment.PRIVATE_NODE_LIFECYCLE, "must-not-leave-lifecycle");
+    if (file !== "docker") throw new Error("unexpected Node lifecycle command");
+    if (args[0] === "compose" && args.includes("ps")) {
+      psCalls += 1;
+      if (missing) return "";
+      return psCalls === 1 || replacement === null ? containerId : replacement;
+    }
+    if (args[0] === "inspect") {
+      return JSON.stringify([{
+        Id: containerId,
+        Image: imageId,
+        Config: { Image: configuredImage ?? expectedImage },
+        HostConfig: { RestartPolicy: { Name: state.restartPolicy } },
+        RestartCount: state.restartCount ?? 0,
+        State: {
+          Running: state.running,
+          Health: { Status: state.health },
+          Pid: state.pid,
+          StartedAt: state.startedAt,
+          ExitCode: state.exitCode,
+        },
+      }]);
+    }
+    if (args[0] === "update" && args[1] === "--restart=no") {
+      state = { ...state, restartPolicy: "no" };
+      return containerId;
+    }
+    if (args[0] === "kill") {
+      if (privateFailure !== null) throw new Error(privateFailure);
+      state = { ...stopped };
+      return containerId;
+    }
+    if (args[0] === "update" && args[1] === "--restart=unless-stopped") {
+      if (!ignoreRestoredPolicy) state = { ...state, restartPolicy: "unless-stopped" };
+      return containerId;
+    }
+    if (args[0] === "start") {
+      state = {
+        ...restarted,
+        restartPolicy: ignoreRestoredPolicy ? restarted.restartPolicy : "unless-stopped",
+      };
+      return containerId;
+    }
+    throw new Error(`unexpected Node lifecycle command: ${args.join(" ")}`);
+  };
+  return {
+    calls,
+    input: {
+      selection: value,
+      projectName: "qrai-realtime-proof",
+      env: {
+        PRIVATE_NODE_LIFECYCLE: "must-not-leave-lifecycle",
+      },
+      commandRunner,
+      delayImpl: async () => {},
+      healthAttempts: 2,
+    },
+  };
+}
+
+test("the Node process lifecycle SIGKILLs and restores the same exact immutable container", async () => {
+  const harness = nodeProcessLifecycleHarness();
+  const lifecycle = createRealtimeNodeProcessFaultLifecycleRuntime(harness.input);
+  const killed = await lifecycle.killNodeProcess();
+  const restored = await lifecycle.startNodeProcess();
+  assert.deepEqual(killed, { killed: true });
+  assert.deepEqual(restored, { healthy: true });
+  const rendered = harness.calls.map(([, args]) => args.join(" "));
+  assert.equal(rendered.some((value) => /^update --restart=no /.test(value)), true);
+  assert.equal(rendered.some((value) => /^kill --signal KILL /.test(value)), true);
+  assert.equal(rendered.some((value) => /^update --restart=unless-stopped /.test(value)), true);
+  assert.equal(rendered.some((value) => /^start /.test(value)), true);
+  for (const privateValue of [
+    "must-not-leave-lifecycle",
+    "d".repeat(64),
+    composeImageEnvironment(selection(), "candidate").NODE_BACKEND_IMAGE,
+  ]) {
+    assert.equal(JSON.stringify({ killed, restored }).includes(privateValue), false);
+  }
+});
+
+test("the Node process lifecycle rejects identity, stop, restart, replacement, and private failures", async () => {
+  const cases = [
+    { missing: true },
+    { initial: { running: false, health: "unhealthy", pid: 0, startedAt: "", exitCode: 0, restartPolicy: "unless-stopped" } },
+    { configuredImage: "qrai/node:mutable" },
+    { stopped: { running: true, health: "healthy", pid: 321, startedAt: "2026-08-10T00:00:00Z", exitCode: 0, restartPolicy: "no" } },
+    { stopped: { running: false, health: "unhealthy", pid: 0, startedAt: "2026-08-10T00:00:00Z", exitCode: 0, restartPolicy: "no" } },
+    { replacement: "e".repeat(64) },
+    { restarted: { running: true, health: "unhealthy", pid: 654, startedAt: "2026-08-10T00:01:00Z", exitCode: 0, restartPolicy: "unless-stopped" } },
+    { restarted: { running: true, health: "healthy", pid: 321, startedAt: "2026-08-10T00:00:00.000000000Z", exitCode: 0, restartPolicy: "unless-stopped" } },
+    { ignoreRestoredPolicy: true, restarted: { running: true, health: "healthy", pid: 654, startedAt: "2026-08-10T00:01:00Z", exitCode: 0, restartPolicy: "no" } },
+    { privateFailure: "private-container private-image private-ticket" },
+  ];
+  for (const mutation of cases) {
+    const harness = nodeProcessLifecycleHarness(mutation);
+    const lifecycle = createRealtimeNodeProcessFaultLifecycleRuntime(harness.input);
+    let operationError = null;
+    try {
+      await lifecycle.killNodeProcess();
+      await lifecycle.startNodeProcess();
+    } catch (error) {
+      operationError = error;
+      try {
+        await lifecycle.startNodeProcess();
+      } catch {
+        // The lifecycle still must attempt policy restoration after a partial fault.
+      }
+    }
+    assert.equal(operationError?.message, "realtime Node process lifecycle failed");
+    assert.equal(String(operationError).includes("private-"), false);
+    if (mutation.privateFailure !== null && mutation.privateFailure !== undefined) {
+      assert.equal(
+        harness.calls.some(([, args]) => args[0] === "update" && args[1] === "--restart=unless-stopped"),
+        true,
+      );
+    }
+  }
 });
 
 function postgresLifecycleHarness({

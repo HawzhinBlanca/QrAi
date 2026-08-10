@@ -463,6 +463,165 @@ function realtimeProofComposeArguments(projectName) {
   return argumentsWithConfig.slice(0, -expectedTail.length);
 }
 
+/** Bind a hard process interruption to one exact immutable Node realtime container. */
+export function createRealtimeNodeProcessFaultLifecycleRuntime({
+  selection,
+  projectName,
+  env = process.env,
+  commandRunner = runBounded,
+  delayImpl = (milliseconds) => new Promise((resolveDelay) => setTimeout(resolveDelay, milliseconds)),
+  healthAttempts = 40,
+} = {}) {
+  let containerId = null;
+  let initialProcess = null;
+  let killedObserved = false;
+  try {
+    const selected = assertReleaseDeploymentSelection(selection);
+    const selectedImages = composeImageEnvironment(selected, "candidate");
+    const expectedImage = selectedImages.NODE_BACKEND_IMAGE;
+    const composeArguments = realtimeProofComposeArguments(projectName);
+    if (
+      !env ||
+      typeof env !== "object" ||
+      Array.isArray(env) ||
+      typeof commandRunner !== "function" ||
+      typeof delayImpl !== "function" ||
+      !Number.isSafeInteger(healthAttempts) ||
+      healthAttempts < 1 ||
+      healthAttempts > 80
+    ) {
+      throw new TypeError("realtime Node process lifecycle adapters are invalid");
+    }
+    const commandEnvironment = { ...env, ...selectedImages };
+
+    const resolveContainer = () => {
+      const ids = commandRunner(
+        "docker",
+        [...composeArguments, "ps", "--all", "--quiet", "node-realtime"],
+        commandEnvironment,
+      ).trim().split("\n").filter(Boolean);
+      if (ids.length !== 1 || !/^[0-9a-f]{12,64}$/.test(ids[0])) {
+        throw new TypeError("realtime Node process container resolution failed");
+      }
+      if (containerId !== null && ids[0] !== containerId) {
+        throw new TypeError("realtime Node process container was replaced during the fault");
+      }
+      containerId = ids[0];
+      return containerId;
+    };
+
+    const inspectContainer = () => {
+      const inspected = JSON.parse(commandRunner(
+        "docker",
+        ["inspect", containerId],
+        commandEnvironment,
+      ));
+      if (
+        !Array.isArray(inspected) ||
+        inspected.length !== 1 ||
+        inspected[0]?.Id !== containerId ||
+        inspected[0]?.Config?.Image !== expectedImage ||
+        !/^sha256:[0-9a-f]{64}$/.test(inspected[0]?.Image ?? "") ||
+        !Number.isSafeInteger(inspected[0]?.RestartCount) ||
+        inspected[0].RestartCount < 0
+      ) {
+        throw new TypeError("realtime Node process container identity is invalid");
+      }
+      return inspected[0];
+    };
+
+    const assertHealthyProcess = (container, { requireNewProcess = false } = {}) => {
+      const state = container.State;
+      const restartPolicy = container.HostConfig?.RestartPolicy?.Name;
+      if (
+        state?.Running !== true ||
+        state?.Health?.Status !== "healthy" ||
+        !Number.isSafeInteger(state?.Pid) ||
+        state.Pid < 1 ||
+        typeof state?.StartedAt !== "string" ||
+        state.StartedAt === "" ||
+        Number.isNaN(Date.parse(state.StartedAt)) ||
+        restartPolicy !== "unless-stopped" ||
+        (requireNewProcess && state.StartedAt === initialProcess?.startedAt)
+      ) {
+        throw new TypeError("realtime Node process is not a healthy bounded process");
+      }
+      return state;
+    };
+
+    async function killNodeProcess() {
+      try {
+        resolveContainer();
+        const before = inspectContainer();
+        const initialState = assertHealthyProcess(before);
+        initialProcess = Object.freeze({
+          pid: initialState.Pid,
+          startedAt: initialState.StartedAt,
+        });
+        commandRunner(
+          "docker",
+          ["update", "--restart=no", containerId],
+          commandEnvironment,
+        );
+        const restartDisabled = inspectContainer();
+        if (restartDisabled.HostConfig?.RestartPolicy?.Name !== "no") {
+          throw new TypeError("realtime Node process restart policy was not disabled");
+        }
+        commandRunner(
+          "docker",
+          ["kill", "--signal", "KILL", containerId],
+          commandEnvironment,
+        );
+        const stopped = inspectContainer();
+        if (
+          stopped.State?.Running !== false ||
+          stopped.State?.Pid !== 0 ||
+          stopped.State?.ExitCode !== 137 ||
+          stopped.HostConfig?.RestartPolicy?.Name !== "no"
+        ) {
+          throw new TypeError("realtime Node process kill was not observed");
+        }
+        killedObserved = true;
+        return Object.freeze({ killed: true });
+      } catch {
+        throw new Error("realtime Node process lifecycle failed");
+      }
+    }
+
+    async function startNodeProcess() {
+      try {
+        resolveContainer();
+        commandRunner(
+          "docker",
+          ["update", "--restart=unless-stopped", containerId],
+          commandEnvironment,
+        );
+        let restarted = inspectContainer();
+        if (restarted.State?.Running !== true) {
+          commandRunner("docker", ["start", containerId], commandEnvironment);
+        }
+        for (let attempt = 0; attempt < healthAttempts; attempt += 1) {
+          restarted = inspectContainer();
+          try {
+            assertHealthyProcess(restarted, { requireNewProcess: killedObserved });
+            return Object.freeze({ healthy: true });
+          } catch {
+            if (attempt === healthAttempts - 1) break;
+          }
+          await delayImpl(250);
+        }
+        throw new TypeError("realtime Node process did not become healthy");
+      } catch {
+        throw new Error("realtime Node process lifecycle failed");
+      }
+    }
+
+    return Object.freeze({ killNodeProcess, startNodeProcess });
+  } catch {
+    throw new Error("realtime Node process lifecycle failed");
+  }
+}
+
 /** Bind the Postgres outage probe to one exact isolated Compose container. */
 export function createRealtimePostgresFaultLifecycleRuntime({
   projectName,
