@@ -5,7 +5,9 @@
 //! Before this module, ONE variable — `ALLOW_INSECURE_DEFAULTS` — disabled **six independent
 //! controls** across two services via seven read sites. A Flutter/native client sends no `Origin`
 //! header, so "mobile can't connect" led an operator straight to the single switch that also ships
-//! a known-public JWT key and a `BYPASSRLS` DB role that makes all 16 RLS policies inert.
+//! a known-public JWT key and a `BYPASSRLS` DB role that makes all 17 RLS policies inert.
+//! (16 when this was written; `tests/security/rls-policy-coverage.test.mjs` now counts them against
+//! the live database, so the number cannot drift silently again.)
 //!
 //! Every name here keeps this codebase's stated polarity: **opt-in to weaken**, never opt-in to
 //! secure (see `realtime-gateway/src/lib.rs`'s `DISABLE_RATE_LIMIT` note for why that convention
