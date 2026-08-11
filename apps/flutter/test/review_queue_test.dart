@@ -139,33 +139,22 @@ void main() {
   });
 
   testWidgets('an erased recording is stated on the card, not hidden', (WidgetTester tester) async {
-    final MockClient http = MockClient((http.Request req) async =>
-        http.Response(jsonEncode(<Map<String, Object?>>[stubFinding(audioStatus: 'discarded')]), 200));
-    await tester.pumpWidget(MaterialApp(
-      home: ReviewQueueScreen(
-        client: ApiClient(baseUrl: 'http://127.0.0.1:8080', httpClient: http),
-        actor: const Actor(tenantId: 'hikmah-pilot-erbil', userId: 'teacher-1', role: 'teacher'),
-      ),
-    ));
-    await tester.pumpAndSettle();
+    final List<http.Request> seen = <http.Request>[];
+    await pump(
+      tester,
+      clientFor(seen, findings: <Map<String, Object?>>[stubFinding(audioStatus: 'discarded')]),
+    );
 
     final Finder notice = find.byKey(const ValueKey<String>('review-audio-finding-1'));
     expect(notice, findsOneWidget);
-    expect((tester.widget<Text>(notice)).data, contains("learner's request"));
+    expect(tester.widget<Text>(notice).data, contains("learner's request"));
   });
 
   testWidgets('a finding with no audioStatus shows no notice at all', (WidgetTester tester) async {
-    // Guards the widget above against passing for the wrong reason: if the notice rendered
-    // unconditionally, both tests would still find a widget.
-    final MockClient http = MockClient((http.Request req) async =>
-        http.Response(jsonEncode(<Map<String, Object?>>[stubFinding()]), 200));
-    await tester.pumpWidget(MaterialApp(
-      home: ReviewQueueScreen(
-        client: ApiClient(baseUrl: 'http://127.0.0.1:8080', httpClient: http),
-        actor: const Actor(tenantId: 'hikmah-pilot-erbil', userId: 'teacher-1', role: 'teacher'),
-      ),
-    ));
-    await tester.pumpAndSettle();
+    // Guards the widget test above against passing for the wrong reason: if the notice rendered
+    // unconditionally, both would still find a widget.
+    final List<http.Request> seen = <http.Request>[];
+    await pump(tester, clientFor(seen));
 
     expect(find.byKey(const ValueKey<String>('review-audio-finding-1')), findsNothing);
   });

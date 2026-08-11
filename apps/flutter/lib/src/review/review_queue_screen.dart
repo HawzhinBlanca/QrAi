@@ -83,8 +83,8 @@ String? audioNotice(String? audioStatus) {
       return 'A recording exists for this word. This client cannot play it yet — open the web '
           'review queue to listen. Every playback is recorded in the audit log.';
     case 'discarded':
-      return 'The recording was erased at the learner\'s request. There is nothing to play, and '
-          'that is the learner\'s decision working, not a fault.';
+      return "The recording was erased at the learner's request. There is nothing to play, and "
+          "that is the learner's decision working, not a fault.";
     case 'not-captured':
       return 'No recording was captured for this recitation.';
     case 'unknown':
