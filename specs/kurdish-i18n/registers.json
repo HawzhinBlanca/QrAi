@@ -8,8 +8,8 @@
   },
   "counts": {
     "ui": 167,
-    "religious": 112,
-    "product": 103,
+    "religious": 113,
+    "product": 104,
     "brand": 2
   },
   "keys": {
@@ -1209,16 +1209,6 @@
       "register": "religious",
       "reason": "uses recitation — the Sorani choice here is a register decision, not a lookup"
     },
-    "teacherSurface.listenTitle": {
-      "register": "religious",
-      "reason": "uses recitation — the Sorani choice here is a register decision, not a lookup"
-    },
-    "teacherSurface.listenHint": {
-      "register": "product"
-    },
-    "teacherSurface.noAudio": {
-      "register": "product"
-    },
     "teacherSurface.alignmentsTitle": {
       "register": "ui"
     },
@@ -1277,6 +1267,24 @@
       "register": "product"
     },
     "app.inviteRequired.help": {
+      "register": "product"
+    },
+    "teacherSurface.audioPerFindingHint": {
+      "register": "religious",
+      "reason": "names RECITATION. Classified product first; tests/i18n/registers.test.mjs refused it, correctly — the protected-term rule does not have a 'but it is only a hint' exemption"
+    },
+    "teacherSurface.listenToFinding": {
+      "register": "religious",
+      "reason": "'word' here is a word OF THE QURAN being recited, not a UI word — same register decision as listenTitle"
+    },
+    "teacherSurface.audioDiscarded": {
+      "register": "product",
+      "reason": "states a privacy outcome; must not sound like a fault, and must not be softened into 'unavailable'"
+    },
+    "teacherSurface.audioNotCaptured": {
+      "register": "product"
+    },
+    "teacherSurface.audioUnavailable": {
       "register": "product"
     }
   }
