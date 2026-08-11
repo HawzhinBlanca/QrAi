@@ -41,6 +41,10 @@ async function eraseMlAudio(ctx, tenantId, learnerId, traceId) {
       method: "POST",
       headers: { "content-type": "application/json", "x-ml-api-key": ctx.mlApiKey },
       body: JSON.stringify({ tenantId, learnerId, traceId }),
+      // lib.rs `upstream_timeout` — privacy.rs:21 uses the same timed client. An erasure that hangs
+      // forever is a delete request that never resolves, which a caller retries; bounded failure is
+      // what makes the documented idempotency usable.
+      signal: AbortSignal.timeout(ctx.upstreamTimeout),
     });
   } catch (e) {
     console.error(`privacy delete: ML audio erase send error: ${e}`);

@@ -46,13 +46,19 @@ const SEVERITIES = ["practice", "warning", "critical"];
  * a learner's transcript. The stage label already carries the operational signal the comment above
  * claims for it; the error object only ever added the content. (N-7, `no-secret-logging.test.mjs`.)
  */
-async function forward({ url, keyHeader, keyValue, body, label, service }) {
+async function forward({ url, keyHeader, keyValue, body, label, service, timeoutMs }) {
   let response;
   try {
     response = await fetch(url, {
       method: "POST",
       headers: { "content-type": "application/json", [keyHeader]: keyValue },
       body: JSON.stringify(body),
+      // lib.rs `upstream_timeout`. Node's fetch has NO deadline of its own, so without this a
+      // wedged upstream held the request open forever. The abort rejects the fetch, so it lands in
+      // the catch below and becomes the same 502 Rust returns — no new branch, no new status.
+      // The signal covers the body read too, which is the other way a stalled upstream hangs a
+      // request: headers sent, bytes never finished.
+      signal: AbortSignal.timeout(timeoutMs),
     });
   } catch (e) {
     console.error(`${service} proxy ${label} send error: ${e}`);
@@ -242,6 +248,7 @@ async function proxyMl(req, reply, ctx, label, path) {
     body: forwarded,
     label,
     service: "ML",
+    timeoutMs: ctx.upstreamTimeout,
   });
 
   // Store what the model said, so a teacher can review it — `persist_tajweed_findings`
@@ -378,6 +385,7 @@ async function proxyAsr(req, reply, ctx, label, path) {
     body,
     label,
     service: "ASR",
+    timeoutMs: ctx.upstreamTimeout,
   });
 
   return reply.send(result);
