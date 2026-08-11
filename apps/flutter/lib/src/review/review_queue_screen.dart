@@ -28,12 +28,22 @@
 /// reads a note back into the finding. An Edit button would silently discard the teacher's work,
 /// which is worse than not offering it.
 ///
-/// ── Why there is no audio ───────────────────────────────────────────────────────────────────────
-/// The web surface fetches `/v1/recitation-sessions/{id}/audio`. That route does not exist in
-/// platform-api (`grep` over `lib.rs` finds no audio route), so the web player is broken. Beyond
-/// that, whether audio exists at all is the learner's consent decision — `discard` retention means
-/// there is nothing to play. Adding a player here would need a route, a retention rule, and a
-/// dependency; what it must not do is imply the teacher heard something they did not.
+/// ── Why there is no audio (and what changed on 2026-08-11) ─────────────────────────────────────
+/// This said: "The web surface fetches `/v1/recitation-sessions/{id}/audio`. That route does not
+/// exist in platform-api (`grep` over `lib.rs` finds no audio route), so the web player is broken."
+/// The diagnosis of the web surface was RIGHT and its player has since been fixed. The conclusion
+/// drawn from it was wrong, and it is worth saying why, because the same grep will mislead the next
+/// reader: platform-api DOES serve audio, at `GET /v1/tajweed-findings/{id}/audio`, and has since
+/// ADR-0037. The web surface was calling the realtime GATEWAY's WebSocket path against the
+/// platform-api base — the right path, the wrong service. It is now contracted
+/// (`specs/flutter-client/openapi.yaml`) and reachable from here.
+///
+/// So a player here needs a client method and a widget, not a new route. What has NOT changed is the
+/// part that matters most: whether audio exists at all is the learner's consent decision, `discard`
+/// retention means there is nothing to play, and every read is audited. The four `audioStatus`
+/// values must stay distinct in the UI — the web surface collapsed them into one "no audio" message
+/// and made a learner's erasure look like a bug. What this must never do is imply the teacher heard
+/// something they did not.
 library;
 
 import 'package:flutter/material.dart';
