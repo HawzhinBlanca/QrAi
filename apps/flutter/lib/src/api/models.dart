@@ -280,6 +280,7 @@ class TajweedFinding {
     required this.reviewStatus,
     required this.sources,
     required this.arabicName,
+    required this.audioStatus,
   });
 
   factory TajweedFinding.fromJson(Map<String, dynamic> json) => TajweedFinding(
@@ -294,6 +295,7 @@ class TajweedFinding {
             .map(SourceReference.fromJson)
             .toList(growable: false),
         arabicName: _strOrNull(json, 'arabicName'),
+        audioStatus: _strOrNull(json, 'audioStatus'),
       );
 
   /// Present only on PERSISTED findings.
@@ -321,6 +323,19 @@ class TajweedFinding {
 
   /// The rule's Arabic name. Canonical text: rendered as sent, never transformed, never translated.
   final String? arabicName;
+
+  /// ADR-0037 — whether a reviewer can HEAR this recitation, and if not, WHY not.
+  ///
+  /// One of `available`, `discarded`, `not-captured`, `unknown` (`StaffTajweedFinding` in the
+  /// contract). Nullable for the same reason [id] is: only the persisted staff queue carries it.
+  /// The learner's `POST /v1/ml/tajweed-findings:predict` computes findings on the fly, before
+  /// anything is stored, so there is nothing yet to have a retention state — null there means "not
+  /// applicable", never "no recording".
+  ///
+  /// The distinction is the point. `discarded` is a learner exercising a right and `not-captured`
+  /// is a session that never had audio; the web surface collapsed both into one "no audio" message
+  /// and made an erasure look like a bug.
+  final String? audioStatus;
 
   /// The ONLY predicate the UI may use to decide whether a learner sees this.
   ///
