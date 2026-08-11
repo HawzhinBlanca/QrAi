@@ -8,8 +8,11 @@
 into citing things that were deleted. A review package whose claims cannot be checked is worse than
 none, because it reads as assurance.
 
-**Nothing described here is deployed.** `services/node-api/server.mjs` serves **0 of 38** routes in
-any default configuration. Run `node scripts/cutover-readiness.mjs` for the current state.
+**Nothing described here is deployed.** `services/node-api/server.mjs` serves **0 of 40** routes in
+any default configuration (37 are portable; none is enabled). Run `node scripts/cutover-readiness.mjs`
+for the current state — and note that it, not this document, is the source. Every count below is
+asserted against that script by `tests/contract/boundary-references.test.mjs`, because the numbers
+here were hand-written and had drifted: the route total was 38 when this was written and is now 40.
 
 ---
 
@@ -148,12 +151,18 @@ ticket row. Every pre-existing test stayed green. The oracle written afterwards 
 
 ## 5. What is NOT covered — stated as gaps, not omitted
 
-- **8 of 38 method+path pairs have no fixture and no parity test.** Counted by
+- **0 of 40 method+path pairs have no fixture and no parity test** — this gap is CLOSED. It read
+  "8 of 38" when the package was written; `specs/contract-coverage-closure/` shut it. Counted by
   `scripts/cutover-readiness.mjs`, which names the number every run.
-- **15 of 38 contracted operations are `x-unvalidated`** — permissive response schemas, because no
-  committed evidence of their shape exists. Marked so the gap is countable;
-  `tests/contract/coverage.test.mjs` pins the count so it can only shrink deliberately.
-- **No rollback artifact.** ADR-0022 is **Proposed**. Rollback today is a rebuild.
+- **3 of 40 contracted operations are `x-unvalidated`** — down from 15, and the remaining three are
+  the ML/ASR proxies, which forward `serde_json::Value` verbatim from an upstream service. Their
+  shape belongs to the ML/ASR contract, not this one; even `type: object` would be a fabrication,
+  because a passthrough forwards an array or a scalar just as happily. Closing them is a product
+  change, not a test. `tests/contract/coverage.test.mjs` pins the remainder BY NAME, so swapping
+  WHICH route is unvalidated fails even though the count is unchanged.
+- **A rollback artifact now exists** — an image build/push in `.github/workflows/release-image.yml`,
+  and ADR-0022 (immutable, digest-pinned artifacts) is **Accepted** as of 2026-08-01. This bullet
+  read "No rollback artifact. ADR-0022 is Proposed." Rollback is no longer a rebuild.
 - **P5.5 / P5.6 open** — kill switch, rollback and DR drill not proven.
 - **No load, soak or chaos testing** of the two-process topology.
 - **Zero users and login disabled**, so there is no production behaviour to observe.

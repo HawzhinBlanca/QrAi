@@ -157,6 +157,8 @@ export async function getFindingAudio(req, reply, ctx) {
         learnerId: prepared.learnerId,
         chunkId: prepared.chunkId,
       }),
+      // lib.rs `upstream_timeout` — review.rs:171 uses the same timed client.
+      signal: AbortSignal.timeout(ctx.upstreamTimeout),
     });
   } catch {
     throw new ApiError("audio storage unavailable", 502);

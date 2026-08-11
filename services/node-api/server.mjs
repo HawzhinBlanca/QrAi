@@ -33,6 +33,7 @@ import {
 import { stringifyRust } from "./lib/json.mjs";
 import { createMetrics } from "./lib/metrics.mjs";
 import { proxy } from "./lib/proxy.mjs";
+import { DEFAULT_UPSTREAM_TIMEOUT_SECS, upstreamTimeoutMs } from "./lib/upstream.mjs";
 import { ROUTES, fastifyPath } from "./routes/index.mjs";
 
 /**
@@ -104,6 +105,9 @@ export function buildServer(config) {
     mlApiKey = "smoke-ml-api-key",
     asrInferenceUrl = "http://127.0.0.1:8091",
     asrApiKey = "smoke-asr-api-key",
+    // lib.rs `upstream_timeout` — the deadline on every ML/ASR call. Defaulted here rather than
+    // read from env, so an embedded test server behaves like the real one without setting anything.
+    upstreamTimeout = DEFAULT_UPSTREAM_TIMEOUT_SECS * 1000,
     logger = false,
   } = config;
 
@@ -197,6 +201,7 @@ export function buildServer(config) {
     metrics, metricsToken, metricsDevOpen,
     pilotAllowedOrigins: allowList,
     mlInferenceUrl, mlApiKey, asrInferenceUrl, asrApiKey,
+    upstreamTimeout,
   };
   for (const route of ROUTES) {
     if (!ported.has(route.key)) continue;
@@ -321,6 +326,17 @@ if (isMain) {
     process.exit(2);
   }
 
+  // Before anything binds, with the other config refusals. main.rs panics on the same values; this
+  // exits 2, the convention this block already uses. Refusing here rather than at the first ML call
+  // is the point: a bad timeout is a value nobody chose, and the operator must learn it at boot.
+  let upstreamTimeout;
+  try {
+    upstreamTimeout = upstreamTimeoutMs(process.env);
+  } catch (e) {
+    console.error(String(e.message));
+    process.exit(2);
+  }
+
   const [host, port] = (process.env.NODE_API_BIND ?? "127.0.0.1:8099").split(":");
   const ported = new Set(
     (process.env.NODE_API_PORTED ?? "").split(",").map((s) => s.trim()).filter(Boolean),
@@ -348,6 +364,7 @@ if (isMain) {
     mlApiKey: process.env.ML_API_KEY || "smoke-ml-api-key",
     asrInferenceUrl: process.env.ASR_INFERENCE_URL || "http://127.0.0.1:8091",
     asrApiKey: process.env.ASR_API_KEY || "smoke-asr-api-key",
+    upstreamTimeout,
   });
   app.listen({ host, port: Number(port) }).catch((e) => {
     console.error(e);

@@ -33,7 +33,7 @@ info:
   version: 0.2.0
   summary: Quran recitation platform API — the contract every client codes against.
   description: |
-    38 method+path pairs. Enumerated from services/platform-api/src/lib.rs and asserted by
+    40 method+path pairs. Enumerated from services/platform-api/src/lib.rs and asserted by
     tests/contract/coverage.test.mjs, so adding a route fails the gate until it is contracted.
 
     Auth is one of three, resolved in this order (services/platform-api/src/auth.rs):
