@@ -110,6 +110,9 @@ export function buildServer(config) {
     // lib.rs `upstream_timeout` — the deadline on every ML/ASR call. Defaulted here rather than
     // read from env, so an embedded test server behaves like the real one without setting anything.
     upstreamTimeout = DEFAULT_UPSTREAM_TIMEOUT_SECS * 1000,
+    // lib.rs `maintenance_guard`. Explicit rather than read from process.env here, mirroring Rust's
+    // `with_maintenance_mode` — the parallel test suite must not race on a process-wide variable.
+    maintenanceMode = false,
     logger = false,
   } = config;
 
@@ -139,6 +142,40 @@ export function buildServer(config) {
     credentials: false, // hard-banned; asserted by a test on every response
     methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
   });
+
+  // ── The maintenance kill-switch, just INSIDE cors ────────────────────────────────────────────
+  //
+  // lib.rs:427 `maintenance_guard`, which this port did not have. MAINTENANCE_MODE=1 is the
+  // documented kill switch (docs/readiness/INVENTORIES.md, P5.5): "every route except /health,
+  // /ready, /metrics returns a clean 503", so orchestrators and monitoring read the process as
+  // up-in-maintenance rather than crashed.
+  //
+  // Measured before this existed, both services started with MAINTENANCE_MODE=1 and every portable
+  // route enabled:
+  //
+  //     Rust        /health 200   /v1/quran/surahs 503   /v1/recitation-sessions 503
+  //     Node port   /health 200   /v1/quran/surahs 200   /v1/recitation-sessions 200
+  //
+  // At cutover that is 37 of 42 routes still serving live traffic while `/health` reports
+  // up-in-maintenance — a switch that says it worked and stopped nothing, which is worse for an
+  // operator mid-incident than having no switch at all.
+  //
+  // `onRequest` so it short-circuits before any handler AND before the proxy catch-all: an unported
+  // route must not be forwarded to a Rust service that is itself in maintenance, and a ported one
+  // must not be served. Registered after `cors` so the 503 still carries the browser-readable
+  // Access-Control-Allow-Origin header, which is the ordering lib.rs:413 spells out.
+  //
+  // The body is `{"error":"service is in maintenance"}` — byte-identical to axum's, because the
+  // parity differ compares bodies and an "improved" message here is a divergence.
+  const MAINTENANCE_EXEMPT = new Set(["/health", "/ready", "/metrics"]);
+  if (maintenanceMode) {
+    app.addHook("onRequest", (req, reply, done) => {
+      // `req.url` carries the query string; the path alone decides, as `req.uri().path()` does.
+      const path = req.url.split("?")[0];
+      if (MAINTENANCE_EXEMPT.has(path)) return done();
+      reply.code(503).header("content-type", "application/json").send({ error: "service is in maintenance" });
+    });
+  }
 
   // tower-http's CorsLayer emits `vary` on EVERY response, including a plain GET with no Origin.
   // `@fastify/cors` emits it only on a preflight, so a locally-served response was missing it while
@@ -370,6 +407,8 @@ if (isMain) {
     asrInferenceUrl: process.env.ASR_INFERENCE_URL || "http://127.0.0.1:8091",
     asrApiKey: process.env.ASR_API_KEY || "smoke-asr-api-key",
     upstreamTimeout,
+    // lib.rs:133 — same variable, same accepted values ("1"/"true"), same default.
+    maintenanceMode: ["1", "true"].includes(process.env.MAINTENANCE_MODE ?? ""),
   });
 
   // Defense in depth, BEFORE the socket opens — main.rs:197 does the same and this port did not.
