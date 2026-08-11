@@ -23,10 +23,12 @@ import Fastify from "fastify";
 import cors from "@fastify/cors";
 
 import { ApiError } from "./lib/authz.mjs";
-import { createDb } from "./lib/db.mjs";
+import { createDb, superuserRoleProblem } from "./lib/db.mjs";
 import {
   ALLOW_INSECURE_SECRETS,
+  ALLOW_SUPERUSER_DB_ROLE,
   LEGACY_ONE_ONLY,
+  LEGACY_ONE_OR_TRUE,
   insecureSecretProblems,
   relaxed,
 } from "./lib/insecure.mjs";
@@ -304,6 +306,9 @@ function isNulByteError(err) {
   });
 
   app.decorate("portedRoutes", [...ported]);
+  // Exposed so the entry point can run the superuser/BYPASSRLS assertion before listening. `null`
+  // when nothing is ported: that shell never touches the database.
+  app.decorate("db", db);
   return app;
 }
 
@@ -366,6 +371,23 @@ if (isMain) {
     asrApiKey: process.env.ASR_API_KEY || "smoke-asr-api-key",
     upstreamTimeout,
   });
+
+  // Defense in depth, BEFORE the socket opens — main.rs:197 does the same and this port did not.
+  // A superuser/BYPASSRLS connection makes all 17 tenant-isolation policies inert at once, since
+  // each reads `app.is_rls_bypass_enabled() OR tenant_id = app.current_tenant_id()` and the bypass
+  // is gated on `rolsuper`.
+  //
+  // Only when routes are actually PORTED: with none, `db` is null and this process is a pure proxy
+  // that never touches the database. Refusing to boot over a role it will not use would be theatre,
+  // and would break the zero-ported shell the parity suite runs on every gate.
+  if (app.db && !relaxed(ALLOW_SUPERUSER_DB_ROLE, LEGACY_ONE_OR_TRUE)) {
+    const problem = await superuserRoleProblem(app.db.sql);
+    if (problem) {
+      console.error(problem);
+      process.exit(2);
+    }
+  }
+
   app.listen({ host, port: Number(port) }).catch((e) => {
     console.error(e);
     process.exit(1);

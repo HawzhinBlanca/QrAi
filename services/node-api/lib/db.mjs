@@ -75,3 +75,39 @@ export function createDb(connectionString, options = {}) {
 
   return { sql, withTenant, currentTenantSetting, end: () => sql.end({ timeout: 5 }) };
 }
+
+/**
+ * Refuse to run against the database as a superuser / `BYPASSRLS` role.
+ *
+ * The port of `main.rs`'s check (platform-api/src/main.rs:197). Defense in depth: every one of the
+ * 17 tenant-isolation policies reads
+ *
+ *     app.is_rls_bypass_enabled() OR tenant_id = app.current_tenant_id()
+ *
+ * and `app.is_rls_bypass_enabled()` is gated on `rolsuper`. So a privileged connection makes the
+ * whole policy set inert at once, and tenant isolation falls back to every handler remembering
+ * `withTenant`. The handlers do — that is the belt; this is the braces, and the port had none.
+ *
+ * Returns the problem string, or null when the role is fine. A STRING rather than a throw so the
+ * caller decides the exit convention (server.mjs exits 2; Rust panics), and so a test can assert
+ * WHICH role was refused without catching.
+ *
+ * A query failure is NOT treated as "fine". If we cannot establish what role we are, we cannot
+ * claim RLS is enforced — the same fail-closed reasoning as the gateway's Redis dedup path.
+ */
+export async function superuserRoleProblem(sql) {
+  let rows;
+  try {
+    rows = await sql`SELECT rolname, rolsuper, rolbypassrls FROM pg_roles WHERE rolname = current_user`;
+  } catch (e) {
+    return `could not establish the database role (${e.message}); refusing to assume RLS is enforced`;
+  }
+  const row = rows?.[0];
+  if (!row) return "current_user has no pg_roles row; refusing to assume RLS is enforced";
+  if (!row.rolsuper && !row.rolbypassrls) return null;
+  return (
+    `DB role '${row.rolname}' is superuser/bypassrls — RLS tenant isolation is INERT. Connect as a ` +
+    `restricted role (see infra/sql/rls-app-role.sql), or set ALLOW_SUPERUSER_DB_ROLE=1 for local ` +
+    `dev only. platform-api refuses the same role.`
+  );
+}
