@@ -27,10 +27,36 @@ const HOP_BY_HOP = new Set([
  * `__Host-qrai-pilot` cookie's Secure/HttpOnly/SameSite/Path are exactly what a careless proxy
  * drops, and nothing downstream would notice until a pilot learner's session broke.
  */
-export async function proxy(req, reply, upstream) {
+export async function proxy(req, reply, upstream, clientAddress) {
   const headers = {};
   for (const [k, v] of Object.entries(req.headers)) {
     if (!HOP_BY_HOP.has(k.toLowerCase())) headers[k] = v;
+  }
+
+  // ── The forwarding headers are OVERWRITTEN, not passed through ───────────────────────────────
+  //
+  // Not a hole in "verbatim": `HOP_BY_HOP` above already establishes that headers describing the
+  // HOP are the proxy's to set, and X-Forwarded-For is the definitive example — an intermediary
+  // writes it, a client does not get to.
+  //
+  // Measured before this existed: a request carrying `x-forwarded-for: 1.2.3.4` reached the
+  // upstream with `x-forwarded-for: 1.2.3.4`, and the shell added nothing of its own. Both of
+  // platform-api's rate-limiting configurations are wrong under that proxy:
+  //
+  //   TRUST_PROXY_HEADERS=1  keys on the header, so a client picks its own bucket by setting one
+  //                          header and the limiter stops existing. lib.rs:375 warns this is only
+  //                          safe "behind a proxy that OVERWRITES those headers" — and this IS
+  //                          that proxy.
+  //   default (peer-keyed)   sees this shell's address for every proxied request, collapsing all
+  //                          proxied traffic into ONE bucket. One busy client throttles everyone.
+  //
+  // `clientAddress` is the address THIS process charged its own limiter (lib/rate-limit.mjs
+  // `clientKey`), so both services key on the same client and neither trusts anything the caller
+  // said beyond what this shell is configured to trust. Omitted only by callers with no request
+  // context, where leaving the client's value in place is no worse than today.
+  if (clientAddress) {
+    headers["x-forwarded-for"] = clientAddress;
+    headers["x-real-ip"] = clientAddress;
   }
 
   const hasBody = !["GET", "HEAD"].includes(req.method);
