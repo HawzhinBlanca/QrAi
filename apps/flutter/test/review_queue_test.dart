@@ -29,9 +29,11 @@ Map<String, Object?> stubFinding({
   String reviewStatus = 'ai-suggested',
   double confidence = 0.9,
   List<Map<String, Object?>>? sources,
+  String? audioStatus,
 }) =>
     <String, Object?>{
       'id': id,
+      if (audioStatus != null) 'audioStatus': audioStatus,
       'wordId': '1:1:1',
       'rule': rule,
       'severity': 'warning',
@@ -101,6 +103,62 @@ Future<void> pump(WidgetTester tester, ApiClient client) async {
 }
 
 void main() {
+  // ── ADR-0037: what a reviewer is told about the recording ──────────────────────────────────
+  //
+  // The web surface rendered every one of these as "No audio available for this session", so a
+  // learner exercising their right to erasure looked identical to a broken URL — and the teacher
+  // reviewed either way. These assert the four outcomes stay DISTINCT, which is the property that
+  // was lost, rather than asserting any particular wording.
+  test('audioNotice says something different for each outcome', () {
+    final Set<String> said = <String>{
+      audioNotice('available')!,
+      audioNotice('discarded')!,
+      audioNotice('not-captured')!,
+      audioNotice('unknown')!,
+    };
+    expect(said, hasLength(4), reason: 'two outcomes share a sentence, which is the original bug');
+
+    expect(audioNotice('discarded'), contains("learner's request"));
+    expect(
+      audioNotice('discarded'),
+      isNot(contains('unavailable')),
+      reason: 'an erasure is the learner deciding, not a fault to retry',
+    );
+    expect(audioNotice('not-captured'), isNot(contains('erased')));
+    // `available` must not imply silence: a reviewer who needs to listen should know to go
+    // elsewhere, not conclude the recording is gone.
+    expect(audioNotice('available'), contains('web review queue'));
+  });
+
+  test('audioNotice stays silent where there is nothing to say, and is safe on a new value', () {
+    // The learner's predict path computes findings before anything is stored, so it sends no
+    // audioStatus. Inventing a notice there would claim a retention state that does not exist yet.
+    expect(audioNotice(null), isNull);
+    // A value added upstream that nobody taught this client about must not read as "no recording".
+    expect(audioNotice('quarantined-pending-review'), audioNotice('unknown'));
+  });
+
+  testWidgets('an erased recording is stated on the card, not hidden', (WidgetTester tester) async {
+    final List<http.Request> seen = <http.Request>[];
+    await pump(
+      tester,
+      clientFor(seen, findings: <Map<String, Object?>>[stubFinding(audioStatus: 'discarded')]),
+    );
+
+    final Finder notice = find.byKey(const ValueKey<String>('review-audio-finding-1'));
+    expect(notice, findsOneWidget);
+    expect(tester.widget<Text>(notice).data, contains("learner's request"));
+  });
+
+  testWidgets('a finding with no audioStatus shows no notice at all', (WidgetTester tester) async {
+    // Guards the widget test above against passing for the wrong reason: if the notice rendered
+    // unconditionally, both would still find a widget.
+    final List<http.Request> seen = <http.Request>[];
+    await pump(tester, clientFor(seen));
+
+    expect(find.byKey(const ValueKey<String>('review-audio-finding-1')), findsNothing);
+  });
+
   test('pendingForReview keeps work and drops what is finished', () {
     TajweedFinding of(String status) =>
         TajweedFinding.fromJson(stubFinding(reviewStatus: status));

@@ -1924,3 +1924,72 @@ the event loop, and an erased learner's identifier persists in it. That is the c
 — written down so it is a known open item with a named owner rather than something rediscovered
 later. `learnerId` being a first-class field on each row means whichever of (a)/(b)/(c) is chosen can
 be implemented without re-parsing history.
+
+## ADR-0041 — The Flutter review queue cannot play recitation audio without a new runtime dependency
+
+**Date:** 2026-08-11 · **Status:** Proposed — needs an owner decision, not an engineering one
+**Related:** ADR-0037 (teacher audio through platform-api, every fetch audited), ADR-0022 (artifacts)
+
+### Context
+
+The Flutter review queue has never had an audio player. Its own comment explained why: "The web
+surface fetches `/v1/recitation-sessions/{id}/audio`. That route does not exist in platform-api, so
+the web player is broken. Adding a player here would need a route, a retention rule, and a
+dependency."
+
+Two of those three are now settled. `GET /v1/tajweed-findings/{id}/audio` has existed since ADR-0037
+and is contracted as of 2026-08-11; the retention rule is ADR-0037's, already enforced server-side
+and now surfaced in this client as a per-finding notice. What remains is the dependency.
+
+### The blocker, stated precisely
+
+`apps/flutter/pubspec.yaml` declares five runtime dependencies — http, flutter_secure_storage, intl,
+record, web_socket_channel — and **none can play audio**. `record` captures; it does not play. No
+playback package appears in `pubspec.lock`, not even transitively. Flutter has no built-in audio
+playback on iOS/Android, so a package (`just_audio`, `audioplayers`, or similar) is required.
+
+This was NOT deferred by preference. `scripts/verify.sh` runs `flutter pub get --enforce-lockfile`,
+which fails when `pubspec.yaml` and `pubspec.lock` disagree, and a correct lockfile cannot be
+hand-written: it carries a resolved transitive graph with per-package SHA256 hashes from pub.dev.
+The environment this change was authored in has no Flutter or Dart SDK, so the lock cannot be
+regenerated. Editing the manifest alone would fail the gate deterministically.
+
+### What was delivered instead
+
+The half that does not need the dependency, because a teacher currently gets NO indication at all:
+
+- `TajweedFinding.audioStatus`, from the contract's `StaffTajweedFinding`.
+- `audioNotice` — four distinct sentences for ADR-0037's four states, asserted distinct by test.
+- No play control. A button that cannot play is the defect this same work removed from the web
+  surface on the same day, where every outcome rendered as "No audio available for this session"
+  and a learner's erasure was indistinguishable from a broken URL.
+
+`available` therefore says a recording exists and that this client cannot play it yet, pointing the
+reviewer at the web queue. That is a worse experience than a player and a much better one than a
+control that silently does nothing.
+
+### The decision, and why it is the owner's
+
+Adding a runtime dependency to a mobile client is not a mechanical step here:
+
+1. **Licence review.** `scripts/check-licenses.mjs` covers JS and Rust packages. It does not read
+   `pubspec.lock` at all, so a Dart dependency enters with no licence gate — a gap this ADR names
+   whichever way the decision goes.
+2. **Platform surface.** Playback packages carry native iOS/Android code and background-audio
+   entitlements. P6.3/P6.4 (signed builds, physical devices) are already `_PENDING_`, and this
+   enlarges what those signatures cover.
+3. **What is actually played.** ml-inference stores whatever the gateway captured. The web client
+   guesses `audio/webm` at the Blob; a native player needs a real container, and nothing yet
+   asserts what those bytes are. That question should be answered before a player ships, not after.
+
+### Options
+
+| | |
+|---|---|
+| **A** | Add `just_audio`, regenerate the lock on a machine with the SDK, extend the licence gate to Dart, and answer (3). Full parity with the web queue. |
+| **B** | Leave the notice as shipped. A reviewer who must listen uses the web queue. Costs nothing and hides nothing. |
+| **C** | Ship a player only after P6.3/P6.4, so the native surface is signed off once rather than twice. |
+
+Recommended: **B until a mobile owner exists, then A or C.** No reviewer is blocked today — the web
+queue plays audio and the notice says where to go. The dependency should land with the person who
+will sign the build that carries it.
