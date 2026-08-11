@@ -721,7 +721,11 @@ paths:
         # cannot hold one, and this used to surface as a 500 (specs/nul-byte-5xx/).
         '400': { $ref: '#/components/responses/BadRequest' }
         '403': { $ref: '#/components/responses/Forbidden' }
-        '404': { description: 'not found — ALSO returned cross-tenant, so existence never leaks' }
+        '404':
+          description: 'not found — ALSO returned cross-tenant, so existence never leaks'
+          # Not `$ref: NotFound`: the cross-tenant note above IS the contract here, and a ref would
+          # discard it. Same body schema, now checkable.
+          content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } }
   /v1/recitation-sessions/{id}/finalize:
     post:
       tags: [recitation]
@@ -1070,7 +1074,9 @@ paths:
         requires a browser origin (migration/plan.md §3.3).
       responses:
         '200': { description: session established, content: { application/json: { schema: { $ref: '#/components/schemas/PilotSession' } } } }
-        '403': { description: unknown, consumed, or expired invitation }
+        '403':
+          description: unknown, consumed, or expired invitation
+          content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } }
   /v1/pilot/session/logout:
     post:
       tags: [pilot]
