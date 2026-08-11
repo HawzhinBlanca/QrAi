@@ -28,7 +28,15 @@ export function routePairsFromRust(src) {
   // A REGEX, not the literal `.route("`: most registrations in lib.rs are multi-line, with the path
   // on the line after `.route(`. Splitting on the literal found 4 of 34 and the coverage test read
   // that as "the contract describes 30 routes that do not exist".
-  for (const block of src.split(/\.route\(\s*"/).slice(1)) {
+  // `(?:\s|\/\/[^\n]*|\/\*[\s\S]*?\*\/)*` — whitespace OR COMMENTS between `.route(` and the path.
+  // Two registrations put an ADR-0037 note there, and `\s*` alone did not match a comment, so the
+  // split walked straight past them: GET /v1/tajweed-findings/{id}/audio and POST /v1/audio-chunks
+  // were invisible. Nothing failed, because coverage.test.mjs compares THIS parser's output to the
+  // contract and the contract was missing exactly the same two — both sides agreed on a smaller
+  // world. That is the second time this parser has silently under-counted (34 of 38, above); the
+  // difference is that an under-count here does not just report a wrong number, it makes a route
+  // unreachable by every check that starts from this list.
+  for (const block of src.split(/\.route\((?:\s|\/\/[^\n]*|\/\*[\s\S]*?\*\/)*"/).slice(1)) {
     const path = block.split('"', 1)[0];
     const tail = block.split(/\.route\(|\.layer\(|\.with_state|\.fallback/, 1)[0];
     // TWO forms, and missing the second is a silent under-count:
@@ -37,7 +45,12 @@ export function routePairsFromRust(src) {
     // Matching only the first form found 34 pairs where there are 38 — and Phase 7's research used
     // that same pattern, so its "34 method+path pairs" was four short. Corrected in
     // specs/flutter-client/tasks.md rather than left to propagate.
-    for (const verb of tail.matchAll(/(?:axum::routing::|\.)(get|post|put|patch|delete)\s*\(/g)) {
+    // THREE forms now. The third is a BARE `get(handler)`, which is how services/realtime-gateway
+    // registers — it imports the verbs. Requiring `axum::routing::` or a leading `.` made this
+    // parser return ZERO routes for a real router, silently: a caller pointing it at the gateway
+    // got an empty list and no error. `(?<![\w.])` keeps that from matching `map.get(` or an
+    // identifier ending in the verb, and the tail is already bounded to this registration.
+    for (const verb of tail.matchAll(/(?:axum::routing::|\.|(?<![\w.:]))(get|post|put|patch|delete)\s*\(/g)) {
       pairs.push({ method: verb[1].toUpperCase(), path });
     }
   }

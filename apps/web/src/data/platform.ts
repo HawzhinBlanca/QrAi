@@ -471,10 +471,17 @@ export interface TajweedFindingSummary {
 /**
  * The audio for ONE finding, from the audited route.
  *
- * NOT `/v1/recitation-sessions/{id}/audio` — that route has never existed. The teacher surface
- * requested it anyway, got a 404 every time, and rendered the failure as "No audio available for
- * this session", which is indistinguishable from a learner having asked for their recording to be
- * destroyed. A privacy outcome and a broken URL looked identical to the person reviewing.
+ * NOT `/v1/recitation-sessions/{id}/audio`. The teacher surface requested that, got a 404 every
+ * time, and rendered the failure as "No audio available for this session" — indistinguishable from
+ * a learner having asked for their recording to be destroyed. A privacy outcome and a broken URL
+ * looked identical to the person reviewing.
+ *
+ * That path is NOT a typo, and calling it one (as an earlier version of this comment did) makes the
+ * mistake look sillier and rarer than it is. It is a REAL route — the realtime GATEWAY's WebSocket
+ * upgrade, `services/realtime-gateway/src/lib.rs:682`, which the learner's live-recitation client
+ * uses correctly. What went wrong was reaching it with the PLATFORM-API base URL over plain HTTP:
+ * the right path, the wrong service, the wrong protocol. Two services sharing a path shape is the
+ * trap, and `tests/contract/client-routes.test.mjs` now checks client paths against BOTH.
  *
  * The route that DOES exist is per FINDING, and deliberately so (ADR-0037): every attempt writes an
  * audit row before the bytes move, and retention is re-checked against both the consent record and

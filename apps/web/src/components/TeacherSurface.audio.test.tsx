@@ -3,11 +3,12 @@
 // A teacher must be able to HEAR the recitation they are judging, and must be told the truth when
 // they cannot.
 //
-// `TeacherSurface` fetched `/v1/recitation-sessions/{id}/audio` on every session selection. That
-// route has never existed — platform-api registers `/v1/tajweed-findings/{id}/audio` and nothing
-// else — so it 404'd every time and the catch rendered "No audio available for this session".
-// Teachers reviewed with no audio at all, and the failure was indistinguishable from a learner
-// having exercised their right to have the recording destroyed.
+// `TeacherSurface` fetched `/v1/recitation-sessions/{id}/audio` on every session selection — the
+// realtime GATEWAY's WebSocket path, against the PLATFORM-API base, over plain HTTP. platform-api
+// registers `/v1/tajweed-findings/{id}/audio` and nothing like it, so this 404'd every time and the
+// catch rendered "No audio available for this session". Teachers reviewed with no audio at all, and
+// the failure was indistinguishable from a learner having exercised their right to have the
+// recording destroyed.
 //
 // These RENDER the real component. The first test asserts the request goes to a route that EXISTS
 // and never to the one that does not; the rest assert the four ADR-0037 outcomes stay distinct,

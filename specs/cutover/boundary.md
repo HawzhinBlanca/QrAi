@@ -8,11 +8,20 @@
 into citing things that were deleted. A review package whose claims cannot be checked is worse than
 none, because it reads as assurance.
 
-**Nothing described here is deployed.** `services/node-api/server.mjs` serves **0 of 40** routes in
+**Nothing described here is deployed.** `services/node-api/server.mjs` serves **0 of 42** routes in
 any default configuration (37 are portable; none is enabled). Run `node scripts/cutover-readiness.mjs`
 for the current state — and note that it, not this document, is the source. Every count below is
 asserted against that script by `tests/contract/boundary-references.test.mjs`, because the numbers
-here were hand-written and had drifted: the route total was 38 when this was written and is now 40.
+here were hand-written and had drifted.
+
+The total moved TWICE on 2026-08-11, for different reasons, and a reviewer should know both. 38 → 40
+was drift: routes were added and this document was not updated. 40 → 42 was not drift — it was a
+BLIND SPOT. `GET /v1/tajweed-findings/{id}/audio` and `POST /v1/audio-chunks` have been registered
+since ADR-0037, and each puts an ADR note between `.route(` and its path, which the route parser's
+`\.route\(\s*"` could not cross. So the parser reported 40, the contract described those same 40,
+and the check comparing them agreed. Both routes are now contracted. Nothing about the SERVICE
+changed; what changed is that this package can now see two routes it was previously describing a
+world without.
 
 ---
 
@@ -151,10 +160,10 @@ ticket row. Every pre-existing test stayed green. The oracle written afterwards 
 
 ## 5. What is NOT covered — stated as gaps, not omitted
 
-- **0 of 40 method+path pairs have no fixture and no parity test** — this gap is CLOSED. It read
+- **0 of 42 method+path pairs have no fixture and no parity test** — this gap is CLOSED. It read
   "8 of 38" when the package was written; `specs/contract-coverage-closure/` shut it. Counted by
   `scripts/cutover-readiness.mjs`, which names the number every run.
-- **3 of 40 contracted operations are `x-unvalidated`** — down from 15, and the remaining three are
+- **3 of 42 contracted operations are `x-unvalidated`** — down from 15, and the remaining three are
   the ML/ASR proxies, which forward `serde_json::Value` verbatim from an upstream service. Their
   shape belongs to the ML/ASR contract, not this one; even `type: object` would be a fabrication,
   because a passthrough forwards an array or a scalar just as happily. Closing them is a product
