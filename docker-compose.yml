@@ -69,6 +69,13 @@ services:
       ALLOW_INSECURE_SECRETS: "${ALLOW_INSECURE_SECRETS:-}"
       ALLOW_SUPERUSER_DB_ROLE: "${ALLOW_SUPERUSER_DB_ROLE:-}"
       METRICS_DEV_OPEN: "${METRICS_DEV_OPEN:-}"
+      # WITHOUT this, /metrics answers 404 to everything — including Prometheus sending the right
+      # token — because the gate is fail-closed on an unset token (`None => metrics_dev_open`, and
+      # METRICS_DEV_OPEN is empty above). No compose file passed it, so monitoring/prometheus.yml's
+      # `x-metrics-token` had nothing to match: the scrape fails, `up` goes 0, PlatformApiDown fires
+      # permanently, and every other alert is blind because its metrics never arrive. Measured: 404.
+      # Empty default keeps local dev unchanged — it is the SAME fail-closed 404 as before.
+      METRICS_TOKEN: "${METRICS_TOKEN:-}"
       # Exact web origin(s), comma-separated (e.g. https://app.example.org). REQUIRED in production
       # (ALLOW_INSECURE_SECRETS unset): platform-api fails closed on boot if this is empty, so the
       # pilot Origin allowlist (auth::require_allowed_origin) and browser CORS are ENFORCED, not
@@ -117,6 +124,13 @@ services:
       ALLOW_INSECURE_DEFAULTS: "${ALLOW_INSECURE_DEFAULTS:-0}"
       ALLOW_INSECURE_SECRETS: "${ALLOW_INSECURE_SECRETS:-}"
       METRICS_DEV_OPEN: "${METRICS_DEV_OPEN:-}"
+      # WITHOUT this, /metrics answers 404 to everything — including Prometheus sending the right
+      # token — because the gate is fail-closed on an unset token (`None => metrics_dev_open`, and
+      # METRICS_DEV_OPEN is empty above). No compose file passed it, so monitoring/prometheus.yml's
+      # `x-metrics-token` had nothing to match: the scrape fails, `up` goes 0, PlatformApiDown fires
+      # permanently, and every other alert is blind because its metrics never arrive. Measured: 404.
+      # Empty default keeps local dev unchanged — it is the SAME fail-closed 404 as before.
+      METRICS_TOKEN: "${METRICS_TOKEN:-}"
       GATEWAY_ALLOW_MISSING_ORIGIN: "${GATEWAY_ALLOW_MISSING_ORIGIN:-}"
       ALLOW_CHAOS_INJECTION: "${ALLOW_CHAOS_INJECTION:-}"
       # The gateway needs the allowlist too — it 403s every upgrade when this is unset in strict mode.
