@@ -35,6 +35,7 @@ import {
 import { stringifyRust } from "./lib/json.mjs";
 import { createMetrics } from "./lib/metrics.mjs";
 import { proxy } from "./lib/proxy.mjs";
+import { clientKey, createRateLimiter, sendTooManyRequests } from "./lib/rate-limit.mjs";
 import { DEFAULT_UPSTREAM_TIMEOUT_SECS, upstreamTimeoutMs } from "./lib/upstream.mjs";
 import { ROUTES, fastifyPath } from "./routes/index.mjs";
 
@@ -113,6 +114,15 @@ export function buildServer(config) {
     // lib.rs `maintenance_guard`. Explicit rather than read from process.env here, mirroring Rust's
     // `with_maintenance_mode` — the parallel test suite must not race on a process-wide variable.
     maintenanceMode = false,
+    // lib.rs:366's tower_governor layer.
+    //
+    // Defaults OFF here, which is NOT a weaker default than Rust's — it is the faithful mapping.
+    // Rust has two constructors: `platform_router()` reads DISABLE_RATE_LIMIT and defaults ON, and
+    // `platform_router_with_rate_limit(state, bool)` takes it explicitly because "tests set it
+    // explicitly to avoid process-env races". `buildServer` IS the explicit form; the entry point
+    // below is the env-driven one, and that is where the ON default lives.
+    rateLimit = false,
+    trustProxyHeaders = false,
     logger = false,
   } = config;
 
@@ -174,6 +184,26 @@ export function buildServer(config) {
       const path = req.url.split("?")[0];
       if (MAINTENANCE_EXEMPT.has(path)) return done();
       reply.code(503).header("content-type", "application/json").send({ error: "service is in maintenance" });
+    });
+  }
+
+  // ── Rate limiting, just inside the kill switch ───────────────────────────────────────────────
+  //
+  // lib.rs:366's tower_governor layer, which this port did not have. ON by default there;
+  // DISABLE_RATE_LIMIT=1 turns it off. POST /v1/auth/token and POST /v1/pilot/session/bootstrap are
+  // both PORTABLE, so without this the invitation exchange is brute-forceable at cutover — the
+  // throttle silently gone rather than deliberately removed.
+  //
+  // Order matches lib.rs: CORS outermost (a preflight is never throttled, and a 429 still carries
+  // headers the browser can read), then the maintenance kill-switch, then this. Registering the
+  // hooks in that sequence IS the ordering — in any Node framework it is otherwise a line-number
+  // accident, which is why ordering.test.mjs exists.
+  if (rateLimit) {
+    const limiter = createRateLimiter();
+    app.addHook("onRequest", (req, reply, done) => {
+      const verdict = limiter.take(clientKey(req, trustProxyHeaders));
+      if (verdict.allowed) return done();
+      sendTooManyRequests(reply, verdict.waitSeconds);
     });
   }
 
@@ -409,6 +439,11 @@ if (isMain) {
     upstreamTimeout,
     // lib.rs:133 — same variable, same accepted values ("1"/"true"), same default.
     maintenanceMode: ["1", "true"].includes(process.env.MAINTENANCE_MODE ?? ""),
+    // lib.rs:370 — `.map(|v| v != "1")`, so ONLY the exact string "1" disables it. "true" does
+    // NOT, and transcribing this as the usual ["1","true"] would silently leave the limiter off
+    // wherever someone set DISABLE_RATE_LIMIT=true expecting it to work like every other flag.
+    rateLimit: (process.env.DISABLE_RATE_LIMIT ?? "") !== "1",
+    trustProxyHeaders: ["1", "true"].includes(process.env.TRUST_PROXY_HEADERS ?? ""),
   });
 
   // Defense in depth, BEFORE the socket opens — main.rs:197 does the same and this port did not.
