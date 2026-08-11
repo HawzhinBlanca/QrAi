@@ -14,8 +14,11 @@ import { queryJson, request, startApi, startMockUpstream, uniqueSuffix } from ".
  * and `scripts/validate-openapi-responses.mjs` only covers the 26 recorded fixture steps, none of
  * which touch these paths.
  *
- * Every test here asserts the SUCCESS path only. The failure paths already have coverage elsewhere;
- * duplicating it would add runtime without adding an oracle.
+ * Every test here asserted the SUCCESS path only, on the reasoning that "the failure paths already
+ * have coverage elsewhere". That held for their STATUS CODES and never for their BODIES — and it
+ * could not have been fixed here, because until the response-level `$ref` fix
+ * (tests/contract/lib/openapi.mjs) no error response had a compiled validator to assert against.
+ * The last test in this file is the failure-path shape coverage that gap was hiding.
  */
 
 let api;
@@ -220,4 +223,48 @@ test("POST /v1/privacy/delete matches PrivacyJob", async () => {
   assertMatchesContract("POST", "/v1/privacy/delete", res);
   assert.equal(res.body.kind, "delete");
   assert.equal(res.body.learnerId, created.body.userId);
+});
+
+/**
+ * The ERROR shapes — which, until the response-level `$ref` fix, no parity test COULD assert.
+ *
+ * Every error response in the contract is written `'403': { $ref: '#/components/responses/Forbidden' }`,
+ * and `compileResponseValidators` walked straight past that form. So no validator existed for any of
+ * them, and `assertMatchesContract` — which fails loudly on a missing validator rather than skipping —
+ * would have rejected this test outright. The header above says "SUCCESS path only" and gave the
+ * reason "the failure paths already have coverage elsewhere". That is true of their STATUS CODES and
+ * was never true of their BODIES: nothing checked an error body's shape anywhere.
+ *
+ * Bodies matter here. `{ error: string }` with `additionalProperties: false` is what stops a handler
+ * leaking a row, a backtrace, or an internal id into a message a rejected caller reads.
+ */
+test("403, 404 and 401 bodies match the contracted Error shape", async () => {
+  const learnerLists = await request(api.baseUrl, "/v1/recitation-sessions", { role: "learner" });
+  assert.equal(learnerLists.status, 403, "the role gate must still reject a learner listing all sessions");
+  assertMatchesContract("GET", "/v1/recitation-sessions", learnerLists);
+
+  const missing = "session-00000000-0000-4000-8000-000000000000";
+  const notFound = await request(api.baseUrl, `/v1/recitation-sessions/${missing}`, { role: "admin" });
+  assert.equal(notFound.status, 404);
+  assertMatchesContract("GET", `/v1/recitation-sessions/${missing}`, notFound);
+
+  const badLogin = await request(api.baseUrl, "/v1/auth/login", {
+    method: "POST",
+    // tenantId is REQUIRED by the handler; omitting it is a 422 body-rejection, not the 401 this
+    // test is about. Same shape as the recorded fixture step "login with unknown email".
+    body: {
+      email: `nobody-${uniqueSuffix()}@example.invalid`,
+      password: "not-a-real-password-12345",
+      tenantId: "hikmah-pilot-erbil",
+    },
+  });
+  assert.equal(badLogin.status, 401);
+  assertMatchesContract("POST", "/v1/auth/login", badLogin);
+
+  // Not merely "it validated": prove the schema is discriminating on these responses. An error body
+  // is the one place a permissive schema is easiest to write and hardest to notice.
+  for (const res of [learnerLists, notFound, badLogin]) {
+    assert.equal(typeof res.body.error, "string", "the contracted field must be the one that is present");
+    assert.deepEqual(Object.keys(res.body), ["error"], "additionalProperties: false — nothing else may ride along");
+  }
 });
