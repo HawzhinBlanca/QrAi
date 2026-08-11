@@ -87,11 +87,11 @@ export function TeacherSurface({ tenantId, authToken }: TeacherSurfaceProps) {
 
   // ── Listening to a recitation ────────────────────────────────────────────────────────────────
   //
-  // This used to fetch `/v1/recitation-sessions/{id}/audio` on every session selection. That route
-  // has never existed — platform-api registers `/v1/tajweed-findings/{id}/audio` and nothing else —
-  // so it 404'd every time and the catch rendered "No audio available for this session". A teacher
-  // could not tell a broken URL from a learner having asked for their recording to be destroyed,
-  // and the reviewing was done either way.
+  // This used to fetch `/v1/recitation-sessions/{id}/audio` on every session selection. That is the
+  // realtime GATEWAY's WebSocket path (its lib.rs:682), not a platform-api route — so against the
+  // platform-api base, over plain HTTP, it 404'd every time and the catch rendered "No audio
+  // available for this session". A teacher could not tell that from a learner having asked for
+  // their recording to be destroyed, and the reviewing was done either way.
   //
   // Audio is now fetched PER FINDING, on demand, from the route that exists. That is not a
   // workaround for a missing session route: ADR-0037 writes an audit row for every attempt before

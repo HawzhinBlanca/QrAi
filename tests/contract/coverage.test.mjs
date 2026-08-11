@@ -53,7 +53,7 @@ test("the contract describes no route the service does not serve", () => {
   assert.deepEqual(phantom, [], `contracted but NOT served:\n  ${phantom.join("\n  ")}`);
 });
 
-test("the pair count is 40, CORRECTING Phase 7's 34", () => {
+test("the pair count is 42, CORRECTING Phase 7's 34", () => {
   // Phase 7's research counted 34 by matching only `axum::routing::<verb>(`. Five methods are
   // registered CHAINED on an existing MethodRouter — `axum::routing::get(h).post(h2)` — on
   // /v1/recitation-sessions, /v1/recitation-sessions/{id}/alignments, /v1/scholar-approvals,
@@ -71,8 +71,22 @@ test("the pair count is 40, CORRECTING Phase 7's 34", () => {
   // 39 -> 40 (2026-08-02, ADR-0027 item 5): POST /v1/recitation-sessions/{id}/finalize. A
   // gateway-streamed recitation had no transcript and so no alignment; this derives both
   // server-side, without letting the client say what the learner recited.
-  assert.equal(rustPairs.length, 40, "lib.rs no longer registers 40 method+path pairs");
-  assert.equal(specPairs.size, 40);
+  //
+  // 40 -> 42 (2026-08-11): GET /v1/tajweed-findings/{id}/audio and POST /v1/audio-chunks. NOT new
+  // routes — both have been registered since ADR-0037. They were INVISIBLE. Each puts an ADR note
+  // between `.route(` and its path string, and `routePairsFromRust` split on `\.route\(\s*"`, which
+  // does not cross a comment. So the parser reported 40, the contract described those same 40, and
+  // the two checks above compared one blind list against another and agreed.
+  //
+  // This pin is the check that was supposed to catch exactly that, and it did not — because the
+  // number it was pinned to came from the same broken parser. A count derived from the thing it is
+  // meant to guard cannot guard it. What actually surfaced it was a THIRD list, built from a
+  // different source: the paths the TypeScript clients request
+  // (tests/contract/client-routes.test.mjs), which reported the finding-audio route as contracted
+  // by nothing. That is the same lesson as Phase 7's 34 — two independently-derived lists
+  // disagreeing is what a contract is for — and the reason the client list now exists.
+  assert.equal(rustPairs.length, 42, "lib.rs no longer registers 42 method+path pairs");
+  assert.equal(specPairs.size, 42);
 });
 
 test("every operation declares at least one response, and error codes reference the shared shape", () => {

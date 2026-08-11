@@ -33,7 +33,7 @@ info:
   version: 0.2.0
   summary: Quran recitation platform API — the contract every client codes against.
   description: |
-    40 method+path pairs. Enumerated from services/platform-api/src/lib.rs and asserted by
+    42 method+path pairs. Enumerated from services/platform-api/src/lib.rs and asserted by
     tests/contract/coverage.test.mjs, so adding a route fails the gate until it is contracted.
 
     Auth is one of three, resolved in this order (services/platform-api/src/auth.rs):
@@ -924,6 +924,105 @@ paths:
               schema: { type: integer, minimum: 0 }
               description: Findings awaiting review in this tenant, ignoring offset and page size.
           content: { application/json: { schema: { type: array, items: { $ref: '#/components/schemas/StaffTajweedFinding' } } } }
+  /v1/tajweed-findings/{id}/audio:
+    get:
+      tags: [review]
+      summary: The recitation a finding is about — the audited path, ADR-0037.
+      description: |
+        The ONLY way a reviewer reaches a learner's recording. The tenant check, the consent check
+        and the audit event happen here, in one place a client cannot skip; the browser never holds
+        an object key and never talks to ml-inference. EVERY authorized attempt writes
+        `recitation.audio.read` BEFORE any bytes move, carrying its outcome — so an attempt on a
+        recording that was destroyed is recorded as faithfully as one that played.
+
+        Audio arrives as base64 in a JSON body, not as a binary stream. The client decodes it.
+
+        Registered in lib.rs since ADR-0037 and UNCONTRACTED until now: an ADR note written between
+        `.route(` and the path made the registration invisible to `routePairsFromRust`, so
+        `coverage.test.mjs` compared a 40-route world against a 40-route contract and agreed.
+      parameters: [{ name: id, in: path, required: true, schema: { type: string } }]
+      responses:
+        '200':
+          description: the chunk overlapping this finding's word span
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [audioBase64, auditEventId, chunkId, chunksOverlappingFinding, endMs, findingEndMs, findingStartMs, sampleRate, startMs]
+                properties:
+                  audioBase64: { type: string }
+                  # The row this read wrote. Returned so a caller can cite the audit entry for its
+                  # own access, rather than trusting that one was made.
+                  auditEventId: { type: string, minLength: 1 }
+                  chunkId: { type: string, minLength: 1 }
+                  # How much of the word this chunk actually covers. A word can straddle a chunk
+                  # boundary, and a client that assumed otherwise would play a fragment as if it
+                  # were the whole thing.
+                  chunksOverlappingFinding: { type: integer, minimum: 0 }
+                  endMs: { type: integer }
+                  findingEndMs: { type: integer }
+                  findingStartMs: { type: integer }
+                  sampleRate: { type: integer, nullable: true }
+                  startMs: { type: integer }
+                additionalProperties: false
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404':
+          description: |
+            No such finding in this tenant, OR the session never captured audio. Deliberately the
+            same answer: distinguishing them would let a teacher in one tenant confirm a finding id
+            in another.
+          content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } }
+        '410':
+          description: |
+            410 GONE, not 404 — the finding exists and the recording DID exist. The learner asked
+            for it to be destroyed and it was, or consent and storage disagree about retention. A
+            404 would read as "we lost it" or "not yet", and a reviewer would keep coming back.
+          content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } }
+  /v1/audio-chunks:
+    post:
+      tags: [recitation]
+      security: []
+      summary: The realtime gateway records that a chunk exists — the missing half of playback.
+      description: |
+        Authenticated by the SESSION'S OWN realtime ticket (`x-realtime-ticket`), not by a user
+        identity: the caller is the gateway, mid-recitation. `tenantId` and `learnerId` are
+        deliberately NOT accepted in the body and come from the signed ticket — a caller that could
+        name the tenant could write a row deciding whose recording a teacher is later played.
+        Unknown fields are dropped rather than refused, which
+        `tests/api-parity/audio-index-parity.test.mjs` asserts rather than assumes.
+
+        Uncontracted until now, for the same reason as the route above.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [sessionId, chunkId, objectKey]
+              properties:
+                sessionId: { type: string, minLength: 1 }
+                chunkId: { type: string, minLength: 1 }
+                objectKey: { type: string, minLength: 1 }
+                startMs: { type: integer }
+                endMs: { type: integer }
+                sampleRate: { type: integer, nullable: true }
+      responses:
+        '200':
+          description: indexed
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [chunkId, indexed, sessionId]
+                properties:
+                  chunkId: { type: string, minLength: 1 }
+                  indexed: { type: boolean }
+                  # From the TICKET, never echoed from the request body.
+                  sessionId: { type: string, minLength: 1 }
+                additionalProperties: false
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
   /v1/teacher-review-queue:
     get:
       tags: [review]
