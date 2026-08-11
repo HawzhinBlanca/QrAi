@@ -314,7 +314,7 @@ export function buildServer(config) {
   // FST_ERR_DUPLICATED_ROUTE — `all` registers GET, Fastify auto-adds HEAD for GET, and `all`
   // registers HEAD too. That is the boot-time duplicate detection §2.1 chose Fastify for, catching a
   // real bug on its first run rather than serving one handler and silently dropping the other.
-  app.setNotFoundHandler((req, reply) => proxy(req, reply, upstream));
+  app.setNotFoundHandler((req, reply) => proxy(req, reply, upstream, clientKey(req, trustProxyHeaders)));
 
   // Fastify parses a body only for content-types it knows. Every parity request sends
   // `content-type: application/json`, including GETs with no body at all, which the default JSON
