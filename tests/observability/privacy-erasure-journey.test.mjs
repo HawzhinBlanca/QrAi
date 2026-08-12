@@ -270,3 +270,76 @@ test("an erasure request fails CLOSED when the audio service cannot be reached",
     await orphanApi.stop();
   }
 });
+
+test("every object the erasure deleted is on the record a restore reads", async () => {
+  // ── Why this is a journey test and not a unit test ──────────────────────────────────────────────
+  // Both halves were individually right. ml-inference deletes every FILE in the learner's directory
+  // and classifies what it removed into THREE lists — `.bin`, `.meta.json`, and
+  // `deletedOtherObjectKeys` for anything else, added deliberately "so the two existing counts keep
+  // meaning exactly what they meant". platform-api collected two of them.
+  //
+  // The gap only has consequences at a third place: `privacy_jobs.audio_object_keys_deleted` is the
+  // column `scripts/restore-audio.sh` reads to decide which objects a volume restore must NOT put
+  // back. That script is careful — it refuses to run under a role that cannot read across tenants,
+  // precisely because an empty erasure list is indistinguishable from "nobody asked to be erased".
+  // An INCOMPLETE list has none of those tells. It looks like a successful erasure, and the missing
+  // object comes back at the next restore, against a receipt the learner already holds.
+  //
+  // Reproduced before the fix: a `.wav` beside a chunk's `.bin`/`.meta.json` was deleted from disk,
+  // reported by ml-inference under `deletedOtherObjectKeys`, and absent from the recorded column.
+  //
+  // Nothing writes such a file today — the only writers use `.bin` and `.meta.json`. This asserts
+  // the invariant rather than today's file naming, because the third list exists exactly for the
+  // file somebody adds later, and that is the one nobody will re-check this path for.
+  const learner = await createLearner("residue");
+  const session = await createSessionFor(learner);
+  await storeAudioFor(learner, session);
+
+  // A file whose name is neither, sitting where the erasure will find it — a partial write, a
+  // future format, a stray artefact. The erasure's own classifier has a bucket for this.
+  const strayName = "chunk-residue.wav";
+  const { writeFileSync } = await import("node:fs");
+  writeFileSync(join(storageDir, TENANT, learner, strayName), Buffer.from([9, 9, 9, 9]));
+
+  const before = audioFilesFor(learner);
+  assert.ok(
+    before.includes(strayName),
+    `the fixture never planted ${strayName}; this test would then assert nothing. On disk: ${JSON.stringify(before)}`,
+  );
+
+  const res = await request(rustUrl, "/v1/privacy/delete", {
+    method: "POST",
+    role: "learner",
+    userId: learner,
+    body: { learnerId: learner },
+  });
+  assert.equal(res.status, 200, `erasure failed: ${res.text}`);
+
+  // It really is gone from live storage — otherwise "recorded as deleted" would be the wrong
+  // question entirely.
+  assert.deepEqual(audioFilesFor(learner), [], "the erasure left files behind");
+
+  const [job] = await queryJson(
+    "SELECT audio_object_keys_deleted AS keys FROM privacy_jobs WHERE learner_id = $1 AND kind = 'delete'",
+    [learner],
+  );
+  assert.ok(job, "the erasure wrote no privacy_jobs row");
+  const recorded = job.keys ?? [];
+  assert.ok(
+    recorded.length >= 3,
+    `only ${recorded.length} key(s) recorded for an erasure that removed ${before.length} files ` +
+      `(${JSON.stringify(before)}); recorded: ${JSON.stringify(recorded)}`,
+  );
+
+  const missing = before.filter(
+    (name) => !recorded.some((key) => key.endsWith(`/${name}`)),
+  );
+  assert.deepEqual(
+    missing,
+    [],
+    `these objects were deleted by the erasure and are NOT in ` +
+      `privacy_jobs.audio_object_keys_deleted:\n  ${missing.join("\n  ")}\n` +
+      `scripts/restore-audio.sh reads that column to decide what a volume restore must withhold, ` +
+      `so each of these would be silently put back — after the learner was told they were gone.`,
+  );
+});
