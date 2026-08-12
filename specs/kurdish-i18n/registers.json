@@ -7,9 +7,9 @@
     "brand": "product name — not translated"
   },
   "counts": {
-    "ui": 167,
+    "ui": 168,
     "religious": 113,
-    "product": 104,
+    "product": 106,
     "brand": 2
   },
   "keys": {
@@ -1198,6 +1198,17 @@
     "teacherSurface.noPending": {
       "register": "religious",
       "reason": "uses recitation — the Sorani choice here is a register decision, not a lookup"
+    },
+    "teacherSurface.queueUnavailable": {
+      "register": "product",
+      "reason": "distinguishes 'the service did not answer' from 'the queue is empty'; a translation that blurs the two restores the defect the string was added for"
+    },
+    "teacherSurface.queueRetry": {
+      "register": "ui"
+    },
+    "teacherSurface.alignmentsUnavailable": {
+      "register": "product",
+      "reason": "same distinction as queueUnavailable, for the word alignments — 'could not load' must not read as 'the learner said nothing'"
     },
     "teacherSurface.learnerLabel": {
       "register": "ui"
