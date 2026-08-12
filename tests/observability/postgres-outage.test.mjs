@@ -17,11 +17,25 @@ import { DATABASE_URL, request, startApi } from "../api-parity/lib/harness.mjs";
  * KILL and reschedule it, which during a database outage means every replica crash-looping while
  * the database is the thing that is broken.
  *
- * What was actually tested before this: `integration.rs:257`
- * `ready_endpoint_returns_200_when_the_db_pool_answers` — the healthy case, and only the healthy
- * case. `tests/node-api/readiness-fault.test.mjs` covers the fault thoroughly, but for the **Node
- * port**. So the degraded behavior was proven in the port and unproven in the original: the inverse
- * of the gap this project usually finds, and just as invisible.
+ * ── CORRECTION to what #414 claimed ────────────────────────────────────────────────────────────
+ * This file's original header said the Rust side had only the happy-path test
+ * (`ready_endpoint_returns_200_when_the_db_pool_answers`, integration.rs:257) and that the degraded
+ * behaviour was "proven in the port and unproven in the original". **That was wrong.**
+ * `readiness_reports_503_when_postgres_is_unreachable_while_liveness_holds` has existed at
+ * integration.rs:4123 since 4 August, asserts both halves of the pairing, and is recorded in the
+ * ledger. The claim came from a grep truncated by `head -8` that stopped at line 257 — the exact
+ * mistake this repo's loop prompt warns about, made while writing a test about not trusting a
+ * single source.
+ *
+ * ── What this file still adds, now that the claim is corrected ──────────────────────────────────
+ * The existing Rust test uses `connect_lazy` against a port nothing listens on and calls the router
+ * in-process. It proves the handler's branch for a database that was NEVER reachable.
+ *
+ * This proves a different failure: a pool with LIVE connections whose backend goes away, through
+ * the real binary over a real socket. "Never connected" and "connected then lost" are different
+ * paths through sqlx — the second has established connections to discover are dead, and a pool that
+ * transparently reconnects would pass the first test and fail this one. It is a complement, not the
+ * only coverage, and it is a smaller contribution than #414 said.
  *
  * ── Making a real outage deterministic ──────────────────────────────────────────────────────────
  * `main.rs:187` calls `.connect()` eagerly, so the service cannot boot against a dead database —
