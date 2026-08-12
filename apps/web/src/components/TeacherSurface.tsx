@@ -13,8 +13,8 @@ import {
   AlertCircle 
 } from "lucide-react";
 import { 
-  fetchRecitationSessions, 
-  fetchSessionAlignments, 
+  readRecitationSessions,
+  readSessionAlignments,
   fetchTajweedFindings, 
   fetchFindingAudio,
   submitTeacherReview, 
@@ -36,6 +36,12 @@ export function TeacherSurface({ tenantId, authToken }: TeacherSurfaceProps) {
   const [alignments, setAlignments] = useState<SessionAlignment[]>([]);
   const [loading, setLoading] = useState(false);
   const [loadingAlignments, setLoadingAlignments] = useState(false);
+  // P2.6 — "the queue is empty" and "the queue could not be loaded" are DIFFERENT things and used
+  // to render identically. A failed load logged to the console and left `sessions` at [], so the
+  // surface told a teacher "No pending recitations." while the service was unreachable. That is a
+  // state reporting success on a failure: the teacher closes the tab believing there is no work.
+  const [queueError, setQueueError] = useState(false);
+  const [alignmentsError, setAlignmentsError] = useState(false);
   // Audio is per FINDING, not per session — see fetchFindingAudio for why. `playing` holds the id
   // of the finding currently sounding, so one player cannot be left running behind another.
   const [audioBusy, setAudioBusy] = useState<string | null>(null);
@@ -49,19 +55,29 @@ export function TeacherSurface({ tenantId, authToken }: TeacherSurfaceProps) {
   // Load the pending queue and general findings
   const loadQueue = async () => {
     setLoading(true);
+    setQueueError(false);
     try {
-      const [allSessions, allFindings] = await Promise.all([
-        fetchRecitationSessions(tenantId, authToken),
+      // `readRecitationSessions`, not `fetchRecitationSessions`: the fetch variant returns its `[]`
+      // fallback on any failure, so nothing was ever thrown and this function's `catch` could not
+      // fire. The queue rendered "No pending recitations." while the service was unreachable.
+      const [sessionRead, allFindings] = await Promise.all([
+        readRecitationSessions(tenantId, authToken),
         fetchTajweedFindings(tenantId, authToken)
       ]);
+      if (sessionRead.failed) {
+        setQueueError(true);
+        setSessions([]);
+        return;
+      }
       // Filter for sessions that require teacher review
-      const pending = allSessions.filter(
+      const pending = sessionRead.data.filter(
         (s) => s.reviewStatus === "teacher-review-required"
       );
       setSessions(pending);
       setFindings(allFindings);
     } catch (err) {
       console.error("Failed to load queue:", err);
+      setQueueError(true);
     } finally {
       setLoading(false);
     }
@@ -79,9 +95,17 @@ export function TeacherSurface({ tenantId, authToken }: TeacherSurfaceProps) {
     }
 
     setLoadingAlignments(true);
-    fetchSessionAlignments(tenantId, selectedSession.id, authToken)
-      .then(setAlignments)
-      .catch((err) => console.error("Failed to fetch alignments:", err))
+    setAlignmentsError(false);
+    readSessionAlignments(tenantId, selectedSession.id, authToken)
+      .then((read) => {
+        setAlignments(read.data);
+        setAlignmentsError(read.failed);
+      })
+      .catch((err) => {
+        console.error("Failed to fetch alignments:", err);
+        setAlignments([]);
+        setAlignmentsError(true);
+      })
       .finally(() => setLoadingAlignments(false));
   }, [selectedSession, tenantId, authToken]);
 
@@ -232,6 +256,16 @@ export function TeacherSurface({ tenantId, authToken }: TeacherSurfaceProps) {
         
         {loading ? (
           <p style={{ color: "var(--text-quiet)", textAlign: "center", padding: "20px 0" }}>{t("teacherSurface.loadingQueue")}</p>
+        ) : queueError ? (
+          // role="alert" and a real control. A message with no way forward is the same dead end as
+          // no message, and this one has to out-rank the empty state: an unreachable service must
+          // never be reported as "nothing to review".
+          <div role="alert" style={{ textAlign: "center", padding: "20px 0" }}>
+            <p style={{ color: "var(--text-quiet)" }}>{t("teacherSurface.queueUnavailable")}</p>
+            <button type="button" onClick={loadQueue} style={{ marginTop: "8px" }}>
+              {t("teacherSurface.queueRetry")}
+            </button>
+          </div>
         ) : sessions.length === 0 ? (
           <p style={{ color: "var(--text-quiet)", textAlign: "center", padding: "20px 0" }}>{t("teacherSurface.noPending")}</p>
         ) : (
@@ -296,6 +330,12 @@ export function TeacherSurface({ tenantId, authToken }: TeacherSurfaceProps) {
               <h3 style={{ margin: "0 0 12px 0", fontSize: "1.1rem" }}>{t("teacherSurface.alignmentsTitle")}</h3>
               {loadingAlignments ? (
                 <p style={{ color: "var(--text-quiet)" }}>{t("teacherSurface.loadingWords")}</p>
+              ) : alignmentsError ? (
+                // Same rule as the queue: an unreadable alignment must not render as a recitation
+                // with no words in it, which reads as "the learner said nothing".
+                <p role="alert" style={{ color: "var(--text-quiet)" }}>
+                  {t("teacherSurface.alignmentsUnavailable")}
+                </p>
               ) : (
                 <div style={{ display: "flex", flexWrap: "wrap", gap: "10px", padding: "16px", border: "1px solid var(--line)", borderRadius: "8px", background: "var(--bg)" }}>
                   {alignments.map((align, index) => {
