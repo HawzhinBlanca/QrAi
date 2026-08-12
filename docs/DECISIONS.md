@@ -2260,3 +2260,82 @@ owner decision with canary and rollback evidence, which is W2/W3/W6, not this.
 
 It also says nothing about whether the product is ready. P3.4/P3.5 — no held-out evaluation — is
 untouched by which process serves the routes.
+
+## ADR-0045 — A right-to-erasure request does not delete the account
+
+**Date:** 2026-08-12 · **Status:** Proposed — needs a DPO/product ruling, not an engineering default
+**Related:** ADR-0040 (the ml-inference audit log survives erasure), `docs/DATA_INVENTORY.md` §2/§4,
+`specs/privacy-delete-learner-scope`, the `privacy-erasure` journey
+
+### Context
+
+`docs/DATA_INVENTORY.md` maintains two lists in one file: §2 enumerates the personal-data
+categories, and §4 describes what `POST /v1/privacy/delete` removes. **Account** is the first row of
+§2 — `id`, `tenant_id`, `display_name`, optional `email`, `password_hash`, `role`, `language` — and
+appears nowhere in §4.
+
+Reproduced against a live erasure on 2026-08-12, with ml-inference running so the request actually
+succeeded (`200`, not the fail-closed `502` you get when the audio service is down):
+
+```
+BEFORE: {"display_name":"Erasure Probe Learner","email":"…@example.test","has_pw":true}
+delete status: 200
+AFTER : {"display_name":"Erasure Probe Learner","email":"…@example.test","has_pw":true}
+```
+
+Byte-identical. A learner who exercises their right to erasure has their recitations, alignments,
+findings, progress, consent records, tickets, pilot sessions, agent runs and raw audio removed — and
+their **name, email address and password hash remain**.
+
+The code and the documentation agree with each other. Neither addresses the account.
+
+### The question
+
+**Does "delete my data" mean "delete my account"?** Three defensible answers, and the difference is
+what a data-protection authority would be told:
+
+| | what happens | what it costs |
+|---|---|---|
+| **Delete the row** | the learner ceases to exist in the database | breaks `privacy_jobs.learner_id REFERENCES users(id)` — the erasure receipt loses its subject, so the proof the request was honoured is damaged by honouring it |
+| **Scrub, keep the id** | `display_name` and `email` replaced, `password_hash` cleared, row survives as a tombstone | the receipt keeps its FK; needs a decision on what a scrubbed name reads as, and whether the tenant/role/language fields are also personal |
+| **Keep it, as today** | erasure covers the learner's *content*, not their *account* | defensible only if erasure and account-closure are genuinely separate rights, and it must then be **said** — currently the product implies one and delivers the other |
+
+The middle option is the obvious engineering answer, which is exactly why an engineer should not
+pick it unilaterally: "what does a scrubbed learner look like to a teacher who reviewed them last
+week" is a product question, and "is a pseudonymised tombstone erasure" is a legal one.
+
+### Why this was not visible
+
+Nothing compared the two lists. §2 and §4 are prose, maintained by hand, in the same document —
+which is exactly the arrangement that makes a gap invisible: a reader checking §4 finds an
+impressively thorough cascade and never re-reads §2 to notice which category is missing from it.
+
+The `privacy-erasure` journey test walks the request end to end and asserts both halves that were
+known to matter — derived rows in Postgres, raw audio on ml-inference's disk. It does not assert
+anything about `users`, because nobody had asked.
+
+### Decision
+
+**Deferred.** No scrubbing, no deletion, no dormant column, no "anonymised" placeholder — the same
+discipline as ADR-0042 and ADR-0043. Building the mechanism first would make the ruling look
+already-made.
+
+What lands instead is the check that makes this the last silent instance:
+`tests/security/erasure-coverage.test.mjs` derives every foreign key into `users(id)` **from the
+live schema** and requires each to be either deleted by the cascade — read from the handler's own
+source — or declared with a reason. A new table that can identify a person cannot be added without
+a recorded position on erasing it.
+
+Three references are declared **retained** or **staff-only** and are correct as they stand:
+`audit_events.actor_id` and `privacy_jobs.learner_id` are the record that the erasure happened, and
+`scholar_approvals.reviewer_id` / `teacher_reviews.teacher_id` hold a staff actor rather than the
+subject. `users.id` is declared retained pointing at this ADR, and that declaration fails the moment
+this ADR stops being Proposed.
+
+### What a ruling needs to specify
+
+1. Delete, scrub, or keep — and if scrub, which columns, and what the replacement value reads as to
+   a teacher looking at their own past reviews.
+2. Whether account closure is a separate request with its own endpoint, or the same one.
+3. Whether the erasure receipt may name a person who no longer exists — i.e. whether
+   `privacy_jobs.learner_id` should become a free-standing identifier rather than an FK.

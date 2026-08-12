@@ -39,8 +39,8 @@
 ## 4. Data-subject rights (already implemented)
 
 - **Erasure:** `POST /v1/privacy/delete` runs a single tenant-scoped transaction that cascades
-  teacher_reviews → tajweed_findings → word_alignments → audio_chunks/alignment_runs → tickets →
-  sessions → consent records → pilot sessions/invitations → structured learner-linked `agent_runs`,
+  teacher_reviews → tajweed_findings → word_alignments → audio_chunks/alignment_runs → realtime_session_tickets →
+  sessions → consent records → pilot_sessions / pilot_invitations → structured learner-linked `agent_runs`,
   **and** calls ml-inference `/v1/privacy/delete` to erase raw audio blobs first
   (`erase_ml_audio`, `services/platform-api/src/handlers/privacy.rs`). An ML failure aborts with the
   DB untouched — no "success while audio survives". The same structured agent-run key is included in
