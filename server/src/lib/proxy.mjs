@@ -36,6 +36,35 @@ export async function proxy(req, reply, upstream) {
     if (!HOP_BY_HOP.has(k.toLowerCase())) headers[k] = v;
   }
 
+  // ── The forwarding headers are OVERWRITTEN, not passed through ───────────────────────────────
+  //
+  // Not a hole in "verbatim": `HOP_BY_HOP` above already establishes that headers describing the
+  // HOP are the proxy's to set, and X-Forwarded-For is the definitive example — an intermediary
+  // writes it, a client does not get to.
+  //
+  // Without this, a request carrying `x-forwarded-for: 1.2.3.4` reached the upstream with
+  // `x-forwarded-for: 1.2.3.4` and this service added nothing of its own. Both of platform-api's
+  // rate-limiting configurations are wrong under such a proxy:
+  //
+  //   TRUST_PROXY_HEADERS=1  keys on the header, so a client picks its own bucket by setting one
+  //                          header and the limiter stops existing. lib.rs:375 warns this is only
+  //                          safe "behind a proxy that OVERWRITES those headers" — and this IS
+  //                          that proxy.
+  //   default (peer-keyed)   sees this process's address for every proxied request, collapsing all
+  //                          proxied traffic into ONE bucket. One busy client throttles everyone.
+  //
+  // `req.ip` is Fastify's `trustProxy`-aware resolution — the SAME value `app.mjs` charges this
+  // service's own token bucket (`rateLimiter.consume(req.ip)`), so both services key on the same
+  // client and neither trusts anything the caller said beyond what `TRUSTED_PROXY_HOPS` allows.
+  //
+  // Ported from `services/node-api/lib/proxy.mjs` (#409), which passes the address as a fourth
+  // argument its callers must remember to supply. Reading `req.ip` here needs no signature change
+  // and cannot be forgotten by one of the fifteen call sites.
+  if (req.ip) {
+    headers["x-forwarded-for"] = req.ip;
+    headers["x-real-ip"] = req.ip;
+  }
+
   const hasBody = !["GET", "HEAD"].includes(req.method);
   let upstreamRes;
   try {
