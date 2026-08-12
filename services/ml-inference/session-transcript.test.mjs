@@ -27,10 +27,23 @@ let received = null;
  */
 let asrReply = { words: [{ word: "بسم" }, { word: "الله" }], text: "بسم الله" };
 
+/**
+ * When true the mock DROPS the connection instead of answering.
+ *
+ * `ASR_SERVICE_URL` is read once at module load, so a test cannot point the service at a dead port
+ * by reassigning the env var — the module already holds the mock's address. Destroying the socket
+ * makes the same thing happen at the same layer: the fetch rejects instead of returning a response.
+ */
+let asrDropsConnection = false;
+
 const asr = createServer((req, res) => {
   let body = "";
   req.on("data", (c) => (body += c));
   req.on("end", () => {
+    if (asrDropsConnection) {
+      req.socket.destroy();
+      return;
+    }
     received = JSON.parse(body);
     res.writeHead(200, { "content-type": "application/json" });
     res.end(JSON.stringify(asrReply));
@@ -323,5 +336,51 @@ test("the ALIGNMENT path also survives an ASR that returns text but no word segm
     );
   } finally {
     asrReply = previous;
+  }
+});
+
+test("an ASR that cannot be reached is a 502 that names no internals", async () => {
+  // The non-ok branch was already a clean 502. A CONNECTION failure was not handled at all, so the
+  // raw fetch rejection escaped as `500 {"error":"fetch failed"}` — measured against the running
+  // service with no ASR listening.
+  //
+  // Two separate wrongs. The STATUS said "this service is broken" when the truth was "a dependency
+  // is down": platform-api's `finalize` maps any non-2xx from here to `ML service error`, so an ASR
+  // outage looked identical to a defect in this service, and a caller deciding whether to retry got
+  // the wrong signal. The BODY was an undifferentiated Node error string, which is not the boundary
+  // the non-ok branch beside it already keeps.
+  const t = "t-asr-down";
+  writeChunk(t, "learner-1", "s-down", "one", 0, 0x31);
+
+  asrDropsConnection = true;
+  try {
+    const err = await transcribeSession({
+      tenantId: t,
+      learnerId: "learner-1",
+      sessionId: "s-down",
+      consent: { externalAsrProcessing: true, guardianApproved: true },
+    }).then(
+      (ok) => ({ unexpected: ok }),
+      (e) => e,
+    );
+
+    assert.ok(
+      !err.unexpected,
+      `an unreachable ASR produced a transcript: ${JSON.stringify(err.unexpected)}`,
+    );
+    assert.equal(
+      err.status,
+      502,
+      `an unreachable dependency must not be reported as this service failing (got ${err.status})`,
+    );
+    // The caller's side of the boundary. The address and the driver's wording belong in the log,
+    // which is where the fix puts them.
+    assert.doesNotMatch(
+      err.message,
+      /127\.0\.0\.1|fetch failed/,
+      `the error names internals: ${err.message}`,
+    );
+  } finally {
+    asrDropsConnection = false;
   }
 });

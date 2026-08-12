@@ -457,16 +457,34 @@ function httpError(status, message) {
 
 // === ASR integration ===
 async function transcribeAudio(audioBase64, audioFormat = "webm", language = "ar") {
-  const response = await fetch(`${ASR_SERVICE_URL}/v1/transcribe`, {
-    method: "POST",
-    headers: {
-      "content-type": "application/json",
-      // ASR now requires an API key (like this service does). Server-to-server call, so the key
-      // stays server-side; matches ASR_API_KEY on the ASR service (default dev key in dev/CI).
-      "x-asr-api-key": process.env.ASR_API_KEY ?? "smoke-asr-api-key",
-    },
-    body: JSON.stringify({ audioBase64, audioFormat, language, wordTimestamps: true }),
-  });
+  let response;
+  try {
+    response = await fetch(`${ASR_SERVICE_URL}/v1/transcribe`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        // ASR now requires an API key (like this service does). Server-to-server call, so the key
+        // stays server-side; matches ASR_API_KEY on the ASR service (default dev key in dev/CI).
+        "x-asr-api-key": process.env.ASR_API_KEY ?? "smoke-asr-api-key",
+      },
+      body: JSON.stringify({ audioBase64, audioFormat, language, wordTimestamps: true }),
+    });
+  } catch (err) {
+    // An ASR that ANSWERS badly was already a 502; an ASR that cannot be reached was not handled at
+    // all, so the raw fetch rejection escaped as a 500 with the body `{"error":"fetch failed"}`.
+    // Measured with no ASR running: `POST /v1/session-transcript -> 500 {"error":"fetch failed"}`.
+    //
+    // Two things were wrong with that, and they are separate. The STATUS said "this service is
+    // broken" when the truth was "a dependency is down" — platform-api's `finalize` maps any non-2xx
+    // from here to `ML service error`, so an ASR outage was indistinguishable from a defect in this
+    // service, and a caller deciding whether to retry got the wrong signal. And the BODY was an
+    // undifferentiated Node error string, which is neither actionable for the caller nor the same
+    // boundary the non-ok branch below already keeps.
+    //
+    // The detail is logged, never returned — the rule `proxy_asr` states and this branch now follows.
+    console.error(`[asr] transcribe send error to ${ASR_SERVICE_URL}: ${err?.message ?? err}`);
+    throw httpError(502, "ASR service unavailable");
+  }
   if (!response.ok) {
     const text = await response.text();
     throw httpError(502, `ASR service failed: ${response.status} ${text}`);
