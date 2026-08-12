@@ -1168,6 +1168,11 @@ pub async fn finalize_session(
             "sessionId": id,
             "quranRef": quran_ref,
             "recognizedText": recognized,
+            // Index-parallel to `recognizedText`. Transcription and alignment are two separate
+            // requests to the ML service, so a timing that is not carried across this hop is a
+            // timing the aligner never has — which is exactly how every alignment this endpoint
+            // produced came back spanless and was refused by `usable_span` below.
+            "recognizedTimings": transcript.get("recognizedTimings").cloned().unwrap_or(serde_json::Value::Null),
             "consent": consent,
         }),
     )
@@ -1204,6 +1209,10 @@ pub async fn finalize_session(
                 .collect()
         })
         .unwrap_or_default();
+
+    // Counted before the move into the request below: the response needs to distinguish "the
+    // aligner offered nothing" from "it offered rows and every one was refused".
+    let alignments_offered = inputs.len() as u64;
 
     let mut tx = crate::begin_tenant_tx(&state.pool, &actor.tenant_id).await?;
     let persisted = persist_alignments_in_tx(
@@ -1263,15 +1272,58 @@ pub async fn finalize_session(
 
     tx.commit().await?;
 
+    // `finalized` must mean the teacher got something, not that the request completed.
+    //
+    // Measured end to end in the mobile order (stream chunks -> /finalize -> analyse): this endpoint
+    // answered `finalized: true` with `persisted: 0`. `word_alignments` stayed empty, so
+    // `persist_tajweed_findings` returned early with nothing to anchor to, so 38 computed findings
+    // stored as 0, so the session never reached a teacher's queue — while the client was told the
+    // recitation was finalised, and nothing downstream could tell that apart from one that was.
+    //
+    // The DEGRADED_STATES rule applied to a write: "we could not store this" and "there was nothing
+    // to store" are different answers, and neither of them is "done".
+    //
+    // The CAUSE is upstream of this function and is NOT fixed here: `/v1/alignments:predict` emits
+    // no `startMs`/`endMs`, because `recognizedWordsFrom` reduces the ASR's timed words to bare
+    // strings before the aligner sees them, and `usable_span` then (correctly) refuses an alignment
+    // that identifies no audio. Isolated on one session: the ML-derived alignments persisted 0, and
+    // a single alignment carrying a span persisted 1. Threading the timings through changes the ML
+    // contract; this makes the failure legible meanwhile, and fails loudly if it ever regresses.
+    let persisted_count = persisted
+        .get("persisted")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0);
+    let (finalized, reason) = match (alignments_offered, persisted_count) {
+        // The aligner produced rows and not one survived persistence. The learner still sees their
+        // own notes; what does not exist is the teacher's copy, and saying so is the point.
+        (offered, 0) if offered > 0 => (false, "alignments-unusable"),
+        // The aligner returned nothing for a transcript it did have. An absent transcript already
+        // returned `transcribed: false` further up, so this is a different failure.
+        (0, _) => (false, "no-alignments"),
+        _ => (true, "consent-granted"),
+    };
+    if !finalized {
+        tracing::warn!(
+            session_id = %id,
+            alignments_offered,
+            persisted_count,
+            reason,
+            "finalize stored no alignment: this session will not reach a teacher's queue"
+        );
+    }
+
     Ok(Json(serde_json::json!({
         "sessionId": id,
-        "finalized": true,
-        "reason": "consent-granted",
+        "finalized": finalized,
+        "reason": reason,
         "chunkCount": transcript.get("chunkCount").cloned().unwrap_or(serde_json::json!(0)),
         // Surfaced on the response too: a client that finalizes a gapped session should be able to
         // tell the learner their recording was incomplete rather than that they recited badly.
         "lostChunkCount": lost_chunks,
         "persisted": persisted.get("persisted").cloned().unwrap_or(serde_json::json!(0)),
+        // What the aligner OFFERED, so `persisted: 0` reads as "all rejected" rather than "nothing
+        // was recited" — the two the old response could not distinguish.
+        "alignmentsOffered": alignments_offered,
         "auditEventId": persisted.get("auditEventId").cloned(),
     })))
 }
