@@ -48,7 +48,26 @@ async fn erase_ml_audio(
     })?;
 
     let mut keys = Vec::new();
-    for field in ["deletedAudioObjectKeys", "deletedMetadataObjectKeys"] {
+    // All THREE lists ml-inference reports, not the two that are named after audio.
+    //
+    // `deleteAudioObjects` unlinks every FILE in the learner's directory and classifies what it
+    // removed by extension: `.bin` as audio, `.meta.json` as metadata, and anything else under
+    // `deletedOtherObjectKeys` — deliberately, so "the two existing counts keep meaning exactly
+    // what they meant". That third list was computed, returned and audited, and dropped here.
+    //
+    // Where this list ends up is what makes the omission matter. It is written to
+    // `privacy_jobs.audio_object_keys_deleted`, and `scripts/restore-audio.sh` reads that column to
+    // decide which objects a volume restore must NOT put back. A key erased from live storage but
+    // missing from this record is one a restore silently resurrects — against a receipt that has
+    // already told the learner it was gone.
+    //
+    // Reproduced with a `.wav` beside a chunk's `.bin`/`.meta.json`: ml-inference deleted all three
+    // and reported all three, and this loop recorded two.
+    for field in [
+        "deletedAudioObjectKeys",
+        "deletedMetadataObjectKeys",
+        "deletedOtherObjectKeys",
+    ] {
         if let Some(arr) = result.get(field).and_then(|v| v.as_array()) {
             keys.extend(arr.iter().filter_map(|v| v.as_str().map(String::from)));
         }
