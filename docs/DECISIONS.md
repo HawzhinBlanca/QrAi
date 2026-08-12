@@ -2339,3 +2339,90 @@ this ADR stops being Proposed.
 2. Whether account closure is a separate request with its own endpoint, or the same one.
 3. Whether the erasure receipt may name a person who no longer exists — i.e. whether
    `privacy_jobs.learner_id` should become a free-standing identifier rather than an FK.
+
+## ADR-0047 — the realtime ticket cannot be revoked, and the erasure deletes its record anyway
+
+**Date:** 2026-08-12 · **Status:** Proposed — the fix is an architectural choice, not a one-liner
+**Related:** ADR-0041 (a control that cannot act is worse than its absence), ADR-0045 (erasure does
+not delete the account), `infra/sql/0021_pilot_identity.sql`
+
+### Context
+
+Every other token this system mints is looked up before it is trusted:
+
+| token | stored as | looked up by | revocable |
+|---|---|---|---|
+| pilot session cookie | `pilot_sessions.token_hash` | `app.get_pilot_session_by_hash` (`auth.rs:171`) | yes — `revoked_at` |
+| pilot invitation | `pilot_invitations.token_hash` | `app.consume_pilot_invitation_by_hash` (`pilot.rs:46`) | yes — single-use |
+| **realtime ticket** | **`realtime_session_tickets.token_hash`** | **nothing** | **no** |
+
+The realtime ticket is a stateless HMAC with a 300s TTL. `platform-api` computes its SHA-256 and
+writes the row (`recitation.rs:514`); `realtime-gateway` validates the signature and never opens a
+database connection at all — it has no `sqlx` dependency. The stored `token_hash` is read by no
+code path in either service. It is written, counted by the privacy export, deleted by the erasure,
+and never consulted.
+
+### What that costs: the erasure can be raced
+
+`privacy.rs:452` runs `DELETE FROM realtime_session_tickets WHERE tenant_id = $1 AND learner_id = $2`.
+It reads as revocation. It revokes nothing, because nothing was ever going to read those rows.
+
+Reproduced 2026-08-12 against a real gateway and a real ml-inference, two tickets minted before any
+erasure request:
+
+```
+1. chunk streamed BEFORE erasure   -> accepted: true
+   files on disk: 2
+2. erasure (POST /v1/privacy/delete, the call platform-api makes) -> 200
+   files on disk after erasure: 0
+3. chunk streamed AFTER erasure    -> accepted: true
+   files on disk after: 2   session-erasure-race-ws-0001.bin
+                             session-erasure-race-ws-0001.meta.json
+```
+
+The erasure completed, reported success, and the learner's audio was written again afterwards by a
+ticket the erasure believed it had destroyed.
+
+### Severity, stated honestly
+
+Bounded, and still worth fixing.
+
+- The window is at most the ticket's remaining TTL — 300 seconds — and only for a ticket already
+  minted. It is not a way to obtain new access.
+- It is the learner's **own** audio and their own ticket. Nothing here lets one person record
+  another, and a real client stops streaming when the learner leaves the page.
+- A second erasure request would collect the orphan: ml-inference deletes by tenant/learner
+  directory, not by database lookup. But the learner has no reason to ask twice — they hold a
+  receipt saying it is done.
+- The orphan is invisible to the database: `index_audio_chunk` would 404 on the deleted session, so
+  no `audio_chunks` row exists for it. Its lifetime is then decided only by the on-disk
+  `.meta.json`, and for `audioRetention: "training-opt-in"` the eviction sweep `continue`s — it is
+  **never** deleted (`server.mjs:1738`).
+
+So: a bounded race that leaves audio the learner asked to be destroyed, potentially permanently, and
+a receipt that already said otherwise.
+
+### Why there is no obvious fix to just apply
+
+1. **Make the gateway check the database.** It deliberately holds no connection; giving it one puts
+   Postgres on the realtime audio path and changes its failure model.
+2. **Publish revocations to Redis**, which the gateway already reaches for dedup and active-session
+   counting. Architecturally the closest fit — and Redis there is explicitly *best-effort*
+   (a stalled Redis must not block chunk acceptance; that was a deliberate fix). A revocation check
+   on a best-effort dependency is a control that silently does not act, which is the thing ADR-0041
+   is about.
+3. **Shorten the TTL.** Reduces the window without closing it, and costs re-mints on every
+   reconnect.
+4. **Re-run the ML audio erase after the ticket TTL expires.** Closes it exactly, and needs a
+   deferred-job mechanism this system does not have.
+
+Each trades a different thing. Picking one is a decision about the realtime path's dependencies, not
+a bug fix.
+
+### Decision
+
+**Deferred.** Nothing is changed here. `tests/security/token-revocability.test.mjs` requires every
+token-bearing column in the schema to be either looked up before it is trusted — naming the file and
+the lookup — or declared stateless with a reason, so the next unrevocable token cannot be minted
+silently, and so `realtime_session_tickets.token_hash` cannot keep reading as a revocation record
+without this ADR attached to it.
