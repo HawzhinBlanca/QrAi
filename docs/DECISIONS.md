@@ -1993,3 +1993,169 @@ Adding a runtime dependency to a mobile client is not a mechanical step here:
 Recommended: **B until a mobile owner exists, then A or C.** No reviewer is blocked today — the web
 queue plays audio and the notice says where to go. The dependency should land with the person who
 will sign the build that carries it.
+
+## ADR-0042 — Does blocking a model retract a human's approval of one finding?
+
+**Date:** 2026-08-12 · **Status:** Proposed — needs a scholar/product ruling, not an engineering one
+**Related:** ADR-0028 (the learner gate), P3.2 (withheld-feedback tests), P3.6 (scholar approval)
+
+### Context
+
+P3.2 asks for withheld-feedback and provenance tests covering findings that are **missing**,
+**rejected**, **expired**, or **fixture** data. Three of the four are covered with failing-first
+tests and now have a guard that keeps them covered
+(`tests/contract/withheld-reasons.test.mjs`, plus `fixture`).
+
+**`expired` has no meaning in this system, and cannot be given one by an engineer.**
+
+Measured, 2026-08-12:
+
+- No table has an expiry column for an approval. Every `expires_at` in the schema —
+  `pilot_invitations.expires_at`, `pilot_sessions.idle_expires_at`,
+  `pilot_sessions.absolute_expires_at`, `realtime_session_tickets.expires_at` — is an
+  authentication lifetime. None of them concerns a human's judgement.
+- `tajweed_findings` records `review_status` and nothing about *when* the review happened or how
+  long it holds.
+- The column an engineer would reach for, `model_versions.status`, is **read by no service at all**
+  (grep across `services/`, and 0027 says so in a comment). Its live values today are `draft` and
+  `eval-passed`; `blocked` is a value nothing acts on.
+
+So the honest state is stronger than "expiry is untested": there is no mechanism by which any
+approval is ever reconsidered, and the field that looks like one is inert.
+
+### The question
+
+A teacher approved finding *F*, produced by model version *M*. Later *M* is found to be wrong —
+blocked, or superseded by a retrained model. **Is the teacher's approval of *F* still valid?**
+
+Both answers are defensible, and the difference is visible to a learner mid-session:
+
+| | if approval survives | if approval is retracted |
+|---|---|---|
+| what the teacher approved | *this finding, about this recitation* — a judgement they made by listening, which a later model has no bearing on | *the model's output*, which they endorsed on the assumption the model was sound |
+| what a learner sees | the note stays; their memorization is not disturbed | the note disappears, possibly between one screen and the next, with no explanation they can act on |
+| the failure it allows | a learner keeps studying from feedback derived from a model the project has disowned | a learner's reviewed, correct feedback is withdrawn because an unrelated model version was retired |
+
+There is a **precedent inside this repo** for the second answer. The locale work already decided a
+human review has a shelf life: `LocaleCapability.interface.reviewExpiresAt` is enforced in
+`apps/web/src/data/platform.ts:147`, and a Sorani pack whose review has lapsed stops being offered.
+Nobody argued a reviewer's judgement was eternal there. Whether recitation feedback is the same kind
+of claim is exactly what needs deciding.
+
+### Why this is not an engineering default
+
+Picking either answer silently would be the worse outcome. "Approval survives" is the current
+behaviour by omission, not by decision — nobody chose it, and it is indistinguishable from having
+forgotten the question. "Approval is retracted" changes what a learner sees without telling them
+why, which is the failure ADR-0041 names: a status that collapses distinct outcomes into one
+message is worse than its absence.
+
+It also cannot be tested before it is decided. A test asserting either behaviour would be an
+engineer's ruling on a scholarly question, wearing a test's authority.
+
+### Decision
+
+**Deferred.** P3.2 stays open with this as its single named blocker, rather than being ticked on
+three-quarters coverage or left vaguely incomplete.
+
+What is in place meanwhile:
+
+- `tests/contract/withheld-reasons.test.mjs` derives the withheld reasons from the contract and
+  requires a test for each, so the three covered reasons cannot silently regress and `expired`
+  cannot silently be forgotten — it is listed as deliberately absent, with this ADR as its reason.
+- Nothing has been built that pretends to expire. There is no dormant column, no unused flag, and
+  no UI string about staleness. When the ruling comes, it lands on a clean surface.
+
+### What a decision needs to specify
+
+1. Does a blocked or superseded model retract prior approvals of its findings — always, never, or
+   only when the model was blocked for a correctness reason rather than retired for a routine one?
+2. If approvals are retracted, what does the learner see in place of a note that was there
+   yesterday? "This note was withdrawn pending re-review" is honest; silence is not.
+3. Do approvals expire on a clock as well, as locale reviews do — and if so, does an expired
+   approval withhold the finding or merely flag it for re-review?
+
+## ADR-0043 — Signed release evidence: the architecture that shipped, and the retention nobody chose
+
+**Date:** 2026-08-12 · **Status:** Proposed — the architecture is describing what exists; the
+retention policy needs an owner's approval
+**Related:** P0.2 (this ADR), P0.4 (manifest + verifier), P7.4 (fresh bundle), P7.5 (challenger),
+ADR-0022 (artifacts), `docs/RELEASE_SIGNING.md` (store signing, a different problem)
+
+### Context
+
+P0.2 asks for an approved ADR covering signed release-evidence architecture and retention. It has sat
+open while **the architecture was built anyway**: `scripts/release-manifest.mjs` (schemaVersion
+2.1.0) and its 22 adversarial tests bind every item P0.4 names, and P0.4's own ledger note records
+the engineering as complete.
+
+That ordering is the problem this ADR fixes. A design that exists only as code is a design nobody
+approved, cannot review as a whole, and cannot disagree with — the next person meets it as a fact
+rather than a choice. So the first half below is **descriptive**: it records decisions already made,
+so they can be challenged. Only the retention half is genuinely open.
+
+`docs/RELEASE_SIGNING.md` is a different subject: it covers signing an APK so a store will accept it.
+This is about signing the *evidence* that a candidate is what it claims to be.
+
+### The architecture, as built
+
+- **Ed25519, and only Ed25519.** Enforced on the private key, the signature algorithm, and every
+  public key in the trusted-signer policy. Not negotiable at runtime: an RSA key is refused at
+  generation, not at verification.
+- **A trusted-signer policy, separate from the signature.** A valid signature by an unauthorized key
+  is refused, and the policy itself is hashed into the signed content — so swapping the policy after
+  the fact invalidates the manifest rather than authorizing a new signer retroactively.
+- **The candidate is a clean Git checkout, asserted.** Untracked files, modified tracked files, and a
+  manifest generated from an earlier commit are each refused. Evidence about a working tree nobody
+  can reconstruct is not evidence.
+- **Nine bound facts** — source, build, image, SBOM, smoke, test, environment, signature, expiry —
+  each with an adversarial test for the case where it drifts. The list is P0.4's; this ADR records
+  that binding them *together in one signed object* was the decision, because any one of them alone
+  can be true of a different build.
+- **Expiry is mandatory and must be in the future.** There is no unbounded evidence. This is the
+  decision most worth stating out loud, because its consequence is that a release candidate goes
+  stale on a clock whether or not anyone is watching — which is the intent.
+
+### The open half: retention
+
+**Nothing in this repository says how long a signed bundle is kept, or what happens to it after
+expiry.** Grepped across `scripts/release-manifest.mjs` and `docs/RELEASE_SIGNING.md`: the word does
+not appear. Expiry is enforced; retention is undefined. Those are different questions, and having
+one without the other is what makes this ADR Proposed rather than Accepted:
+
+- An expired manifest is refused by the verifier. It is not deleted, and nothing says it should be.
+- So today's de-facto policy is "keep everything forever, and refuse to act on the old ones" — which
+  may well be right, but was chosen by nobody.
+
+Retention is not an engineering preference. It interacts with:
+
+1. **Incident forensics.** After a bad release, the question is what the candidate contained. That
+   needs the bundle for the *previous* releases too, not only the current one.
+2. **Privacy.** A bundle binds an environment summary and a smoke trace. If any future evidence
+   captures learner-derived data — it does not today, and it must not start without revisiting this
+   — an indefinite retention becomes a data-protection question rather than a storage one.
+3. **The challenger's job (P7.5).** An independent verifier needs enough history to compare a
+   candidate against its predecessor. Too short a window makes that impossible.
+
+### Decision
+
+**The architecture above is recorded as-is and is not changed by this ADR.** It is already enforced
+by 22 tests; re-deciding it now would be theatre.
+
+**Retention is deferred to an owner**, with a recommendation to make explicit rather than inherit:
+
+| | proposal |
+|---|---|
+| **Keep** | every signed bundle for a released candidate, indefinitely — they are small, and they are the only record of what shipped |
+| **Prune** | unreleased candidate bundles after 90 days, since a candidate that never shipped has no forensic claim on the future |
+| **Never delete on expiry** | an expired bundle is refused for *acting on*, and kept for *explaining* — those are different uses and only one of them has a clock |
+| **Revisit if** | evidence ever begins capturing learner-derived content, which would move this from a storage decision to a privacy one |
+
+### Consequences
+
+- P0.2 stays open until an owner approves. The row's blocker is now one specific question —
+  retention — rather than "an ADR is missing", and the architecture half is no longer unwritten.
+- P0.4 is unaffected: its engineering was already complete, and its blocker is a retained
+  candidate-bound artifact, which is P7.4's job.
+- Nothing was built to satisfy this ADR. No retention field, no pruning script, no dormant config.
+  When the ruling comes it lands on a clean surface — the same discipline as ADR-0042.
