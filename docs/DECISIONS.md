@@ -2159,3 +2159,104 @@ by 22 tests; re-deciding it now would be theatre.
   candidate-bound artifact, which is P7.4's job.
 - Nothing was built to satisfy this ADR. No retention field, no pruning script, no dormant config.
   When the ruling comes it lands on a clean surface — the same discipline as ADR-0042.
+
+## ADR-0044 — `server/` is the Node backend; `services/node-api` is frozen
+
+**Date:** 2026-08-12 · **Status:** Accepted (engineering scope only — see Non-scope)
+**Related:** ADR-0034 (a port is only ported where something compares it), PR #388,
+`specs/lean-flutter-node-consolidation/tasks.md`
+
+### Context
+
+Two Node backends exist in this repository at once:
+
+| | `services/node-api` (main) | `server/` (PR #388, unmerged) |
+|---|---|---|
+| route modules | 14 | 16 — the same 14, plus `canary`, `device-identity` |
+| `routes/review.mjs` | 536 lines | 773 lines, the same file grown |
+| cutover control | `NODE_API_PORTED`, default none | `NODE_API_PORTED` + `NODE_API_ROUTE_MODE=retained-canary` |
+| driven by the A/B parity harness | yes | yes — `startShell` spawns `server/src/main.mjs` |
+| Rust oracle retained | yes | yes |
+| also contains | — | `jobs/`, `storage/`, `realtime/`, `inference/`, `identity/`, `worker.mjs` |
+
+Measured 2026-08-12. These are **not rival designs**. `server/` is `services/node-api` at a later
+age: same lineage file by file, same strangler control, same parity harness, same Rust oracle. It
+additionally absorbs `services/ml-inference` (as `inference/` + `storage/`) and
+`services/realtime-gateway` (as `realtime/`), which is why PR #388 deletes both.
+
+Leaving the question open is the expensive option. Two ledgers are counting progress against two
+codebases: `specs/readiness-recovery-10-10` (on main, 36 open rows) and
+`specs/lean-flutter-node-consolidation` (on the draft, 40 open rows, not on main). Work landing on
+one is invisible to the other, and every W2/W3/W6/W7 task inherits an answer nobody has given.
+
+### Decision
+
+**`server/` is the Node backend this project is building.** `services/node-api` is its earlier form
+and is **frozen**: it may be fixed, but it may not grow.
+
+Concretely, frozen means:
+
+- **No new route modules, no new route keys in `PORTABLE`, no new `lib/` modules.** A new capability
+  belongs in `server/`. Adding it here would mean implementing it twice and proving it once.
+- **Fixes are allowed and expected.** A freeze that forbids repair would push people to work around
+  it. Bug fixes, test additions, and security corrections to existing modules stay in scope.
+- **Shrinking is allowed.** Removing a module is retirement, which is the direction of travel.
+
+Enforced by `tests/contract/node-api-frozen.test.mjs`, pinned to 14 route modules, 9 lib modules and
+37 `PORTABLE` keys. The pin IS the decision here rather than a measurement of it — the guard's whole
+content is "this set does not grow", and it names `server/` in its failure message so the next
+person is told where the code goes instead.
+
+### Why `server/` rather than `services/node-api`
+
+Keeping `services/node-api` would mean re-doing the consolidation it already contains — durable
+jobs, the audio object store, the realtime boundary, local inference, the canary route. That is the
+bulk of PR #388's 96 commits, and redoing it would buy nothing: the draft did not abandon the
+discipline that makes a port trustworthy, it inherited it. `PARITY_THROUGH_SHELL` still puts it
+behind the same A/B differ, and `scripts/verify.sh` on that branch still runs the Rust suite as the
+oracle.
+
+### Two risks this decision creates, and how each is closed
+
+**1. The controls now exist twice, independently.** Rate limiting, `MAINTENANCE_MODE`, the
+superuser/BYPASSRLS refusal, the `x-forwarded-for` overwrite, `UPSTREAM_TIMEOUT_SECS` and trace
+propagation are present in BOTH trees — but main's are proven by parity tests written against
+`services/node-api`, and `server/`'s are separate code those tests have never run against. Two
+implementations of a security control agreeing by assumption is the exact shape this repo keeps
+finding defects in.
+
+*Closed by:* `tests/api-parity/lib/harness.mjs:451` spawns the shell, and it is one line. Pointing it
+at `server/src/main.mjs` runs the whole A/B suite, the five journeys and the fault tests against the
+survivor. Every divergence surfaces there. **This must pass before `services/node-api` is deleted.**
+
+**2. `services/ml-inference` cannot be deleted in the same change.** Four of the five journeys in
+`docs/readiness/JOURNEYS.md` spawn `services/ml-inference/server.mjs` directly, and it owns
+`audio-storage/` and the on-disk erasure that ADR-0037 and the privacy journey prove. That
+`server/inference/` and `server/storage/` replace it faithfully is currently asserted, not shown.
+
+*Closed by:* keeping `ml-inference` and `realtime-gateway` until the journeys pass against
+`server/`'s absorbed versions, as a separate step with its own evidence.
+
+### Sequence
+
+1. This ADR; the freeze guard. (Here.)
+2. Rebase PR #388 onto main — 21 commits behind, 23 conflicting files, mostly `verify.sh` test-list
+   unions and `DECISIONS.md` appends.
+3. Flip `harness.mjs:451` to `server/src/main.mjs`; run the full gate. Reconcile every divergence.
+4. Delete `services/node-api`.
+5. Separately, and only once the journeys pass against it: retire `ml-inference` and
+   `realtime-gateway`.
+
+A 631-file draft cannot be reviewed. Steps 2–4 should land along the seams `server/` already has —
+`lib/` + routes first (the direct successor), then `jobs/` + `storage/`, then `inference/`, then
+`realtime/` — so there is no window in which main has no working backend.
+
+### Non-scope
+
+This decides which codebase the Node backend lives in. It does **not** authorize a production
+cutover: `NODE_API_PORTED` still defaults to none in both trees, and ADR-0034's rule stands —
+a route is servable only where something compares it. Turning routes on in production remains an
+owner decision with canary and rollback evidence, which is W2/W3/W6, not this.
+
+It also says nothing about whether the product is ready. P3.4/P3.5 — no held-out evaluation — is
+untouched by which process serves the routes.
