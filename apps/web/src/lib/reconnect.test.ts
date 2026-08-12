@@ -1,3 +1,12 @@
+/**
+ * @fault-coverage: realtime-gateway
+ *
+ * Registered against the "Realtime gateway (WS, from web)" row of the P5.2 dependency map in
+ * `docs/readiness/INVENTORIES.md`: "equal-jitter backoff reconnect + bounded drop-oldest buffering".
+ * Both halves are asserted below — the backoff schedule, and that a long outage drops the OLDEST
+ * audio rather than growing without limit or discarding the most recent.
+ * `tests/observability/dependency-fault-coverage.test.mjs` reads this annotation.
+ */
 import { describe, expect, it } from "vitest";
 import {
   DEFAULT_RECONNECT_POLICY,

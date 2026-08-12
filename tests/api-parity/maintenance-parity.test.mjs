@@ -4,8 +4,13 @@ import test, { after, before } from "node:test";
 import { request, startApi } from "./lib/harness.mjs";
 
 /**
+ * @fault-coverage: whole-api
+ *
  * MAINTENANCE_MODE=1 — the documented kill switch — must behave identically whichever service
  * answers.
+ *
+ * Registered against the "Whole API (ops)" row of the P5.2 dependency map. This is the only row
+ * whose "fault" is deliberate, which makes it the easiest one to leave untested.
  *
  * `docs/readiness/INVENTORIES.md` lists it as the pilot's kill switch and P5.5 rests on it: "every
  * route except /health, /ready, /metrics returns a clean 503", so orchestrators and monitoring read

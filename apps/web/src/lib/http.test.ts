@@ -1,3 +1,11 @@
+/**
+ * @fault-coverage: platform-api
+ *
+ * Registered against the "platform-api (from web)" row of the P5.2 dependency map in
+ * `docs/readiness/INVENTORIES.md`: "fetchWithTimeout 15 s hard abort — a hung backend can't freeze
+ * the UI". The abort tests below are what make that a control rather than a claim.
+ * `tests/observability/dependency-fault-coverage.test.mjs` reads this annotation.
+ */
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { bootstrapPilotSession } from "./api";

@@ -134,6 +134,17 @@ async fn proxy_ml(
         );
     }
 
+    // The trace has to be in the FAILURE record too, not only the success one.
+    //
+    // On the happy path the caller's trace reaches `audit_events.metadata.trace_id` via
+    // `persist_tajweed_findings`. That write only happens on success — so when the upstream was
+    // wedged or answered garbage, nothing anywhere recorded the trace, and the three log lines below
+    // said only which label failed. An operator holding a learner's `x-trace-id` and asking "what
+    // happened to my request" could answer it for every request that WORKED and for none that
+    // failed, which is the case a trace exists for. Caught by
+    // `tests/observability/trace-survives-fault.test.mjs` (P5.3).
+    let trace = crate::auth::extract_trace_id(headers).unwrap_or_else(|| "none".to_owned());
+
     let response = state
         .http_client
         .post(format!("{}{}", state.ml_inference_url, path))
@@ -143,17 +154,20 @@ async fn proxy_ml(
         .send()
         .await
         .map_err(|e| {
-            tracing::error!("ML proxy {label} send error: {e}");
+            tracing::error!("ML proxy {label} send error [trace_id={trace}]: {e}");
             ApiError::Upstream("ML service unavailable".to_owned())
         })?;
 
     if !response.status().is_success() {
-        tracing::warn!("ML proxy {label} upstream status {}", response.status());
+        tracing::error!(
+            "ML proxy {label} upstream status {} [trace_id={trace}]",
+            response.status()
+        );
         return Err(ApiError::Upstream("ML service error".to_owned()));
     }
 
     let mut result: serde_json::Value = response.json().await.map_err(|e| {
-        tracing::error!("ML proxy {label} parse error: {e}");
+        tracing::error!("ML proxy {label} parse error [trace_id={trace}]: {e}");
         ApiError::Upstream("ML service returned an invalid response".to_owned())
     })?;
 
@@ -580,6 +594,9 @@ async fn proxy_asr(
         obj.insert("traceId".to_owned(), serde_json::Value::String(trace));
     }
 
+    // Same reasoning as the ML proxy: a failed call has to leave the trace behind it too.
+    let trace = crate::auth::extract_trace_id(headers).unwrap_or_else(|| "none".to_owned());
+
     let response = state
         .http_client
         .post(format!("{}{}", state.asr_inference_url, path))
@@ -589,17 +606,20 @@ async fn proxy_asr(
         .send()
         .await
         .map_err(|e| {
-            tracing::error!("ASR proxy {label} send error: {e}");
+            tracing::error!("ASR proxy {label} send error [trace_id={trace}]: {e}");
             ApiError::Upstream("ASR service unavailable".to_owned())
         })?;
 
     if !response.status().is_success() {
-        tracing::warn!("ASR proxy {label} upstream status {}", response.status());
+        tracing::error!(
+            "ASR proxy {label} upstream status {} [trace_id={trace}]",
+            response.status()
+        );
         return Err(ApiError::Upstream("ASR service error".to_owned()));
     }
 
     response.json().await.map(Json).map_err(|e| {
-        tracing::error!("ASR proxy {label} parse error: {e}");
+        tracing::error!("ASR proxy {label} parse error [trace_id={trace}]: {e}");
         ApiError::Upstream("ASR service returned an invalid response".to_owned())
     })
 }
