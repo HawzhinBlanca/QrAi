@@ -26,6 +26,7 @@ person came for**, from the far side of every boundary the request crossed.
 | id | who | the promise it keeps | boundaries crossed |
 |---|---|---|---|
 | `learner-practice` | learner | recites and is given feedback that is allowed to be shown, and their progress is recorded | web → platform-api → ml-inference → Postgres |
+| `mobile-finalize` | learner | recites on a phone — streamed, not uploaded — and the session becomes something a teacher can be given | gateway-shaped chunk writes → ml-inference transcript + aligner → platform-api persistence |
 | `teacher-review` | teacher | finds the session waiting for them, can hear the recitation, and their decision is written down and audited | queue → per-finding audited audio → review write |
 | `finding-approval` | learner + teacher | a withheld finding becomes visible to the learner it is about, and **only** after a human approved it | ADR-0028 gate, across two roles and two requests |
 | `scholar-approval` | scholar | an approval of source/model scope is recorded against the exact thing approved | governance write → read-back |
