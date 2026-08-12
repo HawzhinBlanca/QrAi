@@ -1,4 +1,6 @@
 /**
+ * @journey: privacy-erasure
+ *
  * A learner asks to be erased, and BOTH halves of them actually go. (P6.1 privacy journey)
  *
  *   node --test tests/observability/privacy-erasure-journey.test.mjs
