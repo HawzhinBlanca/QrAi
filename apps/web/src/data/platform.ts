@@ -79,7 +79,7 @@ export const localeCapabilities: LocaleCapability[] = [
     label: "English",
     nativeName: "English",
     direction: "ltr",
-    interface: { availability: "available", source: "source-language", bundlePath: "apps/web/src/locales/en.json", keyCount: 386 },
+    interface: { availability: "available", source: "source-language", bundlePath: "apps/web/src/locales/en.json", keyCount: 389 },
     quranTranslation: { availability: "none", evidence: "No English verse-translation bundle is shipped." },
   },
   {
@@ -388,14 +388,44 @@ export async function fetchBenchmarkMetrics(tenantId: string, authToken?: string
 const ADMIN_HEADERS = (tenantId: string, authToken?: string): Record<string, string> =>
   actorHeaders(tenantId, "admin-1", "admin", authToken);
 
-async function fetchConsole<T>(path: string, tenantId: string, fallback: T, authToken?: string): Promise<T> {
+/**
+ * A console read that says whether it worked. (P2.6)
+ *
+ * `fetchConsole` returns its fallback on any failure — a timeout, a refused connection, a 500 — so
+ * every consumer received `[]` and rendered "nothing here". A teacher whose backend was unreachable
+ * was shown "No pending recitations.": not a degraded state but a confident, wrong answer, and one
+ * they act on by closing the tab.
+ *
+ * The failure could not be caught upstream either: the component's own `catch` never fired, because
+ * nothing was ever thrown. That is why the signal has to start here.
+ *
+ * `fetchConsole` keeps its signature and its behaviour — twenty-odd callers depend on it and most
+ * of them genuinely have nothing better to do than show an empty panel. It now delegates, so there
+ * is one implementation rather than two that can drift.
+ */
+export interface ConsoleRead<T> {
+  data: T;
+  /** True when the read failed and `data` is the fallback rather than an answer from the service. */
+  failed: boolean;
+}
+
+async function fetchConsoleRead<T>(
+  path: string,
+  tenantId: string,
+  fallback: T,
+  authToken?: string,
+): Promise<ConsoleRead<T>> {
   try {
     const response = await fetchWithTimeout(`${API_BASE}${path}`, { headers: ADMIN_HEADERS(tenantId, authToken) });
-    if (!response.ok) return fallback;
-    return (await response.json()) as T;
+    if (!response.ok) return { data: fallback, failed: true };
+    return { data: (await response.json()) as T, failed: false };
   } catch {
-    return fallback;
+    return { data: fallback, failed: true };
   }
+}
+
+async function fetchConsole<T>(path: string, tenantId: string, fallback: T, authToken?: string): Promise<T> {
+  return (await fetchConsoleRead(path, tenantId, fallback, authToken)).data;
 }
 
 export interface AgentRunSummary {
@@ -575,6 +605,11 @@ export function fetchRecitationSessions(tenantId: string, authToken?: string): P
   return fetchConsole<RecitationSessionSummary[]>("/v1/recitation-sessions", tenantId, [], authToken);
 }
 
+/** As `fetchRecitationSessions`, but distinguishes "no sessions" from "could not ask". */
+export function readRecitationSessions(tenantId: string, authToken?: string): Promise<ConsoleRead<RecitationSessionSummary[]>> {
+  return fetchConsoleRead<RecitationSessionSummary[]>("/v1/recitation-sessions", tenantId, [], authToken);
+}
+
 export function fetchSessionAlignments(
   tenantId: string,
   sessionId: string,
@@ -587,6 +622,20 @@ export function fetchSessionAlignments(
     ]);
   }
   return fetchConsole<SessionAlignment[]>(
+    `/v1/recitation-sessions/${sessionId}/alignments`,
+    tenantId,
+    [],
+    authToken,
+  );
+}
+
+/** As `fetchSessionAlignments`, but distinguishes "no words" from "could not ask". */
+export function readSessionAlignments(
+  tenantId: string,
+  sessionId: string,
+  authToken?: string,
+): Promise<ConsoleRead<SessionAlignment[]>> {
+  return fetchConsoleRead<SessionAlignment[]>(
     `/v1/recitation-sessions/${sessionId}/alignments`,
     tenantId,
     [],
