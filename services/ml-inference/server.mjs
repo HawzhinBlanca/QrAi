@@ -506,6 +506,27 @@ function recognizedWordsFrom(asrResult) {
   return text === "" ? [] : text.split(/\s+/);
 }
 
+/**
+ * Where each recognized word was heard, index-parallel to `recognizedWordsFrom`.
+ *
+ * `recognizedWordsFrom` reduces the ASR's segments to bare strings, and until this existed those
+ * timings were dropped on the floor — so `/v1/alignments:predict` emitted alignments with no span,
+ * and platform-api's `usable_span` refused every one of them. Measured: a finalized mobile session
+ * offered 29 alignments and persisted 0, and the same session persisted an alignment that carried
+ * a span. Nothing reached a teacher's queue.
+ *
+ * Returns null when the ASR reported no per-word segments, so a caller can tell "no timings" from
+ * "timings that are all unusable".
+ */
+export function recognizedTimingsFrom(asrResult) {
+  const segments = asrResult?.words;
+  if (!Array.isArray(segments) || segments.length === 0) return null;
+  return segments.map((w) => ({
+    startMs: Number.isInteger(w?.startMs) ? w.startMs : null,
+    endMs: Number.isInteger(w?.endMs) ? w.endMs : null,
+  }));
+}
+
 // === Real alignment prediction ===
 async function predictAlignment(requestBody) {
   const startedAt = performance.now();
@@ -619,6 +640,7 @@ async function predictAlignment(requestBody) {
     // There is no honest alignment without recognition. `needs-review` (an existing
     // `word_alignments.status` value) is what "we did not hear this word" looks like.
     let recognizedWords;
+    let recognizedTimings = null;
     let asrResult = null;
     let recognized = true;
     if (requestBody.audioBase64 && asrActuallyAllowed) {
@@ -628,6 +650,7 @@ async function predictAlignment(requestBody) {
       // recognizedText / canonical path below and the audio is never processed.
       asrResult = await transcribeAudio(requestBody.audioBase64, requestBody.audioFormat ?? "webm", "ar");
       recognizedWords = recognizedWordsFrom(asrResult);
+      recognizedTimings = recognizedTimingsFrom(asrResult);
     } else if (requestBody.recognizedText && Array.isArray(requestBody.recognizedText)) {
       // Every element must be a string; a non-string would throw inside alignWords and
       // surface as a 500. Bad input is a 400.
@@ -635,6 +658,11 @@ async function predictAlignment(requestBody) {
         throw httpError(400, "recognizedText must be an array of strings");
       }
       recognizedWords = requestBody.recognizedText;
+      // Index-parallel timings, when the caller has them. `finalize_session` transcribes in one
+      // service and aligns in another, so without this the timings cannot survive the hop.
+      if (Array.isArray(requestBody.recognizedTimings)) {
+        recognizedTimings = requestBody.recognizedTimings;
+      }
     } else if (requestBody.recognizedTextString) {
       // Guard the type: a truthy non-string (number, object, array) would throw a
       // TypeError on .trim() and surface as a 500. Bad input is a 400.
@@ -659,7 +687,7 @@ async function predictAlignment(requestBody) {
     // Not `alignWords(canonical, [])`: that reports every word as `missed`, which is also a claim
     // about the recitation — "they left these out" — and equally unfounded when nothing was heard.
     const alignmentResults = recognized
-      ? alignWords(canonicalWords, recognizedWords)
+      ? alignWords(canonicalWords, recognizedWords, recognizedTimings)
       : canonicalWords.map((w) => ({
           wordId: w.id,
           canonicalText: w.text,
@@ -684,6 +712,13 @@ async function predictAlignment(requestBody) {
       heardText: r.heardText,
       status: r.status,
       confidence: r.confidence,
+      // Present only when this word was PAIRED with a recognized one that carried a timing. A
+      // `missed` word has no span and must not acquire one: platform-api anchors tajweed findings
+      // to it, and a fabricated span points a finding at audio the learner never recited there.
+      // Spread rather than set to null so the field is absent, which is what `usable_span` reads.
+      ...(Number.isInteger(r.startMs) && Number.isInteger(r.endMs)
+        ? { startMs: r.startMs, endMs: r.endMs }
+        : {}),
       reviewStatus,
       tenantId,
       quranRef,
@@ -1391,6 +1426,10 @@ async function transcribeSession(requestBody) {
     reason: "consent-granted",
     // Canonical text is never normalised here; these are the ASR's words, passed through.
     recognizedText: recognizedWordsFrom(asr),
+    // Index-parallel to `recognizedText`. The caller (`finalize_session`) aligns in a SECOND
+    // request to this service, so without carrying the timings across that hop the aligner has
+    // nothing to place a word in time with, and every alignment it returns is refused on arrival.
+    recognizedTimings: recognizedTimingsFrom(asr),
     chunkCount: parts.length,
     sampleRate,
     // Reported even when empty, so a caller can tell "no gaps" from "this build does not check".
