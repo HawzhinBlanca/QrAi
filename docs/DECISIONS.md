@@ -2339,3 +2339,92 @@ this ADR stops being Proposed.
 2. Whether account closure is a separate request with its own endpoint, or the same one.
 3. Whether the erasure receipt may name a person who no longer exists — i.e. whether
    `privacy_jobs.learner_id` should become a free-standing identifier rather than an FK.
+
+## ADR-0046 — `recordingConsent` is a checkbox no server reads
+
+**Date:** 2026-08-12 · **Status:** Proposed — the remediation needs a data decision, not just a gate
+**Related:** ADR-0028 (the learner gate is enforced on the wire, not in the client),
+`docs/DATA_INVENTORY.md` §5, `packages/contracts` `ConsentSnapshot`
+
+### Context
+
+The consent panel offers five choices. Three are enforced server-side and one is not enforced
+anywhere:
+
+| flag | what the learner is told | server-side gate |
+|---|---|---|
+| `audioRetention` | "otherwise it is discarded after analysis" | `mustDiscardAudio`, ml-inference:1089 |
+| `externalAsrProcessing` | "Allow browser or cloud speech processing…" | `canUseExternalAsr`, recitation.rs:160 |
+| `guardianApproved` | "required for learners under 13" | same gate |
+| **`recordingConsent`** | **"(Required to record.)"** | **none** |
+| **`anonymizedLearning`** | **"Help improve the model with anonymized data."** | **none — nothing reads it at all** |
+
+Reproduced 2026-08-12 against a running service:
+
+```
+session create with recordingConsent=false -> 200
+realtime ticket for that session          -> 200  TICKET ISSUED (audio streaming authorised)
+stored consent snapshot recordingConsent  =  false
+```
+
+The session's own stored answer says the learner does not consent to being recorded, and the ticket
+that authorises audio streaming is issued anyway. `docs/DATA_INVENTORY.md` §5 states the enforcement
+honestly — "enforced on web + mobile" — which is precisely the arrangement ADR-0028 was written
+after: *a display choice, not an authorization boundary*.
+
+### Why it is unenforced: the field has no column
+
+`consent_records` stores `audio_retention`, `anonymized_learning`, `external_asr_processing`,
+`guardian_approved`, `consent_version`. There is **no `recording_consent` column**. The flag exists
+in the contract, in the UI and in `recitation_sessions.consent_snapshot` (JSONB) — and not in the
+table every server-side gate joins. The ticket mint reads `c.audio_retention` and
+`s.external_processing_allowed` from exactly that join, so it could not consult recording consent
+even if someone had thought to.
+
+### Why this is not a one-line fix
+
+Refusing a ticket when the snapshot says `false` would be the obvious change, and it would be wrong
+today:
+
+```
+recordingConsent = false    4615 sessions
+recordingConsent = true     3403 sessions
+absent                      1157 sessions
+```
+
+`false` is also the **default** — `sessions.mjs:50`, `recitation.rs:370` — so for most of those
+4,615 rows it means "never populated", not "the learner declined". The two are indistinguishable in
+the data. A strict gate would deny the majority of existing sessions and read, to an operator, as an
+outage.
+
+### Severity, stated honestly
+
+Lower than it first appears, and still real. The audio a learner can cause to be captured this way
+is **their own**: nothing here lets one person record another, and the real web client blocks the
+flow before it starts. What the system does have is a stored recording of a person alongside that
+person's own recorded refusal — a records and lawful-basis problem, not an attacker capturing a
+minor's voice. It would matter to a DPA and it does not warrant an incident.
+
+`anonymizedLearning` is currently harmless for a different reason: **no training pipeline exists**
+(P3.4/P3.5), so no data is used for learning whether the box is ticked or not. That is exactly why
+it could stay broken indefinitely — and why nothing would stop a future pipeline from ignoring it.
+
+### Decision
+
+**Deferred**, and nothing is enforced in this change. Turning the gate on requires deciding:
+
+1. **What the 4,615 `false` rows mean.** Backfill from another signal, treat historical rows as
+   grandfathered, or migrate and re-ask? Choosing wrong either denies consenting learners or
+   ratifies consent nobody gave.
+2. **Where the boundary is.** The ticket is the honest place — recitation.rs:464 already says "the
+   ticket is the only channel it has" — but session creation and chunk storage are also candidates,
+   and picking one means the others must be provably unreachable without it.
+3. **Whether `recording_consent` becomes a column.** Reading JSONB works; a column is what every
+   other enforced flag has, and the absence of one is why this was invisible.
+4. **What `anonymizedLearning` is for.** If it will gate a future training pipeline, say so and
+   write the gate when the pipeline exists. If it will not, the checkbox should go — a control that
+   cannot act is worse than its absence (ADR-0041).
+
+Meanwhile `tests/security/consent-gate-coverage.test.mjs` requires every flag in the contract to
+have a named server-side gate or a declared reason, so a sixth flag cannot be added and quietly do
+nothing, and neither of these two can be forgotten.
