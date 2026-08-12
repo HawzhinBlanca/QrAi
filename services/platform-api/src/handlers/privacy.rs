@@ -225,11 +225,108 @@ async fn create_privacy_job(
             })
             .collect();
 
+    // ── The session-owned categories, which the receipt used to omit ─────────────────────────────
+    //
+    // `included_ids` is BOTH the export summary ("we currently hold N records for you") and, on a
+    // delete, the receipt of what was destroyed — `deleted_ids` is a clone of it. It was built from
+    // five tables while the cascade below deletes from twelve.
+    //
+    // Measured on a learner seeded with one consent record, one session, one alignment and one
+    // finding: all four rows were gone afterwards and the receipt named ONE, the session. A learner
+    // or a regulator asking "what did you delete?" was told about the recitation and not about the
+    // assessments made of it, the word-level record, or the consent they had given.
+    //
+    // These are IDENTIFIERS, never content, so nothing here crosses the ADR-0028 learner gate: the
+    // count of pending notes is already something both clients render, and an id discloses no
+    // judgement. Scoped through `recitation_sessions` by learner, exactly as the deletes are, so the
+    // receipt and the cascade cannot describe different sets.
+    let session_scoped = |table: &str, prefix: &str| {
+        format!(
+            "SELECT {t}.id FROM {t} JOIN recitation_sessions rs ON rs.id = {t}.session_id \
+             WHERE {t}.tenant_id = $1 AND rs.tenant_id = $1 AND rs.learner_id = $2",
+            t = table
+        )
+        .replace("PREFIX", prefix)
+    };
+
+    let mut session_owned_ids: Vec<String> = Vec::new();
+    for (table, prefix) in [
+        ("word_alignments", "word_alignment"),
+        ("audio_chunks", "audio_chunk"),
+        ("alignment_runs", "alignment_run"),
+    ] {
+        let rows = sqlx::query(&session_scoped(table, prefix))
+            .bind(&actor.tenant_id)
+            .bind(&req.learner_id)
+            .fetch_all(&mut *tx)
+            .await?;
+        session_owned_ids.extend(rows.into_iter().map(|r| {
+            format!(
+                "{prefix}:{}",
+                r.try_get::<String, _>("id").unwrap_or_default()
+            )
+        }));
+    }
+
+    // Findings hang off an alignment rather than a session, so they need the extra hop.
+    let finding_rows = sqlx::query(
+        "SELECT tf.id FROM tajweed_findings tf \
+         JOIN word_alignments wa ON wa.id = tf.alignment_id \
+         JOIN recitation_sessions rs ON rs.id = wa.session_id \
+         WHERE tf.tenant_id = $1 AND rs.tenant_id = $1 AND rs.learner_id = $2",
+    )
+    .bind(&actor.tenant_id)
+    .bind(&req.learner_id)
+    .fetch_all(&mut *tx)
+    .await?;
+    session_owned_ids.extend(finding_rows.into_iter().map(|r| {
+        format!(
+            "tajweed_finding:{}",
+            r.try_get::<String, _>("id").unwrap_or_default()
+        )
+    }));
+
+    let consent_rows =
+        sqlx::query("SELECT id FROM consent_records WHERE tenant_id = $1 AND user_id = $2")
+            .bind(&actor.tenant_id)
+            .bind(&req.learner_id)
+            .fetch_all(&mut *tx)
+            .await?;
+    let consent_ids: Vec<String> = consent_rows
+        .into_iter()
+        .map(|r| {
+            format!(
+                "consent_record:{}",
+                r.try_get::<String, _>("id").unwrap_or_default()
+            )
+        })
+        .collect();
+
+    let ticket_rows = sqlx::query(
+        "SELECT id FROM realtime_session_tickets WHERE tenant_id = $1 AND learner_id = $2",
+    )
+    .bind(&actor.tenant_id)
+    .bind(&req.learner_id)
+    .fetch_all(&mut *tx)
+    .await?;
+    let ticket_ids: Vec<String> = ticket_rows
+        .into_iter()
+        .map(|r| {
+            format!(
+                "realtime_session_ticket:{}",
+                r.try_get::<String, _>("id").unwrap_or_default()
+            )
+        })
+        .collect();
+
     let mut included_ids = session_ids.clone();
     included_ids.extend(progress_ids);
     included_ids.extend(agent_run_ids);
     included_ids.extend(pilot_session_ids);
     included_ids.extend(pilot_invitation_ids);
+    included_ids.extend(session_owned_ids);
+    included_ids.extend(consent_ids);
+    included_ids.extend(ticket_ids);
 
     let deleted_ids = if kind == PrivacyJobKind::Delete {
         included_ids.clone()

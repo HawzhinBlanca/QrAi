@@ -135,14 +135,55 @@ async function createPrivacyJob(req, reply, ctx, kind) {
       SELECT id FROM pilot_invitations
       WHERE tenant_id = ${actor.tenantId} AND learner_id = ${learnerId}`;
 
+    // The session-owned categories. These were absent from both this list and the Rust original,
+    // so on a DELETE the receipt named the recitation and not the assessments made of it, the
+    // word-level record, or the consent given. Scoped through `recitation_sessions` by learner,
+    // exactly as the cascade deletes, so the receipt and the deletion cannot describe different
+    // sets. Identifiers only — an id discloses no judgement, so nothing crosses the ADR-0028 gate.
+    const wordAlignments = await tx`
+      SELECT wa.id FROM word_alignments wa
+      JOIN recitation_sessions rs ON rs.id = wa.session_id
+      WHERE wa.tenant_id = ${actor.tenantId} AND rs.tenant_id = ${actor.tenantId}
+        AND rs.learner_id = ${learnerId}`;
+    const audioChunks = await tx`
+      SELECT ac.id FROM audio_chunks ac
+      JOIN recitation_sessions rs ON rs.id = ac.session_id
+      WHERE ac.tenant_id = ${actor.tenantId} AND rs.tenant_id = ${actor.tenantId}
+        AND rs.learner_id = ${learnerId}`;
+    const alignmentRuns = await tx`
+      SELECT ar.id FROM alignment_runs ar
+      JOIN recitation_sessions rs ON rs.id = ar.session_id
+      WHERE ar.tenant_id = ${actor.tenantId} AND rs.tenant_id = ${actor.tenantId}
+        AND rs.learner_id = ${learnerId}`;
+    // Findings hang off an alignment rather than a session, so they need the extra hop.
+    const findings = await tx`
+      SELECT tf.id FROM tajweed_findings tf
+      JOIN word_alignments wa ON wa.id = tf.alignment_id
+      JOIN recitation_sessions rs ON rs.id = wa.session_id
+      WHERE tf.tenant_id = ${actor.tenantId} AND rs.tenant_id = ${actor.tenantId}
+        AND rs.learner_id = ${learnerId}`;
+    const consentRecords = await tx`
+      SELECT id FROM consent_records
+      WHERE tenant_id = ${actor.tenantId} AND user_id = ${learnerId}`;
+    const tickets = await tx`
+      SELECT id FROM realtime_session_tickets
+      WHERE tenant_id = ${actor.tenantId} AND learner_id = ${learnerId}`;
+
     // The ORDER and the PREFIXES are wire contract — this list is what a learner receives as their
-    // export manifest. Session ids are bare; everything else is namespaced.
+    // export manifest. Session ids are bare; everything else is namespaced. The order below mirrors
+    // handlers/privacy.rs exactly; the parity differ compares these arrays element by element.
     const includedRecords = [
       ...sessions.map((r) => r.id ?? ""),
       ...progress.map((r) => `learner_progress:${r.ayah_ref ?? ""}`),
       ...agentRuns.map((r) => `agent_run:${r.id ?? ""}`),
       ...pilotSessions.map((r) => `pilot_session:${r.id ?? ""}`),
       ...pilotInvitations.map((r) => `pilot_invitation:${r.id ?? ""}`),
+      ...wordAlignments.map((r) => `word_alignment:${r.id ?? ""}`),
+      ...audioChunks.map((r) => `audio_chunk:${r.id ?? ""}`),
+      ...alignmentRuns.map((r) => `alignment_run:${r.id ?? ""}`),
+      ...findings.map((r) => `tajweed_finding:${r.id ?? ""}`),
+      ...consentRecords.map((r) => `consent_record:${r.id ?? ""}`),
+      ...tickets.map((r) => `realtime_session_ticket:${r.id ?? ""}`),
     ];
     const deletedRecords = kind === "delete" ? [...includedRecords] : [];
 
