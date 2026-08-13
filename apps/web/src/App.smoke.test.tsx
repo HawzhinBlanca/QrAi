@@ -3,6 +3,7 @@ import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import App from "./App";
+import { setPilotIdentity } from "./lib/pilotSession";
 
 // Extends EventTarget so both consumer styles this codebase uses are supported: property
 // assignment (`recorder.ondataavailable = ...`, used by the live WS recitation path) and
@@ -126,6 +127,11 @@ describe("Quran AI app smoke", () => {
     vi.unstubAllGlobals();
     localStorage.removeItem("quran-ai-auth");
     localStorage.removeItem("quran-ai-onboarding-dismissed");
+    // A pilot identity lives in a MODULE variable as well as localStorage, so removing the key is
+    // not enough to undo it. Left set, it makes every later test run as that learner: the teacher
+    // queue case was redirected away and failed on "Teacher Queue" missing, with the DOM showing
+    // the pilot learner's name. Clearing through the setter drops both halves.
+    setPilotIdentity(null);
     document.body.innerHTML = "";
   });
 
@@ -897,6 +903,38 @@ describe("Quran AI app smoke", () => {
     expect(i18n.language).toBe("ckb");
     expect(document.documentElement.dir).toBe("rtl");
     expect(document.documentElement.lang).toBe("ckb");
+  });
+
+  it("a pilot learner can end their session — the profile chip is not inert", async () => {
+    // ── The defect this pins ──────────────────────────────────────────────────────────────────────
+    // The chip was rendered `disabled` whenever bypassLogin was set, on the reasoning that "in the
+    // default bypass-login mode there is no real session to log out of". True when written; false
+    // once pilot sessions existed, because bypass-login is the ONLY mode they bootstrap in. A pilot
+    // session is a pilot_sessions row and an HttpOnly cookie, 8h idle / 24h absolute, and no UI
+    // could end it — on a shared classroom laptop the next person inherited the previous learner.
+    //
+    // Asserting on the CONTROL, not on pilotSession's internals: the module always worked. What was
+    // missing was a caller, so a unit test of setPilotIdentity(null) would have passed throughout.
+    // Set through the module rather than by writing localStorage: pilotSession.ts reads storage
+    // ONCE at import, which in a browser happens after the page's storage exists but in a test
+    // happens before this line. Calling the setter models an active session either way.
+    setPilotIdentity({
+      userId: "learner-42",
+      tenantId: "hikmah-pilot-erbil",
+      displayName: "Amina",
+      role: "learner",
+      csrfToken: "csrf-abc",
+    });
+
+    const root = createRoot(container);
+    await act(async () => {
+      root.render(<App />);
+    });
+
+    const chip = document.querySelector<HTMLButtonElement>("button.profile-chip");
+    expect(chip).not.toBeNull();
+    expect(chip!.disabled).toBe(false);
+    expect(chip!.getAttribute("aria-label")).toBeTruthy();
   });
 
   it("enforces role-gated section redirection to prevent URL/state-based bypass", async () => {

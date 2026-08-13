@@ -40,6 +40,7 @@ import {
   type RecitationConsent,
   type SurahInfo,
   bootstrapPilotSession,
+  logoutPilotSession,
 } from "./lib/api";
 import { getPilotIdentity, type PilotIdentity } from "./lib/pilotSession";
 import {
@@ -115,6 +116,13 @@ function AuthenticatedApp({ bypassLogin = false }: { bypassLogin?: boolean }) {
   // Pilot (no-login) identity, restored from a prior bootstrap and refreshed when an invite link
   // is opened. When set, it drives the app's identity via the __Host-qrai-pilot cookie (P1.6).
   const [pilotIdentity, setPilotIdentityState] = useState<PilotIdentity | null>(() => getPilotIdentity());
+  // Ending a pilot session: revoke it server-side and drop the local identity. React state is
+  // cleared too, not just the module's — the chip reads `pilotIdentity`, so without this the app
+  // would keep rendering the learner it had just signed out.
+  const endPilotSession = useCallback(async () => {
+    await logoutPilotSession();
+    setPilotIdentityState(null);
+  }, []);
   // True only while an `?invite=` bootstrap is in flight, so we DON'T fire learner data loads with the
   // pre-bootstrap default identity (which 401s under header-auth-off). Cleared when bootstrap settles.
   const [pilotBootstrapPending, setPilotBootstrapPending] = useState<boolean>(
@@ -1167,7 +1175,7 @@ function AuthenticatedApp({ bypassLogin = false }: { bypassLogin?: boolean }) {
           onLanguageChange={setActiveLanguage}
           displayName={effectiveUser?.displayName}
           roleLabel={effectiveUser?.role}
-          onLogout={bypassLogin ? undefined : logout}
+          onLogout={pilotIdentity ? endPilotSession : bypassLogin ? undefined : logout}
         />
         <motion.div
           animate={{ opacity: 1, y: 0 }}
