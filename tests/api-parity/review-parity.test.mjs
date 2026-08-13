@@ -133,6 +133,56 @@ test("a teacher may READ approvals but not CREATE one", async () => {
   assert.equal(s.status, 403);
 });
 
+test("only a SCHOLAR may record a scholar-approved decision, on both backends", async () => {
+  // The route gate admits scholar, admin and ops. That is right for `draft` and `blocked` — those
+  // are operational — but `scholar-approved` carries religious authority, and `scholar_approvals`
+  // is the table a "qualified scholar approval" is evidenced with. Measured before this existed,
+  // one request per role, all else equal:
+  //     scholar -> 200  scholar-approved by a scholar
+  //     ops     -> 200  scholar-approved by a ops
+  //     admin   -> 200  scholar-approved by a admin
+  // The database's own join read "scholar-approved by a ops", indistinguishable from a scholar's.
+  //
+  // assertABMutating, so a fix on one backend alone fails here: both must refuse identically, with
+  // the same status AND the same message.
+  for (const role of ["admin", "ops"]) {
+    const { shell: s } = await assertABMutating(shell.baseUrl, rustUrl, {
+      name: `${role} records a scholar-approved decision`,
+      probeFor: () => ({
+        path: "/v1/scholar-approvals",
+        method: "POST",
+        role,
+        body: { ...approvalBody(), status: "scholar-approved" },
+      }),
+      normalize: (b) => b,
+    });
+    assert.equal(s.status, 403, `${role} was allowed to record a scholar-approved decision`);
+  }
+});
+
+test("admin and ops keep every decision that is NOT an approval", async () => {
+  // The other direction, and the reason the fix is a status check rather than a narrower route
+  // gate. Without this, tightening the whole route to scholars only would pass the test above while
+  // taking away operational work nobody meant to remove — blocking something is a SAFETY action and
+  // must not need a scholar to be present.
+  for (const [role, status] of [["ops", "draft"], ["admin", "blocked"], ["ops", "blocked"]]) {
+    const { shell: s } = await assertABMutating(shell.baseUrl, rustUrl, {
+      name: `${role} records ${status}`,
+      probeFor: () => ({
+        path: "/v1/scholar-approvals",
+        method: "POST",
+        role,
+        body: { ...approvalBody(), status },
+      }),
+      // Same normalizer the other creation tests use: a successful create returns freshly
+      // generated ids, which differ per backend by construction and are not the contract.
+      normalize: (b) =>
+        b && typeof b === "object" && b.id ? { ...b, id: "<ID>", auditEventId: "<A>" } : b,
+    });
+    assert.equal(s.status, 200, `${role} could no longer record ${status}`);
+  }
+});
+
 test("the scholar-approvals LIST shape is a count, not the sources themselves", async () => {
   // Creates the row it needs rather than hoping one exists. `if (empty) return` made this a wire
   // contract that was pinned on a developer's machine and asserted NOTHING on CI, where

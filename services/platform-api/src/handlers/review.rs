@@ -440,6 +440,24 @@ pub async fn create_scholar_approval(
     actor.require_any(&[ActorRole::Scholar, ActorRole::Admin, ActorRole::Ops])?;
     let Json(req) = body?;
 
+    // ── Only a scholar may say "scholar-approved" ───────────────────────────────────────────────
+    // The gate above still admits Admin and Ops, and that stays: recording a `draft`, or `blocked`ing
+    // something, is operational work. Approving is not. `scholar_approvals` rows carry religious
+    // authority — the status names it — and this table is the artifact a "qualified scholar approval"
+    // is evidenced with, so a row an operator minted is indistinguishable from a scholar's.
+    //
+    // Measured before this check existed, one request per role, all else equal:
+    //     scholar -> 200  scholar-approved by a scholar
+    //     ops     -> 200  scholar-approved by a ops
+    //     admin   -> 200  scholar-approved by a admin
+    //
+    // BEFORE the transaction and before the sources/risk refusals, deliberately: authorization
+    // precedes validation elsewhere here for a stated reason, and a caller who may not approve at
+    // all should not learn whether their sources would have been accepted.
+    if req.status == ScholarDecision::ScholarApproved && actor.role != ActorRole::Scholar {
+        return Err(ApiError::NotAScholar);
+    }
+
     let mut tx = crate::begin_tenant_tx(&state.pool, &actor.tenant_id).await?;
 
     if req.status == ScholarDecision::ScholarApproved && req.sources.is_empty() {

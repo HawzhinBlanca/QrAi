@@ -30,6 +30,8 @@ const RISK_LEVELS = ["low", "medium", "high"];
 /** types.rs:341-344 — thiserror Display strings, which ARE the wire messages. */
 const MISSING_SOURCES = "source references are required for scholar-approved content";
 const HIGH_RISK_APPROVAL = "high-risk content cannot be auto-approved";
+/** types.rs — ApiError::NotAScholar. Names the rule, not the caller's role. */
+const NOT_A_SCHOLAR = "only a scholar may record a scholar-approved decision";
 /** review.rs — the ApiError::BadRequest string, which IS the wire message. */
 const UNSOURCED_ACCEPTANCE =
   "a finding with no source cannot be released to a learner; reject it, or have a source added first";
@@ -342,6 +344,24 @@ export async function createScholarApproval(req, reply, ctx) {
   if (!SCHOLAR_DECISIONS.includes(b.status)) throw new RejectionError("status is required", 422);
   if (!RISK_LEVELS.includes(b.risk)) throw new RejectionError("risk is required", 422);
   if (!Array.isArray(b.sources)) throw new RejectionError("sources is required", 422);
+
+  // ── Only a scholar may say "scholar-approved" ─────────────────────────────────────────────────
+  // The route gate above still admits admin and ops, and that stays: recording a `draft`, or
+  // `blocked`ing something, is operational work. Approving is not. `scholar_approvals` rows carry
+  // religious authority — the status names it — and this table is the artifact a "qualified scholar
+  // approval" is evidenced with, so a row an operator minted is indistinguishable from a scholar's.
+  //
+  // Measured before this check existed, one request per role, all else equal:
+  //     scholar -> 200  scholar-approved by a scholar
+  //     ops     -> 200  scholar-approved by a ops
+  //     admin   -> 200  scholar-approved by a admin
+  //
+  // BEFORE the sources and risk refusals, deliberately. Authorization precedes validation elsewhere
+  // in this codebase for a stated reason, and a caller who may not approve at all should not learn
+  // whether their sources would have been accepted.
+  if (b.status === "scholar-approved" && actor.role !== "scholar") {
+    throw new ApiError(NOT_A_SCHOLAR, 403);
+  }
 
   // ── The two refusals, BEFORE anything is written ──────────────────────────────────────────────
   // Order matters and is transcribed: sources first, then risk. A request that fails both gets the
