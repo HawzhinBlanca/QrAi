@@ -12,7 +12,7 @@ import { queryJson } from "../api-parity/lib/harness.mjs";
  * `docs/DATA_INVENTORY.md` §2 lists the personal-data categories and §4 lists the erasure cascade.
  * The two are maintained by hand, side by side, in the same file — and **Account** appears in §2 and
  * in no part of §4. Measured against a live erasure (200 OK, ml-inference running): the learner's
- * `display_name`, `email` and `password_hash` are byte-identical before and after. ADR-0045 poses
+ * `display_name`, `email` and `password_hash` are byte-identical before and after. ADR-0061 poses
  * that question; this guard is what stops the NEXT one from being silent.
  *
  * ── The two lists ───────────────────────────────────────────────────────────────────────────────
@@ -77,7 +77,7 @@ const DECLARED = {
     why:
       "the account row survives an erasure with display_name, email and password_hash intact — " +
       "reproduced against a live erasure. Whether 'delete my data' means 'delete my account' is a " +
-      "DPO/product ruling, not an engineering default: ADR-0045.",
+      "DPO/product ruling, not an engineering default: ADR-0061.",
   },
 };
 
@@ -170,14 +170,14 @@ test("no declaration names a reference the schema no longer has", async () => {
 });
 
 test("the account question is on the record, not only in this file", async () => {
-  // A guard whose reason lives only in the guard is a rule nobody can argue with. If ADR-0045 is
+  // A guard whose reason lives only in the guard is a rule nobody can argue with. If ADR-0061 is
   // decided, `users.id` needs an implementation and a different declaration — this fails first.
   const adrs = readFileSync(join(root, "docs/DECISIONS.md"), "utf8");
-  assert.match(adrs, /## ADR-0045 —/, "ADR-0045 is gone, so the retained account row has no recorded reason");
+  assert.match(adrs, /## ADR-0061 —/, "ADR-0061 is gone, so the retained account row has no recorded reason");
   assert.match(
-    adrs.slice(adrs.indexOf("## ADR-0045 —")),
+    adrs.slice(adrs.indexOf("## ADR-0061 —")),
     /\*\*Status:\*\* Proposed/,
-    "ADR-0045 is no longer Proposed — if the ruling was made, users.id needs code, not a declaration",
+    "ADR-0061 is no longer Proposed — if the ruling was made, users.id needs code, not a declaration",
   );
 });
 

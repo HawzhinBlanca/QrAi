@@ -300,7 +300,7 @@ test("node-api's learner redaction fails CLOSED on malformed ML responses, like 
   // kept the old behaviour, so a cutover to node-api would have silently reopened an ADR-0028 gate
   // the Rust side had already closed. Reachable without anyone editing the gate: a partially
   // migrated model server, a debug build with a different schema, a compromised ML service.
-  const { redactWithheldFindings } = await import("../../services/node-api/routes/ml-proxy.mjs");
+  const { redactWithheldFindings } = await import("../../server/src/routes/ml-proxy.mjs");
 
   // 1. `findings` present but not an array — drop it, do not forward it.
   const notAnArray = { findings: "MODEL-TEXT-A-LEARNER-MUST-NOT-SEE" };

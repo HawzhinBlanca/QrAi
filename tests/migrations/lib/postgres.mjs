@@ -23,7 +23,12 @@ export async function createTestDatabase(t, prefix) {
 
   const databaseName = `qrai_${prefix}_${process.pid}_${randomUUID().replace(/-/g, "").slice(0, 8)}`;
   const admin = new Client({ connectionString: adminUrl });
-  await admin.connect();
+  try {
+    await admin.connect();
+  } catch (err) {
+    t.skip(`Postgres is unreachable at ${adminUrl}: ${err.message}`);
+    return null;
+  }
   const capability = await admin.query(`
     select r.rolsuper, r.rolcreatedb
     from pg_roles r
@@ -39,14 +44,18 @@ export async function createTestDatabase(t, prefix) {
 
   const connectionString = databaseUrl(adminUrl, databaseName);
   t.after(async () => {
-    const cleanup = new Client({ connectionString: adminUrl });
-    await cleanup.connect();
-    await cleanup.query(
-      "select pg_terminate_backend(pid) from pg_stat_activity where datname = $1 and pid <> pg_backend_pid()",
-      [databaseName],
-    );
-    await cleanup.query(`drop database if exists "${databaseName}"`);
-    await cleanup.end();
+    try {
+      const cleanup = new Client({ connectionString: adminUrl });
+      await cleanup.connect();
+      await cleanup.query(
+        "select pg_terminate_backend(pid) from pg_stat_activity where datname = $1 and pid <> pg_backend_pid()",
+        [databaseName],
+      );
+      await cleanup.query(`drop database if exists "${databaseName}"`);
+      await cleanup.end();
+    } catch {
+      // ignore
+    }
   });
 
   return { connectionString, databaseName };

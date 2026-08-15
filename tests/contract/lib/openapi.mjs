@@ -95,7 +95,7 @@ export function routePairsFromRust(src) {
     // TWO forms, and missing the second is a silent under-count:
     //   axum::routing::get(h)              the first method on a path
     //   axum::routing::get(h).post(h2)     every SUBSEQUENT method, CHAINED on the MethodRouter
-    for (const verb of tail.matchAll(/(?:axum::routing::|\.)(get|post|put|patch|delete)\s*\(/g)) {
+    for (const verb of tail.matchAll(/(?:axum::routing::|\.|(?<![\w.:]))(get|post|put|patch|delete)\s*\(/g)) {
       pairs.push({ method: verb[1].toUpperCase(), path });
     }
 

@@ -45,7 +45,7 @@ Three properties, and a cell is only covered when its test asserts them:
 ## What is deliberately not here
 
 **The Flutter client.** Its degraded states are a separate matrix and it cannot play audio at all
-yet (ADR-0041, Proposed). Listing it with `n/a` cells would read as "checked and fine".
+yet (ADR-0057, Proposed). Listing it with `n/a` cells would read as "checked and fine".
 
 **The realtime gateway's reconnect.** It is a dependency-level fault, covered by the P5.2 map and
 `apps/web/src/lib/reconnect.test.ts`, not a per-flow UI state.

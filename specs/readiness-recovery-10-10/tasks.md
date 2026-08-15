@@ -68,8 +68,8 @@ P6 supports R10; and P7 supports R11/R12.
     empty to a screen reader). The row needs VoiceOver, an alternative screen reader, and real-pixel
     zoom/reflow. **Blocker: physical devices.**
   - **P3.2** — `expired` has no meaning here: no approval-expiry column exists anywhere, and
-    `model_versions.status` is read by no service. **Blocker: the ADR-0042 ruling.**
-  - **P0.2** — ADR-0043 records the architecture that already shipped so it can be challenged, and
+    `model_versions.status` is read by no service. **Blocker: the ADR-0058 ruling.**
+  - **P0.2** — ADR-0059 records the architecture that already shipped so it can be challenged, and
     isolates the half nobody chose: retention appears nowhere. **Blocker: owner approval.**
 
   Guards written this pass that caught their own author: the a11y coverage guard would have

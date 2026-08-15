@@ -2,7 +2,7 @@
 
 Measured 2026-08-12 against `main` (`services/node-api`) and PR #388 (`server/`, head `5be8a41`).
 
-ADR-0044 makes `server/` the backend and freezes `services/node-api`. Its first named risk is that
+ADR-0060 makes `server/` the backend and freezes `services/node-api`. Its first named risk is that
 the shared controls now exist **twice, independently**: main's are proven by parity tests written
 against `services/node-api`, and `server/`'s are separate code those tests have never run against.
 
@@ -16,7 +16,7 @@ cannot be booted here: it needs `@fastify/websocket` and `@aws-sdk/client-s3`, n
 installed, and adding a runtime dependency needs an ADR (AGENTS.md).
 
 So this is a **static** comparison — read from both sources, no execution. It is evidence for the
-merge, not a substitute for step 3 of ADR-0044's sequence: point
+merge, not a substitute for step 3 of ADR-0060's sequence: point
 `tests/api-parity/lib/harness.mjs:451` at `server/src/main.mjs` and run the real suite. Everything
 below should be re-checked there, and anything this missed will surface there.
 
@@ -147,7 +147,7 @@ existing test can see it. This repo already has a name for that shape: *a contro
 harness cannot be found missing by that harness.*
 
 The fix is one block, ported from main's `proxy.mjs`, and it should land on `server/` **before** the
-harness is pointed at it — otherwise step 3 of ADR-0044 proves parity on a path that has silently
+harness is pointed at it — otherwise step 3 of ADR-0060 proves parity on a path that has silently
 lost a control.
 
 ## What matched exactly
@@ -168,4 +168,4 @@ Worth stating, because a comparison that reports only differences is not trustwo
 - **The realtime boundary and `inference/`.** Main has no counterpart, so there is nothing to diff.
   Those are new surface, and they need their own evidence rather than a comparison.
 - **`services/ml-inference` equivalence.** That `server/inference/` and `server/storage/` faithfully
-  replace it is the second risk in ADR-0044 and is not addressed here at all.
+  replace it is the second risk in ADR-0060 and is not addressed here at all.

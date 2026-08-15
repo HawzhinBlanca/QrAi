@@ -505,7 +505,7 @@ test("privacy delete erases the learner's agent runs and preserves another learn
  * is a display choice, not an authorization boundary.
  *
  * Run through the Node shell as well (PARITY_THROUGH_SHELL=1 with this route in NODE_API_PORTED) to
- * pin `redactWithheldFindings` in services/node-api/routes/ml-proxy.mjs against the Rust original.
+ * pin `redactWithheldFindings` in server/src/routes/ml-proxy.mjs against the Rust original.
  */
 test("ML tajweed predict: a learner receives no unreviewed judgement", async () => {
   const sessionId = await createSession("learner-1");

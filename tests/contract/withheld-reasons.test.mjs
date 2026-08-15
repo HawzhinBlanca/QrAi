@@ -20,7 +20,7 @@ import { fileURLToPath } from "node:url";
  *
  * The fourth reason, `expired`, is NOT covered and must not appear covered. There is no expiry
  * concept for an approval anywhere in the schema, and inventing one is a scholar/product ruling —
- * ADR-0042. This file lists it as deliberately absent with a pointer to that decision, so it stays
+ * ADR-0058. This file lists it as deliberately absent with a pointer to that decision, so it stays
  * visible instead of being quietly forgotten or quietly implemented.
  *
  * Hermetic: reads the contract and the test tree.
@@ -42,7 +42,7 @@ const REASONS = [
 ];
 
 /** Named, unclaimed, and deliberately so. */
-const DEFERRED = [{ id: "expired", why: "ADR-0042 — no expiry concept exists; needs a ruling" }];
+const DEFERRED = [{ id: "expired", why: "ADR-0058 — no expiry concept exists; needs a ruling" }];
 
 function sources(dir, out = []) {
   for (const entry of readdirSync(dir)) {
@@ -117,26 +117,26 @@ test("every reason the gate can refuse for has a test that exercises it", () => 
 test("the deferred reason is still deferred, and still named", () => {
   // Both directions. If `expired` acquires a test, this file must be updated rather than the test
   // quietly implementing a ruling nobody made; if it loses its entry here, the gap stops being
-  // visible. ADR-0042 is the decision that resolves it.
+  // visible. ADR-0058 is the decision that resolves it.
   const found = claims();
   for (const { id, why } of DEFERRED) {
     assert.ok(
       !found.has(id),
       `"${id}" now has a test (${found.get(id)?.join(", ")}), but it is recorded here as deferred: ` +
-        `${why}. If the ruling has been made, update ADR-0042 and move it into REASONS.`,
+        `${why}. If the ruling has been made, update ADR-0058 and move it into REASONS.`,
     );
   }
 
   const adrs = readFileSync(join(root, "docs/DECISIONS.md"), "utf8");
   assert.match(
     adrs,
-    /## ADR-0042 —/,
-    "ADR-0042 is gone, so the deferred `expired` reason has no recorded reason for being deferred",
+    /## ADR-0058 —/,
+    "ADR-0058 is gone, so the deferred `expired` reason has no recorded reason for being deferred",
   );
   assert.match(
-    adrs.slice(adrs.indexOf("## ADR-0042 —")),
+    adrs.slice(adrs.indexOf("## ADR-0058 —")),
     /\*\*Status:\*\* Proposed/,
-    "ADR-0042 is no longer Proposed — if it has been decided, `expired` needs a test, not a deferral",
+    "ADR-0058 is no longer Proposed — if it has been decided, `expired` needs a test, not a deferral",
   );
 });
 

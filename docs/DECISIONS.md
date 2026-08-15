@@ -2917,7 +2917,7 @@ the event loop, and an erased learner's identifier persists in it. That is the c
 later. `learnerId` being a first-class field on each row means whichever of (a)/(b)/(c) is chosen can
 be implemented without re-parsing history.
 
-## ADR-0041 — The Flutter review queue cannot play recitation audio without a new runtime dependency
+## ADR-0057 — The Flutter review queue cannot play recitation audio without a new runtime dependency
 
 **Date:** 2026-08-11 · **Status:** Proposed — needs an owner decision, not an engineering one
 **Related:** ADR-0037 (teacher audio through platform-api, every fetch audited), ADR-0022 (artifacts)
@@ -2986,7 +2986,7 @@ Recommended: **B until a mobile owner exists, then A or C.** No reviewer is bloc
 queue plays audio and the notice says where to go. The dependency should land with the person who
 will sign the build that carries it.
 
-## ADR-0042 — Does blocking a model retract a human's approval of one finding?
+## ADR-0058 — Does blocking a model retract a human's approval of one finding?
 
 **Date:** 2026-08-12 · **Status:** Proposed — needs a scholar/product ruling, not an engineering one
 **Related:** ADR-0028 (the learner gate), P3.2 (withheld-feedback tests), P3.6 (scholar approval)
@@ -3067,7 +3067,7 @@ What is in place meanwhile:
 3. Do approvals expire on a clock as well, as locale reviews do — and if so, does an expired
    approval withhold the finding or merely flag it for re-review?
 
-## ADR-0043 — Signed release evidence: the architecture that shipped, and the retention nobody chose
+## ADR-0059 — Signed release evidence: the architecture that shipped, and the retention nobody chose
 
 **Date:** 2026-08-12 · **Status:** Proposed — the architecture is describing what exists; the
 retention policy needs an owner's approval
@@ -3152,7 +3152,7 @@ by 22 tests; re-deciding it now would be theatre.
 - Nothing was built to satisfy this ADR. No retention field, no pruning script, no dormant config.
   When the ruling comes it lands on a clean surface — the same discipline as ADR-0042.
 
-## ADR-0044 — `server/` is the Node backend; `services/node-api` is frozen
+## ADR-0060 — `server/` is the Node backend; `services/node-api` is frozen
 
 **Date:** 2026-08-12 · **Status:** Accepted (engineering scope only — see Non-scope)
 **Related:** ADR-0034 (a port is only ported where something compares it), PR #388,
@@ -3253,7 +3253,7 @@ owner decision with canary and rollback evidence, which is W2/W3/W6, not this.
 It also says nothing about whether the product is ready. P3.4/P3.5 — no held-out evaluation — is
 untouched by which process serves the routes.
 
-## ADR-0045 — A right-to-erasure request does not delete the account
+## ADR-0061 — A right-to-erasure request does not delete the account
 
 **Date:** 2026-08-12 · **Status:** Proposed — needs a DPO/product ruling, not an engineering default
 **Related:** ADR-0040 (the ml-inference audit log survives erasure), `docs/DATA_INVENTORY.md` §2/§4,
@@ -3332,7 +3332,7 @@ this ADR stops being Proposed.
 3. Whether the erasure receipt may name a person who no longer exists — i.e. whether
    `privacy_jobs.learner_id` should become a free-standing identifier rather than an FK.
 
-## ADR-0046 — `recordingConsent` is a checkbox no server reads
+## ADR-0062 — `recordingConsent` is a checkbox no server reads
 
 **Date:** 2026-08-12 · **Status:** Proposed — the remediation needs a data decision, not just a gate
 **Related:** ADR-0028 (the learner gate is enforced on the wire, not in the client),
@@ -3421,7 +3421,7 @@ Meanwhile `tests/security/consent-gate-coverage.test.mjs` requires every flag in
 have a named server-side gate or a declared reason, so a sixth flag cannot be added and quietly do
 nothing, and neither of these two can be forgotten.
 
-## ADR-0047 — the realtime ticket cannot be revoked, and the erasure deletes its record anyway
+## ADR-0063 — the realtime ticket cannot be revoked, and the erasure deletes its record anyway
 
 **Date:** 2026-08-12 · **Status:** Proposed — the fix is an architectural choice, not a one-liner
 **Related:** ADR-0041 (a control that cannot act is worse than its absence), ADR-0045 (erasure does

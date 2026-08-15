@@ -51,7 +51,7 @@ Three consequences of this ordering that are easy to get backwards:
   tajweed feedback is sev-1, because the learner acts on it and carries it into their memorization.
 - **Silence outranks an error.** A path that fails loudly is sev-2; the same path failing while
   reporting success is sev-1, because nothing downstream — including this test suite — can tell.
-- **Severity does not decay because a fix is hard.** ADR-0041's Flutter player is missing, not
+- **Severity does not decay because a fix is hard.** ADR-0057's Flutter player is missing, not
   broken, and says so. That is the correct handling of an unfixable gap: state it, do not downgrade
   it.
 

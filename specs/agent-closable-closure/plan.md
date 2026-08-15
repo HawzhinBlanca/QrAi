@@ -100,7 +100,7 @@ The dependency table in `docs/readiness/INVENTORIES.md` asserts 6 × 3 behaviors
   *Non-vacuity:* `assert.ok(cells.length >= 20)`.
   *Acceptance:* WHEN a critical flow lacks an actionable state, THE gate SHALL fail naming the cell.
 - **T14 — fill the cells.** Every state must be *actionable* — a message with a way forward, not a
-  spinner that never resolves. Per ADR-0041's rule: a control that cannot act is worse than none, so
+  spinner that never resolves. Per ADR-0057's rule: a control that cannot act is worse than none, so
   a cell whose only honest answer is "you cannot proceed" says exactly that and why.
 
 *≈2 PRs.*
@@ -110,7 +110,7 @@ The dependency table in `docs/readiness/INVENTORIES.md` asserts 6 × 3 behaviors
 - **T15 — `tests/contract/withheld-reasons.test.mjs`.** Derive the withheld reasons from the contract
   enum; require a test exercising each. Locks in the four that are covered and makes `expired`
   visibly, deliberately absent rather than forgotten.
-- **T16 — ADR-0042 (Proposed): does `model_versions.status = blocked` retract a prior human approval
+- **T16 — ADR-0058 (Proposed): does `model_versions.status = blocked` retract a prior human approval
   of a specific finding?** States the two defensible answers and what each costs a learner mid-session.
   **Owner/scholar decision.** Ledger updated to name this as the single blocker on P3.2.
 
@@ -118,7 +118,7 @@ The dependency table in `docs/readiness/INVENTORIES.md` asserts 6 × 3 behaviors
 
 ## W6 — P0.2: the release-evidence ADR
 
-- **T17 — ADR-0043 (Proposed): signed release-evidence architecture and retention.** What a bundle
+- **T17 — ADR-0059 (Proposed): signed release-evidence architecture and retention.** What a bundle
   binds (source, build, image, SBOM, smoke, test, environment, signature, expiry), how a verifier
   checks it, how long evidence is kept, and what makes evidence stale. Written against what P0.4 and
   P7.4 will need, so approving it unblocks both.
