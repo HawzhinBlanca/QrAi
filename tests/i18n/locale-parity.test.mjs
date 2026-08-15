@@ -253,3 +253,167 @@ test("the DEFAULT language's coverage is stated, not discovered", () => {
     );
   }
 });
+
+// ─────────────────────────────────────────────────────────────────────────────────────────────────
+// P2.2, the two halves the manifest declared and nothing enforced.
+//
+// 1. EXPIRY. Every row carries `reviewExpires` and no code anywhere reads it — the only hit outside
+//    the manifest itself is the ledger sentence promising it. A locale reviewed once would keep
+//    claiming `complete` for the rest of the product's life, which is the failure mode the field
+//    was added to prevent. `apps/web/src/data/platform.ts` already enforces the equivalent
+//    `reviewExpiresAt` on the platform's own capability records (ADR, DECISIONS.md); the shipped
+//    interface strings had no such rule.
+//
+// 2. NO FALLBACK. `i18n/index.ts` sets `fallbackLng: "en"`, so a missing key renders English and
+//    nothing raises. The status check above compares COUNTS (`actual < referenceKeys`), and a count
+//    cannot see identity: a locale carrying 389 keys of which some are orphans and an equal number
+//    of English keys are absent passes it while rendering English to a learner who was told the
+//    translation was complete. `complete` has to mean zero fallbacks, key by key.
+// ─────────────────────────────────────────────────────────────────────────────────────────────────
+
+/**
+ * What is wrong with one capability row's review claim, as of `now`.
+ *
+ * Pure, and separate from the manifest, for the same reason `localeProblems` is: today every row is
+ * a `placeholder` with `reviewer: null`, so a rule applied only to the real file would pass without
+ * ever having decided anything. The synthetic cases below are where this earns its place.
+ *
+ * The reference locale is exempt: it is authored here, not translated, so there is no reviewer whose
+ * approval could go stale. Anything else claiming review has to say when that claim runs out.
+ */
+export function reviewClaimProblems(code, row, referenceLocale, now) {
+  const problems = [];
+  if (row.status === "placeholder") return problems; // claims nothing; nothing to expire
+  if (code === referenceLocale) return problems;
+
+  if (!row.reviewer) {
+    problems.push(`${code}: declared ${row.status} with no reviewer`);
+  }
+  if (row.reviewExpires === null || row.reviewExpires === undefined) {
+    problems.push(
+      `${code}: declared ${row.status} with no reviewExpires — an approval that never runs out is ` +
+        "not an approval anybody has to renew",
+    );
+    return problems;
+  }
+  const expires = new Date(row.reviewExpires);
+  if (!Number.isFinite(expires.getTime())) {
+    problems.push(`${code}: reviewExpires is not a date: ${JSON.stringify(row.reviewExpires)}`);
+    return problems;
+  }
+  if (expires <= now) {
+    problems.push(
+      `${code}: the review expired on ${row.reviewExpires} — the strings are still shipping and ` +
+        "nobody currently stands behind them",
+    );
+  }
+  return problems;
+}
+
+test("no locale ships a review claim that has run out", () => {
+  const problems = Object.entries(capability.locales).flatMap(([code, row]) =>
+    reviewClaimProblems(code, row, capability.referenceLocale, new Date()),
+  );
+  assert.deepEqual(
+    problems,
+    [],
+    `a shipped locale's review claim does not hold:\n  ${problems.join("\n  ")}\n` +
+      "Either renew the review and update reviewExpires, or drop the row to `placeholder` so the " +
+      "app stops claiming a translation nobody currently vouches for.",
+  );
+});
+
+test("REJECTS a review that expired yesterday", () => {
+  const now = new Date("2026-08-15T00:00:00Z");
+  const p = reviewClaimProblems(
+    "ckb",
+    { status: "complete", keys: 389, reviewer: "A. Reviewer", reviewExpires: "2026-08-14" },
+    "en",
+    now,
+  );
+  assert.match(p.join(), /expired on 2026-08-14/);
+});
+
+test("ACCEPTS a review that expires tomorrow", () => {
+  // The boundary in the other direction, so the rule cannot be satisfied by rejecting everything.
+  const now = new Date("2026-08-15T00:00:00Z");
+  const p = reviewClaimProblems(
+    "ckb",
+    { status: "complete", keys: 389, reviewer: "A. Reviewer", reviewExpires: "2026-08-16" },
+    "en",
+    now,
+  );
+  assert.deepEqual(p, []);
+});
+
+test("REJECTS a review claim with no expiry at all", () => {
+  // The likelier mistake: someone writes a reviewer's name and leaves `reviewExpires: null` as it
+  // already is in every row, and the claim silently becomes permanent.
+  const p = reviewClaimProblems(
+    "ar",
+    { status: "partial", keys: 40, reviewer: "A. Reviewer", reviewExpires: null },
+    "en",
+    new Date("2026-08-15T00:00:00Z"),
+  );
+  assert.match(p.join(), /no reviewExpires/);
+});
+
+test("a placeholder needs no reviewer and no expiry", () => {
+  // Claiming nothing is the one honest state that costs nothing to hold, which is why every row is
+  // in it today. If this rule ever demanded a reviewer here, the pressure would be to upgrade the
+  // status rather than to find one.
+  const p = reviewClaimProblems("tr", capability.locales.tr, "en", new Date());
+  assert.deepEqual(p, []);
+});
+
+test("every shipped locale file satisfies the parity rules, not just ckb", () => {
+  // The rules above were applied to one hard-coded path. A second locale file appearing — which is
+  // exactly what P2.4 produces — would have been checked by nothing.
+  const checked = [];
+  const failures = [];
+  for (const code of Object.keys(capability.locales)) {
+    if (code === capability.referenceLocale) continue;
+    const path = join(root, `apps/web/src/locales/${code}.json`);
+    if (!existsSync(path)) continue;
+    checked.push(code);
+    const problems = localeProblems(en, JSON.parse(readFileSync(path, "utf8")));
+    if (problems.length) failures.push(`${code}:\n    ${problems.join("\n    ")}`);
+  }
+  assert.ok(
+    checked.length >= 1,
+    "no non-reference locale file was checked; this test is passing on an empty set",
+  );
+  assert.deepEqual(failures, [], `locale files break the parity rules:\n  ${failures.join("\n  ")}`);
+});
+
+/** English keys a locale does not carry — every one of them renders through `fallbackLng: "en"`. */
+export function fallbackKeys(english, locale) {
+  const present = new Set(leafKeys(locale));
+  return leafKeys(english).filter((key) => !present.has(key));
+}
+
+test("a locale declared complete falls back for NOTHING", () => {
+  const reference = shippedLocale(capability.referenceLocale);
+  const wrong = [];
+  for (const [code, row] of Object.entries(capability.locales)) {
+    if (row.status !== "complete" || code === capability.referenceLocale) continue;
+    const missing = fallbackKeys(reference, shippedLocale(code));
+    if (missing.length) {
+      wrong.push(
+        `${code}: declared complete and falls back to ${capability.referenceLocale} for ` +
+          `${missing.length} keys, starting with ${missing.slice(0, 3).join(", ")}`,
+      );
+    }
+  }
+  assert.deepEqual(wrong, [], wrong.join("\n  "));
+});
+
+test("REJECTS a complete claim that is complete only by COUNT", () => {
+  // The case the count check cannot see, and the reason this test exists. Same number of keys as the
+  // English, one of them an orphan, one English key absent: `actual < referenceKeys` is false, so
+  // the status check passes, and the learner reads English where they were promised Kurdish.
+  const english = { a: "A", b: "B", c: "C" };
+  const sameCountDifferentKeys = { a: "ئا", b: "ب", zz: "ز" };
+  assert.equal(leafKeys(sameCountDifferentKeys).length, leafKeys(english).length);
+  assert.deepEqual(fallbackKeys(english, sameCountDifferentKeys), ["c"]);
+});
