@@ -31,10 +31,15 @@ echo "ALLOW_INSECURE_DEFAULTS=0" >> "$ENV_FILE"
 echo "=== 3. Pulling/Building staging images ==="
 docker compose -p "$PROJECT_NAME" --env-file "$ENV_FILE" build
 
-echo "=== 4. Starting staging environment ==="
+echo "=== 4. Migrating and provisioning the staging database ==="
+docker compose -p "$PROJECT_NAME" --env-file "$ENV_FILE" up -d postgres
+docker compose -p "$PROJECT_NAME" --env-file "$ENV_FILE" run --rm migrations \
+  sh -eu -c 'node server/scripts/migrate.mjs && node server/scripts/provision-role.mjs'
+
+echo "=== 5. Starting staging environment ==="
 docker compose -p "$PROJECT_NAME" --env-file "$ENV_FILE" up -d
 
-echo "=== 5. Waiting for services to become healthy ==="
+echo "=== 6. Waiting for services to become healthy ==="
 wait_for_health() {
   local service="$1"
   local url="$2"
@@ -56,6 +61,12 @@ wait_for_health() {
 
 # The platform-api readiness check verifies database connection
 # (localhost:8080/ready is mapped from container port 8080)
+wait_for_health "asr-inference" "http://localhost:8091/ready" || {
+  echo "ERROR: asr-inference failed loaded-model readiness. Logs:"
+  docker compose -p "$PROJECT_NAME" --env-file "$ENV_FILE" logs asr-inference
+  exit 1
+}
+
 wait_for_health "platform-api" "http://localhost:8080/ready" || {
   echo "ERROR: platform-api failed to boot healthy. Logs:"
   docker compose -p "$PROJECT_NAME" --env-file "$ENV_FILE" logs platform-api

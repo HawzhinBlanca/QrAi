@@ -1,0 +1,92 @@
+{
+  "schemaVersion": 1,
+  "activeCandidateId": "muaalem-v3.2-shadow",
+  "candidates": [
+    {
+      "id": "muaalem-v3.2-shadow",
+      "status": "shadow-only",
+      "releaseEligible": false,
+      "model": {
+        "provider": "huggingface",
+        "repository": "obadx/muaalem-model-v3_2",
+        "revision": "01a1ef9fbe40d144ef845101e89ff924aed3fef5",
+        "artifact": "model.safetensors",
+        "artifactSha256": "sha256:6b6a2e85303d17ff0f3af5e1fc79ac83daecee409c756ddf27f0ced59393bb41",
+        "artifactSizeBytes": 2423124012,
+        "files": [
+          {
+            "path": "added_tokens.json",
+            "sha256": "sha256:8ac65705686105b31937d2fa8c15f3d7143ead07fb46380ec28042aa4f25e2ee",
+            "sizeBytes": 45
+          },
+          {
+            "path": "config.json",
+            "sha256": "sha256:2094c962ca4a167304d8a2c6d2ca429060cbb6c817de09904739ab088bbcf16f",
+            "sizeBytes": 2183
+          },
+          {
+            "path": "model.safetensors",
+            "sha256": "sha256:6b6a2e85303d17ff0f3af5e1fc79ac83daecee409c756ddf27f0ced59393bb41",
+            "sizeBytes": 2423124012
+          },
+          {
+            "path": "preprocessor_config.json",
+            "sha256": "sha256:8e6281aad64f97e40534135a59dcc5d33571efae376f2a25adf5551951897ab4",
+            "sizeBytes": 275
+          },
+          {
+            "path": "special_tokens_map.json",
+            "sha256": "sha256:e9f51460cefd9c0211c0f0f346682595d02936f05b2ebd409d9fc05c78e481d5",
+            "sizeBytes": 96
+          },
+          {
+            "path": "tokenizer_config.json",
+            "sha256": "sha256:c778e27e2430b6743c5501b7e045ed2928257e7ac430442c3772df6d7ec74e82",
+            "sizeBytes": 1090
+          },
+          {
+            "path": "vocab.json",
+            "sha256": "sha256:dcbdac0162632df023002ca1cdd48e74f0f77a328d7f69503f9ff021afb19473",
+            "sizeBytes": 1532
+          }
+        ],
+        "trainingDataset": "upstream-training-data-undisclosed"
+      },
+      "implementation": {
+        "package": "quran-muaalem",
+        "version": "0.1.0",
+        "repository": "https://github.com/obadx/quran-muaalem",
+        "commit": "2e444e040516781ecef72fe9bbc513bb34dedad4"
+      },
+      "qps": {
+        "package": "quran-transcript",
+        "version": "0.5.2",
+        "repository": "https://github.com/obadx/quran-transcript",
+        "commit": "fb64a1a8b0d7f5c38ffe26de0c69cc4a2b840950",
+        "profileId": "hafs-murattal-madd-4-4-4-4-candidate-v1",
+        "profileStatus": "pending-scholar-approval",
+        "profileChecksum": "sha256:304a8e010b0f8b1037be1c1eb3b1c4cd6228e4a4195d0eedd28f3848c4c0b5c8",
+        "profile": {
+          "rewaya": "hafs",
+          "recitation_speed": "murattal",
+          "madd_monfasel_len": 4,
+          "madd_mottasel_len": 4,
+          "madd_mottasel_waqf": 4,
+          "madd_aared_len": 4
+        }
+      },
+      "limits": {
+        "sampleRate": 16000,
+        "maxWindowMs": 15000,
+        "maxWords": 256
+      },
+      "requiredReleaseGates": {
+        "independentLicenseReview": false,
+        "scholarProfileApproval": false,
+        "heldOutKurdishL1Evaluation": false,
+        "calibration": false,
+        "latencyAndMemory": false
+      }
+    }
+  ]
+}

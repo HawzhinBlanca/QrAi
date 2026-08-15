@@ -29,7 +29,7 @@ import { loadOpenapi } from "./lib/openapi.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const repoRoot = join(here, "..", "..");
-const spec = loadOpenapi(join(repoRoot, "specs/flutter-client/openapi.yaml"));
+const spec = loadOpenapi(join(repoRoot, "packages/contracts/openapi.yaml"));
 const typesRs = readFileSync(join(repoRoot, "services/platform-api/src/types.rs"), "utf8");
 
 /** `TrainingOptIn` -> `training-opt-in`, matching serde's `rename_all = "kebab-case"`. */
@@ -69,6 +69,15 @@ function contractEnums() {
 const RUST = rustEnums();
 const CONTRACT = contractEnums();
 
+// These response-only values are emitted by the Node inference producer and forwarded by the
+// platform API; they are deliberately narrower than Rust's persistence enum. Keep the exception
+// exact and named so a new subset cannot bypass parity by sharing a property name.
+const PRODUCER_SUBSETS = {
+  "PredictedTajweedFinding.reviewStatus": ["ai-suggested"],
+  "PredictedWordAlignment.reviewStatus": ["ai-suggested", "teacher-review-required"],
+  "AlignmentPredictionResponse.reviewStatus": ["ai-suggested", "teacher-review-required"],
+};
+
 /** `audioRetention` -> `AudioRetention`. The service names its enums after the field. */
 const rustNameFor = (prop) => prop.charAt(0).toUpperCase() + prop.slice(1);
 
@@ -89,7 +98,7 @@ for (const [path, values] of Object.entries(CONTRACT)) {
   const rustName = rustNameFor(prop);
   if (!RUST[rustName]) continue;
 
-  test(`${path} offers exactly what ${rustName} accepts`, () => {
+  test(`${path} matches ${rustName} or its declared producer subset`, () => {
     const invented = values.filter((v) => !RUST[rustName].includes(v));
     assert.deepEqual(
       invented,
@@ -97,6 +106,16 @@ for (const [path, values] of Object.entries(CONTRACT)) {
       `${path} contracts ${JSON.stringify(invented)}, which ${rustName} rejects. A client written ` +
         `from this document sends a value the API answers with a 422.`,
     );
+
+    const producerSubset = PRODUCER_SUBSETS[path];
+    if (producerSubset) {
+      assert.deepEqual(
+        values,
+        producerSubset,
+        `${path} drifted from the explicit inference-producer subset`,
+      );
+      return;
+    }
 
     const missing = RUST[rustName].filter((v) => !values.includes(v));
     assert.deepEqual(
@@ -107,6 +126,12 @@ for (const [path, values] of Object.entries(CONTRACT)) {
     );
   });
 }
+
+test("every declared producer subset names a real contracted enum", () => {
+  for (const [path, values] of Object.entries(PRODUCER_SUBSETS)) {
+    assert.deepEqual(CONTRACT[path], values, `${path} is missing or changed without updating its producer proof`);
+  }
+});
 
 test("no contracted enum is silently unchecked", () => {
   // The failure this file is most likely to develop: a new enum lands, no Rust counterpart is

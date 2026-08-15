@@ -19,7 +19,10 @@ if bash scripts/verify.sh; then
   for f in specs/*/tasks.md; do
     [ -e "$f" ] || continue
     tmp="$(mktemp)"
-    sed "s/- \[ \] ${task} /- [x] ${task} /" "$f" > "$tmp" && mv "$tmp" "$f"
+    sed \
+      -e "s/- \[ \] ${task} /- [x] ${task} /" \
+      -e "s/- \[ \] \*\*${task}\*\* /- [x] **${task}** /" \
+      "$f" > "$tmp" && mv "$tmp" "$f"
   done
   echo "Ledger updated: ${task} done (tests: ${tests}; verify.sh passed)."
 else

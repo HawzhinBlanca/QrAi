@@ -5,10 +5,10 @@
 /// the socket is opened inside `start()`, so a learner who has not consented has neither a
 /// microphone stream nor a connection to the gateway — not an idle one, not a connecting one.
 ///
-/// ── The sample rate is the ticket's decision, not this file's ───────────────────────────────────
-/// `RealtimeTicket.allowedSampleRates` is what the gateway will accept for THIS session. Hardcoding
-/// 16 kHz would work until the day a session is issued for something else, and then fail as garbled
-/// audio rather than as an error — the worst way for an audio bug to present.
+/// ── The ticket must carry the one realtime PCM profile ──────────────────────────────────────────
+/// The raw v1 wire has no codec/rate metadata. The server therefore advertises exactly one profile:
+/// mono PCM16LE at 16 kHz. Refusing any drift here prevents audio recorded at another rate from
+/// being persisted and timed as 16 kHz. W4.11 owns buffering device chunks into exact 480 ms frames.
 library;
 
 import 'dart:async';
@@ -95,12 +95,12 @@ class StreamingRecorder implements AudioRecorder {
     return stream;
   }
 
-  /// The rate to record at: the ticket's first allowed value.
+  /// The only rate the unversioned raw-binary wire can describe truthfully.
   int get sampleRate {
-    if (ticket.allowedSampleRates.isEmpty) {
-      throw StateError('the ticket allows no sample rate; refusing to guess one');
+    if (ticket.allowedSampleRates.length != 1 || ticket.allowedSampleRates.single != 16000) {
+      throw StateError('the realtime ticket must allow exactly the 16 kHz PCM profile');
     }
-    return ticket.allowedSampleRates.first;
+    return ticket.allowedSampleRates.single;
   }
 
   @override

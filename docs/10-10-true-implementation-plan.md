@@ -146,7 +146,11 @@ Audio-to-text alignment with timestamps, not just text comparison.
 
 ---
 
-## Phase 5: Real Tajweed Analysis on Audio (Week 5-7)
+## Phase 5: Real Tajweed Analysis on Audio (historical proposal; superseded by W1.10–W1.13)
+
+> F0/energy/centroid thresholds are not an acceptable learner-error authority. ADR-0048 replaces
+> this proposal with a pinned reference-aware Muaalem shadow adapter, withheld raw observations,
+> calibration, Kurdish-L1 held-out evaluation, and scholar/licence gates before promotion.
 
 Detect tajweed errors from audio features, not text regex.
 

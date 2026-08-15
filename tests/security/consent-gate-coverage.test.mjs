@@ -14,7 +14,7 @@ import { fileURLToPath } from "node:url";
  *   realtime ticket for that session          -> 200  TICKET ISSUED
  *   stored consent snapshot recordingConsent  =  false
  *
- * Reproduced against a running service on 2026-08-12. ADR-0046 holds the question of how to enforce
+ * Reproduced against a running service on 2026-08-12. ADR-0062 holds the question of how to enforce
  * it, because 4,615 existing sessions record `false` and `false` is also the default — so the data
  * cannot distinguish "declined" from "never asked", and a naive gate would deny most of them.
  *
@@ -51,33 +51,33 @@ const MIN_REASON = 40;
 const GATES = {
   audioRetention: [
     { file: "packages/contracts/src/index.ts", marker: "export function mustDiscardAudio" },
-    { file: "services/ml-inference/server.mjs", marker: 'audioRetention !== "teacher-review"' },
+    { file: "server/src/inference/runtime.mjs", marker: 'retention === "teacher-review"' },
   ],
   externalAsrProcessing: [
     { file: "packages/contracts/src/index.ts", marker: "export function canUseExternalAsr" },
     { file: "services/platform-api/src/handlers/recitation.rs", marker: "external_asr_processing && req.consent.guardian_approved" },
-    { file: "services/node-api/routes/session-writes.mjs", marker: "consent.externalAsrProcessing && consent.guardianApproved" },
+    { file: "server/src/routes/session-writes.mjs", marker: "consent.externalAsrProcessing && consent.guardianApproved" },
   ],
   guardianApproved: [
     { file: "packages/contracts/src/index.ts", marker: "consent.externalAsrProcessing && consent.guardianApproved" },
-    { file: "services/node-api/routes/ml-proxy.mjs", marker: "guardian_approved" },
+    { file: "server/src/routes/ml-proxy.mjs", marker: "guardian_approved" },
   ],
 };
 
-/** Flags with no gate, and the recorded reason. Both point at ADR-0046. */
+/** Flags with no gate, and the recorded reason. Both point at ADR-0062. */
 const UNENFORCED = {
   recordingConsent: {
     why:
       "no server reads it: `consent_records` has no recording_consent column, so the ticket mint " +
       "joins a table that cannot contain it. Reproduced — a session whose snapshot says false is " +
       "issued an audio ticket. Enforcement needs a ruling on 4,615 rows where false is also the " +
-      "default: ADR-0046.",
+      "default: ADR-0062.",
   },
   anonymizedLearning: {
     why:
       "records a preference for a capability that does not exist — there is no training pipeline " +
       "(P3.4/P3.5), so no data is used for learning either way. Harmless today, which is why it " +
-      "could stay unwired: ADR-0046 asks whether to build the gate or remove the checkbox.",
+      "could stay unwired: ADR-0062 asks whether to build the gate or remove the checkbox.",
   },
 };
 
@@ -150,23 +150,23 @@ test("every claimed gate is still present in the file that claims it", () => {
   assert.deepEqual(broken, [], `consent gates that have moved or gone:\n  ${broken.join("\n  ")}`);
 });
 
-test("an unenforced flag carries a reason worth reading, and ADR-0046 is still open", () => {
+test("an unenforced flag carries a reason worth reading, and ADR-0062 is still open", () => {
   const thin = Object.entries(UNENFORCED)
     .filter(([, v]) => (v.why ?? "").length < MIN_REASON)
     .map(([flag, v]) => `${flag}: ${v.why?.length ?? 0} chars, need ${MIN_REASON}`);
   assert.deepEqual(thin, [], `unenforced flags with no argument:\n  ${thin.join("\n  ")}`);
 
   const adrs = readFileSync(join(root, "docs/DECISIONS.md"), "utf8");
-  assert.match(adrs, /## ADR-0046 —/, "ADR-0046 is gone, so two unenforced consent flags have no recorded reason");
+  assert.match(adrs, /## ADR-0062 —/, "ADR-0062 is gone, so two unenforced consent flags have no recorded reason");
   assert.match(
-    adrs.slice(adrs.indexOf("## ADR-0046 —")),
+    adrs.slice(adrs.indexOf("## ADR-0062 —")),
     /\*\*Status:\*\* Proposed/,
-    "ADR-0046 is no longer Proposed — if the ruling was made, these flags need gates, not declarations",
+    "ADR-0062 is no longer Proposed — if the ruling was made, these flags need gates, not declarations",
   );
 });
 
 test("a flag declared unenforced has not quietly acquired a gate", () => {
-  // The reverse direction. If someone wires `recordingConsent` without revisiting ADR-0046, this
+  // The reverse direction. If someone wires `recordingConsent` without revisiting ADR-0062, this
   // fails — because enforcing it against 4,615 rows where `false` is the default is the decision
   // the ADR exists to make, and shipping it silently is how consenting learners get denied.
   const files = [];
@@ -195,7 +195,7 @@ test("a flag declared unenforced has not quietly acquired a gate", () => {
     gated,
     [],
     `recordingConsent now appears to be enforced:\n  ${gated.join("\n  ")}\n` +
-      `That is the right destination, but ADR-0046 must be decided first — 4,615 existing sessions ` +
+      `That is the right destination, but ADR-0062 must be decided first — 4,615 existing sessions ` +
       `record false, and false is also the default.`,
   );
 });

@@ -21,6 +21,8 @@ export type {
   FullQuranAyah,
   FullQuranSurah,
   FullQuranManifest,
+  FullQuranProvenanceV2,
+  QuranIntegrityHashes,
 } from "./full-quran";
 import type { FullQuranSurah } from "./full-quran";
 
@@ -62,6 +64,14 @@ export const CANONICAL_SOURCE_MANIFESTS: CanonicalSourceManifest[] = [
     edition: "quran-foundation-uthmani",
     scriptType: "uthmani",
     importVersion: CANONICAL_IMPORT_VERSION,
+  },
+  {
+    id: "alquran-cloud",
+    title: "Al Quran Cloud Uthmani Quran Text",
+    url: "https://alquran.cloud/api",
+    edition: "quran-uthmani",
+    scriptType: "uthmani",
+    importVersion: "full-quran-2026-06-26",
   },
 ];
 

@@ -1,6 +1,6 @@
 import { Suspense, lazy } from "react";
 import { useTranslation } from "react-i18next";
-import type { SupportedLanguageCode } from "../types/platform";
+import type { SupportedLanguageCode } from "@quran-ai/contracts";
 import type { AppSection } from "../types/practice";
 
 const PlatformCommand = lazy(() => import("./PlatformCommand").then(m => ({ default: m.PlatformCommand })));

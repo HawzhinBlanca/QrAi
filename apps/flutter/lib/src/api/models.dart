@@ -1,6 +1,6 @@
 /// Wire models for the QrAi platform API.
 ///
-/// Hand-written from `specs/flutter-client/openapi.yaml`, which is itself hand-authored and
+/// Hand-written from `packages/contracts/openapi.yaml`, which is itself hand-authored and
 /// asserted against the Rust router in both directions by `tests/contract/coverage.test.mjs`.
 /// Generating these from the server would produce models that cannot disagree with it, and a model
 /// that cannot disagree is not a check.
@@ -24,6 +24,19 @@ int _int(Map<String, dynamic> json, String key) {
   if (v is int) return v;
   if (v is num) return v.toInt();
   throw FormatException('expected int at "$key", got ${v.runtimeType}');
+}
+
+int? _intOrNull(Map<String, dynamic> json, String key) {
+  final Object? v = json[key];
+  if (v == null) return null;
+  if (v is int) return v;
+  throw FormatException('expected int or null at "$key", got ${v.runtimeType}');
+}
+
+bool? _boolOrNull(Map<String, dynamic> json, String key) {
+  final Object? v = json[key];
+  if (v == null || v is bool) return v as bool?;
+  throw FormatException('expected bool or null at "$key", got ${v.runtimeType}');
 }
 
 double _num(Map<String, dynamic> json, String key) {
@@ -256,8 +269,8 @@ class SourceReference {
 
 /// Review states allowed to reach a learner.
 ///
-/// An ALLOWLIST, deliberately. `reviewStatus` arrives as a bare JSON string — `services/ml-inference`
-/// sets it with a string literal and no schema enforcement, unlike platform-api's Rust enum — so a
+/// An ALLOWLIST, deliberately. `reviewStatus` arrives as a bare JSON string from an inference
+/// producer rather than platform-api's Rust enum — so a
 /// denylist of the unapproved states would fail OPEN on a typo or on a status added upstream without
 /// updating this line, and unreviewed judgement about someone's recitation would reach them. An
 /// allowlist fails closed.
@@ -277,32 +290,74 @@ class TajweedFinding {
     required this.severity,
     required this.explanation,
     required this.confidence,
+    required this.analysisBasis,
     required this.reviewStatus,
     required this.sources,
     required this.arabicName,
+    required this.withheld,
+    required this.startMs,
+    required this.endMs,
     required this.audioStatus,
+    required this.evidenceId,
+    required this.modelVersion,
+    required this.modelArtifactSha256,
+    required this.acousticDatasetVersion,
+    required this.acousticDatasetManifestSha256,
+    required this.calibratorId,
+    required this.calibratorArtifactSha256,
+    required this.calibrationStatus,
+    required this.evaluationEvidenceId,
+    required this.evaluationEvidenceSha256,
+    required this.evaluationEvidenceStatus,
+    required this.auditEventId,
   });
 
-  factory TajweedFinding.fromJson(Map<String, dynamic> json) => TajweedFinding(
-        id: _strOrNull(json, 'id'),
-        wordId: _str(json, 'wordId'),
-        rule: _str(json, 'rule'),
-        severity: _str(json, 'severity'),
-        explanation: _str(json, 'explanation'),
-        confidence: _num(json, 'confidence'),
-        reviewStatus: _str(json, 'reviewStatus'),
-        sources: objectsIn(json['sources'], 'tajweed finding sources')
-            .map(SourceReference.fromJson)
-            .toList(growable: false),
-        arabicName: _strOrNull(json, 'arabicName'),
-        audioStatus: _strOrNull(json, 'audioStatus'),
+  factory TajweedFinding.fromJson(Map<String, dynamic> json) {
+    final String analysisBasis = _str(json, 'analysisBasis');
+    if (analysisBasis != 'acoustic') {
+      throw FormatException(
+        'tajweed finding analysisBasis must be acoustic, got "$analysisBasis"',
       );
+    }
+      );
+    }
+    return TajweedFinding(
+      id: _strOrNull(json, 'id'),
+      wordId: _str(json, 'wordId'),
+      rule: _str(json, 'rule'),
+      severity: _str(json, 'severity'),
+      explanation: _str(json, 'explanation'),
+      confidence: _num(json, 'confidence'),
+      analysisBasis: analysisBasis,
+      reviewStatus: _str(json, 'reviewStatus'),
+      sources: objectsIn(json['sources'], 'tajweed finding sources')
+          .map(SourceReference.fromJson)
+          .toList(growable: false),
+      arabicName: _strOrNull(json, 'arabicName'),
+      withheld: _boolOrNull(json, 'withheld'),
+      startMs: _intOrNull(json, 'startMs'),
+      endMs: _intOrNull(json, 'endMs'),
+      audioStatus: _strOrNull(json, 'audioStatus'),
+      evidenceId: _strOrNull(json, 'evidenceId'),
+      modelVersion: _strOrNull(json, 'modelVersion'),
+      modelArtifactSha256: _strOrNull(json, 'modelArtifactSha256'),
+      acousticDatasetVersion: _strOrNull(json, 'acousticDatasetVersion'),
+      acousticDatasetManifestSha256: _strOrNull(json, 'acousticDatasetManifestSha256'),
+      calibratorId: _strOrNull(json, 'calibratorId'),
+      calibratorArtifactSha256: _strOrNull(json, 'calibratorArtifactSha256'),
+      calibrationStatus: _strOrNull(json, 'calibrationStatus'),
+      evaluationEvidenceId: _strOrNull(json, 'evaluationEvidenceId'),
+      evaluationEvidenceSha256: _strOrNull(json, 'evaluationEvidenceSha256'),
+      evaluationEvidenceStatus: _strOrNull(json, 'evaluationEvidenceStatus'),
+      auditEventId: _strOrNull(json, 'auditEventId'),
+    );
+  }
 
   /// Present only on PERSISTED findings.
   ///
   /// `GET /v1/tajweed-findings` (the staff queue) selects `tf.id`; the learner's
   /// `POST /v1/ml/tajweed-findings:predict` computes findings on the fly and
-  /// `services/ml-inference/tajweed.js` builds them without one — which is why the panel keys on
+  /// the server inference producer builds them without one — which is why the panel keys on
   /// wordId+rule. Nullable rather than required for that reason: a required `id` made every
   /// learner-side response fail to parse.
   ///
@@ -315,6 +370,9 @@ class TajweedFinding {
   final String explanation;
   final double confidence;
 
+  /// A finding is a claim about measured learner performance, never a deterministic text rule.
+  final String analysisBasis;
+
   /// Server-side review state. See [learnerApprovedReviewStatuses].
   final String reviewStatus;
 
@@ -323,6 +381,11 @@ class TajweedFinding {
 
   /// The rule's Arabic name. Canonical text: rendered as sent, never transformed, never translated.
   final String? arabicName;
+
+  /// Nullable on historical rows. Null never clears the learner gate; no default is invented.
+  final bool? withheld;
+  final int? startMs;
+  final int? endMs;
 
   /// ADR-0037 — whether a reviewer can HEAR this recitation, and if not, WHY not.
   ///
@@ -337,6 +400,19 @@ class TajweedFinding {
   /// and made an erasure look like a bug.
   final String? audioStatus;
 
+  final String? evidenceId;
+  final String? modelVersion;
+  final String? modelArtifactSha256;
+  final String? acousticDatasetVersion;
+  final String? acousticDatasetManifestSha256;
+  final String? calibratorId;
+  final String? calibratorArtifactSha256;
+  final String? calibrationStatus;
+  final String? evaluationEvidenceId;
+  final String? evaluationEvidenceSha256;
+  final String? evaluationEvidenceStatus;
+  final String? auditEventId;
+
   /// The ONLY predicate the UI may use to decide whether a learner sees this.
   ///
   /// Mirrors `canShowLearnerFacingAiOutput` in `packages/contracts/src/index.ts` term for term —
@@ -347,9 +423,37 @@ class TajweedFinding {
   /// Note what this is NOT: "confidence is high enough" on its own. A model's confidence is not a
   /// human's approval, and letting the threshold stand in for one is the substitution this refuses.
   bool get isLearnerVisible =>
+      analysisBasis == 'acoustic' &&
       learnerApprovedReviewStatuses.contains(reviewStatus) &&
+      confidence.isFinite &&
       confidence >= learnerMinConfidence &&
-      sources.isNotEmpty;
+      confidence <= 1 &&
+      sources.isNotEmpty &&
+      sources.every((SourceReference source) =>
+          source.id.isNotEmpty && source.title.isNotEmpty && source.citation.isNotEmpty) &&
+      withheld == false &&
+      startMs != null &&
+      endMs != null &&
+      startMs! >= 0 &&
+      endMs! > startMs! &&
+      audioStatus == 'available' &&
+      _hasText(evidenceId) &&
+      _hasText(modelVersion) &&
+      _isSha256(modelArtifactSha256) &&
+      _hasText(acousticDatasetVersion) &&
+      _isSha256(acousticDatasetManifestSha256) &&
+      _hasText(calibratorId) &&
+      _isSha256(calibratorArtifactSha256) &&
+      calibrationStatus == 'calibrated' &&
+      _hasText(evaluationEvidenceId) &&
+      _isSha256(evaluationEvidenceSha256) &&
+      evaluationEvidenceStatus == 'release-trusted' &&
+      _hasText(auditEventId);
+
+  static bool _hasText(String? value) => value != null && value.isNotEmpty;
+
+  static bool _isSha256(String? value) =>
+      value != null && RegExp(r'^sha256:[a-f0-9]{64}$').hasMatch(value);
 
   /// Whether a teacher decision can be recorded against this finding.
   ///

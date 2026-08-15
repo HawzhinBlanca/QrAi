@@ -21,6 +21,7 @@ TajweedFinding finding({
     TajweedFinding.fromJson(<String, dynamic>{
       'wordId': wordId,
       'rule': rule,
+      'analysisBasis': 'acoustic',
       'severity': 'practice',
       'explanation': 'Apply ghunnah on the noon sakina.',
       'reviewStatus': reviewStatus,
@@ -29,6 +30,28 @@ TajweedFinding finding({
       'sources': <Map<String, dynamic>>[
         <String, dynamic>{'id': 's1', 'title': sourceTitle, 'citation': 'Ch. 4'},
       ],
+      // Declared test evidence for the complete learner gate. These values are never presented as
+      // a measured model result outside this widget test.
+      'withheld': false,
+      'startMs': 120,
+      'endMs': 460,
+      'audioStatus': 'available',
+      'evidenceId': 'declared-panel-evidence-1',
+      'modelVersion': 'declared-panel-model-v1',
+      'modelArtifactSha256':
+          'sha256:1111111111111111111111111111111111111111111111111111111111111111',
+      'acousticDatasetVersion': 'declared-panel-dataset-v1',
+      'acousticDatasetManifestSha256':
+          'sha256:2222222222222222222222222222222222222222222222222222222222222222',
+      'calibratorId': 'declared-panel-calibrator-v1',
+      'calibratorArtifactSha256':
+          'sha256:3333333333333333333333333333333333333333333333333333333333333333',
+      'calibrationStatus': 'calibrated',
+      'evaluationEvidenceId': 'declared-panel-evaluation-v1',
+      'evaluationEvidenceSha256':
+          'sha256:4444444444444444444444444444444444444444444444444444444444444444',
+      'evaluationEvidenceStatus': 'release-trusted',
+      'auditEventId': 'declared-panel-audit-1',
     });
 
 Future<void> pump(WidgetTester tester, List<TajweedFinding> findings) => tester.pumpWidget(

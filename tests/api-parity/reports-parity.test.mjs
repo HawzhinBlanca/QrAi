@@ -13,8 +13,9 @@ import assert from "node:assert/strict";
 import test, { after, before } from "node:test";
 
 import { assertAB } from "./lib/ab.mjs";
-import { formatF32, formatF64 } from "../../services/node-api/lib/json.mjs";
-import { request, startApi, startShell } from "./lib/harness.mjs";
+import { assertMatchesContract } from "./lib/contract.mjs";
+import { formatF32, formatF64 } from "../../server/src/lib/json.mjs";
+import { queryJson, request, startApi, startShell, TENANT, uniqueSuffix } from "./lib/harness.mjs";
 
 /**
  * The routes this file is ABOUT, served by the shell rather than proxied to Rust.
@@ -47,16 +48,67 @@ let shell;
  * caught it was a literal key-list assertion beside the probe, which is not a comparison at all.
  */
 let rustUrl;
+const evidenceSuffix = uniqueSuffix();
+const evidenceModelVersion = `fixture-eval-model-${evidenceSuffix}`;
+const evidenceEvalId = `fixture-eval-run-${evidenceSuffix}`;
+const digest = (character) => `sha256:${character.repeat(64)}`;
 
 before(async () => {
   api = await startApi({});
   rustUrl = api.upstreamUrl ?? api.baseUrl;
   shell = await startShell({ upstream: rustUrl, env: { NODE_API_PORTED: PORTED } });
+  // Declared fixture only. It exercises every readback field and is mechanically ineligible for
+  // release; none of these values is presented as model or calibration evidence.
+  await queryJson(
+    `insert into model_versions (id, kind, version, status) values ($1, 'alignment', $2, 'draft')`,
+    [evidenceModelVersion, evidenceSuffix],
+  );
+  await queryJson(
+    `insert into eval_runs
+       (id, tenant_id, model_version_id, dataset_version, metrics, word_alignment_f1, tajweed_f1,
+        false_positive_rate, teacher_agreement_rate, unsourced_learner_outputs, passed,
+        evaluation_task, evidence_id, evidence_kind, evidence_eligibility, release_eligible,
+        evidence_payload, evidence_payload_sha256, candidate_id, model_artifact_sha256,
+        dataset_manifest_sha256, split_manifest_sha256, split_id, evaluator_version,
+        evaluator_source_sha256, evaluator_protocol_sha256, raw_row_manifest_sha256,
+        raw_results_sha256, calibrator_id, calibrator_artifact_sha256, signer_key_id,
+        signature_algorithm, signature_base64url, signed_at, evaluation_counts, slice_metrics)
+     values
+       ($1, $2, $3, 'declared-fixture-v1', '{}', 0.5, 0.4, 0.3, 0.2, 1, false,
+        'acoustic-tajweed', $4, 'row-level-computed-evaluation', 'fixture-regression', false,
+        $5, $6, 'fixture-candidate', $7, $8, $9, 'held-out', 'fixture-evaluator-v1',
+        $10, $11, $12, $13, 'fixture-calibrator', $14, 'test-only-ephemeral',
+        'Ed25519', $15, '2026-08-07T00:00:00Z', $16, $17)`,
+    [
+      evidenceEvalId,
+      TENANT,
+      evidenceModelVersion,
+      `fixture-evidence-${evidenceSuffix}`,
+      JSON.stringify({ nested: { z: 1, a: 2 }, declaredFixture: true }),
+      digest("1"),
+      digest("2"),
+      digest("3"),
+      digest("4"),
+      digest("5"),
+      digest("6"),
+      digest("7"),
+      digest("8"),
+      digest("9"),
+      "A".repeat(86),
+      JSON.stringify({ rowCount: 2, negativeCount: 1, positiveCount: 1, reciterCount: 2 }),
+      JSON.stringify([{ sliceId: "fixture-slice", declaredFixture: true }]),
+    ],
+  );
 });
 
 after(async () => {
-  await shell?.stop();
-  await api?.stop();
+  try {
+    await queryJson("delete from eval_runs where id = $1", [evidenceEvalId]);
+    await queryJson("delete from model_versions where id = $1", [evidenceModelVersion]);
+  } finally {
+    await shell?.stop();
+    await api?.stop();
+  }
 });
 
 const ROLES = ["learner", "teacher", "scholar", "admin", "ops"];
@@ -107,6 +159,67 @@ test("GET /v1/eval-runs/{v}: a missing model version is 404, identically", async
   for (const path of ["/v1/eval-runs/no-such-model", "/v1/eval-runs/..%2Fetc", "/v1/eval-runs/%20"]) {
     await assertAB(shell.baseUrl, rustUrl, { path, role: "admin" });
   }
+});
+
+test("eval evidence is complete, explicit, ineligible, and byte-identical", async () => {
+  const path = `/v1/eval-runs/${evidenceModelVersion}`;
+  const response = await request(shell.baseUrl, path, { role: "admin" });
+  assert.equal(response.status, 200);
+  assertMatchesContract("GET", path, response);
+  assert.deepEqual(Object.keys(response.body), [
+    "modelVersion",
+    "datasetVersion",
+    "wordAlignmentF1",
+    "tajweedF1",
+    "falsePositiveRate",
+    "teacherAgreementRate",
+    "unsourcedLearnerOutputs",
+    "passed",
+    "evaluationTask",
+    "evidenceId",
+    "evidenceKind",
+    "evidenceEligibility",
+    "releaseEligible",
+    "evidencePayload",
+    "evidencePayloadSha256",
+    "candidateId",
+    "modelArtifactSha256",
+    "datasetManifestSha256",
+    "splitManifestSha256",
+    "splitId",
+    "evaluatorVersion",
+    "evaluatorSourceSha256",
+    "evaluatorProtocolSha256",
+    "rawRowManifestSha256",
+    "rawResultsSha256",
+    "calibratorId",
+    "calibratorArtifactSha256",
+    "signerKeyId",
+    "signatureAlgorithm",
+    "signatureBase64Url",
+    "signedAt",
+    "evaluationCounts",
+    "sliceMetrics",
+  ]);
+  assert.equal(response.body.evidenceKind, "row-level-computed-evaluation");
+  assert.equal(response.body.evidenceEligibility, "fixture-regression");
+  assert.equal(response.body.releaseEligible, false);
+  assert.equal(response.body.passed, false);
+  assert.equal(response.body.signedAt, "2026-08-07T00:00:00.000000Z");
+  assert.deepEqual(response.body.evidencePayload, {
+    declaredFixture: true,
+    nested: { a: 2, z: 1 },
+  });
+  assert.deepEqual(response.body.evaluationCounts, {
+    negativeCount: 1,
+    positiveCount: 1,
+    reciterCount: 2,
+    rowCount: 2,
+  });
+  assert.deepEqual(response.body.sliceMetrics, [
+    { declaredFixture: true, sliceId: "fixture-slice" },
+  ]);
+  await assertAB(shell.baseUrl, rustUrl, { path, role: "admin" });
 });
 
 /**

@@ -25,35 +25,83 @@ export function loadOpenapi(path) {
  */
 export function routePairsFromRust(src) {
   const pairs = [];
-  // A REGEX, not the literal `.route("`: most registrations in lib.rs are multi-line, with the path
-  // on the line after `.route(`. Splitting on the literal found 4 of 34 and the coverage test read
-  // that as "the contract describes 30 routes that do not exist".
-  // `(?:\s|\/\/[^\n]*|\/\*[\s\S]*?\*\/)*` — whitespace OR COMMENTS between `.route(` and the path.
-  // Two registrations put an ADR-0037 note there, and `\s*` alone did not match a comment, so the
-  // split walked straight past them: GET /v1/tajweed-findings/{id}/audio and POST /v1/audio-chunks
-  // were invisible. Nothing failed, because coverage.test.mjs compares THIS parser's output to the
-  // contract and the contract was missing exactly the same two — both sides agreed on a smaller
-  // world. That is the second time this parser has silently under-counted (34 of 38, above); the
-  // difference is that an under-count here does not just report a wrong number, it makes a route
-  // unreachable by every check that starts from this list.
-  for (const block of src.split(/\.route\((?:\s|\/\/[^\n]*|\/\*[\s\S]*?\*\/)*"/).slice(1)) {
-    const path = block.split('"', 1)[0];
-    const tail = block.split(/\.route\(|\.layer\(|\.with_state|\.fallback/, 1)[0];
+
+  // Rust permits comments between a call's opening parenthesis and its first argument. Treat those
+  // comments as lexical trivia instead of trying to grow a route-matching regular expression.
+  // Block comments may nest in Rust, so the scanner tracks depth.
+  const skipTrivia = (start) => {
+    let at = start;
+    while (at < src.length) {
+      if (/\s/.test(src[at])) {
+        at += 1;
+        continue;
+      }
+      if (src.startsWith("//", at)) {
+        const newline = src.indexOf("\n", at + 2);
+        at = newline === -1 ? src.length : newline + 1;
+        continue;
+      }
+      if (src.startsWith("/*", at)) {
+        let depth = 1;
+        at += 2;
+        while (at < src.length && depth > 0) {
+          if (src.startsWith("/*", at)) {
+            depth += 1;
+            at += 2;
+          } else if (src.startsWith("*/", at)) {
+            depth -= 1;
+            at += 2;
+          } else {
+            at += 1;
+          }
+        }
+        continue;
+      }
+      break;
+    }
+    return at;
+  };
+
+  let cursor = 0;
+  while (cursor < src.length) {
+    const routeStart = src.indexOf(".route(", cursor);
+    if (routeStart === -1) break;
+
+    const pathStart = skipTrivia(routeStart + ".route(".length);
+    if (src[pathStart] !== '"') {
+      cursor = routeStart + ".route(".length;
+      continue;
+    }
+
+    let pathEnd = pathStart + 1;
+    while (pathEnd < src.length) {
+      if (src[pathEnd] === "\\") {
+        pathEnd += 2;
+        continue;
+      }
+      if (src[pathEnd] === '"') break;
+      pathEnd += 1;
+    }
+    if (pathEnd >= src.length) break;
+
+    const path = src.slice(pathStart + 1, pathEnd);
+    const tailStart = pathEnd + 1;
+    const boundaryOffsets = [".route(", ".layer(", ".with_state", ".fallback"]
+      .map((boundary) => src.indexOf(boundary, tailStart))
+      .filter((offset) => offset !== -1);
+    const tailEnd = boundaryOffsets.length === 0 ? src.length : Math.min(...boundaryOffsets);
+    const tail = src.slice(tailStart, tailEnd);
+
     // TWO forms, and missing the second is a silent under-count:
     //   axum::routing::get(h)              the first method on a path
     //   axum::routing::get(h).post(h2)     every SUBSEQUENT method, CHAINED on the MethodRouter
-    // Matching only the first form found 34 pairs where there are 38 — and Phase 7's research used
-    // that same pattern, so its "34 method+path pairs" was four short. Corrected in
-    // specs/flutter-client/tasks.md rather than left to propagate.
-    // THREE forms now. The third is a BARE `get(handler)`, which is how services/realtime-gateway
-    // registers — it imports the verbs. Requiring `axum::routing::` or a leading `.` made this
-    // parser return ZERO routes for a real router, silently: a caller pointing it at the gateway
-    // got an empty list and no error. `(?<![\w.])` keeps that from matching `map.get(` or an
-    // identifier ending in the verb, and the tail is already bounded to this registration.
     for (const verb of tail.matchAll(/(?:axum::routing::|\.|(?<![\w.:]))(get|post|put|patch|delete)\s*\(/g)) {
       pairs.push({ method: verb[1].toUpperCase(), path });
     }
+
+    cursor = pathEnd + 1;
   }
+
   // Deduplicate: identical method+path registered twice would otherwise inflate the count.
   const seen = new Set();
   return pairs.filter((p) => {

@@ -17,6 +17,8 @@
 #   BACKUP_DECRYPTION_KEY  REQUIRED for encrypted (.cms) backups — the offline private key.
 #   RESTORE_FORCE=1        Allow restoring into a database that already has rows (default: refuse).
 #   RESTORE_JOBS           pg_restore parallelism (default: 4).
+#   RESTORE_APP_DATABASE_PASSWORD  REQUIRED. Rotates/provisions the restricted runtime role after
+#                                  forward migrations complete.
 #
 # ─────────────────────────────────────────────────────────────────────────────────────────────────
 # SAFETY: this script deliberately has NO DEFAULT for its target.
@@ -53,7 +55,13 @@ if [[ -z "${RESTORE_TARGET_URL:-}" ]]; then
   exit 2
 fi
 
-for tool in pg_restore psql; do
+restore_app_database_password="${RESTORE_APP_DATABASE_PASSWORD:-}"
+if [[ ${#restore_app_database_password} -lt 16 ]]; then
+  echo "error: RESTORE_APP_DATABASE_PASSWORD is required and must contain at least 16 characters." >&2
+  exit 2
+fi
+
+for tool in pg_restore psql node; do
   if ! command -v "$tool" >/dev/null 2>&1; then
     echo "error: $tool not found on PATH (install the postgresql client)" >&2
     exit 1
@@ -127,6 +135,16 @@ if ! pg_restore --dbname="$target" --clean --if-exists --no-owner --jobs="$jobs"
   echo "error: pg_restore reported failures — treat this restore as FAILED, not partial." >&2
   exit 1
 fi
+
+# A backup may predate the migration ledger or the newest additive migration. Restore the data
+# first, then converge it through the same checksum-locked boundary used by Compose, CI, staging,
+# and release. Role rotation is separate from immutable schema history but mandatory before this
+# restored database is considered ready for application traffic.
+migration_runner="${MIGRATION_RUNNER:-$(dirname "$0")/../server/scripts/migrate.mjs}"
+role_provisioner="${ROLE_PROVISIONER:-$(dirname "$0")/../server/scripts/provision-role.mjs}"
+MIGRATION_DATABASE_URL="$target" node "$migration_runner"
+MIGRATION_DATABASE_URL="$target" APP_DATABASE_PASSWORD="$restore_app_database_password" \
+  node "$role_provisioner"
 
 end_epoch="$(date -u +%s)"
 elapsed=$(( end_epoch - start_epoch ))

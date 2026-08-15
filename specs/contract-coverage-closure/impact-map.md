@@ -20,7 +20,7 @@ quietly inside a coverage commit.
 
 ## 2. Modified
 
-### `specs/flutter-client/openapi.yaml` (C3)
+### `packages/contracts/openapi.yaml` (C3)
 
 **Callers: `tests/contract/lib/openapi.mjs` → `compileResponseValidators()`, and the
 `contract: openapi vs real responses` gate step.** Replacing `x-unvalidated: true` with a real schema

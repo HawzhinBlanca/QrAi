@@ -18,9 +18,9 @@ Below is the symbol-level impact map of files and callers affected by the change
 
 ### 3. Database Schema & RLS
 - **Files:**
-  - [infra/sql/0001_core_schema.sql](file:///Users/hawzhin/QrAi/infra/sql/0001_core_schema.sql)
-  - [infra/sql/0003_tenant_rls.sql](file:///Users/hawzhin/QrAi/infra/sql/0003_tenant_rls.sql)
-  - [infra/sql/0006_seed_internal.sql](file:///Users/hawzhin/QrAi/infra/sql/0006_seed_internal.sql)
+  - [infra/migrations/0001_core_schema.sql](file:///Users/hawzhin/QrAi/infra/migrations/0001_core_schema.sql)
+  - [infra/migrations/0003_tenant_rls.sql](file:///Users/hawzhin/QrAi/infra/migrations/0003_tenant_rls.sql)
+  - [infra/migrations/0006_seed_internal.sql](file:///Users/hawzhin/QrAi/infra/migrations/0006_seed_internal.sql)
 - **Affected Tables:** `eval_runs`
 - **Test Impact:**
   - `gets_eval_run_from_postgres` in [tests/integration.rs](file:///Users/hawzhin/QrAi/services/platform-api/tests/integration.rs) will run with RLS enforced.

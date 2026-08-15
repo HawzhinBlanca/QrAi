@@ -3,6 +3,8 @@ import { createHash, createPrivateKey, createPublicKey, sign, verify as verifySi
 import { existsSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 
+import { DEPLOYABLE_IMAGE_KEYS } from "./lib/deployable-images.mjs";
+
 const schemaVersion = "2.1.0";
 const requiredArtifactFiles = [
   join("specs", "readiness-recovery-10-10", "plan.md"),
@@ -11,7 +13,6 @@ const requiredArtifactFiles = [
   join("specs", "readiness-recovery-10-10", "impact-map.md"),
   join("specs", "readiness-recovery-10-10", "tasks.md")
 ];
-const deployableServices = ["platform-api", "realtime-gateway", "ml-inference", "asr-inference", "web"];
 const sha256Digest = /^sha256:[a-f0-9]{64}$/;
 const sha256Hash = /^[a-f0-9]{64}$/;
 const candidateSha = /^[a-f0-9]{40}$/;
@@ -178,7 +179,7 @@ function assertArtifactPath(repositoryRoot, filePath) {
 
 function assertImageDigests(imageDigests, label = "imageDigests") {
   assertJsonObject(imageDigests, label);
-  for (const service of deployableServices) {
+  for (const service of DEPLOYABLE_IMAGE_KEYS) {
     if (typeof imageDigests[service] !== "string" || !sha256Digest.test(imageDigests[service])) {
       fail(`${label}.${service} must be a non-empty sha256 digest.`);
     }

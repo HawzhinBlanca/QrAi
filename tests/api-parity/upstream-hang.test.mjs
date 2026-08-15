@@ -42,7 +42,7 @@ let ml;
 let asr;
 
 before(async () => {
-  ml = await startMockUpstream(() => ({ status: 200, body: { findings: [] } }));
+  ml = await startMockUpstream(() => ({ status: 200, body: { annotations: [], findings: [] } }));
   asr = await startMockUpstream(() => ({ status: 200, body: { text: "", words: [] } }));
   api = await startApi({
     env: {

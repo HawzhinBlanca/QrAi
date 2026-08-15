@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
@@ -12,7 +12,7 @@ import { fileURLToPath } from "node:url";
  * `[` itself — so a human reviewer cannot see what the class contains. In PR #258 a literal class
  * in `forced_align.py` merged two ranges, deleted every Arabic letter, and passed review. It has
  * since been broken twice more, independently: `services/asr-inference/server.py` (ghunnah) and
- * `services/ml-inference/tajweed.js` (five patterns, including a literal RANGE — the #258 shape).
+ * `server/src/inference/tajweed.mjs` (five patterns, including a literal RANGE — the #258 shape).
  *
  * Three instances in two languages is not a series of accidents, it is a missing gate. This is the
  * gate, and it is repo-wide rather than per-file so the fourth instance fails in CI instead of in
@@ -46,14 +46,23 @@ PATTERNS[".mjs"] = PATTERNS[".js"];
 PATTERNS[".ts"] = PATTERNS[".js"];
 PATTERNS[".tsx"] = PATTERNS[".js"];
 
-/** Tracked source files only — never node_modules, never build output. */
+/** Working-tree source files only — tracked or new, never ignored dependencies/build output. */
+function existingSources(files, base = root) {
+  return files.filter((file) => existsSync(join(base, file)));
+}
+
 function trackedSources() {
-  return execFileSync("git", ["ls-files"], { cwd: root, encoding: "utf8", maxBuffer: 32 << 20 })
-    .split("\n")
+  const files = execFileSync("git", ["ls-files", "--cached", "--others", "--exclude-standard"], {
+    cwd: root,
+    encoding: "utf8",
+    maxBuffer: 32 << 20,
+  }).split("\n");
+
+  return existingSources(files)
     .filter((f) => Object.keys(PATTERNS).some((ext) => f.endsWith(ext)))
     // This file names the codepoints it bans, and the two suites that prove the fixes quote the
     // patterns they assert on. Excluding the checker from its own check is standard; excluding
-    // anything else is not, so the list is exactly three files and they are all tests.
+    // anything else is not, so the list is exactly two files and they are both tests.
     .filter(
       (f) =>
         ![
@@ -109,6 +118,17 @@ test("no regex in the repo contains a literal Arabic combining mark", () => {
     [],
     "these regexes carry literal Arabic combining marks — use \\uXXXX escapes " +
       `(AGENTS.md hard boundary):\n  ${violations.join("\n  ")}`,
+  );
+});
+
+
+test("source inventory ignores index entries deleted from the working tree", () => {
+  assert.deepEqual(
+    existingSources([
+      "tests/security/arabic-regex-escapes.test.mjs",
+      "services/definitely-retired-component.py",
+    ]),
+    ["tests/security/arabic-regex-escapes.test.mjs"],
   );
 });
 

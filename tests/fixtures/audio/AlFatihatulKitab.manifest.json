@@ -1,0 +1,38 @@
+{
+  "schemaVersion": 1,
+  "id": "wikimedia-alfatihatulkitab-cc0-v1",
+  "purpose": "Real-audio integration fixture for ASR word-span transport and refusal tests",
+  "evidenceEligibility": "integration-fixture-only-not-model-evaluation",
+  "file": "AlFatihatulKitab.ogg",
+  "mediaType": "application/ogg",
+  "byteLength": 809597,
+  "durationSeconds": 92.72,
+  "sha1": "671b6e324988d3752318d2e8be1fb9cc7db30e58",
+  "sha256": "59a4eef339d3e42aeaf9b77a6423297a0f830e4872783fc0718a64862b02df32",
+  "sourcePage": "https://commons.wikimedia.org/wiki/File:AlF%C4%81tihatulKit%C4%81b.ogg",
+  "sourceRevision": "https://commons.wikimedia.org/w/index.php?title=File:AlF%C4%81tihatulKit%C4%81b.ogg&oldid=1218177366",
+  "sourceFile": "https://upload.wikimedia.org/wikipedia/commons/6/6d/AlF%C4%81tihatulKit%C4%81b.ogg",
+  "author": "Ibrahimmusa4",
+  "sourceDate": "2024-11-08",
+  "fetchedAt": "2026-08-07",
+  "license": "CC0-1.0",
+  "derivedPcm": {
+    "file": "AlFatihatulKitab.pcm",
+    "mediaType": "audio/L16;rate=16000;channels=1",
+    "sampleRate": 16000,
+    "channels": 1,
+    "bitsPerSample": 16,
+    "byteLength": 2966742,
+    "sha256": "8974589d5633aa9caefea900a2d1b6fbd965fdc1814e8a1b9f3782f16ca4a8ce",
+    "derivation": "ffmpeg decode of the byte-pinned CC0 source; no normalization or text processing"
+  },
+  "capture": {
+    "file": "AlFatihatulKitab.asr-base-capture.json",
+    "responseSha256": "10f942539ff9e4ca046e9436060d6e2d152045abd763b416f2653f4d8d8cae9d",
+    "capturedAt": "2026-08-07T00:34:00+03:00",
+    "candidateId": "openai-whisper-base",
+    "implementationId": "openai-whisper:base@20250625",
+    "artifactDigest": "sha256:ed3a0b6b1c0edf879ad9b11b1af5a0e6ab5db9205f891f668f8b0e6c6326e34e",
+    "runtimePurpose": "plumbing-proof-only-not-transcription-quality-evidence"
+  }
+}

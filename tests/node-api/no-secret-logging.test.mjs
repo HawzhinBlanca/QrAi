@@ -5,7 +5,7 @@ import { dirname, join } from "node:path";
 import test, { after, before } from "node:test";
 import { fileURLToPath } from "node:url";
 
-import { buildServer } from "../../services/node-api/server.mjs";
+import { createApplication } from "../../server/src/app.mjs";
 
 /**
  * N-7 — THE node-api SHALL NOT log audio bytes, bearer tokens, cookie values, password hashes, or
@@ -27,13 +27,16 @@ import { buildServer } from "../../services/node-api/server.mjs";
  */
 
 const here = dirname(fileURLToPath(import.meta.url));
-const nodeApi = join(here, "..", "..", "services", "node-api");
+const nodeApi = join(here, "..", "..", "server", "src");
 
 // Distinctive enough that a substring match cannot be a coincidence, and shaped like the real thing.
 const BEARER = "eyJhbGciOiJIUzI1NiJ9.CANARYtokenPAYLOAD8f21.CANARYsigNATURE";
 const COOKIE = "CANARYpilotCookieValue-4d7a";
 const PASSWORD = "CANARYpassword-correct-horse";
 const HASH = "$2b$12$CANARYbcryptHASHvalue0000000000000000000000000000000";
+const DEVICE_ACCESS = `qrai_at_v1.${"A".repeat(43)}`;
+const DEVICE_REFRESH = `qrai_rt_v1.${"R".repeat(43)}`;
+const DEVICE_INVITATION = `qrai_inv_v1.${"I".repeat(43)}`;
 
 /**
  * The upstream body that fails to parse. The canary sits at the START on purpose: Node quotes the
@@ -88,7 +91,7 @@ async function withCapturedLogs(config, body) {
     original[level] = console[level];
     console[level] = (...args) => lines.push(args.map(String).join(" "));
   }
-  const app = buildServer({
+  const app = createApplication({
     upstream: upstreamUrl,
     logger: { level: "trace", stream: { write: (s) => lines.push(s) } },
     ...config,
@@ -106,7 +109,7 @@ async function withCapturedLogs(config, body) {
 test("an upstream body that fails to parse is never echoed into the log", async () => {
   const logs = await withCapturedLogs(
     {
-      ported: new Set(["POST /v1/asr/transcribe"]),
+      compatibilityRouteKeys: new Set(["POST /v1/asr/transcribe"]),
       allowHeaderAuth: true,
       asrInferenceUrl: asrUrl,
     },
@@ -144,7 +147,7 @@ test("credentials in a request never reach any log sink, even at trace level", a
   for (const path of ["/v1/asr/transcribe", "/v1/anything-unported"]) {
     const logs = await withCapturedLogs(
       {
-        ported: new Set(["POST /v1/asr/transcribe"]),
+        compatibilityRouteKeys: new Set(["POST /v1/asr/transcribe"]),
         allowHeaderAuth: true,
         asrInferenceUrl: asrUrl,
       },
@@ -171,6 +174,37 @@ test("credentials in a request never reach any log sink, even at trace level", a
       ["a password hash", HASH],
     ]) {
       assert.ok(!logs.includes(canary), `${what} reached the log via ${path}:\n${logs}`);
+    }
+  }
+});
+
+test("device invitation, access, and refresh credentials never reach any log sink", async () => {
+  const probes = [
+    {
+      path: "/v1/device-enrollments:exchange",
+      options: { method: "POST", body: JSON.stringify({ invitationToken: DEVICE_INVITATION }) },
+    },
+    {
+      path: "/v1/device-sessions:refresh",
+      options: { method: "POST", body: JSON.stringify({ refreshToken: DEVICE_REFRESH }) },
+    },
+    {
+      path: "/v1/learner/progress",
+      options: { method: "GET", headers: { authorization: `Bearer ${DEVICE_ACCESS}` } },
+    },
+  ];
+  for (const probe of probes) {
+    const logs = await withCapturedLogs(
+      { deviceIdentityEnabled: true, rateLimitEnabled: false },
+      async (url) => {
+        await fetch(`${url}${probe.path}`, {
+          headers: { "content-type": "application/json", ...(probe.options.headers ?? {}) },
+          ...probe.options,
+        });
+      },
+    );
+    for (const credential of [DEVICE_ACCESS, DEVICE_REFRESH, DEVICE_INVITATION]) {
+      assert.ok(!logs.includes(credential), `device credential reached logs via ${probe.path}:\n${logs}`);
     }
   }
 });

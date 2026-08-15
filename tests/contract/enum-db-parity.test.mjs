@@ -18,9 +18,9 @@ import { loadOpenapi } from "./lib/openapi.mjs";
  * services believe.
  *
  * ── This has already gone wrong once ────────────────────────────────────────────────────────────
- * `infra/sql/0010_review_status_check.sql` constrains `recitation_sessions.review_status` to FIVE
+ * `infra/migrations/0010_review_status_check.sql` constrains `recitation_sessions.review_status` to FIVE
  * values, omitting `teacher-review-required`, under a comment saying it "matches ReviewStatus in
- * the platform-api types". It did not. `infra/sql/0011_teacher_review_required_status.sql` exists
+ * the platform-api types". It did not. `infra/migrations/0011_teacher_review_required_status.sql` exists
  * for no other reason than to add the missing value — an entire migration whose existence is the
  * bug report.
  *
@@ -33,7 +33,7 @@ import { loadOpenapi } from "./lib/openapi.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const repoRoot = join(here, "..", "..");
-const spec = loadOpenapi(join(repoRoot, "specs/flutter-client/openapi.yaml"));
+const spec = loadOpenapi(join(repoRoot, "packages/contracts/openapi.yaml"));
 
 const DATABASE_URL = process.env.DATABASE_URL;
 

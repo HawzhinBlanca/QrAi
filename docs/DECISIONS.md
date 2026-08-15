@@ -5,6 +5,973 @@ architectural change. Newest first.
 
 ---
 
+## ADR-0053 — Postgres is the Node realtime single-use authority
+
+**Status:** Accepted · **Date:** 2026-08-08 · **Decider:** repository owner through the approved persistent implementation goal
+**Related:** ADR-0051 (realtime contract), ADR-0052 (Node admission), ADR-0050 (one Node package)
+
+### Context
+
+ADR-0051 made Postgres replay protection conditional on a restricted-role cross-instance benchmark.
+The Node shadow now needs one durable decision between valid ticket admission and WebSocket upgrade,
+without persisting the raw ticket/nonce, trusting process memory, or adding Redis/NATS. The existing
+`realtime_session_tickets` table is issuance/audit state keyed by a whole-token digest and is not a
+single-use nonce authority.
+
+### Decision
+
+- Migration 0036 adds forced-RLS `realtime_ticket_replay_claims`, scoped by tenant, session, and the
+  lowercase SHA-256 of the exact signed nonce bytes. It stores no raw credential and cascades with
+  session privacy deletion. `numeric(20,0)` preserves the signed ticket's full u64 expiry domain.
+- Admission performs one restricted `INSERT … SELECT … ON CONFLICT DO NOTHING RETURNING` after
+  Origin/ticket/rate validation and before `101`. The select independently verifies the visible
+  tenant/session/learner and expiry against database time. Conflict or absent scope is generic 401;
+  database error/timeout is bodyless 503. There is no memory fallback.
+- Cleanup deletes at most 1,000 expired rows per pass in deterministic order with
+  `FOR UPDATE SKIP LOCKED`. One unref'd interval owns scheduled cleanup, suppresses overlap, retains
+  rows on failure, and is drained before the database pool closes. Metrics use fixed outcomes only.
+- The approved restricted-role profile—32 warm-ups, 512 durable unique claims, concurrency 32 using
+  two independent production-default pools—passed the p95 `<100 ms` and throughput `>=100/s` bars.
+  Postgres is therefore selected for Node. Rust Redis/in-memory behavior remains the no-traffic
+  compatibility oracle until later parity/canary/rollback gates permit retirement.
+
+### Consequences
+
+Two Node instances and fresh processes cannot accept the same signed session nonce. Accepted socket
+context excludes the nonce, and accepted metrics advance only after durable success. W3.4 adds no
+service, dependency, port, public route, client change, audio handling, or traffic movement. Reverting
+the Node replay call returns the internal shadow to W3.3; the additive table may remain inert.
+
+---
+
+## ADR-0052 — Node realtime admits one internal shadow route with the Fastify adapter
+
+**Status:** Accepted · **Date:** 2026-08-08 · **Decider:** repository owner through the approved persistent implementation goal
+**Related:** ADR-0051 (realtime contract), ADR-0050 (one Node package), ADR-0022 (reversible release)
+
+### Context
+
+W3.2 established an independently drainable internal Node realtime process, but deliberately
+refused every upgrade. W3.3 needs a real authenticated handshake for ticket/Origin/rate parity
+without creating a second package, hand-written WebSocket stack, public route, replay claim, or
+audio implementation. Node's platform library is a client, not a production WebSocket server.
+
+### Decision
+
+- `@fastify/websocket` 11.3.0 is the one supported server adapter and an exact production
+  dependency of the existing `server` package. Its transitive `ws` version stays frozen by the
+  workspace lockfile; there is no second direct socket package or image.
+- The adapter is registered before all routes. Only the exact session-audio route may upgrade.
+  Admission reuses the established `rt_v2` validator and bounded token bucket, applies exact
+  browser Origin and explicit native no-Origin policies, validates tenant and a maximum 3,600
+  second remaining lifetime, and derives peer identity only through a bounded trusted-hop policy.
+- A valid shadow upgrade receives `101`, passes only frozen claims plus nullable trace to the
+  socket seam, and immediately closes code 1013 as temporarily unavailable. It reads, stores,
+  forwards, and acknowledges no audio. Refusals remain generic HTTP classes and metrics expose
+  only the four fixed admission outcomes.
+- The process remains internal with no host port or public traffic. The Rust gateway remains the
+  traffic target and compatibility oracle. W3.4 owns replay and its Postgres benchmark; W3.5 owns
+  bounded audio, queues, and acknowledgements. Neither is implied by an admitted handshake.
+
+### Consequences
+
+This change proves a real, fail-closed Node admission shadow while leaving clients, public routing,
+stored data, the Rust data plane, and rollback unchanged. Removing the plugin route and dependency
+restores the W3.2 refusal-only shell. Traffic movement still requires the later parity, load,
+canary, rollback, and human release gates.
+
+**W3.5 implementation note (2026-08-09):** the historical W3.3 default above remains the admission
+proof and an explicit test seam, but the production default now runs one bounded audio runtime. It
+accepts at most 2 MiB of application bytes behind a 2 MiB + 64 KiB transport ceiling, retains at
+most 8 chunks/4 MiB per session and 64 MiB process-wide, and permits 100 active/draining sessions.
+`accepted=true` means enqueued, not stored; create-only object-store success/failure is a separate
+fixed metric outcome. At the W3.5 milestone Rust remained the traffic target while W3.6 durable
+outcome/index repair and later recovery, codec/rate, image, and canary gates remained open.
+
+**W3.6 implementation note (2026-08-09):** the production shadow now sends every accepted store
+result through one shared audio-index/outcome authority. Retained success creates the sole playback
+index (`audio_chunks`) with the same current-session, learner, retention, derived-key, span/rate,
+retry, and immutable-conflict rules as the HTTP adapter. Migration 0037 keeps only constrained
+accepted-lost/stored-unindexed diagnostics under forced RLS and session cascade. Store/index failure
+closes the socket and has a fixed outcome; finalization unions unrepaired accepted losses with
+inference gaps. Repair revalidates object metadata against current tenant state and atomically
+creates the index plus repaired provenance. A remotely committed conditional write discovered
+after a timeout may therefore repair an initially accepted-lost chunk. Playback never consults the
+diagnostic table. At the W3.6 milestone Rust remained the traffic target and recovery plus later
+image/canary gates were still open.
+
+**W3.7 implementation note (2026-08-09):** the v1 raw-binary/seven-field acknowledgement wire
+remains unchanged and therefore cannot prove whether a sent frame without an acknowledgement was
+stored. The approved recovery policy keeps one frame in flight, buffers at most 125 frames/2 MiB,
+uses an API-issued fresh single-use ticket per attempt with bounded equal jitter, and resets retry
+state only after an accepted acknowledgement. A disconnect with a sent frame, invalid
+acknowledgement, exhaustion, overflow, or device failure stops capture and finalizes one immutable
+closed recovery report; it never replays ambiguous audio or silently drops it. Migration 0038 adds
+that optional report to the existing forced-RLS session row. Authentication precedes report parsing;
+only the owning learner may submit client-capture truth, while authorized staff retain legacy
+empty-body finalization. Finalization exposes alignment result and recording integrity separately and
+never fabricates a combined loss total from client and server counts. This is a Node reference contract
+for Flutter W4.11, not a new product client or a traffic move; Rust remains the public target.
+
+---
+
+## ADR-0051 — Realtime keeps one wire contract and gains an isolated Node entrypoint
+
+**Status:** Accepted · **Date:** 2026-08-08 · **Decider:** repository owner through the approved persistent implementation goal
+**Related:** ADR-0050 (one Node package), ADR-0040 (migration boundary), ADR-0022 (reversible release)
+
+### Context
+
+The Rust gateway currently owns WebSocket admission, replay checks, bounded audio ingress, and
+`audio.ack`. The Node API already issues byte-compatible `rt_v2` tickets, but the shared ticket
+vectors live under a transitional port spec and no language-neutral fixture pins acknowledgments.
+Writing a Node socket before freezing those boundaries would allow two implementations to agree in
+tests while disagreeing on the deployed wire or on which failures are security decisions.
+
+ADR-0050 selected one modular Node codebase with separate process roles. It also said Postgres owns
+durable realtime replay state. This ADR qualifies that realtime clause: Postgres is the proposed
+authority, not an implemented fact, until the W3.4 concurrency and load benchmark proves it meets
+the admission budget. Device credential replay state remains Postgres-owned and is unaffected.
+
+### Decision
+
+- The same `server` package gains a separate realtime process and entrypoint. It must be
+  independently deployable, drainable, observable, and failure-isolated from API and worker event
+  loops. The Rust gateway remains the compatibility oracle until parity, load, canary, and rollback
+  evidence permits retirement.
+- The deployed wire stays unchanged. `rt_v2` tickets and `audio.ack` documents live in one
+  language-neutral fixture root under `packages/contracts`. Rust remains the fixture generator and
+  oracle. The raw ticket is never stored or persisted. Valid tickets preserve exact field order,
+  UTF-8 HMAC bytes, boolean text, retention, unsigned-64-bit expiry, and lowercase signature.
+- Replay identity is a SHA-256 nonce hash scoped to the signed claims. Postgres with a unique claim
+  and TTL cleanup is the proposed shared replay authority, subject to the W3.4 benchmark. A
+  configured shared authority fails closed when unavailable. The existing Rust Redis/in-memory path
+  remains only as the compatibility oracle during that benchmark; this decision does not add Redis,
+  NATS, a service mesh, or another runtime dependency.
+- Browser upgrades require the exact configured Origin allowlist. A native client's no-Origin
+  request is a separate, explicit deployment policy; it is never inferred from browser behavior and
+  does not relax tenant, session, expiry, retention, signature, replay, or admission checks.
+- Each session has a bounded per-session queue with explicit `audio.ack` responses. Consumers branch
+  only on `kind` and `accepted`. `message` is non-empty diagnostic prose, not a semantic enum;
+  `trace_id` is always present as a non-empty string or null. Sequence values must cross the JSON
+  boundary as non-negative safe integers.
+
+### Consequences
+
+W3.1 freezes decision and fixture truth only. It adds no WebSocket listener, database migration,
+replay store, queue, or traffic movement. W3.2 owns the process lifecycle; W3.3 owns admission;
+W3.4 owns durable replay and the Postgres benchmark; W3.5 owns the bounded audio runtime. A failed
+fixture change restores one authority rather than introducing a second copy.
+
+**Implementation note (2026-08-08, W3.2–W3.4):** the existing `server` package/image runs an
+internal `node-realtime` process alongside API and worker. It exposes process liveness, bounded
+deep readiness, private fixed-cardinality metrics, and the exact admitted-but-unavailable shadow
+route defined by ADR-0052. ADR-0053's restricted Postgres authority now makes valid tickets
+single-use across instances/processes before upgrade. It uses the same restricted Postgres,
+private object-store, shutdown, healthcheck, release, and rollback boundaries. It has no host port
+or traffic edge; Rust remains the only realtime ingress.
+
+**W3.5 implementation note (2026-08-09):** the same process now enforces a 2 MiB application and
+2 MiB + 64 KiB transport boundary, 8 chunks/4 MiB per session, 64 MiB process-wide, and 100
+active/draining sessions. `accepted=true` means enqueued, not stored; a bounded FIFO writes through
+the existing create-only object-store interface and reports storage separately. Shutdown drains or
+aborts before resource close. Rust remains the traffic target until recovery, durable outcome,
+format, image, canary, and rollback gates pass.
+
+**W3.6 implementation note (2026-08-09):** the bounded consumer now reports fixed indexed,
+discarded, stored-unindexed, accepted-lost, unrecorded-dependency, and rejected outcomes. Retained
+success and the signed-ticket HTTP adapter share one current-session/retention/index domain;
+migration 0037 records only privacy-safe forced-RLS diagnostics, while `audio_chunks` remains the
+sole playback authority. Store/index failure closes the socket, finalization preserves unique
+unrepaired accepted losses, and the dry-run-first repair command atomically indexes and marks a
+verified retained object repaired. Rust still receives all public realtime traffic; recovery,
+format, image, canary, and rollback gates remain open.
+
+**W3.7 implementation note (2026-08-09):** recovery on the unchanged v1 wire is deliberately
+fail-closed. One in-flight frame and a 125-frame/2 MiB FIFO permit safe reconnect only when no sent
+frame is ambiguous. Every connection attempt obtains a fresh API-issued ticket; equal-jitter retry
+is capped at six attempts and 15 seconds. Ambiguity and terminal faults stop capture, classify every
+captured frame as acknowledged/dropped/uncertain, and submit one exact immutable report. Migration
+0038 stores that privacy-safe summary on the forced-RLS session row. Authentication runs first and
+only the owning learner may submit or retry client-capture truth; authorized staff may still finalize
+with the legacy empty body. API responses keep client loss and server accepted-loss separate. The
+executable reference controller and real Node WebSocket/API proof freeze behavior for Flutter W4.11.
+They do not add a service, dependency, public route, protocol version, React investment, or traffic
+edge.
+
+---
+
+## ADR-0050 — One modular Node backend owns runtime, deadlines, storage, and production identity
+
+**Status:** Accepted · **Date:** 2026-08-07 · **Decider:** repository owner through the approved consolidation plan
+**Related:** ADR-0040 (migration boundary), ADR-0038 (controlled device enrollment), ADR-0028 (learner gate)
+
+### Context
+
+`services/node-api` is a well-tested strangler, but it is not a deployable product boundary. Its
+runtime imports are declared as root development tooling, it still falls back to Rust, retained
+audio is filesystem-backed, several dependencies can wait forever, and lifecycle/security parity
+is incomplete. Moving files without first settling these boundaries would create a smaller tree
+whose failure and identity semantics were accidental.
+
+The approved destination is one Node codebase, not one overloaded event loop. Postgres and private
+object storage are infrastructure. Python ASR remains an isolated evaluated worker until an
+alternative passes the same evidence gates.
+
+### Decision
+
+- `server/package.json` is the one production dependency boundary. It exposes independently
+  deployable and independently drainable API, realtime, and worker entrypoints. CPU-heavy
+  inference and background work never run on the API event loop. These process roles share domain
+  modules and contracts; they are not separate application services or dependency trees.
+- Every runtime import is declared in `server/package.json` under `dependencies` and is present in
+  the frozen workspace lock. The root package remains orchestration/test tooling only. Fastify,
+  Postgres, JOSE, validation, and contract parsers move with their callers. The production object
+  adapter uses `@aws-sdk/client-s3`; native `AbortController`, Web Crypto, and platform APIs are
+  preferred where they already provide the required behavior. A later dependency still requires
+  its own reviewed diff.
+- Production retained audio uses private S3-compatible object storage. The filesystem adapter is
+  test/development only. Object keys are constructed from server-derived tenant, learner, session,
+  and chunk identities; bucket credentials and raw object locations never cross the API boundary.
+  Postgres remains authoritative for the tenant-bound audio index, retention state, outbox work,
+  and privacy lifecycle.
+- Each request receives one monotonic deadline. Every Postgres, object-storage, ASR, compatibility,
+  and worker operation consumes the remaining budget and receives an `AbortSignal`; child work may
+  shorten but never reset the parent deadline. No durable operation may claim complete after
+  cancellation. Retried effects require an idempotency key or transactional outbox record, and
+  timeout responses reveal no dependency internals.
+- Volumetric HTTP/WebSocket admission uses bounded per-process token buckets with explicit capacity,
+  refill, cardinality, and eviction limits. Client network identity is derived only through
+  configured trusted-proxy hops. Rate limiting is defense in depth, never authorization. Postgres
+  owns durable credential attempt and replay state for enrollment, refresh, and realtime-ticket
+  boundaries so another instance cannot reset a security decision. The lean target adds no Redis
+  or NATS.
+- Production identity follows ADR-0038: login remains owner-gated off; a single-use invitation is
+  exchanged for a rotating, revocable, expiring device session with server-derived tenant and role.
+  Raw invitation, access, and refresh material uses hash-only credential storage and is never
+  logged. Staff roles are provisioned by authorized administration and are never caller-selected.
+
+### Consequences
+
+W2.2 may now create the package without inventing architecture in code. Later W2 tasks must prove
+standalone lifecycle, middleware order, restricted-role boot, deadlines/cancellation, storage
+lifecycle, and enrollment before traffic moves. This ADR neither activates new routes nor claims
+that filesystem audio, the Rust fallback, or debug identity is production-ready.
+
+**Implementation note (2026-08-07, W2.9):** the package now defaults to standalone when no upstream
+is configured, registers every key from one executable route registry, and has no proxy catch-all.
+The Rust fallback survives only in explicitly configured compatibility mode for parity/canary
+reversal. Compose remains that compatibility shadow, so this source-mode change is not a traffic
+cutover or a production-readiness claim.
+
+**Implementation note (2026-08-07, W2.10):** the Node HTTP boundary now applies literal/exact CORS,
+maintenance, bounded per-process token-bucket admission, request parsing/body ceilings,
+authorization/handlers, fixed error redaction, and response metrics in one tested order. Admission
+is default-on at a 200 burst and one token per 50 ms, with 10,000-key/idle-LRU bounds and no new
+broker or dependency. Forwarded client identity remains ignored unless proxy trust is explicitly
+enabled with a positive bounded hop count. This completes HTTP admission behavior, not W2.12
+dependency deadlines, W2.13 drain, W2.16 durable credential-attempt state, or W3 realtime limits.
+
+**Implementation note (2026-08-07, W2.11):** the Node database pool now inspects its effective
+Postgres role during Fastify `onReady`, before a listening socket can be established, and refuses
+`SUPERUSER`, `BYPASSRLS`, `CREATEDB`, `CREATEROLE`, or `REPLICATION`. The established
+`ALLOW_SUPERUSER_DB_ROLE`/deprecated local alias remains the only explicit development relaxation.
+All ordinary tenant work stays behind the transaction-local `withTenant` boundary. Pilot invitation
+bootstrap now uses `withDiscoveredTenant`: its locked-down security-definer lookup runs first, then
+the shared tenant GUC and statement timeout are installed before tenant-owned work can run. A static
+gate pins database-driver ownership and the exact tenant-neutral/security-definer raw SQL allowlist.
+
+**Implementation note (2026-08-07, W2.12):** every API request now receives one monotonic deadline
+before maintenance/admission/authorization or database work. The same signal reaches compatibility
+forwarding, ML/ASR proxying, finalization, privacy erase, review audio, ML→ASR windows, and agent
+platform calls; caller disconnect also aborts it. The shared helper uses only Node platform APIs.
+Postgres connections install server-side `statement_timeout` and
+`idle_in_transaction_session_timeout`; tenant transactions tighten the statement limit to the
+request remainder. This deliberately avoids a JavaScript promise race that could answer timeout
+while a transaction later commits. SQLSTATE `57014` is a fixed retryable 503, while dependency
+boundaries use fixed 502/503 responses without URL, token, transcript, audio, or driver detail.
+Review audio keeps its pre-fetch attempt audit but records `delivery: served` only after a complete
+valid response. `tests/faults/dependency-timeouts.test.mjs` proves hung partial-response socket
+cancellation for compatibility, ASR, storage/privacy/review, and workers plus live Postgres rollback.
+This completes W2.12 cancellation semantics, not W2.13 drain, W2.15 outbox retries, or W2.17 final
+storage/worker relocation.
+
+**Implementation note (2026-08-07, W2.13):** the Node API now installs one dependency-free
+SIGINT/SIGTERM controller before listen. The first signal invokes Fastify close, immediately closes
+admission, preserves active HTTP responses, and reserves the final fifth of a strict 1–300 second
+budget for `onClose` resources. Remaining HTTP/raw/upgraded sockets are force-closed at the reserve
+boundary; a second signal escalates the same shutdown, and a hard outer timer exits non-zero rather
+than hanging indefinitely. The Postgres.js pool consumes only the reserved close time and successful
+completion is logged after `sql.end`. Pinned Fastify 5.11's native close branch treats documented
+`forceCloseConnections: "idle"` as truthy and drops active requests, so the app explicitly uses
+`false`: Node 22 `server.close()` reaps idle sockets and the controller alone owns timed active
+closure. The production image declares SIGTERM and Compose gives the eight-second app budget a
+ten-second container stop window. This completes HTTP/process drain; W3 still owns protocol-level
+WebSocket close frames for the future Node realtime entrypoint.
+
+**Implementation note (2026-08-07, W2.14 dependency):** the production S3 data-plane adapter uses
+exact `@aws-sdk/client-s3` 3.1101.0 (Apache-2.0, Node >=20), the newest registry release older than
+the repository's dependency-age window when selected. The newer 3.1102–3.1105 releases were not
+taken hours after publication. The modular v3 client supplies maintained Signature V4,
+S3-compatible endpoint/path-style configuration, conditional commands, checksum fields, response
+stream handling, SDK retry classification, and AbortSignal propagation; reimplementing signing and
+XML error semantics with raw `fetch` would add security-critical code rather than make the system
+leaner. The adapter imports only `@aws-sdk/client-s3`, never a browser upload or presigning package.
+No bucket credential, raw object URL, or caller-authored key crosses the API boundary.
+
+**Implementation note (2026-08-07, W2.14 lifecycle):** one shared async store now serves the Node
+API and worker-owned inference runtime. Production refuses an implicit driver and refuses filesystem unless
+the conspicuous development-only acknowledgement is set. S3 writes are private conditional creates
+with full SHA-256 checksums and bound identity/retention/span metadata; reads consume and validate the
+complete body; lists paginate; deletes inspect per-key errors and verify the learner prefix is empty.
+Every command receives the request `AbortSignal`, readiness checks the bucket, and shutdown destroys
+the client. Filesystem uses create-only owner-private files and retains an explicit legacy reader for
+migration tests/development, never as a silent production fallback.
+
+Object keys are derived from verified tenant, learner, session, and chunk identity in both Node and
+the Rust compatibility oracle. Identical byte/metadata retries are no-ops; changed immutable data or
+index metadata returns a conflict. Review playback and privacy export/delete use the injected store
+directly; the temporary private HTTP seam is limited to measured Rust/gateway compatibility
+consumers and uses the worker's exact store instance. The storage/index boundary is not falsely
+described as atomic: inventory
+exposes incomplete pairs, and `repair-audio-index.mjs` is storage-neutral, dry-run first, idempotent,
+ownership-checked, and reports inverse index-without-object states. Production bucket provisioning,
+credential rotation, monitoring, and restore rehearsal remain deployment work, not application claims.
+
+**Implementation note (2026-08-07, W2.15):** one forced-RLS Postgres `background_jobs` table is the
+durable queue and transactional outbox for session finalization, session Tajweed evaluation, and
+privacy export/delete. No Redis, NATS, queue ORM, second backend package, public job route, or
+privileged queue role was added. API callers still receive the existing synchronous response body:
+the API enqueues and waits within its request deadline, while the same-package `job-worker` owns
+first execution, expired-lease recovery, and retries. Claims use `SKIP LOCKED`, bounded
+leases/attempts, monotonic generations, fixed
+error codes, and capped backoff. External inference and object deletion are at-least-once; only the
+fenced tenant transaction containing the domain effect and job completion is exactly-once.
+
+Privacy now commits a bounded identifier/object manifest before its idempotent erase, closing the
+crash window without putting audio, transcripts, credentials, or dependency addresses in the queue.
+The worker reads only the global institution registry, then claims and commits under ordinary tenant
+RLS. Its private health/readiness/metrics endpoint has finite state/kind/outcome labels, and SIGTERM
+stops claims, cancels work, then closes storage and Postgres within the configured grace. A dead row
+is never reset: an in-tenant admin/ops recovery command creates one audited, idempotent successor;
+if that successor dies, it is the next immutable replay source. Runtime session evaluation may only
+read existing release evidence. The offline evaluator and detached signature/release checks remain
+the sole evidence authorities; the job package cannot write `eval_runs` or access signing material.
+Local live-Postgres proof does not substitute for required remote CI and staging recovery drills.
+
+**Implementation note (2026-08-07, W2.17):** alignment, instructional Tajweed, transcript assembly,
+acoustic-shadow observation, retained-audio handling, and privacy inference now live under
+`server/src/inference`; the former standalone ML source tree, Compose service, and OCI image are
+removed. At W2.17, `node-api` and `job-worker` became different commands of the exact same
+production image; W3.2 later adds `node-realtime` as a third command of that image without moving
+traffic.
+The API never executes durable work inline: it enqueues and waits, while the worker is the sole
+owner of first attempts, retries, and crash recovery. The worker injects one exact object-store
+instance into both workflow and inference paths, preventing adapter drift.
+
+The worker's port 8098 listener is a temporary private compatibility boundary for the measured
+Rust platform/gateway consumers. It is constrained by a service key, closed route allowlist,
+bounded admission/body sizes, and monotonic deadlines; it is not a second application or public
+API. Compose, release inventories, smoke tests, and Docker CI require one Node image identity. The
+Python ASR model process remains isolated. This cutover consolidates Node inference ownership; it
+does not silently move public HTTP or realtime traffic, which retain their independent canary and
+rollback gates. Required remote CI, staging replay, and production infrastructure proof remain
+outside the local implementation claim.
+
+**Implementation note (2026-08-07, W2.18):** base Compose remains Rust-safe. The explicit
+`docker-compose.canary.yml` overlay starts Node in a closed `retained-canary` mode whose exactly 39
+retained routes are derived from the checked route manifest, then moves Web requests and realtime
+indexing to Node together. Rust remains live for the four retirement-transition operations and for
+immediate reversal. The upstream selector accepts only the internal Rust or Node service address;
+missing, URL-shaped, or arbitrary hosts fail Web startup.
+
+This is one isolated environment/cohort switch, with no random traffic split or dual write. A
+mutable retained request executes locally once; transition routes proxy once to Rust. Applying the
+canary overlay is therefore an explicit deployment decision, and removing it returns Web and the
+gateway to the base Rust targets. Candidate and previous application bits are independently bound
+to immutable GHCR digests by ADR-0022. The topology and effect guards do not claim that a candidate
+was deployed, observed, approved, or rolled back within an SLO; those remain W2.18 operational
+evidence gates.
+
+**Implementation note (2026-08-08, W2.18 T3):** retained-canary mode alone emits a bounded
+`x-qrai-route-owner` marker so an image probe can distinguish local Node handling from the Rust
+compatibility path without changing ordinary responses. The candidate proof consumes only the
+release overlay's immutable digests, verifies actual container image IDs and running selector
+values, uses short-lived JWT actors, and writes expiring evidence once. It deliberately stops and
+restores Rust to prove the 39 retained routes have no silent fallback. This mechanism does not make
+a promotion decision and does not replace load, monitoring, rollback, remote CI, or human gates.
+
+---
+
+## ADR-0049 — Release claims require signed row-level evaluation evidence
+
+**Status:** Accepted · **Date:** 2026-08-07 · **Decider:** repository owner through the approved W1.11–W1.13 plan
+**Related:** ADR-0048 (acoustic shadow boundary), ADR-0045 (immutable candidates), ADR-0043 (producer attribution)
+
+### Context
+
+The existing evaluation route copied aggregate accuracy numbers from a committed golden fixture.
+The database and release checker could compare those numbers with thresholds, but neither could
+prove which model bytes, corpus split, evaluator, raw rows, or calibrator produced them. A boolean
+`passed`, an aggregate-only document, or a filename containing “golden” is not evaluation evidence.
+The repository currently has no consented and adjudicated Kurdish-L1 held-out corpus, no approved
+calibrator, and no release-eligible acoustic evidence.
+
+### Decision
+
+- `model-evaluation-evidence-v1.schema.json` is the one strict JSON Schema 2020-12 contract for
+  computed evaluation bundles. Unknown fields fail; mutable aliases and aggregate-only input are
+  insufficient. Every bundle binds the candidate artifact and implementation, registry/runtime/image,
+  sealed dataset and reciter-disjoint split manifests, evaluator source and approved protocol, raw
+  row manifest/results, counts, subgroup slices, calibration, uncertainty, approvals, and timestamps.
+- Evidence is computed from immutable row-level labels and scores. Metrics include average precision,
+  ROC AUC, the selected operating point, calibration error, agreement, and reciter-clustered bootstrap
+  intervals. Caller-supplied summaries never become the source of those values.
+- The evidence object is canonicalized with RFC 8785. A separate envelope carries a detached Ed25519
+  signature, signer key id, and the SHA-256 of those exact canonical bytes. Trust class belongs to
+  operator-controlled public-key policy, not to a self-asserted field in the signed bundle.
+- Eligibility is closed: `fixture-regression`, `research-only`, or `release-candidate`. A release
+  candidate additionally requires a runnable license-approved artifact, consented licensed sealed
+  held-out data, reciter-disjoint split, approved protocol, bound calibrator, and all four external
+  approvals. Signature verification and release policy still decide whether it may clear a gate.
+- Fixture and test-key bundles can exercise the machinery, but can never qualify as calibration or
+  release authority. Production trust contains public keys only; no private signing material belongs
+  in the repository.
+- Runtime calibration has a separate closed registry. Its active record must name byte-verified
+  calibrator data and exactly match the acoustic scorer artifact, evaluated dataset manifest, and
+  verified evaluation-evidence digests. The committed registry is empty; the current shadow
+  candidate refuses active calibration, so adding a file or changing an alias cannot publish a
+  confidence without a separately reviewed candidate promotion.
+- Every new acoustic finding persists the exact model artifact, dataset manifest, calibrator, and
+  evaluation evidence identities. Learner readback additionally derives its alignment span and
+  retained-audio evidence from server-owned rows. The learner gate requires all of them, a valid
+  citation, human approval, calibrated confidence, release-trusted evidence, and an audit id.
+- Gate status is derived at the platform boundary. Inference callers cannot self-assert
+  `release-trusted` or `calibrated`; stale, fixture, unverified, missing-audio and historical rows
+  remain available to staff while their learner-facing judgment fields are redacted.
+
+### Consequences
+
+Evaluation becomes an auditable supply chain rather than a row of plausible decimals. Schema-valid
+does not mean trusted, accurate, or releasable. The implemented release checker re-hashes bytes,
+verifies the detached signature, binds every database identity/count/slice/calibrator projection,
+and requires one unique authority across all tenant-visible history. Newer rows cannot hide older
+ones; invalid or distinct release-labelled evidence fails closed. Because production trust is empty,
+migration 0032 demotes the remaining aggregate `eval-passed` claim. Until external data and
+approvals exist, W1.10 stays shadow-only and learner findings stay empty.
+
+---
+
+## ADR-0048 — Muaalem v3.2 is an internal acoustic shadow candidate, not learner feedback
+
+**Status:** Accepted · **Date:** 2026-08-07 · **Decider:** repository owner through the approved W1.10 plan
+**Related:** ADR-0047 (instruction/performance boundary), ADR-0045 (immutable candidates), ADR-0043 (producer attribution)
+
+### Context
+
+The retired ASR Tajweed endpoint inferred rule presence from duration, pitch variation, energy, and
+spectral centroid. Those features were not reference-aware error detection, had no calibrated
+decision boundary, and could not justify a learner claim. A second standalone experiment duplicated
+the Python/model boundary without a production caller and has now been removed. The selected upstream
+Muaalem v3.2 checkpoint is reference-aware and predicts phonemes/sifat, but its model card leaves
+training/evaluation detail incomplete and upstream explicitly describes its softmax values as
+uncalibrated. Its published results are not Kurdish-L1 child evidence.
+
+### Decision
+
+- One immutable shadow candidate is recorded in `acoustic-candidates.json`: Hub revision
+  `01a1ef9fbe40d144ef845101e89ff924aed3fef5`, safetensors SHA-256
+  `6b6a2e85303d17ff0f3af5e1fc79ac83daecee409c756ddf27f0ced59393bb41`, implementation commit
+  `2e444e040516781ecef72fe9bbc513bb34dedad4`, and QPS commit
+  `fb64a1a8b0d7f5c38ffe26de0c69cc4a2b840950`. Every required local model file is independently
+  size- and digest-pinned.
+- The ordinary ASR image remains lean and unchanged. An explicit `acoustic-candidate` Docker target
+  installs the source locks, embeds the model, verifies all bytes at build time, and runs offline.
+- Muaalem runs only behind the existing ASR process in a bounded restartable child. The private
+  route accepts 16 kHz mono windows no longer than 15 seconds and only server-derived measured word
+  spans. The public proxies reject caller-authored learner identity, Quran identity, and spans.
+- QPS is derived directly from the server-authoritative canonical bytes with the versioned
+  scholar-pending Hafs/murattal 4/4/4/4 profile. The adapter never uses upstream Aya/Tanzil lookup,
+  `normalize_aya`, or Unicode normalization.
+- Exact-image inference found that the pinned upstream sifat mismatch branch assigns aligned class
+  ids into its probability vector; observed `SingleUnit.prob` values therefore reached `2.0`.
+  Categorical sifat label/index observations remain available internally, but every sifat score is
+  explicitly marked `withheld-upstream-decoder-bug`. Separately range-validated phoneme softmax
+  values remain ephemeral shadow observations.
+- No shadow value is renamed `confidence`, persisted, placed in `findings[]`, reviewed as learner
+  performance, or returned to Flutter. Audit metadata retains only bounded
+  status/count/attribution/refusal information.
+
+### Consequences
+
+The repository has one credible acoustic research path instead of two disconnected services, but
+it still has no release-grade acoustic finding. The reproducible correct/muted vector pair proves
+only structural execution and sensitivity; it is not an error-detection or accuracy result.
+Promotion requires an upstream fix or independently verified sifat decoder, independent model/data
+licence review, scholar approval of the QPS profile, a consented adjudicated Kurdish-L1 held-out
+corpus, calibration, reciter-disjoint evaluation, latency/memory evidence, and candidate-bound
+approval. Until every gate is proven, `releaseEligible=false` and learner `findings[]` remains empty.
+
+---
+
+## ADR-0047 — Tajweed instruction is not learner-performance evidence
+
+**Status:** Accepted · **Date:** 2026-08-07 · **Decider:** repository owner through the approved consolidation plan
+**Related:** ADR-0033 (analysis basis), ADR-0036 (placeholder confidence), ADR-0043 (producer attribution)
+
+### Context
+
+The deterministic Tajweed engine reads canonical Quran text only. It does not listen to the learner,
+measure a recitation span, or calibrate an acoustic score. Despite that, its rule occurrences and
+golden-fixture decimals travelled as performance-shaped `findings`, were persisted in
+`tajweed_findings`, entered the teacher performance queue, and could be accepted as feedback about a
+learner. Replacing invented decimals with zero did not fix the category error: zero was still a
+claimed performance confidence for something never measured.
+
+### Decision
+
+- Tajweed prediction has two disjoint arrays. `annotations[]` contains deterministic canonical
+  instruction with `analysisBasis='text-rule'`, `instructional=true`, sources, and no confidence,
+  severity, or review state. `findings[]` is reserved for span-linked acoustic learner judgments and
+  remains empty until a calibrated, evaluated, and approved acoustic candidate is promoted.
+- Declared golden-fixture rules follow the same annotation contract; fixture decimals and severity
+  never cross into learner-performance output.
+- Rust and Node validate the separation before persistence or response redaction. Cross-contaminated
+  shapes fail with a generic upstream 502. Persistence accepts only explicit acoustic findings and
+  writes the acoustic basis as a server literal.
+- Migration 0030 reclassifies historical `canonical-text` rows to `text-rule`, nulls their placeholder
+  confidence, and enforces `text-rule/null` versus `acoustic/non-null` consistency. The rows remain
+  available for audit; performance queues, learner session reads, and accepted teacher reviews
+  exclude them.
+- Flutter parses only acoustic findings and fails closed on a missing or non-acoustic basis. It may
+  ignore instructional annotations until a dedicated teaching surface exists, but it cannot render
+  one as a recitation error.
+
+### Consequences
+
+The product can teach where a Tajweed rule applies without pretending it detected a learner mistake.
+Historical audit data is retained without remaining actionable performance feedback. A real learner
+finding now requires an acoustic producer; this decision does not implement or validate that producer,
+calibrate confidence, or make any accuracy claim. ADR-0033 and ADR-0036 remain historical context but
+their temporary `canonical-text` performance-row behavior is superseded by this decision.
+
+---
+
+## ADR-0046 — Finalized words link to one exact tenant-bound producer run
+
+**Status:** Accepted · **Date:** 2026-08-07 · **Decider:** repository owner through the approved consolidation plan
+**Related:** ADR-0043 (producer attribution), ADR-0040 (migration boundary), ADR-0030 (transcript source)
+
+### Context
+
+Component attribution existed on inference responses but disappeared before persistence. Bounded
+transcription did not return its ASR/forced-aligner records, finalization forwarded token spans
+without their author, and `word_alignments` had no run link. Joining the existing `alignment_runs`
+table by session would be unsafe: a later client re-record can replace the words while an earlier
+server run remains. New sessions also selected the historical `model-v0.3` registry row even though
+the running producer identifies itself as `quran-constrained-levenshtein@1`.
+
+### Decision
+
+- Repeated bounded-window component records must be structurally identical and are stored once.
+  Forced alignment augments ASR; Quran alignment must preserve that exact upstream document and add
+  exactly one Quran-aligner record. Missing, conflicting, or unrelated attribution fails closed.
+- The transcript attribution field exists only on the private finalizer-to-ML request. Both public
+  APIs reject client-supplied spans and the attribution that would make those spans appear trusted.
+- Migration 0029 adds an explicit, unique runtime-selected alignment registry row. Historical
+  sessions are never rewritten; a session/producer compatibility-label disagreement refuses
+  finalization and writes neither words nor a run.
+- One successful finalization inserts one `alignment_runs` document and links every persisted word
+  to it inside the same tenant transaction. The foreign key contains run id, tenant id, and session
+  id. A `NOT VALID` check requires the link for new server-derived rows while retaining historical
+  rows without inventing provenance.
+- Staff-only alignment readback returns the stored compatibility model, transcript source, exact
+  component document, dataset, evidence ids, and audit id. Legacy/client rows return null
+  attribution/dataset and empty evidence ids. No default producer is substituted.
+
+### Consequences
+
+A word can now be traced from the exact inference response through Postgres and restricted readback,
+and a client re-record deletes the obsolete run after its linked words. Sessions opened before the
+runtime registry change may require a new recording rather than being relabeled. This proves
+identity and lineage only; it does not make the captured audio an accuracy benchmark or select an
+ASR winner. The Node finalizer remains W2.6; its absence is explicit in the parity coverage ledger.
+
+---
+
+## ADR-0045 — ASR candidates are immutable; no benchmark means no winner
+
+**Status:** Accepted · **Date:** 2026-08-06 · **Decider:** repository owner through the approved consolidation plan
+**Related:** ADR-0044 (ASR readiness), ADR-0043 (producer attribution), ADR-0038 (lean target)
+
+### Context
+
+Readiness proved that the configured checkpoint loads and executes, but it did not prove that the
+checkpoint is accurate for Kurdish-L1 Quran recitation. Compose ran generic Whisper `base`; the
+Python default named a Hugging Face repository without a commit. A declared digest beside a mutable
+repository alias still could not prove which snapshot produced a result.
+
+The repository has no tracked evaluation audio and no approved, consented, reciter-disjoint
+Kurdish held-out corpus. The strongest public Quran-pronunciation benchmark found, IqraEval 2025,
+uses 18 Arabic-L1 adult speakers and elicited errors; it explicitly lacks children and broader
+dialect coverage. It cannot substitute for the approved Sorani/Badini, age, device, and noise
+slices. Tarteel's public model has an immutable artifact, but its model card does not disclose the
+training/evaluation datasets needed to treat its WER as this product's evidence.
+
+### Decision
+
+- `services/asr-inference/model-candidates.json` is the single checked-in candidate registry. A
+  runnable process names `ASR_CANDIDATE_ID`, and runtime/model/revision/artifact identity must match
+  that record before model allocation.
+- A Hugging Face candidate requires a full 40-character lowercase commit revision. The loader passes
+  that revision to both download and pipeline construction, hashes the downloaded primary weight
+  file, and refuses a mismatch. `main`, `latest`, branches, and unqualified repository aliases fail.
+- The registry records generic Whisper `base` as the runnable baseline and Tarteel at commit
+  `e3f4a5f3f5336a1f0e43a2c2bdae62a680c53a8c` with the upstream weight SHA-256. Tarteel remains
+  `packaging-required`; neither candidate is selected.
+- Candidate evidence must bind the registry identity, runtime lock, image, sealed held-out dataset,
+  evaluator implementation, source commit, approved protocol, complete required slice matrix,
+  aggregate metrics, per-slice metrics, and resource measurements. Thresholds come from the approved
+  protocol, never constants introduced by the validator.
+- A declared fixture may exercise the validator but is always ineligible. The registry status stays
+  `blocked-no-eligible-benchmark` until the human approvals and real corpus exist. W1.12 owns metric
+  recomputation and signed release evidence; this decision does not counterfeit either.
+
+### Consequences
+
+Generic aliases and copied metrics can no longer enter the ASR selection path. The current image
+remains operationally useful but cannot be described as a reviewed winner, and learner-performance
+feedback remains withheld. Completing W1.5 now requires external consented data collection and
+independent owner, scholar, privacy/legal, data, and license review—not another code-only fixture.
+
+---
+
+## ADR-0044 — ASR liveness is process-only; readiness is model-and-probe gated
+
+**Status:** Accepted · **Date:** 2026-08-06 · **Decider:** repository owner through the approved consolidation plan
+**Related:** ADR-0043 (producer attribution), ADR-0038 (lean target)
+
+### Context
+
+The ASR process loaded its model synchronously before FastAPI existed, so a hung load prevented
+liveness from answering. A caught load failure later bound the port, but `/health` still returned
+200 and Compose treated the degraded container as healthy. The response embedded `loaded` and an
+exception string, yet no route or orchestrator gate proved that the selected artifact was the one
+configured or that inference could execute.
+
+### Decision
+
+- `/health` is a fast process-only signal. Model loading, attribution validation, and inference
+  never affect its status or expose their exception text there.
+- One background controller owns load, validation, and retry. `/ready` and ASR-backed route
+  admission read the same immutable snapshot; no readiness request runs inference.
+- `ASR_MODEL_DIGEST` is mandatory. The current Compose-selected Whisper `base` artifact is pinned
+  to the SHA-256 in Whisper's verified checkpoint URL, and a missing, malformed, unresolved, or
+  mismatched digest fails closed. Configuration failures are terminal for that process rather than
+  triggering a model reload storm.
+- A deterministic 100 ms, 16 kHz mono zero-signal WAV (SHA-256
+  `2976da01e205a110c9fa41d47659e238a5c6d3c3f3137582f2949853faa201dd`) exercises the selected
+  inference path once. Only a structurally valid inference result clears readiness. The probe has
+  a deadline, is cached, contains no learner audio, and never supports an accuracy claim.
+- Transient load/probe failures retry through the same worker. A timed-out probe cannot overlap a
+  replacement; liveness remains available and orchestration can replace the unready container.
+- Compose and staging consume `/ready`, while W1.5 remains responsible for evaluated model
+  selection, CPU/GPU packaging, capacity, and accuracy evidence.
+
+### Consequences
+
+An alive process can now report an actionable unready state without receiving traffic. A green
+container implies loaded selected-model bytes, matching identity, and one completed inference
+execution—not Quran-recitation quality. Image size and platform-specific PyTorch packaging remain
+visible W1.5 work and cannot be disguised by this operational probe.
+
+---
+
+## ADR-0043 — Inference producers own component-level model attribution
+
+**Status:** Accepted · **Date:** 2026-08-06 · **Decider:** repository owner through the approved consolidation plan
+**Related:** ADR-0038 (lean target), ADR-0042 (canonical integrity)
+
+### Context
+
+Learner inference crossed several independently versioned components—ASR, forced alignment,
+Quran-constrained alignment, acoustic scoring, and calibration—but responses and database writes
+carried one free-form `modelVersion`. Flutter could submit that value, public proxies accepted a
+former allowlist, session alignment writes fell back to `model-v0.3`, and the ML service could use
+an environment label unrelated to the executable artifact. A label could therefore survive while
+the producing bytes, dataset, or component changed.
+
+### Decision
+
+- A model result carries schema-versioned records from the closed component vocabulary `asr`,
+  `forced-aligner`, `quran-aligner`, `acoustic-scorer`, and `calibrator`.
+- Every active record names a non-empty implementation id, an exact lowercase `sha256:` artifact
+  digest, a dataset version, an analysis basis, and any calibrator linkage. An unavailable
+  component states why and cannot claim an artifact.
+- The inference producer authors and validates attribution. Public clients cannot submit
+  `modelVersion` or `modelAttribution`; Node and Rust proxies fail closed before returning a 200
+  when the producer record is absent, unknown, malformed, duplicated, or inconsistent.
+- The transitional `modelVersion` response field is derived from the primary component's
+  implementation id. It is compatibility data, never model-selection authority.
+- Bare OpenAI Whisper is digest-bound to the verified checkpoint URL. A Hugging Face ASR or forced
+  aligner alias without an explicitly deployed artifact digest is unavailable rather than guessed.
+  The Quran aligner and deterministic acoustic scorer hash their exact executable source bytes.
+- Session creation selects the sole configured alignment model server-side. Alignment persistence
+  inherits the session's selected identity; it never takes a request value or fallback.
+
+### Consequences
+
+Unknown or ambiguously deployed artifacts now stop inference instead of producing untraceable
+learner data. Model replacement requires an explicit producer record and digest. W1.8 will persist
+and read back these component records through the restricted tenant path; this decision establishes
+the authoritative response and boundary contract without prematurely changing that schema.
+
+---
+
+## ADR-0042 — Frame and pin both canonical ayahs and word tokens
+
+**Status:** Accepted · **Date:** 2026-08-06 · **Decider:** repository owner through the approved consolidation plan
+**Related:** ADR-0041 (direct corpus provider)
+
+### Context
+
+The legacy full-corpus SHA-256 serializes `surah:ayah:text\n`. It protects all 6,236 ayah strings
+but never reads the 82,456 parallel word tokens used by Quran-constrained alignment. A same-count
+token edit could therefore keep the legacy checksum and every structural count green.
+
+Delimiter-only formats also make their own assumptions about which bytes can occur in fields. A
+canonical integrity format must be unambiguous without trimming, Unicode normalization, or a
+character allowlist.
+
+### Decision
+
+- Keep the legacy checksum and `provenance-v1.json` immutable.
+- Add append-only `provenance-v2.json`, checksum-pin v1, and hash the ayah and word-token streams
+  independently with SHA-256.
+- Frame the domain, every record, and every UTF-8 field with an unsigned 64-bit big-endian byte
+  length. Ayah records contain `(surahNumber, ayahNumber, text)`; token records contain
+  `(surahNumber, ayahNumber, wordIndex, text)` in canonical order.
+- Declare the exact tokenization contract: one U+0020 between tokens; ayah 1:1 alone preserves a
+  leading U+FEFF outside the token stream.
+- The production SQL generator validates v1, v2, source/version metadata, counts, and token
+  reconstruction before emitting SQL. Database columns and per-row checksums do not change.
+
+### Consequences
+
+A same-count token drift now fails independently of ayah text and per-row checksum tests. The
+format is byte-unambiguous and portable to future Node/Dart/Rust implementations. A legitimate
+corpus or tokenization correction requires a new versioned manifest and reviewed hashes; it never
+rewrites this manifest or the shipped Quran files in place.
+
+---
+
+## ADR-0041 — Identify the shipped canonical corpus by its direct acquisition provider
+
+**Status:** Accepted · **Date:** 2026-08-06 · **Decider:** repository owner through the approved consolidation plan
+**Related:** ADR-0040 (canonical seeds outside schema history)
+
+### Context
+
+The checked-in full-corpus importer and historical manifest identify Al Quran Cloud edition
+`quran-uthmani`, but the production SQL generator later labeled every built record `tanzil`.
+Source identity participates in canonical record checksums, so this was a provenance and database
+integrity defect even though the Arabic text was unchanged.
+
+The current provider response was compared with all 6,236 shipped ayah strings and matched exactly.
+Al Quran Cloud's terms name several upstream sources but do not map this edition to one exact
+upstream artifact. Calling the bytes Tanzil would therefore assert evidence the provider does not
+publish.
+
+### Decision
+
+- The full corpus uses source id `alquran-cloud`, edition `quran-uthmani`, and import version
+  `full-quran-2026-06-26`. `tanzil` remains available only for independently sourced fixtures or
+  imports.
+- The append-only `packages/quran-data/src/data/full-quran/provenance-v1.json` is the reviewed
+  provenance authority. The original import manifest and Surah JSON files are historical acquisition
+  material and are not rewritten.
+- The full SQL generator uses the exported full-corpus source constant. Existing databases are
+  upgraded through additive migration `0028_canonical_quran_source_id.sql`, then reseeded through
+  that generator so source-bound checksums and metadata move together; rows are not relabeled while
+  retaining old checksums. Historical migrations remain byte-identical.
+- No Arabic ayah or word byte changes in this migration. Automated proof compares every old/new
+  bundle text value and preserves the existing corpus hash. Word-token serialization hashing remains
+  W1.2 and is not folded into this decision.
+
+### Consequences
+
+The database and review artifacts now state what the repository can prove: Al Quran Cloud is the
+direct provider, while the edition-level upstream chain remains unresolved. Attribution names the
+direct provider. A later upstream correction requires new primary evidence, a new versioned
+provenance record, regenerated source-bound checksums, and the same byte-invariance gates.
+
+---
+
+## ADR-0040 — One checksum-locked database migration boundary
+
+**Status:** Accepted · **Date:** 2026-08-06 · **Decider:** repository owner through the approved consolidation plan
+**Related:** ADR-0012 (RLS posture), ADR-0038 (lean Flutter/Node target)
+
+### Context
+
+Database setup had several competing histories: Docker init mounts stopped at migration 0021, CI
+maintained its own 26-file loop, and staging, restore, smoke, and release could each apply SQL by a
+different path. There was no database ledger or checksum comparison. A fresh database could
+therefore differ from an upgraded one while both booted successfully, and the application role was
+provisioned beside schema SQL despite having a different security and rotation lifecycle.
+
+### Decision
+
+- `infra/migrations/manifest.json` is the ordered, immutable source boundary. The 26 historical SQL
+  files retain their original bytes and are pinned by SHA-256.
+- `server/scripts/migrate.mjs` is the sole schema entry point for Compose, CI, staging, restore, and
+  release. It uses an administrative `MIGRATION_DATABASE_URL`, holds a session advisory lock,
+  applies each file and its `schema_migrations` row in one transaction, and refuses gaps, unknown
+  rows, filename drift, checksum drift, or an unrecognized pre-ledger schema.
+- Only the structurally fingerprinted historical 0021 and 0027 states may be adopted into the
+  ledger. Fresh, adopted, and upgraded databases must produce the same schema fingerprint.
+- `server/scripts/provision-role.mjs` separately creates or rotates `quran_ai_app`. Runtime services
+  use that restricted login; they never receive migration authority. Full-corpus seeds remain
+  versioned data artifacts outside schema migration history.
+
+### Consequences
+
+There is one auditable migration history and one operational command across every environment.
+Startup now fails closed on drift and serializes concurrent deploys. Operators must supply separate
+administrative and runtime credentials, and restore/release procedures must run migration and role
+provisioning before application traffic starts.
+
+---
+
+## ADR-0039 — Generate the Flutter API boundary with pinned OpenAPI Generator `dart-dio`
+
+**Status:** Accepted · **Date:** 2026-08-06 · **Decider:** repository owner through the approved consolidation plan
+**Related:** ADR-0026 (Flutter dependencies), ADR-0038 (target route contract)
+
+### Context
+
+The Flutter client is hand-written from an OpenAPI file and a Node test compares selected model
+keys. That test catches useful drift, but it does not create request methods, auth wiring, typed
+errors, or new models. Keeping a complete client synchronized by hand is not credible for the final
+Flutter-only product.
+
+The generator has to support Flutter Web, bearer and API-key security, composite schemas, and the
+OpenAPI 3.1 contract while remaining reproducible. As checked on 2026-08-06, OpenAPI Generator
+7.22.0 is the latest stable release. Its official `dart-dio` generator is marked stable, supports
+authorization and composite/union schemas, and produces a cross-platform Dart client. The simpler
+`dart` generator keeps the current `http` package but officially lacks authorization and union
+support, so it is not an acceptable security boundary. Newer native-Dart generators were rejected
+for now because they have very short release histories and much smaller field evidence.
+
+Sources: [OpenAPI Generator 7.22.0 release](https://github.com/OpenAPITools/openapi-generator/releases/tag/v7.22.0),
+[official `dart-dio` capability matrix](https://openapi-generator.tech/docs/generators/dart-dio/).
+
+### Decision
+
+- Use **OpenAPI Generator 7.22.0** with the **`dart-dio` generator** and its stable `built_value`
+  serialization mode.
+- The sole source is `packages/contracts/openapi.yaml`; generation never fetches a remote spec.
+- Pin the generator artifact/version and configuration in the repository when W4.2 adds the tool.
+  Generated output is deterministic and CI regenerates into a temporary directory and fails on a
+  diff. Generated files are never edited by hand.
+- `dio` replaces `http` at the completed API boundary; both networking stacks must not remain as
+  permanent runtime dependencies. Realtime WebSocket and audio dependencies remain separate.
+- Before any production caller migrates, the generated package must compile and prove required vs
+  optional vs nullable semantics, all security schemes, error responses, enum behavior, and a
+  byte-exact canonical Quran text round trip. A generator defect fails the migration; it is not
+  patched around in handwritten generated files.
+- No generator is installed in W0.2. Tool installation and generated-code review remain W4.2 so a
+  dependency is not added months before it has a runtime caller.
+
+### Consequences
+
+Generation is reproducible and the client boundary becomes contract-driven, at the cost of one
+eventual networking-stack replacement and generated `built_value` support dependencies. The
+selection is intentionally pinned rather than `latest`; upgrades are explicit diffs with the same
+generation and canonical-byte gates.
+
+---
+
+## ADR-0038 — Retire public password/agent routes and adopt controlled device enrollment
+
+**Status:** Accepted · **Date:** 2026-08-06 · **Decider:** repository owner through the approved consolidation plan
+**Supersedes:** ADR-0020 (open learner self-registration); ADR-0025 (proposed Node bcrypt dependency)
+**Preserves:** ADR-0002 (login stays off until the owner declares production)
+
+### Context
+
+The measured runtime baseline is 42 method/path operations. Four are wrong for the final product:
+open password registration lets a caller create identities, password login would force the lean
+Node target to retain bcrypt and a public login UI, and the generic agent-run read/write pair exposes
+an internal orchestration record as product API. None is needed for the Kurdish Quran practice loop.
+
+Native Flutter still needs real, revocable identity and delayed reviewed feedback. The browser-only
+`__Host-qrai-pilot` cookie cannot be the native credential boundary, and the staff session list must
+not be weakened into a learner history endpoint.
+
+### Decision
+
+The final target retires exactly:
+
+- `POST /v1/auth/register`
+- `POST /v1/auth/login`
+- `GET /v1/agent-runs`
+- `POST /v1/agent-runs`
+
+They remain served and contracted during the strangler period. Each current production caller is
+recorded in `packages/contracts/route-manifest.json`; removal is forbidden until that inventory is
+empty, compatibility tests are replaced, and the relevant canary/rollback gate has passed.
+
+The target adds these separately specified operations:
+
+- `POST /v1/device-enrollments:exchange` — exchange one single-use, expiring invitation for a
+  server-derived learner/device session; a caller never chooses tenant or role.
+- `POST /v1/device-sessions:refresh` — rotate the device credential; replay of an already-rotated
+  credential fails closed.
+- `DELETE /v1/device-sessions/current` — revoke the current device session and make logout real.
+- `GET /v1/learner/recitation-sessions` — paginated own-only history for delayed teacher feedback;
+  the privileged staff listing remains unchanged.
+
+Staff and scholar identities are provisioned by authorized administrators, never self-selected.
+Raw invitation and refresh credentials are returned only at their intended exchange, stored only as
+hashes server-side, and never logged. Native secrets belong in Keychain/Keystore. The server may
+implement and contract these operations as `implemented-owner-gated`, but it must not register
+them unless the owner-controlled `DEVICE_IDENTITY_ENABLED=1` switch is explicit; this ADR does not
+re-enable Web login.
+
+The manifest classifies every baseline operation as retained or retired and lists additions
+separately. Counts are computed from those sets: 42 baseline, four retirements, 38 retained baseline
+operations, and four additions. There is no independent target-count field that can drift.
+
+### W2.16 implementation note (2026-08-07)
+
+The Node boundary now implements the three device-identity operations behind the default-off
+`DEVICE_IDENTITY_ENABLED=1` owner gate. Additive migration 0035 stores only SHA-256 invitation,
+access, and refresh hashes under forced tenant RLS. Invitations are 256-bit opaque values with a
+fixed 24-hour lifetime. An exchange creates server-derived identity with a 15-minute access
+credential, seven-day idle lifetime, and 30-day absolute family lifetime. Refresh rotates both
+credentials and retains a generation chain; refresh replay revokes the entire credential family
+before returning a generic 401. Logout also revokes the family.
+
+`server/scripts/provision-device-enrollment.mjs` is the sole operator provisioning boundary. It
+requires a stored in-tenant admin, creates only learner/teacher/scholar users when explicitly given
+all approved fields, records an audit event, generates the invitation internally, and returns its
+raw value once. It cannot create admin/ops users or accept a session role, tenant, invitation, or
+credential chosen by an HTTP caller. Privacy export exposes only nonzero device-row counts; delete
+removes the learner's device sessions and invitations inside the existing fenced tenant transaction.
+This implementation does not activate the routes, re-enable Web login, or complete native secure
+storage/attestation work; W4.10 and independent security approval remain release gates.
+
+### Consequences
+
+The proposed bcrypt dependency is no longer required for the final Node service. Current password,
+agent service, fixture-capture, and privacy-audit paths continue only as transition surfaces and
+must migrate before deletion. Pilot invitation/cookie operations remain available for browser
+compatibility until their own client-retirement gate; this decision does not silently expand the
+four-route retirement set.
+
+---
+
 ## ADR-0020 — Open learner self-registration is retained for the pilot (F2)
 **Date:** 2026-07-24 · **Status:** Accepted (owner decision)
 
@@ -653,7 +1620,7 @@ Quran.com ground truth — mean word-START error ~64-100 ms over Al-Fatihah 1:1-
   Rust persists non-zero start_ms/end_ms -> web sends audioBase64. Last-word END drifts into
   trailing silence (measure madd separately).
 
-## ADR-0038 — Interface locale capability gates prevent untranslated UI claims
+## ADR-0055 — Interface locale capability gates prevent untranslated UI claims
 
 **Status:** Accepted through the 2026-07-19 readiness-recovery plan
 **Deciders:** product owner (approved recovery plan), implementation team
@@ -663,7 +1630,9 @@ Quran.com ground truth — mean word-START error ~64-100 ms over Al-Fatihah 1:1-
 > `checkAdr0022` in `scripts/cutover-readiness.mjs` resolves an ADR by `split("## ADR-00NN")[1]`,
 > so a duplicated number silently resolves to whichever section appears first in the file. Nothing
 > reads 0019 today, so nothing was misreported — but the next machine-read of a duplicated number
-> would be wrong with no error. This one moved because nothing cites it by number, while
+> would be wrong with no error. ADR-0055 is the next free number in the consolidated ledger; the
+> upstream ADR-0038 proposal was already occupied here by device enrollment. This one moved because
+> nothing cites it by number, while
 > `ADR-0019`'s pilot-invitations meaning is cited in the ADR-0020 context paragraph.
 
 ### Context
@@ -707,7 +1676,7 @@ marketed as a Sorani UI.
 `agent_runs` unboundedly and spamming the teacher review queue with duplicates. The obvious fix
 is a DB unique constraint on `(tenant_id, finding_id)` — but `finding_id` lives inside the
 `trace` JSONB, not a column, so that needs a new migration. New migrations currently can't ship
-green: CI's Postgres only applies `infra/sql/0001–0013` (its list in the CI-protected
+green: CI's Postgres only applies `infra/migrations/0001–0013` (its list in the CI-protected
 `.github/workflows/ci.yml`), so any integration test touching a new column fails `verify` — the
 exact wall that's kept PR #123 red since 2026-07-07.
 
@@ -740,9 +1709,9 @@ So the "blocked on the ci.yml migration list" reason for choosing Option B has e
 correct and in place; this is no longer a forced choice, just an unpromoted one.
 
 ## ADR-0022 — Deployable artifacts must be immutable and digest-pinned, so rollback has a target
-**Date:** 2026-07-30 · **Status:** Accepted (2026-08-01, option A) · **Deciders:** repo owner + whoever owns ops
+**Date:** 2026-07-30 · **Status:** Accepted (amended 2026-08-07, option B) · **Deciders:** repo owner + whoever owns ops
 
-**Context.** `docker-compose.yml` builds every application service from source (`build:`); only
+**Original context.** `docker-compose.yml` built every application service from source (`build:`); only
 `postgres` uses `image:`. No workflow builds or pushes a container image — `grep -i
 "docker build|docker push|ghcr|registry|docker/build-push"` across `.github/workflows/` returns
 nothing. So there is no artifact anywhere that represents "the version that was running".
@@ -786,36 +1755,48 @@ immediately; (B) is what makes it disaster recovery. Do not let (A) become the r
   deliberate and should be stated in the runbook, not discovered during an outage.
 - Storage grows with retained tags; a retention count is needed, mirroring `backup-db.sh`'s.
 
-**ACCEPTED 2026-08-01 — option (A), local tag retention.**
+**SUPERSEDED 2026-08-07 — the initial option (A) decision is replaced by option (B), GHCR.**
 
-The owner chose (A). This ADR recommended **(B) with (A) as the interim** and warned "do not let (A)
-become the resting state", so the divergence is recorded here rather than left implicit.
+The W2.18 audit proved that local retention never produced a usable rollback artifact in the actual
+workflow: a GitHub-hosted runner is a fresh VM for the job and is decommissioned when the job ends,
+so its local Docker tags disappear. The uploaded file also mixed build logs with JSON, and no
+Compose path consumed the claimed digests. Those were correctness failures, not future scaling
+concerns.
 
-What (A) delivers — `scripts/release-images.mjs` + `.github/workflows/release-image.yml`:
-- a STABLE tag per service per commit (`qrai/<service>:<short-sha>`), so a specific commit's image
-  can be named later;
-- the image DIGEST, published as a build artifact, satisfying `release-manifest.mjs`'s
-  `assertImageDigests()` with real values rather than relaxing the verifier to match reality;
-- RETENTION of the last N, so the previous image still exists when the current one turns out to be
-  wrong. The retention rule is a pure function with its own test, run BEFORE any pruning: a bug
-  there deletes the image you were about to roll back to.
+The accepted design is now a **durable registry**:
+- CI publishes every deployable artifact to GHCR under the full candidate Git SHA and records the
+  registry-reported `sha256` digest in strict machine-readable JSON;
+- `node-api`, `job-worker`, and `node-realtime` share one `node-backend` artifact identity because
+  they execute the same production image, while the migration runner remains a separate
+  least-privileged artifact;
+- `docker-compose.release.yml` disables source-build fallback and requires exact
+  `repository@sha256:digest` references for every released application service;
+- `scripts/release-deployment.mjs` preserves one explicit candidate/previous selection, renders
+  either slot into the release overlay, and fails image verification when any running container is
+  stopped, substituted, or backed by content other than the selected registry digest;
+- rollback selects a previously retained digest. `scripts/http-canary-controller.mjs` reverses Web
+  and realtime indexing together, then restores and verifies the seven previous application images;
+  it deliberately excludes the one-shot database image because schema rollback is not an
+  application incident action. Registry retention/deletion is an explicit remote policy and is
+  never simulated by pruning ephemeral runner-local tags.
 
-**What (A) explicitly does NOT deliver, and this is the part to keep visible:**
-- **It is not disaster recovery.** The tags live only on the host that built them; a replacement
-  host has nothing to roll back to. `P5.6` (DR drill) is therefore NOT satisfied by this and must
-  not be marked as though it were.
-- It gives no provenance chain outside that host, so nobody else can verify what ran.
+`docker-build.yml` remains a Dockerfile verification workflow, not release publication. A release
+or rollback rehearsal must use the release overlay and observed image digests; rebuilding an old
+commit does not satisfy the rollback gate.
 
-`docker-build.yml` is unchanged and is NOT this: it builds every image to verify the Dockerfiles and
-the non-root hardening, producing no stable identifier, no digest and no retention.
+**Implementation note (2026-08-08, W2.18 T5 gate; W3.2 service-count amendment):** controller artifacts now distinguish a
+healthy observation, a deliberate rollback drill, and an incident, and offline verification
+requires the rollback to expose seven restored images, one stored effect, zero duplicates, and passed
+privacy cleanup. Release mode validates a fresh signed monitoring observation, the exact successful
+remote check inventory, and independent role-bound release-owner/security/SRE Ed25519 approvals
+over the exact candidate/load/controller artifacts. The validator writes a closure only after the
+full release gate and never promotes traffic or creates a human approval.
 
-**Revisit (B) when** the pilot runs on a host the team does not personally control, or when anyone
-outside the build host needs to verify a deployed digest. Neither is true today; both are
-foreseeable.
-
-**Status note.** Proposed, not accepted: this is an architectural change to how the system is
-deployed and the owner has not chosen between (A) and (B). **P5.5 cannot close until it is decided
-and rehearsed** — a rollback rehearsal performed before this lands would be rehearsing a rebuild.
+**Consequences of the amended decision.** Host loss no longer destroys candidate or prior image
+identity, and release evidence matches the deploy path. Rollback does depend on GHCR availability;
+the runbook must preserve a previously pulled digest on the deployment host and must never describe
+a source rebuild as rollback. P5.5/P5.6 remain open until a real candidate and prior digest are
+deployed and the timed rollback drill is evidenced.
 
 ---
 
@@ -1577,22 +2558,20 @@ inherited exactly one route's worth of the bug.
 
 ### Decision
 
-The gate runs the full parity suite through the Node port over **every** route in `PORTABLE` — 243
-assertions, up from 14 — and the route list is **read out of `server.mjs` at gate time** rather than
-written into `verify.sh`. A hardcoded list is a second place to remember, and the forgotten one is
-always the gate: a route added to `PORTABLE` would be servable in production with nothing comparing
-it to anything.
-
-The parser fails loudly if it reads fewer than 30 routes, because a regex that silently matches
-nothing would report a green run over an empty set.
+The gate runs the full parity suite through every locally executable Node route. W2.9 removed the
+second `PORTABLE` list and its format-sensitive source parser; the gate imports the frozen
+`ROUTE_KEYS` projection derived from `server/src/routes/index.mjs::ROUTES`. It fails loudly if that
+registry contains fewer than 30 routes. One executable registry now controls registration, startup
+compatibility validation, absolute authorization coverage, and full through-Node parity.
 
 ### Consequences
 
 - The gate is slower: the parity suite now runs twice, once per backend. That is the cost of the
   claim, and the claim is the one thing that makes a cutover decidable.
-- **This does not enable anything.** `NODE_API_PORTED` stays empty at runtime and `traffic-share`
-  stays UNMET. Parity is one of four gates the brief names (parity, rollback, security, operations);
-  it is now measured rather than assumed.
+- This parity decision did not itself move traffic. W2.9 later made the source process standalone by
+  default; Compose remains an explicit compatibility shadow and public Web/realtime traffic still
+  targets Rust. Parity is one of four gates (parity, rollback, security, operations), not a release
+  signature.
 
 ---
 
@@ -1754,8 +2733,9 @@ audio had been destroyed on purpose and the queue looked identical to one where 
 unplayed. ADR-0036 and the `audioStatus` field made that legible. This is about the case where the
 recording *does* exist.
 
-Audio is written by realtime-gateway into ml-inference's object storage. Nothing could read it back:
-ml-inference had a store route and no read route at all.
+At the time of this decision, audio was written by realtime-gateway through ml-inference's storage
+route and nothing could read it back. W2.14 subsequently moved the object boundary into the shared
+Node storage module used directly by platform-api and by the transitional ML writer.
 
 ### Decision
 
@@ -1774,10 +2754,10 @@ approximate for a child's recorded voice.
 transfer that fails halfway is still recorded as an attempt. Auditing begins after authorization
 succeeds: an unauthenticated caller must not be able to write rows into the audit log.
 
-**ml-inference takes the object key's PARTS, never the key.** `<tenant>/<learner>/<chunk>.bin` as a
-single string would mean filtering a path-shaped value for traversal on the one route that reads
-files off the host. Three segments through `safeStorageSegment` make traversal structurally
-impossible rather than filtered.
+**The storage boundary takes object-identity PARTS, never a caller-selected key.** The current key is
+derived as `audio/v1/<tenant>/<learner>/<session>/<chunk>.pcm`. Passing one path-shaped string would
+turn traversal filtering into an authorization boundary; strict tenant, learner, session, and chunk
+segments make the identity structural instead.
 
 **Retention is checked twice, independently.** platform-api reads the learner's consent record from
 Postgres. ml-inference reads the retention written *alongside the bytes* when they were stored, and
@@ -1792,20 +2772,31 @@ they disagree, something is wrong and the safe answer is to refuse.
 - The audit log gains a row per playback. That is the point — "who listened to this child's
   recording, and when" is a question a pilot has to be able to answer.
 - Withdrawal of consent takes effect at the next fetch, with no issued-credential window to expire.
-- **Not yet built:** `audio_chunks` (the DB index) is still written by nothing, so no finding
-  currently resolves to a stored object. The read path exists and is tested; the write path from
-  realtime-gateway to platform-api is the remaining half and is a separate change.
+- **Implemented:** after ml-inference confirms storage, realtime-gateway writes `audio_chunks`
+  through `POST /v1/audio-chunks` using the session's scoped signed ticket. Compose supplies the
+  internal `PLATFORM_API_URL`; disabled and failed indexing increment an actionable
+  stored-unindexed metric rather than disappearing.
+- A retained object survives an index outage. `server/scripts/repair-audio-index.mjs` reconciles
+  S3-compatible, current-filesystem, and legacy objects dry-run first and idempotently, but does not
+  treat a key or metadata as authority: the tenant-scoped session row must independently confirm
+  tenant, learner, and current retention through the same domain used by the Node realtime/HTTP
+  writers. Apply mode creates the playback index and repaired diagnostic provenance in one
+  transaction. It also reports incomplete object/metadata pairs and database indexes whose object
+  is missing. The operations container uses the configured store and restricted application role.
+- `tests/e2e/teacher-audio-index.test.mjs` proves real WebSocket storage → database index → audited
+  teacher playback, then forces an index outage and proves metric, repair, idempotence, and an
+  ownership-mismatch refusal.
 
 ---
 
-## ADR-0039 — hamza-on-carrier (ؤ/ئ) ASR variance: partial credit, not full normalization
+## ADR-0056 — hamza-on-carrier (ؤ/ئ) ASR variance: partial credit, not full normalization
 
 **Date:** 2026-08-08 · **Status:** Accepted (interim); full normalization pending scholar review
 
-> Numbered 0039, not 0038: `docs/fix-adr-0019-number-collision` renumbers the interface-locale
-> capability-gates ADR (a duplicate ADR-0019) to ADR-0038, so 0038 is spoken for.
+> Renumbered to ADR-0056 during consolidation because ADR-0039 already names Flutter OpenAPI
+> generation and ADR-0055 already names the interface-locale capability gates.
 
-**Context.** `normalizeArabic()` in `services/ml-inference/alignment.js` unifies taa marbuta (ة) with
+**Context.** `normalizeArabic()` in `server/src/inference/alignment.mjs` unifies taa marbuta (ة) with
 haa (ه), since the two are acoustically similar in pause form with no tajweed significance —
 verified empirically that ASR transcribing a correctly-recited taa-marbuta word as haa scored as low
 as 0.75 similarity, wrongly landing in the "misread" band. A similar-shaped gap exists for hamza on a
@@ -1849,18 +2840,19 @@ masking it as fully "matched".
 added without a scholar sign-off recorded as its own ADR, following the ADR-0014 pattern. If a
 qualified reviewer confirms hamza-on-carrier ASR variance should be scored as fully equivalent — or,
 conversely, that even partial credit is inappropriate and it must score as a full penalty —
-`substitutionCost()` in `services/ml-inference/alignment.js` is the single place to change, with
-`alignment.test.mjs` updated to match.
+`substitutionCost()` in `server/src/inference/alignment.mjs` is the single place to change, with
+`tests/inference/alignment.test.mjs` updated to match.
 ---
 
-## ADR-0040 — The ml-inference audit log grows without bound and survives erasure; retention is a human decision
+## ADR-0054 — The inference audit log grows without bound and survives erasure; retention is a human decision
 
 **Date:** 2026-08-09 · **Status:** Proposed — needs an owner/DPO decision, NOT an engineering one
-**Related:** ADR-0003 (ml-inference reached only via platform-api), the cross-learner export fix
+**Related:** ADR-0003 (inference is internal), ADR-0050 (one Node backend), the cross-learner export fix
 
 ### Context
 
-`services/ml-inference` writes one append-only JSONL per tenant under `AUDIO_STORAGE_DIR/audit-log/`.
+`server/src/inference/runtime.mjs` writes one append-only JSONL per tenant under
+`AUDIO_STORAGE_DIR/audit-log/`.
 Three properties of it were found while fixing the learner-scoped privacy export, and none of them
 can be settled by an agent:
 
@@ -1870,9 +2862,9 @@ can be settled by an agent:
 2. **It is read whole, synchronously, on the request path.** `readTenantAuditEvents` does
    `readFileSync` + `JSON.parse` over the entire file. `GET /v1/audit-events?tenantId=` returns
    every row with no pagination or cap. On a single-threaded Node service both cost grows linearly
-   and blocks every other request. platform-api's own audit endpoint — a different store, its
-   Postgres `audit_events` table — is Admin/Ops-gated and already `LIMIT 200`; ml-inference's is
-   behind `ML_API_KEY` and internal, so this is a reliability question, not an exposure one.
+   and blocks every other request. The platform audit endpoint — a different store, its Postgres
+   `audit_events` table — is Admin/Ops-gated and already `LIMIT 200`; the compatibility inference
+   endpoint is key-gated and internal, so this is a reliability question, not an exposure one.
 3. **Erasure does not touch it.** `deletePrivacy` removes the learner's audio and chunk metadata and
    appends `privacy.delete.requested` — an event whose `subjectId` *is* the learner's id. So a
    learner who asks to be forgotten leaves behind every audit row naming them, plus a new one
@@ -1890,7 +2882,7 @@ this ADR. Choosing any of them silently would be an agent inventing a compliance
 
 ### The question for the owner / DPO
 
-1. **Retention period.** How long must an ml-inference audit row be kept, and on what basis? Once
+1. **Retention period.** How long must an inference audit row be kept, and on what basis? Once
    answered, rotation is mechanical and should reuse the existing consent-retention sweep rather
    than growing a second scheduler.
 2. **Erasure interaction.** On a verified erasure request, must the learner's prior audit rows be
@@ -1925,7 +2917,7 @@ the event loop, and an erased learner's identifier persists in it. That is the c
 later. `learnerId` being a first-class field on each row means whichever of (a)/(b)/(c) is chosen can
 be implemented without re-parsing history.
 
-## ADR-0041 — The Flutter review queue cannot play recitation audio without a new runtime dependency
+## ADR-0057 — The Flutter review queue cannot play recitation audio without a new runtime dependency
 
 **Date:** 2026-08-11 · **Status:** Proposed — needs an owner decision, not an engineering one
 **Related:** ADR-0037 (teacher audio through platform-api, every fetch audited), ADR-0022 (artifacts)
@@ -1994,7 +2986,7 @@ Recommended: **B until a mobile owner exists, then A or C.** No reviewer is bloc
 queue plays audio and the notice says where to go. The dependency should land with the person who
 will sign the build that carries it.
 
-## ADR-0042 — Does blocking a model retract a human's approval of one finding?
+## ADR-0058 — Does blocking a model retract a human's approval of one finding?
 
 **Date:** 2026-08-12 · **Status:** Proposed — needs a scholar/product ruling, not an engineering one
 **Related:** ADR-0028 (the learner gate), P3.2 (withheld-feedback tests), P3.6 (scholar approval)
@@ -2075,7 +3067,7 @@ What is in place meanwhile:
 3. Do approvals expire on a clock as well, as locale reviews do — and if so, does an expired
    approval withhold the finding or merely flag it for re-review?
 
-## ADR-0043 — Signed release evidence: the architecture that shipped, and the retention nobody chose
+## ADR-0059 — Signed release evidence: the architecture that shipped, and the retention nobody chose
 
 **Date:** 2026-08-12 · **Status:** Proposed — the architecture is describing what exists; the
 retention policy needs an owner's approval
@@ -2160,7 +3152,7 @@ by 22 tests; re-deciding it now would be theatre.
 - Nothing was built to satisfy this ADR. No retention field, no pruning script, no dormant config.
   When the ruling comes it lands on a clean surface — the same discipline as ADR-0042.
 
-## ADR-0044 — `server/` is the Node backend; `services/node-api` is frozen
+## ADR-0060 — `server/` is the Node backend; `services/node-api` is frozen
 
 **Date:** 2026-08-12 · **Status:** Accepted (engineering scope only — see Non-scope)
 **Related:** ADR-0034 (a port is only ported where something compares it), PR #388,
@@ -2261,7 +3253,7 @@ owner decision with canary and rollback evidence, which is W2/W3/W6, not this.
 It also says nothing about whether the product is ready. P3.4/P3.5 — no held-out evaluation — is
 untouched by which process serves the routes.
 
-## ADR-0045 — A right-to-erasure request does not delete the account
+## ADR-0061 — A right-to-erasure request does not delete the account
 
 **Date:** 2026-08-12 · **Status:** Proposed — needs a DPO/product ruling, not an engineering default
 **Related:** ADR-0040 (the ml-inference audit log survives erasure), `docs/DATA_INVENTORY.md` §2/§4,
@@ -2340,7 +3332,7 @@ this ADR stops being Proposed.
 3. Whether the erasure receipt may name a person who no longer exists — i.e. whether
    `privacy_jobs.learner_id` should become a free-standing identifier rather than an FK.
 
-## ADR-0046 — `recordingConsent` is a checkbox no server reads
+## ADR-0062 — `recordingConsent` is a checkbox no server reads
 
 **Date:** 2026-08-12 · **Status:** Proposed — the remediation needs a data decision, not just a gate
 **Related:** ADR-0028 (the learner gate is enforced on the wire, not in the client),
@@ -2429,7 +3421,7 @@ Meanwhile `tests/security/consent-gate-coverage.test.mjs` requires every flag in
 have a named server-side gate or a declared reason, so a sixth flag cannot be added and quietly do
 nothing, and neither of these two can be forgotten.
 
-## ADR-0047 — the realtime ticket cannot be revoked, and the erasure deletes its record anyway
+## ADR-0063 — the realtime ticket cannot be revoked, and the erasure deletes its record anyway
 
 **Date:** 2026-08-12 · **Status:** Proposed — the fix is an architectural choice, not a one-liner
 **Related:** ADR-0041 (a control that cannot act is worse than its absence), ADR-0045 (erasure does

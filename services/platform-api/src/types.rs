@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 // enum-shaped column in this schema (role, review_status, status, severity, risk, audio_retention)
 // has a matching Rust-side check + a DB CHECK constraint; this one didn't, so an arbitrary string
 // could be persisted and later silently drive UI logic (e.g. text-direction selection) with no
-// validation error anywhere. See infra/sql for the matching DB-level CHECK constraint.
+// validation error anywhere. See infra/migrations for the matching DB-level CHECK constraint.
 pub const SUPPORTED_LANGUAGE_CODES: [&str; 9] =
     ["ar", "ckb", "en", "tr", "ur", "id", "ms", "fr", "de"];
 
@@ -167,7 +167,8 @@ pub struct RecitationSessionRequest {
     pub learner_id: String,
     pub quran_ref: QuranReference,
     pub source_checksum: String,
-    pub model_version: String,
+    #[serde(default)]
+    pub model_version: Option<String>,
     pub language: String,
     #[serde(default = "default_practice_mode")]
     pub mode: PracticeMode,
@@ -290,6 +291,31 @@ pub struct EvalRun {
     pub teacher_agreement_rate: f32,
     pub unsourced_learner_outputs: u32,
     pub passed: bool,
+    pub evaluation_task: Option<String>,
+    pub evidence_id: Option<String>,
+    pub evidence_kind: String,
+    pub evidence_eligibility: String,
+    pub release_eligible: bool,
+    pub evidence_payload: Option<serde_json::Value>,
+    pub evidence_payload_sha256: Option<String>,
+    pub candidate_id: Option<String>,
+    pub model_artifact_sha256: Option<String>,
+    pub dataset_manifest_sha256: Option<String>,
+    pub split_manifest_sha256: Option<String>,
+    pub split_id: Option<String>,
+    pub evaluator_version: Option<String>,
+    pub evaluator_source_sha256: Option<String>,
+    pub evaluator_protocol_sha256: Option<String>,
+    pub raw_row_manifest_sha256: Option<String>,
+    pub raw_results_sha256: Option<String>,
+    pub calibrator_id: Option<String>,
+    pub calibrator_artifact_sha256: Option<String>,
+    pub signer_key_id: Option<String>,
+    pub signature_algorithm: Option<String>,
+    pub signature_base64_url: Option<String>,
+    pub signed_at: Option<String>,
+    pub evaluation_counts: Option<serde_json::Value>,
+    pub slice_metrics: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -361,6 +387,8 @@ pub enum ApiError {
     Database(String),
     #[error("{0}")]
     BadRequest(String),
+    #[error("{0}")]
+    Conflict(String),
     /// An upstream/proxied service (e.g. ML inference) failed. The message is GENERIC and safe to
     /// return to clients — detailed errors are logged server-side, never surfaced (no topology leak).
     #[error("{0}")]
@@ -482,6 +510,7 @@ impl IntoResponse for ApiError {
             Self::MissingSources | Self::HighRiskApproval | Self::BadRequest(_) => {
                 StatusCode::BAD_REQUEST
             }
+            Self::Conflict(_) => StatusCode::CONFLICT,
             Self::Database(_) => StatusCode::INTERNAL_SERVER_ERROR,
             Self::Upstream(_) => StatusCode::BAD_GATEWAY,
             Self::Unavailable(_) => StatusCode::SERVICE_UNAVAILABLE,
@@ -644,11 +673,11 @@ mod tests {
             "learnerId": "learner-1",
             "quranRef": { "surahNumber": 1, "ayahStart": 1, "ayahEnd": 7, "display": "Al-Fatihah 1-7" },
             "sourceChecksum": "sha256:abc",
-            "modelVersion": "ml-aligner-v0.2",
             "language": "ar",
             "consent": { "audioRetention": "discard", "anonymizedLearning": false },
         }))
         .expect("session request without an explicit practice plan id deserializes");
         assert_eq!(req.practice_plan_id, "fatihah-mastery-v1");
+        assert_eq!(req.model_version, None);
     }
 }

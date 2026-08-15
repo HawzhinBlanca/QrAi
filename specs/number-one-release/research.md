@@ -39,7 +39,7 @@ passing only in a developer's working tree is evidence, not a release claim.
   `PrivacySettings.tsx`, and `TeacherSurface.tsx`.
 - Domain gates: `packages/contracts/src/index.ts`,
   `services/ml-inference/tajweed.js`, and `docs/SCHOLAR_REVIEW.md`.
-- Persistence/tenant boundary: `infra/sql/0003_tenant_rls.sql`,
+- Persistence/tenant boundary: `infra/migrations/0003_tenant_rls.sql`,
   `services/platform-api/tests/integration.rs`, and platform-api handlers.
 - Production packaging: `docker-compose.yml`, Dockerfiles, nginx config, and
   protected CI workflows.

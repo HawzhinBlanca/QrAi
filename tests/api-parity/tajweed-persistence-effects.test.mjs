@@ -1,28 +1,16 @@
 /**
- * A tajweed prediction must leave something a teacher can review — in BOTH implementations.
+ * Deterministic Tajweed instruction must never become learner-performance state.
  *
  *   node --test tests/api-parity/tajweed-persistence-effects.test.mjs
  *
  * ── Why this is not an `assertAB` probe ─────────────────────────────────────────────────────────
- * `assertAB` compares status, headers and response bytes. On this route the two implementations
- * agreed on all three and disagreed on everything that matters:
+ * `assertAB` cannot see an unsafe INSERT. This suite therefore proves the database effect directly:
+ * the real rule engine returns instructional `annotations`, the performance `findings` array is
+ * empty, and neither runtime creates a `tajweed_findings` row or a false persistence audit.
  *
- *     rust        status=200  findings in response=5  tajweed_findings=1  audit=1
- *     node shell  status=200  findings in response=5  tajweed_findings=0  audit=0
- *
- * The Node port returned the findings and stored none of them. No teacher could ever review one, and
- * there was no record that the ML call had happened at all — the exact state `persist_tajweed_findings`
- * was written to end ("Tajweed findings existed only for the length of this response until now"),
- * reintroduced by the port and invisible to the differ because the bytes matched.
- *
- * Response parity is not effect parity. A byte comparison cannot see a missing INSERT, so the
- * assertion here is against the DATABASE, per implementation, with no comparison between them: an
- * absolute expectation is the only kind that survives both sides being wrong the same way.
- *
- * ── Why the real ml-inference ───────────────────────────────────────────────────────────────────
- * The findings have to be real findings. A mock returning `{findings: []}` would make both
- * implementations trivially agree — `persist_tajweed_findings` returns early on an empty array — and
- * this test would pass against a service that stores nothing.
+ * ── Why the real worker inference runtime ───────────────────────────────────────────────────────
+ * A mock returning empty arrays would prove nothing. The real runtime must return at least one
+ * deterministic annotation for Al-Fatihah 1:1, while still returning zero acoustic findings.
  */
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
@@ -32,7 +20,16 @@ import { dirname, join } from "node:path";
 import { after, before, test } from "node:test";
 import { fileURLToPath } from "node:url";
 
+import { createInferenceRuntime } from "../../server/src/inference/local.mjs";
+import { createJobRuntime } from "../../server/src/jobs/runtime.mjs";
+import { createJobStore } from "../../server/src/jobs/store.mjs";
+import { createWorkflowHandlers } from "../../server/src/jobs/workflows.mjs";
+import { createDb } from "../../server/src/lib/db.mjs";
+
 import {
+  DATABASE_URL,
+  TENANT,
+  purgeSessionsByChecksum,
   queryJson,
   request,
   reservePort,
@@ -41,8 +38,19 @@ import {
   uniqueSuffix,
 } from "./lib/harness.mjs";
 
+// Run-scoped session checksums, so the teardown at the end of this file deletes exactly this run's
+// rows and nothing else. These suites created sessions and never removed them: measured, the shared
+// staging database had accumulated 64,869 recitation sessions across ~8 fixed checksums, growing by
+// thousands a day. Leaked rows already broke a review-parity assertion and a Rust integration test
+// once in this program (`seedQueued`), and an unbounded corpus is what makes ORDER BY without a
+// unique tiebreaker, row-count deltas, and other suites' bulk teardown intermittently fail.
+// Per-run rather than a shared literal: two agents run this gate against the same Postgres.
+const RUN_CK_EFFECTS = `fnv1a32:effects-${uniqueSuffix()}`;
+const RUN_CK_NOALIGN = `fnv1a32:noalign-${uniqueSuffix()}`;
+
+
 const root = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
-const ML_ENTRY = join(root, "services/ml-inference/server.mjs");
+const ML_ENTRY = join(root, "tests/inference/lib/worker-compatibility-harness.mjs");
 const ML_KEY = "tajweed-effects-ml-key";
 
 /** Everything this test needs the shell to answer itself. Anything absent here is proxied to Rust. */
@@ -58,6 +66,10 @@ let storageDir;
 let api;
 let shell;
 let rustUrl;
+let workerDb;
+let workerLoop;
+let workerRunning = false;
+const ownedSessions = new Set();
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -88,9 +100,52 @@ before(async () => {
     } catch {
       // not up yet
     }
-    if (Date.now() > deadline) throw new Error(`ml-inference never came up\n${mlStderr}`);
+    if (Date.now() > deadline) throw new Error(`worker inference ingress never came up\n${mlStderr}`);
     await sleep(50);
   }
+
+  workerDb = createDb(DATABASE_URL);
+  const workerRuntime = createJobRuntime({
+    store: createJobStore({ db: workerDb }),
+    handlers: createWorkflowHandlers({
+      db: workerDb,
+      inference: createInferenceRuntime(),
+      upstreamTimeoutMs: 5_000,
+    }),
+    workerId: "tajweed-effects-parity-worker",
+    leaseMs: 7_000,
+    operationTimeoutMs: 6_000,
+    retryBaseMs: 10,
+    retryMaxMs: 100,
+  });
+  workerRunning = true;
+  workerLoop = (async () => {
+    while (workerRunning) {
+      const sessions = [...ownedSessions];
+      if (sessions.length === 0) {
+        await new Promise((resolve) => setTimeout(resolve, 5));
+        continue;
+      }
+      const jobId = await workerDb.withTenant(TENANT, async (tx) => {
+        const [row] = await tx`
+          SELECT id
+          FROM background_jobs
+          WHERE tenant_id = ${TENANT}
+            AND kind = 'session.evaluate'
+            AND subject_id = ANY(${sessions})
+            AND status IN ('queued', 'retry')
+            AND available_at <= now()
+          ORDER BY priority DESC, created_at, id
+          LIMIT 1`;
+        return row?.id ?? null;
+      });
+      if (jobId === null) {
+        await new Promise((resolve) => setTimeout(resolve, 5));
+      } else {
+        await workerRuntime.runOne(TENANT, { jobId });
+      }
+    }
+  })();
 
   api = await startApi({ env: { ML_INFERENCE_URL: mlUrl, ML_API_KEY: ML_KEY } });
   rustUrl = api.upstreamUrl ?? api.baseUrl;
@@ -101,6 +156,14 @@ before(async () => {
 });
 
 after(async () => {
+  let workerFailure = null;
+  workerRunning = false;
+  try {
+    await workerLoop;
+  } catch (error) {
+    workerFailure = error;
+  }
+  await workerDb?.end();
   await shell?.stop();
   await api?.stop();
   if (ml && ml.exitCode === null) {
@@ -110,6 +173,7 @@ after(async () => {
     if (ml.exitCode === null) ml.kill("SIGKILL");
   }
   if (storageDir) rmSync(storageDir, { recursive: true, force: true });
+  if (workerFailure) throw workerFailure;
 });
 
 /**
@@ -128,8 +192,8 @@ async function seededSession(base) {
     body: {
       learnerId: learner,
       quranRef: { surahNumber: 1, ayahStart: 1, ayahEnd: 1, display: "Al-Fatihah 1:1" },
-      sourceChecksum: "fnv1a32:effects",
-      modelVersion: "model-v0.3",
+      sourceChecksum: RUN_CK_EFFECTS,
+
       language: "ckb",
       mode: "guided-recite",
       practicePlanId: "fatihah-mastery-v1",
@@ -144,6 +208,7 @@ async function seededSession(base) {
   });
   assert.equal(created.status, 200, `session create failed: ${created.text}`);
   const sessionId = created.body.id ?? created.body.sessionId;
+  if (base === shell.baseUrl) ownedSessions.add(sessionId);
 
   const words = await queryJson(
     "SELECT id FROM canonical_words WHERE ayah_id = '1:1' ORDER BY word_index LIMIT 2",
@@ -184,7 +249,7 @@ const implementations = () => [
   ["rust", rustUrl],
 ];
 
-test("a prediction stores findings a teacher can review, in both implementations", async () => {
+test("real text rules remain instructional and create no performance rows, in both implementations", async () => {
   for (const [impl, base] of implementations()) {
     const { learner, sessionId } = await seededSession(base);
     const trace = `effects-${uniqueSuffix()}`;
@@ -197,10 +262,20 @@ test("a prediction stores findings a teacher can review, in both implementations
       body: { sessionId, quranRef: { surahNumber: 1, ayahStart: 1, ayahEnd: 1, display: "1:1" } },
     });
     assert.equal(predicted.status, 200, `${impl}: predict failed: ${predicted.text}`);
-    assert.ok(
-      Array.isArray(predicted.body?.findings) && predicted.body.findings.length > 0,
-      `${impl}: the ML service returned no findings, so this test would pass vacuously`,
-    );
+    assert.ok(Array.isArray(predicted.body?.annotations), `${impl}: annotations is not an array`);
+    assert.ok(predicted.body.annotations.length > 0, `${impl}: real rule engine returned no instruction`);
+    assert.deepEqual(predicted.body.findings, [], `${impl}: text rules leaked into performance findings`);
+    for (const annotation of predicted.body.annotations) {
+      assert.equal(annotation.analysisBasis, "text-rule", `${impl}: annotation basis`);
+      assert.equal(annotation.instructional, true, `${impl}: annotation is not explicitly instructional`);
+      for (const forbidden of ["confidence", "severity", "reviewStatus"]) {
+        assert.equal(
+          Object.hasOwn(annotation, forbidden),
+          false,
+          `${impl}: instructional annotation invented performance field ${forbidden}`,
+        );
+      }
+    }
 
     const stored = await queryJson(
       `SELECT tf.id, tf.review_status, tf.analysis_basis, tf.model_version_id, tf.audit_event_id
@@ -209,39 +284,14 @@ test("a prediction stores findings a teacher can review, in both implementations
         WHERE wa.session_id = $1`,
       [sessionId],
     );
-    assert.ok(
-      stored.length > 0,
-      `${impl}: the prediction returned ${predicted.body.findings.length} findings and stored NONE. ` +
-        `They existed for the length of the response — no teacher can review one, and nothing ` +
-        `records that the ML call happened.`,
-    );
-
-    // Every stored finding is a MODEL's opinion about the canonical text, and must say so. A row
-    // that arrives already `teacher-reviewed`, or claiming an acoustic basis, is a claim about a
-    // human judgement nobody made.
-    for (const row of stored) {
-      assert.equal(row.review_status, "ai-suggested", `${impl}: finding ${row.id} review_status`);
-      assert.equal(row.analysis_basis, "canonical-text", `${impl}: finding ${row.id} analysis_basis`);
-      assert.ok(row.model_version_id, `${impl}: finding ${row.id} names no model version`);
-      assert.ok(row.audit_event_id, `${impl}: finding ${row.id} is anchored to no audit event`);
-    }
+    assert.deepEqual(stored, [], `${impl}: instructional text rules were persisted as performance`);
 
     const audit = await queryJson(
-      `SELECT id, action, actor_id, subject_id, metadata->>'trace_id' AS trace_id
-         FROM audit_events WHERE id = $1`,
-      [stored[0].audit_event_id],
+      `SELECT id FROM audit_events
+        WHERE action = 'ml.tajweed.persisted' AND subject_id = $1`,
+      [sessionId],
     );
-    assert.equal(audit.length, 1, `${impl}: the finding's audit_event_id resolves to no row`);
-    assert.equal(audit[0].action, "ml.tajweed.persisted", `${impl}: audit action`);
-    assert.equal(audit[0].subject_id, sessionId, `${impl}: audit names a different session`);
-    assert.equal(
-      audit[0].trace_id,
-      trace,
-      `${impl}: the audit row does not carry the caller's trace, so the finding cannot be joined ` +
-        `to the ML call that produced it`,
-    );
-    // `actor_id` REFERENCES users(id): the authenticated caller, never a synthetic service name.
-    assert.equal(audit[0].actor_id, learner, `${impl}: audit actor`);
+    assert.deepEqual(audit, [], `${impl}: audit falsely claims performance findings were persisted`);
   }
 });
 
@@ -260,8 +310,8 @@ test("a session with nothing to anchor to records no findings AND no audit claim
       body: {
         learnerId: learner,
         quranRef: { surahNumber: 1, ayahStart: 1, ayahEnd: 1, display: "Al-Fatihah 1:1" },
-        sourceChecksum: "fnv1a32:noalign",
-        modelVersion: "model-v0.3",
+        sourceChecksum: RUN_CK_NOALIGN,
+
         language: "ckb",
         mode: "guided-recite",
         practicePlanId: "fatihah-mastery-v1",
@@ -276,6 +326,7 @@ test("a session with nothing to anchor to records no findings AND no audit claim
     });
     assert.equal(created.status, 200, `${impl}: session create failed: ${created.text}`);
     const sessionId = created.body.id ?? created.body.sessionId;
+    if (base === shell.baseUrl) ownedSessions.add(sessionId);
 
     // Deliberately NO alignments posted.
     const predicted = await request(base, "/v1/ml/tajweed-findings:predict", {
@@ -301,10 +352,7 @@ test("a session with nothing to anchor to records no findings AND no audit claim
   }
 });
 
-test("re-running analysis on an already-analysed session does not duplicate findings", async () => {
-  // The "already analysed" short-circuit is the first thing `persist_tajweed_findings` checks, and a
-  // port that dropped it would double a teacher's review queue on every retry — including the
-  // automatic ones a flaky network produces.
+test("re-running deterministic analysis is stable and never creates performance rows", async () => {
   for (const [impl, base] of implementations()) {
     const { learner, sessionId } = await seededSession(base);
     const body = {
@@ -329,11 +377,26 @@ test("re-running analysis on an already-analysed session does not duplicate find
       [sessionId],
     );
 
-    assert.ok(after1.length > 0, `${impl}: nothing stored on the first run`);
-    assert.equal(
-      after2.length,
-      after1.length,
-      `${impl}: re-running analysis duplicated the findings (${after1.length} -> ${after2.length})`,
-    );
+    assert.ok(first.body.annotations.length > 0, `${impl}: first run returned no instruction`);
+    const semantics = (response) =>
+      response.body.annotations.map(({ wordId, rule, explanation, sources, sourceChecksum }) => ({
+        wordId,
+        rule,
+        explanation,
+        sources,
+        sourceChecksum,
+      }));
+    assert.deepEqual(semantics(second), semantics(first), `${impl}: deterministic instruction drifted`);
+    assert.deepEqual(after1, [], `${impl}: first run persisted instruction as performance`);
+    assert.deepEqual(after2, [], `${impl}: retry persisted instruction as performance`);
   }
+});
+
+// Registered last: node:test runs `after` hooks in registration order, so this drains the
+// rows once the hooks above have stopped the services still able to write them.
+after(async () => {
+  let left = 0;
+  left += await purgeSessionsByChecksum(RUN_CK_EFFECTS);
+  left += await purgeSessionsByChecksum(RUN_CK_NOALIGN);
+  assert.equal(left, 0, `teardown left ${left} session(s) behind`);
 });

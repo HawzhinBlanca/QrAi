@@ -59,7 +59,7 @@ On a host with a working Docker daemon, or any two reachable Postgres instances:
 # 1. Source DB with the real schema + corpus
 docker run -d --name qrai-dr-src -e POSTGRES_USER=hawzhin -e POSTGRES_DB=quran_ai \
   -e POSTGRES_HOST_AUTH_METHOD=trust -p 127.0.0.1:5435:5432 postgres:16-alpine
-# apply infra/sql/0001..0021, then packages/quran-data/scripts/seed-full-quran-to-db.sh
+# apply infra/migrations/0001..0021, then packages/quran-data/scripts/seed-full-quran-to-db.sh
 
 # 2. Empty target DB
 docker run -d --name qrai-dr-tgt -e POSTGRES_USER=hawzhin -e POSTGRES_DB=quran_ai_restored \

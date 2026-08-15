@@ -196,7 +196,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Defense-in-depth: if the API connects as a superuser / BYPASSRLS role, EVERY RLS policy is a
     // no-op and tenant isolation rests solely on per-handler filters. Refuse to boot in production in
-    // that case (dev/CI opt out with ALLOW_SUPERUSER_DB_ROLE=1), mirroring infra/sql/rls-app-role.sql.
+    // that case (dev/CI opt out with ALLOW_SUPERUSER_DB_ROLE=1), mirroring infra/provision/app-role.sql.
     if !insecure::relaxed(
         insecure::ALLOW_SUPERUSER_DB_ROLE,
         insecure::LEGACY_ONE_OR_TRUE,
@@ -209,7 +209,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         if rolsuper || rolbypassrls {
             panic!(
                 "DB role '{rolname}' is superuser/bypassrls — RLS tenant isolation is INERT. Connect \
-                 as a restricted role (see infra/sql/rls-app-role.sql), or set ALLOW_SUPERUSER_DB_ROLE=1 \
+                 as a restricted role (see infra/provision/app-role.sql), or set ALLOW_SUPERUSER_DB_ROLE=1 \
                  for local dev only."
             );
         }

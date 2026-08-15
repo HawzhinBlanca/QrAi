@@ -10,7 +10,7 @@ measurements every number here rests on.
 `P0.1…P7.6`, `T0.1…T8` — bare `P1`–`P6` would sit inside the readiness ledger's own namespace.
 `PAR*` collides with nothing.
 
-**Precondition for every DB-gated task:** a Postgres with all `infra/sql/0*.sql` migrations plus
+**Precondition for every DB-gated task:** a Postgres with all `infra/migrations/0*.sql` migrations plus
 `rls-app-role.sql` applied. The suite is skipped, never faked, when none answers — same rule as
 `verify.sh:146-177`.
 

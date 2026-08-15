@@ -30,6 +30,7 @@ const smokeScriptFiles = [
   "scripts/smoke-gateway.mjs",
   "scripts/smoke-ml.mjs",
   "scripts/smoke-privacy.mjs",
+  "scripts/lib/worker-compatibility-smoke.mjs",
   "scripts/proof.sh",
   "packages/quran-data/scripts/seed-full-quran-to-db.sh",
 ];
@@ -67,7 +68,7 @@ async function runDbCommand(args, stdinContent) {
 async function cleanAndSeedDatabase() {
   await runDbCommand([
     ...databaseConnectionArgs(smokeAdminUrl),
-    "-c", "TRUNCATE recitation_sessions, users, institutions, audit_events, consent_records, realtime_session_tickets, audio_chunks, word_alignments, alignment_runs, tajweed_findings, teacher_reviews, scholar_approvals, agent_runs, eval_runs, privacy_jobs, pilot_invitations, pilot_sessions CASCADE;"
+    "-c", "TRUNCATE recitation_sessions, users, institutions, audit_events, consent_records, realtime_session_tickets, realtime_audio_chunk_outcomes, audio_chunks, word_alignments, alignment_runs, tajweed_findings, teacher_reviews, scholar_approvals, agent_runs, eval_runs, privacy_jobs, pilot_invitations, pilot_sessions, background_jobs CASCADE;"
   ]);
 
   await new Promise((resolve, reject) => {
@@ -89,7 +90,7 @@ async function cleanAndSeedDatabase() {
     });
   });
 
-  const internalSeedSql = await readFile("infra/sql/0006_seed_internal.sql", "utf8");
+  const internalSeedSql = await readFile("infra/migrations/0006_seed_internal.sql", "utf8");
   await runDbCommand(databaseConnectionArgs(smokeAdminUrl), internalSeedSql);
 }
 
@@ -107,13 +108,12 @@ try {
   });
   await runStep("smoke:browser", ["pnpm", "smoke:browser"], { SMOKE_ARTIFACT_DIR: artifactRoot });
 
-  // Privacy delete erases the learner's audio from ml-inference BEFORE the DB transaction (fail-closed
-  // right-to-erasure), so smoke:api's privacy-delete step needs ml-inference reachable — otherwise it
-  // returns 502. Start ml-inference first and point platform-api at it.
-  const mlInference = await mlInferenceServiceConfig();
-  const mlUp = await ensureHttpService(mlInference);
+  // The durable worker owns local inference, retained audio, privacy erasure, and the temporary Rust
+  // compatibility allowlist. Boot that exact process before either Rust consumer.
+  const jobWorker = await jobWorkerServiceConfig();
+  const workerUp = await ensureHttpService(jobWorker);
 
-  const platformApi = await platformApiServiceConfig(mlUp ? mlInference.baseUrl : undefined);
+  const platformApi = await platformApiServiceConfig(workerUp ? jobWorker.baseUrl : undefined);
   if (await ensureHttpService(platformApi)) {
     await runStep("smoke:api", ["pnpm", "smoke:api"], {
       ...platformApi.smokeEnv,
@@ -121,13 +121,20 @@ try {
     });
   }
 
-  const realtimeGateway = await realtimeGatewayServiceConfig();
+  const realtimeGateway = await realtimeGatewayServiceConfig(workerUp ? jobWorker.baseUrl : undefined);
   if (await ensureHttpService(realtimeGateway)) {
     await runStep("smoke:gateway", ["pnpm", "smoke:gateway"], realtimeGateway.smokeEnv);
   }
 
-  await runStep("smoke:ml", ["pnpm", "smoke:ml"], { SMOKE_ARTIFACT_DIR: artifactRoot });
-  await runStep("smoke:privacy", ["pnpm", "smoke:privacy"], { SMOKE_ARTIFACT_DIR: artifactRoot });
+  if (workerUp) {
+    const workerSmokeEnv = {
+      ML_API_KEY: "smoke-ml-api-key",
+      ML_INFERENCE_SMOKE_URL: jobWorker.baseUrl,
+      SMOKE_ARTIFACT_DIR: artifactRoot,
+    };
+    await runStep("smoke:ml", ["pnpm", "smoke:ml"], workerSmokeEnv);
+    await runStep("smoke:privacy", ["pnpm", "smoke:privacy"], workerSmokeEnv);
+  }
 
   const status = failures.length === 0 ? "passed" : "failed";
   await writeSummary(status);
@@ -182,7 +189,7 @@ async function ensureHttpService({ name, healthUrl, command, serviceEnv = {} }) 
   return true;
 }
 
-async function platformApiServiceConfig(mlInferenceUrl) {
+async function platformApiServiceConfig(workerUrl) {
   if (process.env.PLATFORM_API_SMOKE_URL || process.env.PLATFORM_API_HEALTH_URL) {
     const baseUrl = process.env.PLATFORM_API_SMOKE_URL ?? "http://127.0.0.1:8080";
     return {
@@ -196,8 +203,7 @@ async function platformApiServiceConfig(mlInferenceUrl) {
   const port = await getFreePort();
   const baseUrl = `http://127.0.0.1:${port}`;
   const serviceEnv = { PLATFORM_API_BIND: `127.0.0.1:${port}`, ML_API_KEY: "smoke-ml-api-key" };
-  // Point platform-api at the ml-inference started above so the privacy-delete audio erasure resolves.
-  if (mlInferenceUrl) serviceEnv.ML_INFERENCE_URL = mlInferenceUrl;
+  if (workerUrl) serviceEnv.ML_INFERENCE_URL = workerUrl;
   return {
     name: "platform-api",
     healthUrl: `${baseUrl}/health`,
@@ -207,24 +213,38 @@ async function platformApiServiceConfig(mlInferenceUrl) {
   };
 }
 
-async function mlInferenceServiceConfig() {
+async function jobWorkerServiceConfig() {
   if (process.env.ML_INFERENCE_URL) {
     const baseUrl = process.env.ML_INFERENCE_URL;
-    return { name: "ml-inference", healthUrl: `${baseUrl}/health`, baseUrl, command: ["true"], serviceEnv: {} };
+    return {
+      name: "job-worker",
+      healthUrl: process.env.JOB_WORKER_HEALTH_URL ?? `${baseUrl}/ready`,
+      baseUrl,
+      command: ["true"],
+      serviceEnv: {},
+    };
   }
   const port = await getFreePort();
   const baseUrl = `http://127.0.0.1:${port}`;
   return {
-    name: "ml-inference",
-    healthUrl: `${baseUrl}/health`,
+    name: "job-worker",
+    healthUrl: `${baseUrl}/ready`,
     baseUrl,
-    command: [process.execPath, "services/ml-inference/server.mjs"],
-    // Match platform-api's ML_API_KEY so the server-side proxy key check passes.
-    serviceEnv: { ML_INFERENCE_PORT: String(port), ML_API_KEY: "smoke-ml-api-key" },
+    command: [process.execPath, "server/src/worker.mjs"],
+    serviceEnv: {
+      DATABASE_URL: process.env.DATABASE_URL,
+      JOB_WORKER_BIND: `127.0.0.1:${port}`,
+      METRICS_DEV_OPEN: "1",
+      ML_API_KEY: "smoke-ml-api-key",
+      ML_EXTERNAL_ASR_TENANTS: "tenant-smoke",
+      ML_USE_GOLDEN_FIXTURES: "1",
+      ML_ACKNOWLEDGE_FIXTURE_OUTPUT: "1",
+      AUDIO_STORAGE_DIR: join(artifactRoot, "audio-storage"),
+    },
   };
 }
 
-async function realtimeGatewayServiceConfig() {
+async function realtimeGatewayServiceConfig(workerUrl) {
   if (process.env.REALTIME_GATEWAY_SMOKE_URL || process.env.REALTIME_GATEWAY_HEALTH_URL) {
     const baseUrl = process.env.REALTIME_GATEWAY_BASE_URL ?? "ws://127.0.0.1:8081";
     return {
@@ -247,6 +267,8 @@ async function realtimeGatewayServiceConfig() {
     serviceEnv: {
       REALTIME_GATEWAY_BIND: `127.0.0.1:${port}`,
       REALTIME_GATEWAY_TICKET_SECRET: "smoke-secret",
+      ML_API_KEY: "smoke-ml-api-key",
+      ...(workerUrl ? { ML_INFERENCE_URL: workerUrl } : {}),
       // The gateway binds to exactly one tenant (GATEWAY_TENANT_ID) and rejects a ticket whose
       // tenant_id doesn't match (services/realtime-gateway/src/lib.rs). smoke-gateway.mjs issues its
       // ticket for `tenant-smoke`, so the gateway must serve that tenant — otherwise the valid-ticket

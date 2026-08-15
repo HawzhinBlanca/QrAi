@@ -110,7 +110,7 @@ fi
 
 # A volume restore spans every tenant on that volume, so the erasure list must too — RLS scopes
 # `privacy_jobs` to one tenant and this operation has no single tenant to be. `app.bypass_rls` is the
-# documented escape (infra/sql/0003_tenant_rls.sql), and it is ASSERTED rather than assumed:
+# documented escape (infra/migrations/0003_tenant_rls.sql), and it is ASSERTED rather than assumed:
 #
 #   without it, and under a role that does not bypass RLS, the query returns ZERO ROWS. Not an
 #   error — an empty erasure list. The restore would then proceed happily and put every erased
@@ -139,7 +139,7 @@ if [[ "$can_bypass" != "t" ]]; then
        "cannot read across tenants." >&2
   echo "      A volume restore spans every tenant on the volume, so the erasure list must too, but" >&2
   echo "      row-level security scopes privacy_jobs to one tenant and app.bypass_rls is honoured" >&2
-  echo "      only for a superuser (infra/sql/0012_superuser_only_rls_bypass.sql)." >&2
+  echo "      only for a superuser (infra/migrations/0012_superuser_only_rls_bypass.sql)." >&2
   echo "      Under this role the erasure list would come back EMPTY — indistinguishable from" >&2
   echo "      'nobody asked to be erased' — and the restore would put every deleted recording back." >&2
   echo "      Re-run with a superuser connection. Nothing has been extracted." >&2

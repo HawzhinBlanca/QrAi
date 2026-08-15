@@ -96,7 +96,7 @@ Everything else — the other 32 pairs, the gateway itself, the Flutter client �
 
 ### N1 — Cross-language ticket vectors, before any Node code mints one
 
-`specs/node-backend-port/fixtures/ticket-vectors.json`: committed `{inputs, secret, expectedTicket}`
+`packages/contracts/fixtures/realtime/rt-v2-ticket-vectors.json`: committed `{inputs, secret, expectedTicket}`
 triples, asserted by **both** a Rust test in `shared-ticket` and a `node:test`.
 
 The vectors are generated from the **Rust** implementation and then asserted in Node, never the

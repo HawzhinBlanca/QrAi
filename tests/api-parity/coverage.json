@@ -4,7 +4,7 @@
   "totals": {
     "ported": 36,
     "mechanical-remainder": 51,
-    "deferred-to-phase-7": 10
+    "deferred-to-phase-7": 12
   },
   "tests": [
     {
@@ -242,7 +242,7 @@
       "reason": "not incident-class under the approved scope B; response shape is pinned by the Phase 5 fixture differ"
     },
     {
-      "rustTest": "ml_proxy_allows_approved_model_version",
+      "rustTest": "ml_proxy_rejects_formerly_approved_model_version",
       "rustLine": 2402,
       "status": "mechanical-remainder",
       "reason": "not incident-class under the approved scope B; response shape is pinned by the Phase 5 fixture differ"
@@ -497,13 +497,13 @@
       "rustTest": "finalize_persists_a_server_derived_alignment_and_refuses_without_consent",
       "rustLine": 4541,
       "status": "ported",
-      "parityFile": "db-endpoints.test.mjs"
+      "parityFile": "session-finalize-parity.test.mjs"
     },
     {
       "rustTest": "finalize_without_a_transcript_stores_nothing",
       "rustLine": 4609,
       "status": "ported",
-      "parityFile": "db-endpoints.test.mjs"
+      "parityFile": "session-finalize-parity.test.mjs"
     },
     {
       "rustTest": "accepting_an_unsourced_finding_is_refused_but_rejecting_it_is_not",
@@ -532,24 +532,36 @@
     {
       "rustTest": "finalize_records_chunks_the_session_never_got",
       "rustLine": 5213,
-      "status": "deferred-to-phase-7",
-      "reason": "platform-api's finalize has no Node implementation yet (the N-series has not ported register, login or finalize), so there is no equivalent route to compare against. The behaviour is asserted by the Rust integration test."
+      "status": "ported",
+      "parityFile": "session-finalize-parity.test.mjs"
     },
     {
       "rustTest": "a_complete_session_records_no_lost_chunks",
       "rustLine": 5261,
-      "status": "deferred-to-phase-7",
-      "reason": "platform-api's finalize has no Node implementation yet (the N-series has not ported register, login or finalize), so there is no equivalent route to compare against. The behaviour is asserted by the Rust integration test."
+      "status": "ported",
+      "parityFile": "session-finalize-parity.test.mjs"
     },
     {
       "rustTest": "a_client_posted_alignment_is_recorded_as_client_reported",
-      "status": "deferred-to-phase-7",
-      "reason": "Node's persist route hardcodes the same 'client-reported' label, so the two agree by construction rather than by comparison; asserting the stored column needs direct database access the black-box parity harness deliberately does not have."
+      "status": "ported",
+      "parityFile": "session-writes-parity.test.mjs"
     },
     {
       "rustTest": "a_finalized_session_records_a_server_derived_alignment",
-      "status": "deferred-to-phase-7",
-      "reason": "finalize_session is not ported (Phase 7), so there is no Node route to compare against — the same reason the other two finalize entries are deferred."
+      "status": "ported",
+      "parityFile": "session-finalize-parity.test.mjs"
+    },
+    {
+      "rustTest": "finalize_rolls_back_every_alignment_when_one_claimed_span_is_invalid",
+      "rustLine": 5200,
+      "status": "ported",
+      "parityFile": "session-finalize-parity.test.mjs"
+    },
+    {
+      "rustTest": "finalize_refuses_a_valid_producer_that_disagrees_with_the_session_model",
+      "rustLine": 5250,
+      "status": "ported",
+      "parityFile": "session-finalize-parity.test.mjs"
     },
     {
       "rustTest": "weekly_accuracy_excludes_self_reported_words_but_still_counts_them",
@@ -581,7 +593,7 @@
       "reason": "P5.3 redaction test. Constructs ApiError::Database directly with a real Postgres unique-violation message, because a dead pool yields PoolTimedOut and can never reach that variant. Pins that a learner's email address in a constraint DETAIL is not returned to the caller. No HTTP surface to port."
     },
     {
-      "rustTest": "a_finding_becomes_visible_to_the_learner_only_when_a_teacher_accepts_it",
+      "rustTest": "teacher_approval_cannot_override_fixture_evidence_or_missing_retained_audio",
       "rustLine": 5344,
       "status": "mechanical-remainder",
       "reason": "P6.1 journey test. Watches ONE finding cross the teacher-review boundary through the API — withheld before, readable after an acceptance, still withheld after a rejection. Not an A/B probe: the assertion is on the learner's view at three points in time, and each observation mutates state the next one reads, which the byte differ cannot express."

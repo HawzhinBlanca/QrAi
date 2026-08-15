@@ -67,7 +67,7 @@ interface, and no client rewrite changes that. Naming it once; not re-litigating
 
 ### F1 — One hand-authored OpenAPI 3.1 contract for all 34 routes
 
-`specs/flutter-client/openapi.yaml`. 3.1's Schema Object *is* JSON Schema 2020-12, so one file serves
+`packages/contracts/openapi.yaml`. 3.1's Schema Object *is* JSON Schema 2020-12, so one file serves
 route contracts and raw schemas both.
 
 Hand-authored, **not generated from the Rust**: a contract derived from the implementation cannot

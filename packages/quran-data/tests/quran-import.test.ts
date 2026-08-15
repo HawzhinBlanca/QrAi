@@ -81,7 +81,11 @@ describe("canonical Quran import", () => {
     const tanzilBundle = buildFatihahImportBundle("tanzil");
     const quranFoundationBundle = buildFatihahImportBundle("quran-foundation");
 
-    expect(CANONICAL_SOURCE_MANIFESTS.map((source) => source.id)).toEqual(["tanzil", "quran-foundation"]);
+    expect(CANONICAL_SOURCE_MANIFESTS.map((source) => source.id)).toEqual([
+      "tanzil",
+      "quran-foundation",
+      "alquran-cloud",
+    ]);
     expect(quranFoundationBundle.ayahs.map((ayah) => ayah.text)).toEqual(tanzilBundle.ayahs.map((ayah) => ayah.text));
     expect(quranFoundationBundle.words.map((word) => word.text)).toEqual(tanzilBundle.words.map((word) => word.text));
     expect(quranFoundationBundle.words[0].sourceChecksum).not.toBe(tanzilBundle.words[0].sourceChecksum);
@@ -89,7 +93,7 @@ describe("canonical Quran import", () => {
 
   it("generates SQL seed output matching canonical schema columns", () => {
     const testDir = fileURLToPath(new URL(".", import.meta.url));
-    const schema = readFileSync(resolve(testDir, "../../../infra/sql/0001_core_schema.sql"), "utf8");
+    const schema = readFileSync(resolve(testDir, "../../../infra/migrations/0001_core_schema.sql"), "utf8");
     const sql = toCanonicalSqlSeed(buildFatihahImportBundle("tanzil"));
 
     expect(schema).toContain("create table canonical_ayahs");

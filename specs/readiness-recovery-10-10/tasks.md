@@ -68,8 +68,8 @@ P6 supports R10; and P7 supports R11/R12.
     empty to a screen reader). The row needs VoiceOver, an alternative screen reader, and real-pixel
     zoom/reflow. **Blocker: physical devices.**
   - **P3.2** — `expired` has no meaning here: no approval-expiry column exists anywhere, and
-    `model_versions.status` is read by no service. **Blocker: the ADR-0042 ruling.**
-  - **P0.2** — ADR-0043 records the architecture that already shipped so it can be challenged, and
+    `model_versions.status` is read by no service. **Blocker: the ADR-0058 ruling.**
+  - **P0.2** — ADR-0059 records the architecture that already shipped so it can be challenged, and
     isolates the half nobody chose: retention appears nowhere. **Blocker: owner approval.**
 
   Guards written this pass that caught their own author: the a11y coverage guard would have
@@ -294,7 +294,7 @@ P6 supports R10; and P7 supports R11/R12.
   flag, and are in `verify.sh` already.
 
   **The same gap existed on the Node port, and it is the one that will be asked first.** `GET /ready`
-  is in the shell's own `PORTABLE` list, so during a cutover the Node process is what an orchestrator
+  is in the executable route registry, so during a cutover the Node process is what an orchestrator
   queries. `routes/infra.mjs` implements the contract correctly — but the only A/B coverage
   (`infra-parity.test.mjs`) asserts `s.text === "ready"`, the happy path, so a port that answered 200
   with a dead pool would have passed. It cannot be an A/B test: the parity harness needs a live

@@ -108,10 +108,19 @@ jobs:
       - uses: actions/setup-node@v4
         with: { node-version: "22", cache: "pnpm" }
       # MIG5: verify.sh runs the asr-inference plain-interpreter suites (eval metrics + the Arabic
-      # diacritic regression from PR #258). numpy only — no torch, no model download.
+      # diacritic regression from PR #258) and two pytest modules. Exact test dependencies only —
+      # no model download.
       - uses: actions/setup-python@v5
         with: { python-version: "3.11" }
-      - run: python3 -m pip install --quiet "numpy>=2"
+      - run: python3 -m pip install --quiet "numpy==2.4.6" "pytest==9.1.1"
+      # W1.6: torch IS now required, for one suite. test_forced_align_spans.py drives torchaudio's
+      # real forced_align/merge_tokens over a hand-built emission tensor to pin the blank index and
+      # the frame->millisecond arithmetic in `align_words` — the sole producer of forced-aligned
+      # spans when native ASR timing is absent. It had no gated test because the only direct caller
+      # exercising it (forced_align_arabic.py) needs the network and a 1.2GB checkpoint.
+      # CPU wheels only: no CUDA, no nvidia-* transitive payload, and still no model download —
+      # the test builds its own emissions. Versions match services/asr-inference/requirements.lock.txt.
+      - run: python3 -m pip install --quiet --index-url https://download.pytorch.org/whl/cpu "torch==2.12.1" "torchaudio==2.11.0"
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy, rustfmt
@@ -136,63 +145,14 @@ jobs:
       # --- Bootstrap ---
       - run: pnpm install --frozen-lockfile
 
-      # --- Assert no missing SQL migrations in CI list ---
-      - name: Assert no missing SQL migrations in CI list
+      # --- One migration/provision boundary; manifest membership and checksums are runner-enforced. ---
+      - name: Migrate and provision restricted database role
+        env:
+          MIGRATION_DATABASE_URL: ${{ env.DATABASE_URL }}
+          APP_DATABASE_PASSWORD: ci-dummy-password-long-enough
         run: |
-          # Compares the LIST, not a count.
-          #
-          # This used to assert a hardcoded number against `ls | wc -l`. It caught 0022 arriving —
-          # and then passed as soon as the number was bumped, while the file was still missing from
-          # the apply list below, so the column did not exist and two integration tests failed on CI
-          # having passed locally. A count cannot tell "acknowledged" from "applied", and the error
-          # it printed ("Update ci.yml") was ambiguous about which of the two it meant.
-          #
-          # Diffing the actual sets says what it means and names the offender.
-          on_disk=$(ls infra/sql/[0-9]*.sql | sort)
-          in_apply_list=$(grep -oE 'infra/sql/[0-9]+_[A-Za-z0-9_-]+\.sql' .github/workflows/ci.yml | sort -u)
-          missing=$(comm -23 <(echo "$on_disk") <(echo "$in_apply_list"))
-          extra=$(comm -13 <(echo "$on_disk") <(echo "$in_apply_list"))
-          if [ -n "$missing" ] || [ -n "$extra" ]; then
-            [ -n "$missing" ] && echo "::error::Migrations on disk but NOT applied by ci.yml (add them to the Apply SQL migrations list): $missing"
-            [ -n "$extra" ] && echo "::error::ci.yml applies migrations that do not exist: $extra"
-            exit 1
-          fi
-
-      # --- Seed Postgres with migrations ---
-      - name: Apply SQL migrations
-        run: |
-          for sql in \
-            infra/sql/0001_core_schema.sql \
-            infra/sql/0002_seed_fatihah.sql \
-            infra/sql/0003_tenant_rls.sql \
-            infra/sql/0004_add_password_hash.sql \
-            infra/sql/0005_learner_progress.sql \
-            infra/sql/0007_seed_surah_names.sql \
-            infra/sql/0008_session_language.sql \
-            infra/sql/0006_seed_internal.sql \
-            infra/sql/0009_learner_progress_rls.sql \
-            infra/sql/0010_review_status_check.sql \
-            infra/sql/0011_teacher_review_required_status.sql \
-            infra/sql/0012_superuser_only_rls_bypass.sql \
-            infra/sql/0013_unique_email_per_tenant.sql \
-            infra/sql/0015_teacher_review_scholar_approval_indexes.sql \
-            infra/sql/0016_missing_tenant_indexes.sql \
-            infra/sql/0017_eval_runs_index.sql \
-            infra/sql/0018_agent_run_learner_id.sql \
-            infra/sql/0019_recitation_and_findings_sort_indexes.sql \
-            infra/sql/0020_language_check.sql \
-            infra/sql/0021_pilot_identity.sql \
-            infra/sql/0022_session_lost_chunks.sql \
-            infra/sql/0023_alignment_transcript_source.sql \
-            infra/sql/0024_teacher_review_survives_realignment.sql \
-            infra/sql/0025_tajweed_analysis_basis.sql \
-            infra/sql/0026_alignment_span_check.sql \
-            infra/sql/0027_unevidenced_model_claim.sql; do
-            echo "Applying $sql..."
-            psql -v ON_ERROR_STOP=1 "$DATABASE_URL" -f "$sql"
-          done
-          echo "Applying rls-app-role.sql..."
-          psql "$DATABASE_URL" -v app_password="ci-dummy-password" -f infra/sql/rls-app-role.sql
+          node server/scripts/migrate.mjs
+          node server/scripts/provision-role.mjs
 
       # --- Seed the full Quran (canonical_ayahs/words for all 114 surahs) so integration
       #     tests like gets_quran_surah_list_from_postgres (expects >= 114) hold in CI. The

@@ -583,6 +583,7 @@ describe("Quran AI app smoke", () => {
           chunk_id: "session-kri-00031-chunk-0000",
           sequence: 0,
           accepted: true,
+          trace_id: null,
           message: "accepted",
         }),
       } as MessageEvent<string>);

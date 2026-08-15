@@ -63,7 +63,7 @@ import {
   requiresHumanReview,
   summarizeScholarQueue,
 } from "../lib/platform";
-import type { SupportedLanguageCode } from "../types/platform";
+import type { SupportedLanguageCode } from "@quran-ai/contracts";
 
 interface PlatformCommandProps {
   tenantId: string;

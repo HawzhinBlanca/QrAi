@@ -14,7 +14,7 @@ import { dirname, join } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 
-import { LATENCY_BUCKETS_MS, createMetrics, escape, metricsAccessAllowed } from "../../services/node-api/lib/metrics.mjs";
+import { LATENCY_BUCKETS_MS, createMetrics, escape, metricsAccessAllowed } from "../../server/src/lib/metrics.mjs";
 
 test("records and renders prometheus exposition — metrics.rs records_and_renders", () => {
   const m = createMetrics();
@@ -126,6 +126,18 @@ test("every metric monitoring/alerts.yml alerts on is one the service actually e
   const exported = new Set(
     (rendered.match(/^# TYPE ([a-z_][a-z0-9_]*)/gm) ?? []).map((l) => l.replace("# TYPE ", "")),
   );
+
+  // This repository deliberately still scrapes the Rust realtime gateway as the public oracle
+  // until W3.9/W7.6. Alerts with job="realtime-gateway" therefore resolve against its renderer,
+  // not the Node HTTP renderer above. The Rust suite separately executes render_prometheus and
+  // asserts these exact names; this guard joins that exporter vocabulary to the shared rules.
+  const gatewaySource = readFileSync(
+    join(repoRoot, "services/realtime-gateway/src/lib.rs"),
+    "utf8",
+  );
+  for (const match of gatewaySource.matchAll(/"(realtime_gateway_[a-z0-9_]+)"/g)) {
+    exported.add(match[1]);
+  }
 
   const missing = [...referenced].filter((m) => !exported.has(m));
   assert.deepEqual(

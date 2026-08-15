@@ -7,6 +7,10 @@ out/
 # Runtime-generated learner audio (PII) written by ml-inference at request time —
 # never source, never commit. See AGENTS.md privacy boundaries.
 services/ml-inference/audio-storage/
+# The inference runtime moved into the Node backend during W2.17. Its default filesystem adapter
+# still writes runtime audit/audio state beside the module in local development; that data is not
+# source and may contain learner identifiers, so keep the relocated path untrackable too.
+server/src/inference/audio-storage/
 
 apps/*/node_modules/
 apps/*/dist/

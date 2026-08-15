@@ -21,6 +21,7 @@
  */
 import { readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
+import { parse as parseYaml } from "yaml";
 
 export const MET = "MET";
 export const UNMET = "UNMET";
@@ -28,32 +29,64 @@ export const NEEDS_HUMAN = "NEEDS-HUMAN";
 
 const check = (id, state, detail) => ({ id, state, detail });
 
-/** How much traffic would the Node shell actually take? */
-export function checkTrafficShare(serverSrc, totalPairs) {
-  const portable = serverSrc.match(/export const PORTABLE = \[([^\]]*)\]/s);
-  const count = portable ? (portable[1].match(/"/g)?.length ?? 0) / 2 : 0;
-  // The DEFAULT is what production runs. `NODE_API_PORTED ?? ""` means zero routes served.
-  const defaultsEmpty = /NODE_API_PORTED\s*\?\?\s*""/.test(serverSrc);
-  const served = defaultsEmpty ? 0 : null;
+/** Does the default standalone registry serve every currently required contract operation? */
+export function checkTrafficShare(localRouteKeys, requiredPairs, topology) {
+  const local = new Set(localRouteKeys);
+  const required = requiredPairs.map((pair) =>
+    typeof pair === "string" ? pair : `${pair.method.toUpperCase()} ${pair.path}`,
+  );
+  const requiredSet = new Set(required);
+  const missing = required.filter((routeKey) => !local.has(routeKey));
+  const extras = [...local].filter((routeKey) => !requiredSet.has(routeKey));
+  const topologyReady =
+    topology?.webUpstream === "node-api:8082" &&
+    topology?.gatewayUpstream === "http://node-api:8082" &&
+    topology?.routeMode === "retained-canary" &&
+    topology?.explicitRouteKeys === "" &&
+    topology?.rustUpstream === "http://platform-api:8080";
+  const exact = missing.length === 0 && extras.length === 0 && topologyReady;
   return check(
     "traffic-share",
-    served === totalPairs ? MET : UNMET,
-    served === 0
-      ? `Node serves 0 of ${totalPairs} routes by default (${count} portable). Nothing to cut over.`
-      : `default routing is not the empty set — read services/node-api/server.mjs before trusting this`,
+    exact ? MET : UNMET,
+    `Node registers ${required.length - missing.length} of ${required.length} required routes by ` +
+      `contract; ${missing.length} missing, ${extras.length} extra, and explicit Web+gateway canary topology is ${topologyReady ? "selected" : "not selected"}.`,
   );
 }
 
-/** Is there an artifact to roll back TO? */
-export function checkRollbackArtifact(workflowSources) {
-  const pattern = /docker\s+build|docker\s+push|docker\/build-push|ghcr\.io|registry\.|buildx/i;
-  const hit = workflowSources.find(({ text }) => pattern.test(text));
+/** Is there a durable artifact and a no-build path that can roll back TO it? */
+export function checkRollbackArtifact(
+  workflowSources,
+  publisherSrc = "",
+  releaseComposeSrc = "",
+  deploymentSrc = "",
+) {
+  const hit = workflowSources.find(({ text }) =>
+    /packages:\s*write/i.test(text) &&
+    /docker\/login-action@v\d+/i.test(text) &&
+    /registry:\s*ghcr\.io/i.test(text) &&
+    /RELEASE_IMAGE_DIGESTS_OUTPUT/.test(text) &&
+    /node scripts\/release-images\.mjs/.test(text) &&
+    /actions\/upload-artifact@v\d+/i.test(text),
+  );
+  const publisherIsDurable = /docker\("buildx",\s*"build"/.test(publisherSrc) && /"--push"/.test(publisherSrc);
+  const composeConsumesDigests =
+    /build:\s*!reset null/.test(releaseComposeSrc) &&
+    /NODE_BACKEND_IMAGE:\?/.test(releaseComposeSrc) &&
+    /repository@sha256/.test(releaseComposeSrc);
+  const candidateAndPreviousAreConsumable =
+    /composeImageEnvironment/.test(deploymentSrc) &&
+    /verifyRunningReleaseImages/.test(deploymentSrc) &&
+    /candidate/.test(deploymentSrc) &&
+    /previous/.test(deploymentSrc);
+  const met = Boolean(
+    hit && publisherIsDurable && composeConsumesDigests && candidateAndPreviousAreConsumable,
+  );
   return check(
     "rollback-artifact",
-    hit ? MET : UNMET,
-    hit
-      ? `an image build/push exists in ${hit.name}`
-      : "no workflow builds or pushes an image, so rollback means `git checkout && docker compose build` — a rebuild, not a rollback (ADR-0022)",
+    met ? MET : UNMET,
+    met
+      ? `${hit.name} publishes GHCR digests and docker-compose.release.yml consumes them without a build fallback`
+      : "no complete GHCR publish + immutable no-build Compose path exists; a generic image build is not a rollback artifact (ADR-0022)",
   );
 }
 
@@ -196,10 +229,12 @@ export function coveredPairs(rustPairs, fixtureSteps, paritySourceText) {
 async function main() {
   const { readdirSync } = await import("node:fs");
   const { loadOpenapi, routePairsFromRust } = await import("../tests/contract/lib/openapi.mjs");
+  const { loadRetainedCanaryRouteKeys } = await import("../server/src/routes/canary.mjs");
+  const { ROUTES } = await import("../server/src/routes/index.mjs");
 
   const read = (p) => readFileSync(p, "utf8");
   const rustPairs = routePairsFromRust(read("services/platform-api/src/lib.rs"));
-  const openapi = loadOpenapi("specs/flutter-client/openapi.yaml");
+  const openapi = loadOpenapi("packages/contracts/openapi.yaml");
   const fixtures = JSON.parse(read("specs/api-golden-fixtures/fixtures/platform-api.json"));
   const parityText = readdirSync("tests/api-parity")
     .filter((f) => f.endsWith(".mjs"))
@@ -210,12 +245,33 @@ async function main() {
     text: read(join(".github/workflows", name)),
   }));
   const readiness = read("specs/readiness-recovery-10-10/tasks.md");
+  const routeManifest = JSON.parse(read("packages/contracts/route-manifest.json"));
+  const requiredNodePairs = [
+    ...routeManifest.baselineOperations.filter((operation) => operation.target === "retain"),
+    ...routeManifest.targetAdditions.filter(
+      (operation) => operation.implementationStatus === "implemented-node",
+    ),
+  ];
+  const defaultRouteKeys = loadRetainedCanaryRouteKeys(ROUTES);
+  const canaryCompose = parseYaml(read("docker-compose.canary.yml"));
+  const canaryTopology = {
+    webUpstream: canaryCompose.services?.web?.environment?.WEB_PLATFORM_API_UPSTREAM,
+    gatewayUpstream: canaryCompose.services?.["realtime-gateway"]?.environment?.PLATFORM_API_URL,
+    routeMode: canaryCompose.services?.["node-api"]?.environment?.NODE_API_ROUTE_MODE,
+    explicitRouteKeys: canaryCompose.services?.["node-api"]?.environment?.NODE_API_PORTED,
+    rustUpstream: canaryCompose.services?.["node-api"]?.environment?.PLATFORM_API_UPSTREAM,
+  };
 
   const checks = [
-    checkTrafficShare(read("services/node-api/server.mjs"), rustPairs.length),
+    checkTrafficShare(defaultRouteKeys, requiredNodePairs, canaryTopology),
     checkOracleCoverage(coveredPairs(rustPairs, fixtures.steps, parityText), rustPairs.length),
     checkSchemaValidation(openapi),
-    checkRollbackArtifact(workflows),
+    checkRollbackArtifact(
+      workflows,
+      read("scripts/release-images.mjs"),
+      read("docker-compose.release.yml"),
+      read("scripts/release-deployment.mjs"),
+    ),
     checkAdr0022(read("docs/DECISIONS.md")),
     checkOperationalProof(readiness),
     checkSignOffRows(readiness),

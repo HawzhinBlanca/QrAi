@@ -71,6 +71,112 @@ async fn read_json<T: serde::de::DeserializeOwned>(response: axum::response::Res
     serde_json::from_slice(&bytes).unwrap()
 }
 
+// Database-mechanics fixture only. The committed production trust store remains empty, so this
+// deliberately release-labelled row cannot become product release authority. It exists solely to
+// exercise the same exact-evidence FK/trigger path that a future externally signed evaluation uses.
+const DECLARED_TEST_MODEL: &str = "model-v0.3";
+const DECLARED_TEST_EVIDENCE_ID: &str = "declared-test-acoustic-evidence-v1";
+const DECLARED_TEST_EVIDENCE_SHA256: &str =
+    "sha256:1111111111111111111111111111111111111111111111111111111111111111";
+const DECLARED_TEST_MODEL_SHA256: &str =
+    "sha256:2222222222222222222222222222222222222222222222222222222222222222";
+const DECLARED_TEST_DATASET: &str = "declared-test-acoustic-dataset-v1";
+const DECLARED_TEST_DATASET_SHA256: &str =
+    "sha256:3333333333333333333333333333333333333333333333333333333333333333";
+const DECLARED_TEST_CALIBRATOR: &str = "declared-test-calibrator-v1";
+const DECLARED_TEST_CALIBRATOR_SHA256: &str =
+    "sha256:9999999999999999999999999999999999999999999999999999999999999999";
+
+async fn ensure_declared_test_acoustic_evidence(pool: &sqlx::PgPool) {
+    sqlx::query(
+        "INSERT INTO eval_runs
+           (id, tenant_id, model_version_id, dataset_version, metrics, word_alignment_f1,
+            tajweed_f1, false_positive_rate, teacher_agreement_rate, unsourced_learner_outputs,
+            passed, evaluation_task, evidence_id, evidence_kind, evidence_eligibility,
+            release_eligible, evidence_payload, evidence_payload_sha256, candidate_id,
+            model_artifact_sha256, dataset_manifest_sha256, split_manifest_sha256, split_id,
+            evaluator_version, evaluator_source_sha256, evaluator_protocol_sha256,
+            raw_row_manifest_sha256, raw_results_sha256, calibrator_id,
+            calibrator_artifact_sha256, signer_key_id, signature_algorithm, signature_base64url,
+            signed_at, evaluation_counts, slice_metrics, created_at)
+         VALUES
+           ('declared-test-acoustic-eval-v1', 'hikmah-pilot-erbil', $1, $2, '{}'::jsonb,
+            0, 0, 1, 0, 0, true, 'acoustic-tajweed', $3,
+            'row-level-computed-evaluation', 'release-candidate', true,
+            '{\"declaredFixture\":true}'::jsonb, $4, 'declared-test-candidate-v1', $5, $6,
+            'sha256:4444444444444444444444444444444444444444444444444444444444444444',
+            'held-out', 'declared-test-evaluator-v1',
+            'sha256:5555555555555555555555555555555555555555555555555555555555555555',
+            'sha256:6666666666666666666666666666666666666666666666666666666666666666',
+            'sha256:7777777777777777777777777777777777777777777777777777777777777777',
+            'sha256:8888888888888888888888888888888888888888888888888888888888888888',
+            $7, $8, 'test-only-ephemeral', 'Ed25519',
+            'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA',
+            '2026-08-07T00:00:00Z',
+            '{\"negativeCount\":1,\"positiveCount\":1,\"reciterCount\":2,\"rowCount\":2}'::jsonb,
+            '[{\"declaredFixture\":true,\"sliceId\":\"fixture-slice\"}]'::jsonb,
+            '1900-01-01T00:00:00Z')
+         ON CONFLICT (id) DO UPDATE SET created_at = excluded.created_at",
+    )
+    .bind(DECLARED_TEST_MODEL)
+    .bind(DECLARED_TEST_DATASET)
+    .bind(DECLARED_TEST_EVIDENCE_ID)
+    .bind(DECLARED_TEST_EVIDENCE_SHA256)
+    .bind(DECLARED_TEST_MODEL_SHA256)
+    .bind(DECLARED_TEST_DATASET_SHA256)
+    .bind(DECLARED_TEST_CALIBRATOR)
+    .bind(DECLARED_TEST_CALIBRATOR_SHA256)
+    .execute(pool)
+    .await
+    .unwrap();
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn insert_declared_test_acoustic_finding(
+    pool: &sqlx::PgPool,
+    id: &str,
+    alignment_id: &str,
+    rule: &str,
+    severity: &str,
+    confidence: f64,
+    explanation: &str,
+    review_status: &str,
+    source_refs: Value,
+    audit_event_id: &str,
+) {
+    ensure_declared_test_acoustic_evidence(pool).await;
+    sqlx::query(
+        "INSERT INTO tajweed_findings
+           (id, tenant_id, alignment_id, rule, severity, confidence, explanation, review_status,
+            source_refs, model_version_id, audit_event_id, analysis_basis,
+            evaluation_evidence_id, evaluation_evidence_sha256, model_artifact_sha256,
+            acoustic_dataset_version, acoustic_dataset_manifest_sha256, calibrator_id,
+            calibrator_artifact_sha256)
+         VALUES ($1, 'hikmah-pilot-erbil', $2, $3, $4, $5::float8::numeric, $6, $7, $8,
+                 $9, $10, 'acoustic', $11, $12, $13, $14, $15, $16, $17)",
+    )
+    .bind(id)
+    .bind(alignment_id)
+    .bind(rule)
+    .bind(severity)
+    .bind(confidence)
+    .bind(explanation)
+    .bind(review_status)
+    .bind(source_refs)
+    .bind(DECLARED_TEST_MODEL)
+    .bind(audit_event_id)
+    .bind(DECLARED_TEST_EVIDENCE_ID)
+    .bind(DECLARED_TEST_EVIDENCE_SHA256)
+    .bind(DECLARED_TEST_MODEL_SHA256)
+    .bind(DECLARED_TEST_DATASET)
+    .bind(DECLARED_TEST_DATASET_SHA256)
+    .bind(DECLARED_TEST_CALIBRATOR)
+    .bind(DECLARED_TEST_CALIBRATOR_SHA256)
+    .execute(pool)
+    .await
+    .unwrap();
+}
+
 /// Security regression: when header-auth is OFF (production default), spoofed
 /// x-user-role headers must NOT grant access — a valid Bearer JWT is required.
 /// Auth is rejected before any DB access, so this needs no live Postgres.
@@ -119,7 +225,7 @@ async fn creates_recitation_session_in_postgres() {
                 "display": "Al-Fatihah 1:1-7"
             },
             "sourceChecksum": "fnv1a32:test",
-            "modelVersion": "model-v0.3",
+
             "language": "ckb",
             "mode": "guided-recite",
             "practicePlanId": "fatihah-mastery-v1",
@@ -177,7 +283,7 @@ async fn quran_ref_word_start_and_word_end_round_trip_through_create_and_get() {
                 "display": "Al-Fatihah 1:1, words 2-4"
             },
             "sourceChecksum": "fnv1a32:word-scope",
-            "modelVersion": "model-v0.3",
+
             "language": "ckb",
             "mode": "listen",
             "practicePlanId": "fatihah-mastery-v1",
@@ -233,7 +339,7 @@ async fn create_session_rejects_an_unsupported_language_code() {
                 "display": "Al-Fatihah 1:1-7"
             },
             "sourceChecksum": "fnv1a32:test",
-            "modelVersion": "model-v0.3",
+
             "language": "xx-not-a-real-code",
             "mode": "guided-recite",
             "practicePlanId": "fatihah-mastery-v1",
@@ -798,6 +904,32 @@ async fn weekly_progress_reports_real_per_day_sessions_and_word_accuracy() {
     .execute(&state.pool)
     .await
     .unwrap();
+    // The rows below intentionally model server-derived evidence because only measured evidence
+    // contributes to accuracy. Since 0029, that claim must be backed by the same declared-fixture
+    // run document production finalization writes; a bare transcript_source label is insufficient.
+    let model_version: String = sqlx::query_scalar(
+        "SELECT model_version_id FROM recitation_sessions WHERE id = $1 AND tenant_id = 'hikmah-pilot-erbil'",
+    )
+    .bind(&session_id)
+    .fetch_one(&state.pool)
+    .await
+    .unwrap();
+    let alignment_run_id = format!("alignment-run-weekly-{suffix}");
+    sqlx::query(
+        "INSERT INTO alignment_runs
+           (id, tenant_id, session_id, model_version_id, dataset_version, latency_ms,
+            evidence_ids, consent_snapshot, audit_event_id, transcript_source, model_attribution)
+         VALUES ($1, 'hikmah-pilot-erbil', $2, $3, 'declared-weekly-progress-fixture', 1,
+                 '[\"declared-weekly-progress-fixture\"]', '{}', $4, 'server-derived', $5)",
+    )
+    .bind(&alignment_run_id)
+    .bind(&session_id)
+    .bind(&model_version)
+    .bind(&alignment_audit)
+    .bind(fixture_alignment_attribution(&model_version))
+    .execute(&state.pool)
+    .await
+    .unwrap();
     for (i, (word_id, status)) in [
         ("1:1:1", "matched"),
         ("1:1:2", "matched"),
@@ -812,14 +944,18 @@ async fn weekly_progress_reports_real_per_day_sessions_and_word_accuracy() {
             // to `client-reported` and that default is deliberate — it is why this insert had to
             // change rather than inherit, and why the assertions below still mean what they say.
             "INSERT INTO word_alignments
-               (id, tenant_id, session_id, word_id, heard_text, start_ms, end_ms, confidence, status, model_version_id, audit_event_id, transcript_source)
-             VALUES ($1, 'hikmah-pilot-erbil', $2, $3, 'x', 0, 100, 0.9, $4, 'model-v0.3', $5, 'server-derived')",
+               (id, tenant_id, session_id, word_id, heard_text, start_ms, end_ms, confidence,
+                status, model_version_id, audit_event_id, transcript_source, alignment_run_id)
+             VALUES ($1, 'hikmah-pilot-erbil', $2, $3, 'x', 0, 100, 0.9, $4, $5, $6,
+                     'server-derived', $7)",
         )
         .bind(format!("wa-weekly-{suffix}-{i}"))
         .bind(&session_id)
         .bind(word_id)
         .bind(status)
+        .bind(&model_version)
         .bind(&alignment_audit)
+        .bind(&alignment_run_id)
         .execute(&state.pool)
         .await
         .unwrap();
@@ -1201,7 +1337,7 @@ async fn persists_and_reads_back_session_alignment() {
             "learnerId": "learner-1",
             "quranRef": {"surahNumber": 1, "ayahStart": 1, "ayahEnd": 7, "display": "Al-Fatihah 1:1-7"},
             "sourceChecksum": "fnv1a32:itest",
-            "modelVersion": "model-v0.3",
+
             "language": "ckb",
             "mode": "guided-recite",
             "practicePlanId": "fatihah-mastery-v1",
@@ -1233,7 +1369,7 @@ async fn persists_and_reads_back_session_alignment() {
         Some("hikmah-pilot-erbil"),
         Some("learner"),
         json!({
-            "modelVersion": "model-v0.3",
+
             "alignments": [
                 {"wordId": "1:1:1", "heardText": "بسم", "startMs": 0, "endMs": 400, "confidence": 0.97, "status": "matched"},
                 {"wordId": "extra-0", "heardText": "x", "startMs": 0, "endMs": 0, "confidence": 0.5, "status": "extra"},
@@ -1289,7 +1425,7 @@ async fn teacher_review_author_is_actor_and_realignment_cascades() {
         json!({
             "learnerId": "learner-1",
             "quranRef": {"surahNumber": 1, "ayahStart": 1, "ayahEnd": 7, "display": "Al-Fatihah 1:1-7"},
-            "sourceChecksum": "fnv1a32:cascade", "modelVersion": "model-v0.3", "language": "ckb",
+            "sourceChecksum": "fnv1a32:cascade",  "language": "ckb",
             "mode": "guided-recite", "practicePlanId": "fatihah-mastery-v1",
             "consent": {"audioRetention": "discard", "anonymizedLearning": true, "externalAsrProcessing": false, "guardianApproved": true, "consentVersion": "pilot-v1"}
         }),
@@ -1324,8 +1460,19 @@ async fn teacher_review_author_is_actor_and_realignment_cascades() {
     let finding_id = format!("tf-cascade-{}", next_suffix());
     sqlx::query("INSERT INTO audit_events (id, tenant_id, actor_id, action, subject_type, subject_id) VALUES ($1,'hikmah-pilot-erbil','ops-1','test.seed','tajweed_finding',$2)")
         .bind(&finding_audit).bind(&finding_id).execute(&state.pool).await.unwrap();
-    sqlx::query("INSERT INTO tajweed_findings (id, tenant_id, alignment_id, rule, severity, confidence, explanation, review_status, source_refs, model_version_id, audit_event_id) VALUES ($1,'hikmah-pilot-erbil',$2,'Ghunnah','warning',0.8,'x','teacher-review-required','[]'::jsonb,'model-v0.3',$3)")
-        .bind(&finding_id).bind(&align_id).bind(&finding_audit).execute(&state.pool).await.unwrap();
+    insert_declared_test_acoustic_finding(
+        &state.pool,
+        &finding_id,
+        &align_id,
+        "Ghunnah",
+        "warning",
+        0.8,
+        "x",
+        "teacher-review-required",
+        json!([]),
+        &finding_audit,
+    )
+    .await;
 
     // (1) teacher-1 reviews it but tries to forge authorship as "teacher-2".
     let review = send_json(
@@ -1947,7 +2094,7 @@ async fn create_test_session_for_learner(router: &axum::Router, learner_id: &str
             "learnerId": learner_id,
             "quranRef": {"surahNumber": 1, "ayahStart": 1, "ayahEnd": 7, "display": "Al-Fatihah 1:1-7"},
             "sourceChecksum": "fnv1a32:privacy-scope",
-            "modelVersion": "model-v0.3",
+
             "language": "ckb",
             "mode": "guided-recite",
             "practicePlanId": "fatihah-mastery-v1",
@@ -2003,21 +2150,21 @@ async fn seed_reviewed_finding(
     .await
     .unwrap();
 
-    sqlx::query(
-        "INSERT INTO tajweed_findings
-           (id, tenant_id, alignment_id, rule, severity, confidence, explanation, review_status, source_refs, model_version_id, audit_event_id)
-         -- Sourced: `create_teacher_review` refuses to ACCEPT a finding with no sources
-         -- (ADR-0027 item 6), and callers of this helper exercise all three decisions. An
-         -- unsourced fixture would make them fail on the rule rather than on what they test.
-         VALUES ($1, 'hikmah-pilot-erbil', $2, 'Ghunnah', 'warning', 0.8, 'x', 'teacher-review-required',
-                 '[{\"id\":\"s1\",\"title\":\"Board\",\"citation\":\"policy\"}]'::jsonb, 'model-v0.3', $3)",
+    // Sourced: `create_teacher_review` refuses to ACCEPT a finding with no sources (ADR-0027 item
+    // 6), and callers of this helper exercise all three decisions.
+    insert_declared_test_acoustic_finding(
+        pool,
+        &finding_id,
+        &alignment_id,
+        "Ghunnah",
+        "warning",
+        0.8,
+        "x",
+        "teacher-review-required",
+        json!([{"id": "s1", "title": "Board", "citation": "policy"}]),
+        &finding_audit,
     )
-    .bind(&finding_id)
-    .bind(&alignment_id)
-    .bind(&finding_audit)
-    .execute(pool)
-    .await
-    .unwrap();
+    .await;
 
     sqlx::query(
         "INSERT INTO teacher_reviews (id, tenant_id, finding_id, teacher_id, decision, note, audit_event_id)
@@ -2489,13 +2636,46 @@ async fn spawn_mock_upstream_200(path: &'static str, body: serde_json::Value) ->
     format!("http://{addr}")
 }
 
+fn model_attribution(component: &str, implementation_id: &str) -> serde_json::Value {
+    let basis = if component == "quran-aligner" {
+        "quran-constrained"
+    } else {
+        "acoustic"
+    };
+    json!({
+        "schemaVersion": 1,
+        "primaryComponent": component,
+        "components": [{
+            "component": component,
+            "status": "active",
+            "implementationId": implementation_id,
+            "artifactDigest": format!("sha256:{}", "a".repeat(64)),
+            "datasetVersion": "declared-fixture",
+            "analysisBasis": basis,
+            "calibratorId": null
+        }]
+    })
+}
+
 // Echoes the request body back as a 200 — lets a test read exactly what the proxy FORWARDED,
 // which is how the server-authoritative-consent overwrite is verified end to end.
 async fn spawn_mock_upstream_echo(path: &'static str) -> String {
     let app = axum::Router::new().route(
         path,
         axum::routing::post(
-            |axum::Json(body): axum::Json<serde_json::Value>| async move { axum::Json(body) },
+            |axum::Json(mut body): axum::Json<serde_json::Value>| async move {
+                if let Some(object) = body.as_object_mut() {
+                    object.insert(
+                        "modelVersion".to_owned(),
+                        json!("declared-quran-aligner-fixture"),
+                    );
+                    object.insert(
+                        "modelAttribution".to_owned(),
+                        model_attribution("quran-aligner", "declared-quran-aligner-fixture"),
+                    );
+                }
+                axum::Json(body)
+            },
         ),
     );
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -2545,7 +2725,7 @@ async fn ml_proxy_overwrites_client_consent_with_the_stored_session_consent() {
             "learnerId": "learner-1",
             "quranRef": { "surahNumber": 1, "ayahStart": 1, "ayahEnd": 7, "display": "Al-Fatihah 1:1-7" },
             "sourceChecksum": "fnv1a32:consent-test",
-            "modelVersion": "model-v0.3",
+
             "language": "ckb",
             "mode": "guided-recite",
             "practicePlanId": "fatihah-mastery-v1",
@@ -2598,7 +2778,11 @@ async fn ml_proxy_overwrites_client_consent_with_the_stored_session_consent() {
 async fn ml_proxy_passes_through_a_successful_upstream_response() {
     let mock_ml = spawn_mock_upstream_200(
         "/v1/alignments:predict",
-        json!({"alignments": [], "modelVersion": "model-v0.3"}),
+        json!({
+            "alignments": [],
+            "modelVersion": "declared-quran-aligner-fixture",
+            "modelAttribution": model_attribution("quran-aligner", "declared-quran-aligner-fixture")
+        }),
     )
     .await;
     let state = test_state().with_ml_inference_url(mock_ml);
@@ -2615,15 +2799,19 @@ async fn ml_proxy_passes_through_a_successful_upstream_response() {
     .await;
     assert_eq!(response.status(), StatusCode::OK);
     let body: Value = read_json(response).await;
-    assert_eq!(body["modelVersion"], "model-v0.3");
+    assert_eq!(body["modelVersion"], "declared-quran-aligner-fixture");
 }
 
 // NOT DB-gated: mock upstream, no session id, no query.
 #[tokio::test]
-async fn ml_proxy_allows_approved_model_version() {
+async fn ml_proxy_rejects_formerly_approved_model_version() {
     let mock_ml = spawn_mock_upstream_200(
         "/v1/alignments:predict",
-        json!({"alignments": [], "modelVersion": "ml-aligner-v0.2"}),
+        json!({
+            "alignments": [],
+            "modelVersion": "declared-quran-aligner-fixture",
+            "modelAttribution": model_attribution("quran-aligner", "declared-quran-aligner-fixture")
+        }),
     )
     .await;
     let state = test_state().with_ml_inference_url(mock_ml);
@@ -2639,7 +2827,9 @@ async fn ml_proxy_allows_approved_model_version() {
     )
     .await;
 
-    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let body: Value = read_json(response).await;
+    assert!(body["error"].as_str().unwrap().contains("server-selected"));
 }
 
 // NOT DB-gated: the model-version allowlist rejects the request before any query.
@@ -2660,13 +2850,21 @@ async fn ml_proxy_rejects_unapproved_model_version() {
 
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
     let body: Value = read_json(response).await;
-    assert!(body["error"].as_str().unwrap().contains("not approved"));
+    assert!(body["error"].as_str().unwrap().contains("server-selected"));
 }
 
 // NOT DB-gated: mock upstream, no session id, no query.
 #[tokio::test]
 async fn asr_transcribe_proxy_passes_through_a_successful_upstream_response() {
-    let mock_asr = spawn_mock_upstream_200("/v1/transcribe", json!({"text": "بِسْمِ اللَّهِ"})).await;
+    let mock_asr = spawn_mock_upstream_200(
+        "/v1/transcribe",
+        json!({
+            "text": "بِسْمِ اللَّهِ",
+            "modelVersion": "declared-asr-fixture",
+            "modelAttribution": model_attribution("asr", "declared-asr-fixture")
+        }),
+    )
+    .await;
     let state = test_state().with_asr_inference_url(mock_asr);
     let router = platform_router_with_rate_limit(state, false);
 
@@ -2689,7 +2887,12 @@ async fn asr_transcribe_proxy_passes_through_a_successful_upstream_response() {
 async fn asr_force_align_proxy_forwards_and_requires_auth() {
     let mock_asr = spawn_mock_upstream_200(
         "/v1/force-align",
-        json!({"words": [{"word": "بِسْمِ", "start": 0.06, "end": 0.61, "score": 0.9}], "duration": 0.61}),
+        json!({
+            "words": [{"word": "بِسْمِ", "start": 0.06, "end": 0.61, "score": 0.9}],
+            "duration": 0.61,
+            "modelVersion": "declared-forced-aligner-fixture",
+            "modelAttribution": model_attribution("forced-aligner", "declared-forced-aligner-fixture")
+        }),
     )
     .await;
     let state = test_state().with_asr_inference_url(mock_asr);
@@ -3155,7 +3358,7 @@ async fn create_session_external_processing_requires_both_asr_consent_and_guardi
             "learnerId": asr_only_learner,
             "quranRef": {"surahNumber": 1, "ayahStart": 1, "ayahEnd": 7, "display": "Al-Fatihah 1:1-7"},
             "sourceChecksum": "fnv1a32:consent-gate",
-            "modelVersion": "model-v0.3",
+
             "language": "ckb",
             "mode": "guided-recite",
             "practicePlanId": "fatihah-mastery-v1",
@@ -3178,7 +3381,7 @@ async fn create_session_external_processing_requires_both_asr_consent_and_guardi
             "learnerId": both_learner,
             "quranRef": {"surahNumber": 1, "ayahStart": 1, "ayahEnd": 7, "display": "Al-Fatihah 1:1-7"},
             "sourceChecksum": "fnv1a32:consent-gate",
-            "modelVersion": "model-v0.3",
+
             "language": "ckb",
             "mode": "guided-recite",
             "practicePlanId": "fatihah-mastery-v1",
@@ -3265,7 +3468,7 @@ async fn get_session_round_trips_every_practice_mode() {
                 "learnerId": learner_id,
                 "quranRef": {"surahNumber": 1, "ayahStart": 1, "ayahEnd": 7, "display": "Al-Fatihah 1:1-7"},
                 "sourceChecksum": "fnv1a32:mode-round-trip",
-                "modelVersion": "model-v0.3",
+
                 "language": "ckb",
                 "mode": mode,
                 "practicePlanId": "fatihah-mastery-v1",
@@ -3345,13 +3548,13 @@ async fn adversarial_sql_isolation_prevents_cross_tenant_access() {
     // container SUPERUSER, and superusers bypass row-level security unconditionally (FORCE or
     // not) — under that identity this test can never pass, which surfaced the day verify.sh's
     // 2s psql probe first succeeded on a CI runner and the DB-gated suite actually ran there.
-    // quran_ai_app exists in every environment that applies infra/sql/rls-app-role.sql (CI does;
+    // quran_ai_app exists in every environment that applies infra/provision/app-role.sql (CI does;
     // local staging already connects as it, where SET ROLE to self is a no-op). LOCAL scope
     // reverts the role at tx end.
     sqlx::query("SET LOCAL ROLE quran_ai_app")
         .execute(&mut *tx)
         .await
-        .expect("quran_ai_app role must exist — apply infra/sql/rls-app-role.sql");
+        .expect("quran_ai_app role must exist — apply infra/provision/app-role.sql");
 
     // Sanity gate: prove the hostile identity is in effect BEFORE probing, so any future
     // scoping surprise fails loudly here instead of as a mysterious row-count assertion.
@@ -3453,7 +3656,7 @@ async fn adversarial_api_isolation_prevents_cross_tenant_write() {
             "learnerId": learner_id,
             "quranRef": {"surahNumber": 1, "ayahStart": 1, "ayahEnd": 7, "display": "Al-Fatihah 1:1-7"},
             "sourceChecksum": "fnv1a32:adversarial-write",
-            "modelVersion": "model-v0.3",
+
             "language": "ckb",
             "mode": "guided-recite",
             "practicePlanId": "fatihah-mastery-v1",
@@ -3503,9 +3706,9 @@ async fn adversarial_api_isolation_prevents_cross_tenant_delete() {
 
 #[tokio::test]
 async fn test_platform_api_cors_origin_validation() {
-    use std::sync::Mutex;
-    static CORS_LOCK: Mutex<()> = Mutex::new(());
-    let _guard = CORS_LOCK.lock().unwrap();
+    use tokio::sync::Mutex;
+    static CORS_LOCK: Mutex<()> = Mutex::const_new(());
+    let _guard = CORS_LOCK.lock().await;
 
     // 1. Setup environment allowed origin
     unsafe {
@@ -4357,7 +4560,7 @@ async fn rls_backstops_a_query_that_forgets_its_tenant_context() {
     sqlx::query("SET LOCAL ROLE quran_ai_app")
         .execute(&mut *tx)
         .await
-        .expect("quran_ai_app role must exist — apply infra/sql/rls-app-role.sql");
+        .expect("quran_ai_app role must exist — apply infra/provision/app-role.sql");
 
     // Sanity gate: prove the tenant GUC really is unset, so a zero-row result below can only be
     // RLS doing its job — not an empty table or a stale context from a recycled connection.
@@ -4454,7 +4657,7 @@ async fn teacher_decision_promotes_the_finding_and_edited_promotes_nothing() {
         json!({
             "learnerId": "learner-1",
             "quranRef": {"surahNumber": 1, "ayahStart": 1, "ayahEnd": 7, "display": "Al-Fatihah 1:1-7"},
-            "sourceChecksum": "fnv1a32:promote", "modelVersion": "model-v0.3", "language": "ckb",
+            "sourceChecksum": "fnv1a32:promote",  "language": "ckb",
             "mode": "guided-recite", "practicePlanId": "fatihah-mastery-v1",
             "consent": {"audioRetention": "discard", "anonymizedLearning": true, "externalAsrProcessing": false, "guardianApproved": true, "consentVersion": "pilot-v1"}
         }),
@@ -4494,8 +4697,19 @@ async fn teacher_decision_promotes_the_finding_and_edited_promotes_nothing() {
             let id = format!("tf-promote-{suffix}");
             sqlx::query("INSERT INTO audit_events (id, tenant_id, actor_id, action, subject_type, subject_id) VALUES ($1,'hikmah-pilot-erbil','ops-1','test.seed','tajweed_finding',$2)")
                 .bind(&audit).bind(&id).execute(&pool).await.unwrap();
-            sqlx::query("INSERT INTO tajweed_findings (id, tenant_id, alignment_id, rule, severity, confidence, explanation, review_status, source_refs, model_version_id, audit_event_id) VALUES ($1,'hikmah-pilot-erbil',$2,'Ghunnah','warning',0.9,'x','ai-suggested','[{\"id\":\"s1\",\"title\":\"Board\",\"citation\":\"policy\"}]'::jsonb,'model-v0.3',$3)")
-                .bind(&id).bind(&align_id).bind(&audit).execute(&pool).await.unwrap();
+            insert_declared_test_acoustic_finding(
+                &pool,
+                &id,
+                &align_id,
+                "Ghunnah",
+                "warning",
+                0.9,
+                "x",
+                "ai-suggested",
+                json!([{"id": "s1", "title": "Board", "citation": "policy"}]),
+                &audit,
+            )
+            .await;
             id
         }
     };
@@ -4576,9 +4790,8 @@ async fn teacher_decision_promotes_the_finding_and_edited_promotes_nothing() {
     assert_eq!(status_of(corrected).await, "blocked");
 }
 
-/// A mock ML service that answers `/v1/tajweed-findings:predict` with the shape
-/// `services/ml-inference` actually returns — `sessionId` at the top level, findings carrying
-/// `wordId`/`rule`/`severity`/`confidence`/`explanation`/`sources`, every one `ai-suggested`.
+/// A declared acoustic fixture for the persistence path. The real deterministic analyser returns
+/// instructional `annotations` and no performance `findings` until the acoustic evaluator ships.
 async fn spawn_mock_ml_tajweed(word_id: &'static str) -> String {
     let app = axum::Router::new().route(
         "/v1/tajweed-findings:predict",
@@ -4586,29 +4799,46 @@ async fn spawn_mock_ml_tajweed(word_id: &'static str) -> String {
             axum::Json(json!({
                 "sessionId": body["sessionId"],
                 "tenantId": body["tenantId"],
-                "modelVersion": "ml-aligner-v0.2",
-                "reviewStatus": "ai-suggested",
-                "confidence": 0.9,
+                "modelVersion": DECLARED_TEST_MODEL,
+                "annotations": [],
                 "findings": [
                     {
                         "wordId": word_id,
                         "rule": "ghunnah",
+                        "analysisBasis": "acoustic",
                         "severity": "practice",
                         "confidence": 0.9,
                         "explanation": "Apply ghunnah on the noon sakina.",
                         "sources": [{"id": "s1", "title": "Board", "citation": "policy"}],
-                        "reviewStatus": "ai-suggested"
+                        "reviewStatus": "ai-suggested",
+                        "modelVersion": DECLARED_TEST_MODEL,
+                        "modelArtifactSha256": DECLARED_TEST_MODEL_SHA256,
+                        "acousticDatasetVersion": DECLARED_TEST_DATASET,
+                        "acousticDatasetManifestSha256": DECLARED_TEST_DATASET_SHA256,
+                        "calibratorId": DECLARED_TEST_CALIBRATOR,
+                        "calibratorArtifactSha256": DECLARED_TEST_CALIBRATOR_SHA256,
+                        "evaluationEvidenceId": DECLARED_TEST_EVIDENCE_ID,
+                        "evaluationEvidenceSha256": DECLARED_TEST_EVIDENCE_SHA256
                     },
                     {
                         // A word this session never aligned: unanchorable, and must be SKIPPED
                         // rather than invented into a word_alignments row.
                         "wordId": "114:6:3",
                         "rule": "qalqalah",
+                        "analysisBasis": "acoustic",
                         "severity": "practice",
                         "confidence": 0.88,
                         "explanation": "unanchored",
-                        "sources": [],
-                        "reviewStatus": "ai-suggested"
+                        "sources": [{"id": "s1", "title": "Board", "citation": "policy"}],
+                        "reviewStatus": "ai-suggested",
+                        "modelVersion": DECLARED_TEST_MODEL,
+                        "modelArtifactSha256": DECLARED_TEST_MODEL_SHA256,
+                        "acousticDatasetVersion": DECLARED_TEST_DATASET,
+                        "acousticDatasetManifestSha256": DECLARED_TEST_DATASET_SHA256,
+                        "calibratorId": DECLARED_TEST_CALIBRATOR,
+                        "calibratorArtifactSha256": DECLARED_TEST_CALIBRATOR_SHA256,
+                        "evaluationEvidenceId": DECLARED_TEST_EVIDENCE_ID,
+                        "evaluationEvidenceSha256": DECLARED_TEST_EVIDENCE_SHA256
                     }
                 ]
             }))
@@ -4639,6 +4869,7 @@ async fn tajweed_findings_persist_and_the_learner_can_read_their_own() {
     let state = test_state().with_ml_inference_url(mock_ml.clone());
     let router =
         platform_router_with_rate_limit(test_state().with_ml_inference_url(mock_ml), false);
+    ensure_declared_test_acoustic_evidence(&state.pool).await;
 
     let created = send_json(
         &router,
@@ -4649,7 +4880,7 @@ async fn tajweed_findings_persist_and_the_learner_can_read_their_own() {
         json!({
             "learnerId": "learner-1",
             "quranRef": {"surahNumber": 1, "ayahStart": 1, "ayahEnd": 7, "display": "Al-Fatihah 1:1-7"},
-            "sourceChecksum": "fnv1a32:persist", "modelVersion": "model-v0.3", "language": "ckb",
+            "sourceChecksum": "fnv1a32:persist",  "language": "ckb",
             "mode": "guided-recite", "practicePlanId": "fatihah-mastery-v1",
             "consent": {"audioRetention": "discard", "anonymizedLearning": true, "externalAsrProcessing": false, "guardianApproved": true, "consentVersion": "pilot-v1"}
         }),
@@ -4719,19 +4950,13 @@ async fn tajweed_findings_persist_and_the_learner_can_read_their_own() {
     .await
     .unwrap();
 
-    // ADR-0033 — what this finding is ABOUT, recorded on the row.
-    //
-    // `analyzeAyah` reads the passage's canonical Uthmani text and nothing else: no audio, no heard
-    // text, no timing. What it returns is "a rule applies at this position", which is true of the
-    // Quran and identical for every learner who ever recites it. This row is anchored to a
-    // `word_alignments` row and will be released to the learner if a teacher accepts it — so
-    // whether it is a fact about the text or a judgement about the person has to survive the write.
+    // This mock is a declared acoustic fixture. Deterministic Quran rules now travel only in the
+    // separate instructional annotations array and never reach this persistence path.
     for r in &rows {
         assert_eq!(
             r.try_get::<String, _>("analysis_basis").unwrap(),
-            "canonical-text",
-            "a text-derived finding was stored without saying so, which is how it becomes \
-             indistinguishable from one derived from the learner's audio"
+            "acoustic",
+            "a learner-performance finding was stored without an acoustic basis"
         );
     }
     assert_eq!(
@@ -4789,7 +5014,9 @@ async fn tajweed_findings_persist_and_the_learner_can_read_their_own() {
     assert_eq!(body[0]["explanation"], json!(""));
     assert_eq!(body[0]["sources"], json!([]));
 
-    // (4) THE LOOP. A teacher accepts; the learner reads it back as reviewed.
+    // (4) THE LOOP. A teacher accepts, so the learner reads the review decision back. The mock is
+    // still a declared fixture, has no retained audio, and has no approved calibrator/evaluation
+    // chain. Review must not override those independent evidence gates.
     let review = send_json(
         &router,
         Method::POST,
@@ -4815,9 +5042,12 @@ async fn tajweed_findings_persist_and_the_learner_can_read_their_own() {
         after_body[0]["reviewStatus"], "teacher-reviewed",
         "the learner must be able to READ the promotion — this is the link that was missing"
     );
-    // canShowLearnerFacingAiOutput, term for term: the learner would now actually be shown this.
-    assert!(after_body[0]["confidence"].as_f64().unwrap() >= 0.82);
-    assert!(!after_body[0]["sources"].as_array().unwrap().is_empty());
+    assert_eq!(after_body[0]["withheld"], json!(true));
+    assert_eq!(after_body[0]["confidence"], json!(0.0));
+    assert_eq!(after_body[0]["sources"], json!([]));
+    assert_eq!(after_body[0]["audioStatus"], "discarded");
+    assert_eq!(after_body[0]["calibrationStatus"], "uncalibrated");
+    assert_eq!(after_body[0]["evaluationEvidenceStatus"], "fixture");
 
     // (5) Ownership, not role: a different learner is refused.
     // Raw headers: send_json maps the role to a FIXED user id, so a second learner needs them.
@@ -4854,8 +5084,42 @@ async fn tajweed_findings_persist_and_the_learner_can_read_their_own() {
 }
 
 /// A mock ML service for the finalize chain: the session transcript, then the alignment computed
-/// from it. Mirrors the real shapes — `transcribed`/`recognizedText` from `/v1/session-transcript`,
-/// `alignments[]` from `/v1/alignments:predict`.
+/// from it. Mirrors the real shapes — measured `recognizedTokens` from `/v1/session-transcript`,
+/// then evidence-backed `alignments[]` from `/v1/alignments:predict`.
+fn fixture_asr_attribution() -> Value {
+    json!({
+        "schemaVersion": 1,
+        "primaryComponent": "asr",
+        "components": [{
+            "component": "asr", "status": "active", "implementationId": "declared-asr-fixture",
+            "artifactDigest": format!("sha256:{}", "a".repeat(64)),
+            "datasetVersion": "declared-asr-dataset", "analysisBasis": "acoustic",
+            "calibratorId": null
+        }]
+    })
+}
+
+fn fixture_alignment_attribution(model: &str) -> Value {
+    json!({
+        "schemaVersion": 1,
+        "primaryComponent": "quran-aligner",
+        "components": [
+            {
+                "component": "asr", "status": "active", "implementationId": "declared-asr-fixture",
+                "artifactDigest": format!("sha256:{}", "a".repeat(64)),
+                "datasetVersion": "declared-asr-dataset", "analysisBasis": "acoustic",
+                "calibratorId": null
+            },
+            {
+                "component": "quran-aligner", "status": "active", "implementationId": model,
+                "artifactDigest": format!("sha256:{}", "b".repeat(64)),
+                "datasetVersion": "declared-quran-dataset", "analysisBasis": "quran-constrained",
+                "calibratorId": null
+            }
+        ]
+    })
+}
+
 /// Like `spawn_mock_ml_finalize`, but the transcript reports chunks that never reached storage.
 ///
 /// That is what an upstream outage leaves behind: ml-inference derives the gap from the holes in the
@@ -4870,20 +5134,45 @@ async fn spawn_mock_ml_finalize_with_gap() -> String {
                 axum::Json(json!({
                     "transcribed": true, "reason": "consent-granted", "chunkCount": 3,
                     "recognizedText": ["بسم", "الله"],
+                    "recognizedTokens": [
+                        {"text": "بسم", "startMs": 0, "endMs": 100, "confidence": 0.92},
+                        {"text": "الله", "startMs": 120, "endMs": 300, "confidence": 0.9}
+                    ],
+                    "transcriptSource": "server-derived",
+                    "modelVersion": "declared-asr-fixture",
+                    "modelAttribution": fixture_asr_attribution(),
                     "missingChunkIds": ["s-ws-0003", "s-ws-0004"]
                 }))
             }),
         )
         .route(
             "/v1/alignments:predict",
-            axum::routing::post(|| async {
-                axum::Json(json!({
-                    "sessionId": "s", "confidence": 0.9,
-                    "alignments": [
-                        {"wordId": "1:1:1", "canonicalText": "بِسْمِ", "heardText": "بسم",
-                         "startMs": 0, "endMs": 100, "confidence": 0.9, "status": "matched"}
-                    ]
-                }))
+            axum::routing::post(|axum::Json(body): axum::Json<Value>| async move {
+                let received_tokens = body
+                    .get("recognizedTokens")
+                    .and_then(|value| value.as_array())
+                    .is_some_and(|tokens| tokens.len() == 2);
+                let no_text_fallback = body.get("recognizedText").is_none();
+                axum::Json(if received_tokens && no_text_fallback {
+                    json!({
+                        "sessionId": "s", "confidence": 0.9, "finalizable": true,
+                        "nonFinalizedReason": null,
+                        "modelVersion": "quran-constrained-levenshtein@1",
+                        "modelAttribution": fixture_alignment_attribution("quran-constrained-levenshtein@1"),
+                        "datasetVersion": "declared-quran-dataset", "evidenceId": "evidence-gap",
+                        "latencyMs": 7,
+                        "alignments": [
+                            {"wordId": "1:1:1", "canonicalText": "بِسْمِ", "heardText": "بسم",
+                             "startMs": 0, "endMs": 100, "confidence": 0.9, "status": "matched"}
+                        ]
+                    })
+                } else {
+                    json!({
+                        "sessionId": "s", "confidence": 0, "finalizable": false,
+                        "nonFinalizedReason": "recognized-text-is-not-span-evidence",
+                        "alignments": []
+                    })
+                })
             }),
         );
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -4895,6 +5184,11 @@ async fn spawn_mock_ml_finalize_with_gap() -> String {
 }
 
 async fn spawn_mock_ml_finalize(transcribed: bool) -> String {
+    spawn_mock_ml_finalize_with_model(transcribed, "quran-constrained-levenshtein@1").await
+}
+
+async fn spawn_mock_ml_finalize_with_model(transcribed: bool, alignment_model: &str) -> String {
+    let alignment_model = alignment_model.to_owned();
     let app = axum::Router::new()
         .route(
             "/v1/session-transcript",
@@ -4902,7 +5196,14 @@ async fn spawn_mock_ml_finalize(transcribed: bool) -> String {
                 axum::Json(if transcribed {
                     json!({
                         "transcribed": true, "reason": "consent-granted", "chunkCount": 3,
-                        "recognizedText": ["بسم", "الله"]
+                        "recognizedText": ["بسم", "الله"],
+                        "recognizedTokens": [
+                            {"text": "بسم", "startMs": 0, "endMs": 500, "confidence": 0.93},
+                            {"text": "الله", "startMs": 500, "endMs": 900, "confidence": 0.9}
+                        ],
+                        "transcriptSource": "server-derived",
+                        "modelVersion": "declared-asr-fixture",
+                        "modelAttribution": fixture_asr_attribution()
                     })
                 } else {
                     json!({
@@ -4914,14 +5215,84 @@ async fn spawn_mock_ml_finalize(transcribed: bool) -> String {
         )
         .route(
             "/v1/alignments:predict",
+            axum::routing::post(move |axum::Json(body): axum::Json<Value>| {
+                let alignment_model = alignment_model.clone();
+                async move {
+                let received_tokens = body
+                    .get("recognizedTokens")
+                    .and_then(|value| value.as_array())
+                    .is_some_and(|tokens| tokens.len() == 2);
+                let no_text_fallback = body.get("recognizedText").is_none();
+                let received_attribution = body.get("transcriptModelAttribution")
+                    == Some(&fixture_asr_attribution());
+                axum::Json(if received_tokens && no_text_fallback && received_attribution {
+                    json!({
+                        "sessionId": "s", "confidence": 0.9, "finalizable": true,
+                        "nonFinalizedReason": null,
+                        "modelVersion": alignment_model,
+                        "modelAttribution": fixture_alignment_attribution(&alignment_model),
+                        "datasetVersion": "declared-quran-dataset", "evidenceId": "evidence-finalize",
+                        "latencyMs": 9,
+                        "alignments": [
+                            {"wordId": "1:1:1", "canonicalText": "بِسْمِ", "heardText": "بسم",
+                             "status": "matched", "confidence": 0.9, "startMs": 0, "endMs": 500},
+                            {"wordId": "1:1:2", "canonicalText": "ٱللَّهِ", "heardText": "الله",
+                             "status": "misread", "confidence": 0.7, "startMs": 500, "endMs": 900}
+                        ]
+                    })
+                } else {
+                    json!({
+                        "sessionId": "s", "confidence": 0, "finalizable": false,
+                        "nonFinalizedReason": "recognized-text-is-not-span-evidence",
+                        "alignments": []
+                    })
+                })
+                }
+            }),
+        );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+    format!("http://{addr}")
+}
+
+/// A hostile/partially migrated producer claims the envelope is finalizable but returns one good
+/// row and one unusable span. The finalizer must roll back the whole replacement, not persist a
+/// plausible prefix and silently discard the bad suffix.
+async fn spawn_mock_ml_finalize_with_partial_invalid_alignment() -> String {
+    let app = axum::Router::new()
+        .route(
+            "/v1/session-transcript",
             axum::routing::post(|| async {
                 axum::Json(json!({
-                    "sessionId": "s", "confidence": 0.9,
+                    "transcribed": true, "reason": "consent-granted", "chunkCount": 1,
+                    "recognizedTokens": [
+                        {"text": "بسم", "startMs": 0, "endMs": 400, "confidence": 0.92},
+                        {"text": "الله", "startMs": 400, "endMs": 800, "confidence": 0.9}
+                    ],
+                    "transcriptSource": "server-derived",
+                    "modelVersion": "declared-asr-fixture",
+                    "modelAttribution": fixture_asr_attribution()
+                }))
+            }),
+        )
+        .route(
+            "/v1/alignments:predict",
+            axum::routing::post(|| async {
+                axum::Json(json!({
+                    "sessionId": "s", "confidence": 0.9, "finalizable": true,
+                    "nonFinalizedReason": null,
+                    "modelVersion": "quran-constrained-levenshtein@1",
+                    "modelAttribution": fixture_alignment_attribution("quran-constrained-levenshtein@1"),
+                    "datasetVersion": "declared-quran-dataset", "evidenceId": "evidence-invalid",
+                    "latencyMs": 8,
                     "alignments": [
                         {"wordId": "1:1:1", "canonicalText": "بِسْمِ", "heardText": "بسم",
-                         "status": "matched", "confidence": 0.9, "startMs": 0, "endMs": 500},
+                         "status": "matched", "confidence": 0.9, "startMs": 0, "endMs": 400},
                         {"wordId": "1:1:2", "canonicalText": "ٱللَّهِ", "heardText": "الله",
-                         "status": "misread", "confidence": 0.7, "startMs": 500, "endMs": 900}
+                         "status": "misread", "confidence": 0.7, "startMs": 400, "endMs": 400}
                     ]
                 }))
             }),
@@ -4944,7 +5315,7 @@ async fn finalize_test_session(router: &axum::Router, checksum: &str) -> String 
         json!({
             "learnerId": "learner-1",
             "quranRef": {"surahNumber": 1, "ayahStart": 1, "ayahEnd": 7, "display": "Al-Fatihah 1:1-7"},
-            "sourceChecksum": checksum, "modelVersion": "model-v0.3", "language": "ckb",
+            "sourceChecksum": checksum,  "language": "ckb",
             "mode": "guided-recite", "practicePlanId": "fatihah-mastery-v1",
             "consent": {"audioRetention": "teacher-review", "anonymizedLearning": true, "externalAsrProcessing": true, "guardianApproved": true, "consentVersion": "pilot-v1"}
         }),
@@ -4986,7 +5357,11 @@ async fn finalize_persists_a_server_derived_alignment_and_refuses_without_consen
     assert_eq!(body["persisted"], 2, "both aligned words must be stored");
 
     let rows = sqlx::query(
-        "SELECT word_id, heard_text, status FROM word_alignments WHERE session_id = $1 ORDER BY word_id",
+        "SELECT wa.word_id, wa.heard_text, wa.status, wa.alignment_run_id,
+                ar.dataset_version, ar.evidence_ids, ar.model_attribution, ar.transcript_source
+         FROM word_alignments wa
+         JOIN alignment_runs ar ON ar.id = wa.alignment_run_id AND ar.tenant_id = wa.tenant_id
+         WHERE wa.session_id = $1 ORDER BY wa.word_id",
     )
     .bind(&session_id)
     .fetch_all(&state.pool)
@@ -4997,6 +5372,27 @@ async fn finalize_persists_a_server_derived_alignment_and_refuses_without_consen
     // the fabricated-alignment fix exists to protect.
     assert_eq!(rows[0].try_get::<String, _>("heard_text").unwrap(), "بسم");
     assert_eq!(rows[1].try_get::<String, _>("status").unwrap(), "misread");
+    assert_eq!(
+        rows[0].try_get::<String, _>("alignment_run_id").unwrap(),
+        rows[1].try_get::<String, _>("alignment_run_id").unwrap(),
+        "one finalization must create one run shared by every word"
+    );
+    assert_eq!(
+        rows[0].try_get::<String, _>("dataset_version").unwrap(),
+        "declared-quran-dataset"
+    );
+    assert_eq!(
+        rows[0].try_get::<Value, _>("evidence_ids").unwrap(),
+        json!(["evidence-finalize"])
+    );
+    assert_eq!(
+        rows[0].try_get::<Value, _>("model_attribution").unwrap(),
+        fixture_alignment_attribution("quran-constrained-levenshtein@1")
+    );
+    assert_eq!(
+        rows[0].try_get::<String, _>("transcript_source").unwrap(),
+        "server-derived"
+    );
 
     // (2) A different learner may not finalize someone else's session.
     let foreign = send_with_headers(
@@ -5025,6 +5421,47 @@ async fn finalize_persists_a_server_derived_alignment_and_refuses_without_consen
     )
     .await;
     assert_eq!(missing.status(), StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+#[ignore = "requires live Postgres"]
+async fn finalize_refuses_a_valid_producer_that_disagrees_with_the_session_model() {
+    let mock = spawn_mock_ml_finalize_with_model(true, "another-valid-quran-aligner@1").await;
+    let state = test_state().with_ml_inference_url(mock.clone());
+    let router = platform_router_with_rate_limit(test_state().with_ml_inference_url(mock), false);
+    let session_id = finalize_test_session(&router, "fnv1a32:model-mismatch").await;
+
+    let response = send_json(
+        &router,
+        Method::POST,
+        &format!("/v1/recitation-sessions/{session_id}/finalize"),
+        Some("hikmah-pilot-erbil"),
+        Some("learner"),
+        json!({}),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let body: Value = read_json(response).await;
+    assert_eq!(body["finalized"], false);
+    assert_eq!(body["reason"], "model-version-mismatch");
+
+    let word_count: i64 =
+        sqlx::query_scalar("select count(*) from word_alignments where session_id = $1")
+            .bind(&session_id)
+            .fetch_one(&state.pool)
+            .await
+            .unwrap();
+    let run_count: i64 =
+        sqlx::query_scalar("select count(*) from alignment_runs where session_id = $1")
+            .bind(&session_id)
+            .fetch_one(&state.pool)
+            .await
+            .unwrap();
+    assert_eq!(
+        (word_count, run_count),
+        (0, 0),
+        "mismatch must leave no partial provenance"
+    );
 }
 
 /// The refusal path: no transcript means NO stored alignment, not a fabricated one.
@@ -5067,6 +5504,69 @@ async fn finalize_without_a_transcript_stores_nothing() {
     );
 }
 
+#[tokio::test]
+#[ignore = "requires live Postgres"]
+async fn finalize_rolls_back_every_alignment_when_one_claimed_span_is_invalid() {
+    use sqlx::Row;
+
+    let mock = spawn_mock_ml_finalize_with_partial_invalid_alignment().await;
+    let state = test_state().with_ml_inference_url(mock.clone());
+    let router = platform_router_with_rate_limit(test_state().with_ml_inference_url(mock), false);
+    let session_id = finalize_test_session(&router, "fnv1a32:finalize-atomic-refusal").await;
+
+    let prior = send_json(
+        &router,
+        Method::POST,
+        &format!("/v1/recitation-sessions/{session_id}/alignments"),
+        Some("hikmah-pilot-erbil"),
+        Some("learner"),
+        json!({
+            "alignments": [{
+                "wordId": "1:1:1", "heardText": "prior-client-practice",
+                "startMs": 10, "endMs": 100, "confidence": 0.4, "status": "matched"
+            }]
+        }),
+    )
+    .await;
+    assert_eq!(prior.status(), StatusCode::OK);
+
+    let response = send_json(
+        &router,
+        Method::POST,
+        &format!("/v1/recitation-sessions/{session_id}/finalize"),
+        Some("hikmah-pilot-erbil"),
+        Some("learner"),
+        json!({}),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let body: Value = read_json(response).await;
+    assert_eq!(body["finalized"], false);
+    assert_eq!(body["reason"], "invalid-alignment-output");
+    assert_eq!(body["persisted"], 0);
+
+    let rows = sqlx::query(
+        "SELECT heard_text, transcript_source FROM word_alignments WHERE session_id = $1",
+    )
+    .bind(&session_id)
+    .fetch_all(&state.pool)
+    .await
+    .unwrap();
+    assert_eq!(
+        rows.len(),
+        1,
+        "the partial server result must not replace prior practice data"
+    );
+    assert_eq!(
+        rows[0].try_get::<String, _>("heard_text").unwrap(),
+        "prior-client-practice"
+    );
+    assert_eq!(
+        rows[0].try_get::<String, _>("transcript_source").unwrap(),
+        "client-reported"
+    );
+}
+
 /// ADR-0027 item 6 — a teacher cannot release a finding with nothing behind it.
 ///
 /// `create_scholar_approval` has always refused this (`MissingSources`). Teacher acceptance became
@@ -5089,7 +5589,7 @@ async fn accepting_an_unsourced_finding_is_refused_but_rejecting_it_is_not() {
         json!({
             "learnerId": "learner-1",
             "quranRef": {"surahNumber": 1, "ayahStart": 1, "ayahEnd": 7, "display": "Al-Fatihah 1:1-7"},
-            "sourceChecksum": "fnv1a32:unsourced", "modelVersion": "model-v0.3", "language": "ckb",
+            "sourceChecksum": "fnv1a32:unsourced",  "language": "ckb",
             "mode": "guided-recite", "practicePlanId": "fatihah-mastery-v1",
             "consent": {"audioRetention": "discard", "anonymizedLearning": true, "externalAsrProcessing": false, "guardianApproved": true, "consentVersion": "pilot-v1"}
         }),
@@ -5125,8 +5625,19 @@ async fn accepting_an_unsourced_finding_is_refused_but_rejecting_it_is_not() {
     let finding_id = format!("tf-unsourced-{suffix}");
     sqlx::query("INSERT INTO audit_events (id, tenant_id, actor_id, action, subject_type, subject_id) VALUES ($1,'hikmah-pilot-erbil','ops-1','test.seed','tajweed_finding',$2)")
         .bind(&audit).bind(&finding_id).execute(&state.pool).await.unwrap();
-    sqlx::query("INSERT INTO tajweed_findings (id, tenant_id, alignment_id, rule, severity, confidence, explanation, review_status, source_refs, model_version_id, audit_event_id) VALUES ($1,'hikmah-pilot-erbil',$2,'Ghunnah','warning',0.9,'x','ai-suggested','[]'::jsonb,'model-v0.3',$3)")
-        .bind(&finding_id).bind(&align_id).bind(&audit).execute(&state.pool).await.unwrap();
+    insert_declared_test_acoustic_finding(
+        &state.pool,
+        &finding_id,
+        &align_id,
+        "Ghunnah",
+        "warning",
+        0.9,
+        "x",
+        "ai-suggested",
+        json!([]),
+        &audit,
+    )
+    .await;
 
     let review = |decision: &'static str| {
         let router = router.clone();
@@ -5191,8 +5702,19 @@ async fn accepting_an_unsourced_finding_is_refused_but_rejecting_it_is_not() {
     let sourced_id = format!("tf-sourced-{suffix2}");
     sqlx::query("INSERT INTO audit_events (id, tenant_id, actor_id, action, subject_type, subject_id) VALUES ($1,'hikmah-pilot-erbil','ops-1','test.seed','tajweed_finding',$2)")
         .bind(&audit2).bind(&sourced_id).execute(&state.pool).await.unwrap();
-    sqlx::query("INSERT INTO tajweed_findings (id, tenant_id, alignment_id, rule, severity, confidence, explanation, review_status, source_refs, model_version_id, audit_event_id) VALUES ($1,'hikmah-pilot-erbil',$2,'Ghunnah','warning',0.9,'x','ai-suggested','[{\"id\":\"s1\",\"title\":\"Board\",\"citation\":\"policy\"}]'::jsonb,'model-v0.3',$3)")
-        .bind(&sourced_id).bind(&align_id).bind(&audit2).execute(&state.pool).await.unwrap();
+    insert_declared_test_acoustic_finding(
+        &state.pool,
+        &sourced_id,
+        &align_id,
+        "Ghunnah",
+        "warning",
+        0.9,
+        "x",
+        "ai-suggested",
+        json!([{"id": "s1", "title": "Board", "citation": "policy"}]),
+        &audit2,
+    )
+    .await;
 
     let ok = send_json(
         &router,
@@ -5266,23 +5788,19 @@ async fn seed_finding_for_gate(
     .await
     .unwrap();
 
-    // `$6::float8::numeric` — a bare f64 bind against a `numeric` column fails to encode.
-    sqlx::query(
-        "INSERT INTO tajweed_findings
-           (id, tenant_id, alignment_id, rule, severity, confidence, explanation, review_status,
-            source_refs, model_version_id, audit_event_id)
-         VALUES ($1, 'hikmah-pilot-erbil', $2, 'Makhraj', 'warning', $3::float8::numeric,
-                 'the throat letter drifted', $4, $5::jsonb, 'model-v0.3', $6)",
+    insert_declared_test_acoustic_finding(
+        pool,
+        &finding_id,
+        &alignment_id,
+        "Makhraj",
+        "warning",
+        confidence,
+        "the throat letter drifted",
+        review_status,
+        serde_json::from_str(sources).unwrap(),
+        &finding_audit,
     )
-    .bind(&finding_id)
-    .bind(&alignment_id)
-    .bind(confidence)
-    .bind(review_status)
-    .bind(sources)
-    .bind(&finding_audit)
-    .execute(pool)
-    .await
-    .unwrap();
+    .await;
 
     finding_id
 }
@@ -5299,7 +5817,7 @@ async fn seed_session_for(router: &axum::Router, checksum: &str) -> String {
             "learnerId": "learner-1",
             "quranRef": {"surahNumber": 1, "ayahStart": 1, "ayahEnd": 7, "display": "Al-Fatihah 1:1-7"},
             "sourceChecksum": format!("fnv1a32:{checksum}"),
-            "modelVersion": "model-v0.3", "language": "ckb",
+             "language": "ckb",
             "mode": "guided-recite", "practicePlanId": "fatihah-mastery-v1",
             "consent": {"audioRetention": "discard", "anonymizedLearning": true,
                         "externalAsrProcessing": false, "guardianApproved": true,
@@ -5346,7 +5864,7 @@ async fn seed_session_for(router: &axum::Router, checksum: &str) -> String {
 /// looked at and refused.
 #[tokio::test]
 #[ignore = "requires live Postgres"]
-async fn a_finding_becomes_visible_to_the_learner_only_when_a_teacher_accepts_it() {
+async fn teacher_approval_cannot_override_fixture_evidence_or_missing_retained_audio() {
     let state = test_state();
     let router = platform_router_with_rate_limit(test_state(), false);
     let session_id = seed_session_for(&router, "p61journey").await;
@@ -5378,9 +5896,9 @@ async fn a_finding_becomes_visible_to_the_learner_only_when_a_teacher_accepts_it
             })
     }
 
-    for (label, word_id, decision, visible_after) in [
-        ("accepted", "1:1:1", "accepted", true),
-        ("rejected", "1:1:2", "rejected", false),
+    for (label, word_id, decision) in [
+        ("accepted", "1:1:1", "accepted"),
+        ("rejected", "1:1:2", "rejected"),
     ] {
         let finding_id = seed_finding_for_gate(
             &state.pool,
@@ -5432,31 +5950,15 @@ async fn a_finding_becomes_visible_to_the_learner_only_when_a_teacher_accepts_it
 
         // 3. And the learner reads the SAME finding again.
         let after = learner_sees(&router, &session_id, &finding_id).await;
-        if visible_after {
-            assert_eq!(
-                after["withheld"],
-                json!(false),
-                "{label}: a teacher accepted this finding and the learner still cannot see it: {after}"
-            );
-            assert_ne!(
-                after["rule"],
-                json!(""),
-                "{label}: accepted, but the content is still blank: {after}"
-            );
-        } else {
-            assert_eq!(
-                after["withheld"],
-                json!(true),
-                "{label}: a teacher REJECTED this finding and the learner can now read it. They are \
-                 being shown a judgement about their own recitation that a teacher looked at and \
-                 refused: {after}"
-            );
-            assert_eq!(
-                after["rule"],
-                json!(""),
-                "{label}: rejected, and the rule is readable anyway: {after}"
-            );
-        }
+        assert_eq!(
+            after["withheld"],
+            json!(true),
+            "{label}: a human decision overrode fixture/calibration/audio evidence: {after}"
+        );
+        assert_eq!(after["rule"], json!(""), "{label}: content leaked: {after}");
+        assert_eq!(after["evaluationEvidenceStatus"], json!("fixture"));
+        assert_eq!(after["calibrationStatus"], json!("uncalibrated"));
+        assert_eq!(after["audioStatus"], json!("discarded"));
     }
 }
 
@@ -5469,8 +5971,9 @@ async fn learner_gets_withheld_findings_redacted_and_staff_get_them_intact() {
 
     const SOURCED: &str = r#"[{"id":"s1","title":"Scholar Board","citation":"policy"}]"#;
 
-    // Clears the gate: reviewed, confident, sourced.
-    let visible = seed_finding_for_gate(
+    // Still fails: human review cannot promote the declared fixture, an unapproved calibrator, or
+    // audio that consent required the platform to discard.
+    let fixture_bound = seed_finding_for_gate(
         &state.pool,
         &session_id,
         "ok",
@@ -5533,15 +6036,8 @@ async fn learner_gets_withheld_findings_redacted_and_staff_get_them_intact() {
             .clone()
     };
 
-    // The approved one arrives whole — withholding everything would be safe and useless.
-    let shown = by_id(&visible);
-    assert_eq!(shown["withheld"], json!(false));
-    assert_eq!(shown["rule"], json!("Makhraj"));
-    assert_eq!(shown["explanation"], json!("the throat letter drifted"));
-    assert_eq!(shown["wordId"], json!("1:1:1"));
-    assert_eq!(shown["sources"].as_array().unwrap().len(), 1);
-
     for (label, id) in [
+        ("teacher-reviewed-fixture", &fixture_bound),
         ("unreviewed", &unreviewed),
         ("unsourced", &unsourced),
         ("low-confidence", &low),
@@ -5831,7 +6327,7 @@ async fn a_client_posted_alignment_is_recorded_as_client_reported() {
         Some("hikmah-pilot-erbil"),
         Some("learner"),
         json!({
-            "modelVersion": "model-v0.3",
+
             // A perfect recitation, asserted rather than recited.
             "alignments": [
                 {"wordId": "1:1:1", "heardText": "بسم", "startMs": 0, "endMs": 400, "confidence": 1.0, "status": "matched"},
@@ -5948,7 +6444,7 @@ async fn weekly_accuracy_excludes_self_reported_words_but_still_counts_them() {
         json!({
             "learnerId": learner,
             "quranRef": {"surahNumber": 1, "ayahStart": 1, "ayahEnd": 7, "display": "Al-Fatihah 1:1-7"},
-            "sourceChecksum": "fnv1a32:provenance-weekly", "modelVersion": "model-v0.3",
+            "sourceChecksum": "fnv1a32:provenance-weekly",
             "language": "ckb", "mode": "guided-recite", "practicePlanId": "fatihah-mastery-v1",
             "consent": {"audioRetention": "discard", "anonymizedLearning": true, "externalAsrProcessing": false, "guardianApproved": true, "consentVersion": "pilot-v1"}
         }),
@@ -5967,7 +6463,7 @@ async fn weekly_accuracy_excludes_self_reported_words_but_still_counts_them() {
         Some("hikmah-pilot-erbil"),
         Some("admin"),
         json!({
-            "modelVersion": "model-v0.3",
+
             // A flawless recitation, asserted rather than recited.
             "alignments": [
                 {"wordId": "1:1:1", "heardText": "بسم", "startMs": 0, "endMs": 400, "confidence": 1.0, "status": "matched"},

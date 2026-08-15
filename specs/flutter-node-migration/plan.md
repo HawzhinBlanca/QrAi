@@ -86,7 +86,7 @@ superuser — so RLS was proven only for one hand-built adversarial path, never 
 - `begin_tenant_tx`'s own doc comment (`lib.rs:449-451`) admits it: *"In dev the connection role is a
   superuser (RLS bypassed), so this is a no-op there."*
 
-So the 16 tenant policies are inert for the *default* suite run, and `infra/sql/rls-app-role.sql`
+So the 16 tenant policies are inert for the *default* suite run, and `infra/provision/app-role.sql`
 is applied in CI but never connected as — except by the three adversarial tests noted above.
 
 **RESOLVED by MIG1 (2026-07-29).** The whole suite was run against the restricted role on an isolated

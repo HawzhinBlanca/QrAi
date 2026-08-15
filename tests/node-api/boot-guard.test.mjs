@@ -8,7 +8,7 @@ import {
   ALLOW_INSECURE_SECRETS,
   LEGACY_VAR,
   insecureSecretProblems,
-} from "../../services/node-api/lib/insecure.mjs";
+} from "../../server/src/lib/insecure.mjs";
 
 /**
  * The node-api port of `main.rs` `ensure_secure_config` — refuse to boot on missing or known-weak
@@ -22,7 +22,7 @@ import {
  */
 
 const here = dirname(fileURLToPath(import.meta.url));
-const server = join(here, "..", "..", "services", "node-api", "server.mjs");
+const server = join(here, "..", "..", "server", "src", "main.mjs");
 
 /** A configuration with nothing wrong with it. Each case below breaks exactly one thing. */
 const STRONG = {
@@ -95,7 +95,8 @@ function boot(env) {
     const child = spawn(process.execPath, [server], {
       env: {
         PATH: process.env.PATH,
-        // Set, so an exit is never the "upstream is required" refusal wearing this test's name.
+        // Compatibility by default; individual cases may override with an empty value to prove
+        // standalone startup.
         PLATFORM_API_UPSTREAM: "http://127.0.0.1:1",
         NODE_API_BIND: "127.0.0.1:0",
         ...env,
@@ -127,6 +128,50 @@ test("the entry point boots when the secrets are strong", async () => {
   assert.equal(res.stillRunning, true, `it exited (${res.code}) instead of listening:\n${res.stderr}`);
 });
 
+test("the entry point boots standalone with no Rust upstream", async () => {
+  const res = await boot({ ...STRONG, PLATFORM_API_UPSTREAM: "" });
+  assert.equal(res.stillRunning, true, `standalone exited (${res.code}):\n${res.stderr}`);
+});
+
+for (const value of ["true", "yes", "2", "01"]) {
+  test(`DEVICE_IDENTITY_ENABLED=${JSON.stringify(value)} fails closed`, async () => {
+    const { code, stderr } = await boot({ ...STRONG, DEVICE_IDENTITY_ENABLED: value });
+    assert.equal(code, 2, `expected exit 2, got ${code}. stderr:\n${stderr}`);
+    assert.match(stderr, /DEVICE_IDENTITY_ENABLED must be exactly 1/);
+  });
+}
+
+test("DEVICE_IDENTITY_ENABLED=1 is the sole explicit owner opt-in", async () => {
+  const res = await boot({ ...STRONG, DEVICE_IDENTITY_ENABLED: "1" });
+  assert.equal(res.stillRunning, true, `owner-gated boot exited (${res.code}):\n${res.stderr}`);
+});
+
+test("NODE_API_PORTED cannot create a partial standalone process", async () => {
+  const { code, stderr } = await boot({
+    ...STRONG,
+    PLATFORM_API_UPSTREAM: "",
+    NODE_API_PORTED: "GET /health",
+  });
+  assert.equal(code, 2, `expected exit 2, got ${code}. stderr:\n${stderr}`);
+  assert.match(stderr, /compatibility-only.*PLATFORM_API_UPSTREAM/);
+});
+
+test("the entry point refuses an unknown API route mode", async () => {
+  const { code, stderr } = await boot({ ...STRONG, NODE_API_ROUTE_MODE: "maybe-canary" });
+  assert.equal(code, 2, `expected exit 2, got ${code}. stderr:\n${stderr}`);
+  assert.match(stderr, /NODE_API_ROUTE_MODE must be explicit-compatibility or retained-canary/);
+});
+
+test("retained-canary refuses an ambiguous copied route list", async () => {
+  const { code, stderr } = await boot({
+    ...STRONG,
+    NODE_API_ROUTE_MODE: "retained-canary",
+    NODE_API_PORTED: "GET /health",
+  });
+  assert.equal(code, 2, `expected exit 2, got ${code}. stderr:\n${stderr}`);
+  assert.match(stderr, /NODE_API_PORTED must be empty/);
+});
+
 test("the entry point boots under the dev relaxation, as the harness relies on", async () => {
   // `tests/api-parity/lib/harness.mjs` BASE_ENV sets ALLOW_INSECURE_DEFAULTS=1 and a 15-character
   // JWT_SECRET. If this ever stopped being true, the whole parity suite would fail at startup with
@@ -134,3 +179,23 @@ test("the entry point boots under the dev relaxation, as the harness relies on",
   const res = await boot({ ALLOW_INSECURE_DEFAULTS: "1", JWT_SECRET: "test-jwt-secret" });
   assert.equal(res.stillRunning, true, `it exited (${res.code}):\n${res.stderr}`);
 });
+
+for (const value of ["6O", "0", "-1", "1.5"]) {
+  test(`the Node entry point refuses UPSTREAM_TIMEOUT_SECS=${JSON.stringify(value)}`, async () => {
+    const { code, stderr } = await boot({ ...STRONG, UPSTREAM_TIMEOUT_SECS: value });
+    assert.equal(code, 2, `expected exit 2, got ${code}. stderr:\n${stderr}`);
+    assert.match(stderr, /UPSTREAM_TIMEOUT_SECS/);
+  });
+}
+
+for (const [label, env] of [
+  ["zero trusted hops", { TRUST_PROXY_HEADERS: "1", TRUST_PROXY_HOPS: "0" }],
+  ["fractional trusted hops", { TRUST_PROXY_HEADERS: "true", TRUST_PROXY_HOPS: "1.5" }],
+  ["inert hop configuration", { TRUST_PROXY_HEADERS: "0", TRUST_PROXY_HOPS: "1" }],
+]) {
+  test(`the Node entry point refuses ${label}`, async () => {
+    const { code, stderr } = await boot({ ...STRONG, ...env });
+    assert.equal(code, 2, `expected exit 2, got ${code}. stderr:\n${stderr}`);
+    assert.match(stderr, /TRUST_PROXY_(?:HEADERS|HOPS)/);
+  });
+}

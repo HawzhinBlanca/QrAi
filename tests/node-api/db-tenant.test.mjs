@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test, { after, before } from "node:test";
 
-import { createDb } from "../../services/node-api/lib/db.mjs";
+import { createDb } from "../../server/src/lib/db.mjs";
 
 /**
  * N3 §2.2 — the highest-risk primitive in the whole port.
@@ -65,6 +65,44 @@ test("the tenant GUC is set INSIDE the transaction", async () => {
     return row.tenant;
   });
   assert.equal(inside, TENANT);
+});
+
+test("worker tenant discovery reads only the global registry and leaves no tenant context", async () => {
+  const tenantIds = await db.listTenantIds();
+  assert.ok(tenantIds.includes(TENANT));
+  assert.deepEqual([...tenantIds].sort(), tenantIds, "tenant polling order must be deterministic");
+  assert.ok(!(await db.currentTenantSetting()), "global tenant discovery installed a pooled tenant GUC");
+});
+
+test("a discovered tenant receives the same GUC and statement timeout before tenant work", async () => {
+  const result = await db.withDiscoveredTenant(
+    async (tx) => {
+      const [before] = await tx`SELECT current_setting('app.tenant_id', true) AS tenant`;
+      assert.ok(!before.tenant, "discovery unexpectedly inherited a tenant context");
+      return { tenantId: TENANT, evidence: "security-definer-result" };
+    },
+    async (tx, discovery) => {
+      const [inside] = await tx`
+        SELECT current_setting('app.tenant_id', true) AS tenant,
+               current_setting('statement_timeout') AS statement_timeout`;
+      return { ...inside, evidence: discovery.evidence };
+    },
+  );
+  assert.deepEqual(result, {
+    tenant: TENANT,
+    statement_timeout: "10s",
+    evidence: "security-definer-result",
+  });
+});
+
+test("a discovered empty tenant is refused and leaves no pooled context", async () => {
+  await assert.rejects(
+    () => db.withDiscoveredTenant(async () => ({ tenantId: "" }), async () => {}),
+    /tenant context must be a non-empty string/,
+  );
+  for (let i = 0; i < 20; i++) {
+    assert.ok(!(await db.currentTenantSetting()), "invalid discovery leaked a tenant context");
+  }
 });
 
 test("the GUC does NOT survive the transaction on a pooled connection", async () => {

@@ -9,7 +9,7 @@
  * `tests/api-parity/privacy-parity.test.mjs` drives platform-api against a MOCK ml-inference that
  * always reports keys deleted. It proves platform-api collects and audits what an upstream tells it.
  *
- * `services/ml-inference/privacy-erasure.test.mjs` drives ml-inference directly and proves the
+ * `tests/inference/privacy-erasure.test.mjs` drives ml-inference directly and proves the
  * recording genuinely leaves the disk.
  *
  * Neither runs one erasure request through both. That join is where this project keeps finding
@@ -39,7 +39,7 @@ import {
 } from "../api-parity/lib/harness.mjs";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
-const ML_ENTRY = join(root, "services/ml-inference/server.mjs");
+const ML_ENTRY = join(root, "tests/inference/lib/worker-compatibility-harness.mjs");
 const ML_KEY = "privacy-journey-ml-key";
 
 let ml;
@@ -98,8 +98,18 @@ after(async () => {
 });
 
 const audioFilesFor = (learnerId) => {
-  const dir = join(storageDir, TENANT, learnerId);
-  return existsSync(dir) ? readdirSync(dir).sort() : [];
+  const root = join(storageDir, "audio", "v1", TENANT, learnerId);
+  if (!existsSync(root)) return [];
+  const files = [];
+  const visit = (dir, relative = "") => {
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      const child = relative ? `${relative}/${entry.name}` : entry.name;
+      if (entry.isDirectory()) visit(join(dir, entry.name), child);
+      else if (entry.isFile()) files.push(child);
+    }
+  };
+  visit(root);
+  return files.sort();
 };
 
 /** Store one chunk the way the realtime gateway does — straight into the ML service. */
@@ -158,7 +168,7 @@ async function createSessionFor(learnerId) {
       learnerId,
       quranRef: { surahNumber: 1, ayahStart: 1, ayahEnd: 1, display: "Al-Fatihah 1:1" },
       sourceChecksum: "fnv1a32:privjourney",
-      modelVersion: "model-v0.3",
+
       language: "ckb",
       mode: "guided-recite",
       practicePlanId: "fatihah-mastery-v1",

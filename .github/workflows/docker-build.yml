@@ -6,16 +6,30 @@ on:
   pull_request:
     paths:
       - "services/*/Dockerfile"
+      - "services/node-api/**"
+      - "server/**"
       - "apps/web/Dockerfile"
-      - "docker-compose.yml"
+      - "apps/web/nginx*.conf"
+      - "apps/web/validate-api-upstream.sh"
+      - "package.json"
+      - "pnpm-lock.yaml"
+      - "pnpm-workspace.yaml"
+      - "docker-compose*.yml"
       - ".dockerignore"
       - ".github/workflows/docker-build.yml"
   push:
     branches: [main]
     paths:
       - "services/*/Dockerfile"
+      - "services/node-api/**"
+      - "server/**"
       - "apps/web/Dockerfile"
-      - "docker-compose.yml"
+      - "apps/web/nginx*.conf"
+      - "apps/web/validate-api-upstream.sh"
+      - "package.json"
+      - "pnpm-lock.yaml"
+      - "pnpm-workspace.yaml"
+      - "docker-compose*.yml"
       - ".dockerignore"
       - ".github/workflows/docker-build.yml"
 
@@ -30,6 +44,7 @@ jobs:
       ML_API_KEY: "ci-dummy-ml-key"
       ASR_API_KEY: "ci-dummy-asr-key"
       POSTGRES_PASSWORD: "ci-dummy-pg"
+      APP_DATABASE_PASSWORD: "ci-dummy-app-pg"
     steps:
       - uses: actions/checkout@v4
 
@@ -38,13 +53,13 @@ jobs:
       - name: docker compose build
         run: docker compose build
 
-      # Assert the four service images run as the non-root appuser (uid 10001), not root. Overrides the
-      # entrypoint to print the effective uid; --no-deps so it doesn't start Postgres/other services.
+      # Assert every deployable image runs as a non-root user. Overrides the entrypoint to print the
+      # effective uid; --no-deps so it doesn't start Postgres/other services.
       - name: Assert containers run as non-root
         run: |
           set -euo pipefail
           fail=0
-          for svc in platform-api realtime-gateway ml-inference asr-inference web; do
+          for svc in platform-api node-api realtime-gateway asr-inference web; do
             uid=$(docker compose run --rm --no-deps --entrypoint sh "$svc" -c 'id -u' | tr -d '\r')
             echo "$svc -> uid $uid"
             if [ "$uid" = "0" ] || [ -z "$uid" ]; then
@@ -53,3 +68,62 @@ jobs:
             fi
           done
           exit $fail
+
+      - name: Clean Node production image smoke
+        run: |
+          set -euo pipefail
+          docker compose run --rm --no-deps --entrypoint sh node-api -ceu '
+            test "$(id -u)" != "0"
+            test "$NODE_ENV" = "production"
+            test ! -e /app/tests
+            test ! -e /app/apps
+            test -f /app/packages/contracts/route-manifest.json
+            test ! -e /app/packages/contracts/openapi.yaml
+            test ! -e /app/packages/quran-data/package.json
+            test -f /app/packages/quran-data/src/data/full-quran/provenance-v2.json
+            test ! -e /app/services/platform-api
+            test ! -e /app/node_modules/typescript
+            node --input-type=module -e "await Promise.all([\"@fastify/cors\",\"fastify\",\"jose\",\"pg\",\"postgres\"].map((name) => import(name)))"
+          '
+
+      - name: Web upstream selector and rendered nginx config fail closed
+        run: |
+          set -euo pipefail
+          # `nginx -t` resolves literal upstream hostnames while parsing. `--no-deps` intentionally
+          # starts no API, so provide only the real Compose DNS alias through an inert one-off
+          # endpoint; otherwise a valid config fails merely because no network peer is registered.
+          platform_cid=$(docker compose run -d --no-deps --use-aliases \
+            --entrypoint sleep platform-api 120)
+          gateway_cid=$(docker compose run -d --no-deps --use-aliases \
+            --entrypoint sleep realtime-gateway 120)
+          trap 'docker rm --force "$platform_cid" "$gateway_cid" >/dev/null 2>&1 || true' EXIT
+          docker compose run --rm --no-deps web nginx -t
+          if docker compose run --rm --no-deps \
+            -e WEB_PLATFORM_API_UPSTREAM=http://node-api:8082 \
+            web nginx -t; then
+            echo "::error::web accepted an unapproved API upstream"
+            exit 1
+          fi
+
+      - name: Native Node image healthcheck reaches healthy
+        run: |
+          set -euo pipefail
+          cid=$(docker compose run -d --no-deps \
+            -e ALLOW_INSECURE_DEFAULTS=1 \
+            -e NODE_API_PORTED='GET /health' \
+            -e NODE_HEALTHCHECK_URL=http://127.0.0.1:8082/health \
+            -e PLATFORM_API_UPSTREAM=http://127.0.0.1:1 \
+            node-api)
+          trap 'docker rm --force "$cid" >/dev/null 2>&1 || true' EXIT
+          for attempt in $(seq 1 30); do
+            status=$(docker inspect --format '{{.State.Health.Status}}' "$cid")
+            if [ "$status" = "healthy" ]; then
+              exit 0
+            fi
+            if [ "$status" = "unhealthy" ]; then
+              break
+            fi
+            sleep 1
+          done
+          docker logs "$cid"
+          exit 1

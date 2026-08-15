@@ -34,7 +34,7 @@ Two additions, and the distinction is the point:
 | read | what breaks it | why that is correct |
 |---|---|---|
 | `services/node-api/server.mjs` | renaming `PORTABLE` | the served-route count must come from the code, not a note |
-| `specs/flutter-client/openapi.yaml` | schema edits | coverage must be counted, not remembered |
+| `packages/contracts/openapi.yaml` | schema edits | coverage must be counted, not remembered |
 | `docs/DECISIONS.md` | ADR-0022's status line moving | the accepted/proposed distinction is the whole check |
 | `specs/readiness-recovery-10-10/tasks.md` | P1.7/P4.1 row text changing | those rows ARE the gate |
 | `.github/workflows/` | an image build appearing | that is the rollback artifact, and its appearance should flip the verdict |

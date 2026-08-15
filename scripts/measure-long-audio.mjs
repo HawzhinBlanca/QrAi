@@ -16,7 +16,25 @@ const asr = createServer((req, res) => {
   req.on("data", (c) => (n += c.length));
   req.on("end", () => {
     res.writeHead(200, { "content-type": "application/json" });
-    res.end(JSON.stringify({ words: [{ word: "x" }], text: "x", bytesReceived: n }));
+    res.end(JSON.stringify({
+      words: [{ word: "x", start: 0.01, end: 0.02, probability: 1 }],
+      text: "x",
+      bytesReceived: n,
+      modelVersion: "declared-long-audio-fixture",
+      modelAttribution: {
+        schemaVersion: 1,
+        primaryComponent: "asr",
+        components: [{
+          component: "asr",
+          status: "active",
+          implementationId: "declared-long-audio-fixture",
+          artifactDigest: `sha256:${"a".repeat(64)}`,
+          datasetVersion: "declared-fixture",
+          analysisBasis: "acoustic",
+          calibratorId: null,
+        }],
+      },
+    }));
   });
 });
 await new Promise((r) => asr.listen(0, "127.0.0.1", r));
@@ -24,7 +42,7 @@ await new Promise((r) => asr.listen(0, "127.0.0.1", r));
 const storage = mkdtempSync(join(tmpdir(), "longaudio-"));
 process.env.AUDIO_STORAGE_DIR = storage;
 process.env.ASR_SERVICE_URL = `http://127.0.0.1:${asr.address().port}`;
-const { transcribeSession } = await import("../services/ml-inference/server.mjs");
+const { transcribeSession } = await import("../server/src/inference/runtime.mjs");
 
 const SAMPLE_RATE = 16000;
 const CHUNK_MS = 100;

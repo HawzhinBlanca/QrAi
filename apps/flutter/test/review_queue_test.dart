@@ -36,6 +36,7 @@ Map<String, Object?> stubFinding({
       if (audioStatus != null) 'audioStatus': audioStatus,
       'wordId': '1:1:1',
       'rule': rule,
+      'analysisBasis': 'acoustic',
       'severity': 'warning',
       'explanation': 'Model suggests the noon sakina was not nasalised.',
       'confidence': confidence,

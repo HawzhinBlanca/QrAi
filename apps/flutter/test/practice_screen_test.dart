@@ -44,6 +44,7 @@ Map<String, Object?> stubFinding({
     <String, Object?>{
       'wordId': '1:1:1',
       'rule': rule,
+      'analysisBasis': 'acoustic',
       'severity': 'practice',
       'explanation': 'Apply ghunnah on the noon sakina.',
       'reviewStatus': reviewStatus,
@@ -51,6 +52,28 @@ Map<String, Object?> stubFinding({
       'sources': <Map<String, Object?>>[
         <String, Object?>{'id': 's1', 'title': 'Tajweed rules', 'citation': 'Ch. 4'},
       ],
+      // Declared test evidence for the complete learner gate. This stub never claims to be model
+      // evaluation output; it only exercises computed-versus-stored practice-flow behavior.
+      'withheld': false,
+      'startMs': 120,
+      'endMs': 460,
+      'audioStatus': 'available',
+      'evidenceId': 'declared-practice-evidence-1',
+      'modelVersion': 'declared-practice-model-v1',
+      'modelArtifactSha256':
+          'sha256:1111111111111111111111111111111111111111111111111111111111111111',
+      'acousticDatasetVersion': 'declared-practice-dataset-v1',
+      'acousticDatasetManifestSha256':
+          'sha256:2222222222222222222222222222222222222222222222222222222222222222',
+      'calibratorId': 'declared-practice-calibrator-v1',
+      'calibratorArtifactSha256':
+          'sha256:3333333333333333333333333333333333333333333333333333333333333333',
+      'calibrationStatus': 'calibrated',
+      'evaluationEvidenceId': 'declared-practice-evaluation-v1',
+      'evaluationEvidenceSha256':
+          'sha256:4444444444444444444444444444444444444444444444444444444444444444',
+      'evaluationEvidenceStatus': 'release-trusted',
+      'auditEventId': 'declared-practice-audit-1',
     };
 
 /// The responses the flow needs, shared by the stub client and by tests that drive their own.
@@ -86,8 +109,8 @@ http.Response stubResponseFor(
   if (req.url.path == '/v1/ml/tajweed-findings:predict') {
     return http.Response(
       jsonEncode(<String, Object?>{
+        'annotations': <Object?>[],
         'findings': findings ?? <Map<String, Object?>>[stubFinding()],
-        'confidence': 0.9,
       }),
       200,
       headers: <String, String>{'content-type': 'application/json'},

@@ -8,55 +8,44 @@
 into citing things that were deleted. A review package whose claims cannot be checked is worse than
 none, because it reads as assurance.
 
-**Nothing described here is deployed.** `services/node-api/server.mjs` serves **0 of 42** routes in
-any default configuration (37 are portable; none is enabled). Run `node scripts/cutover-readiness.mjs`
-for the current state — and note that it, not this document, is the source. Every count below is
-asserted against that script by `tests/contract/boundary-references.test.mjs`, because the numbers
-here were hand-written and had drifted.
-
-The total moved TWICE on 2026-08-11, for different reasons, and a reviewer should know both. 38 → 40
-was drift: routes were added and this document was not updated. 40 → 42 was not drift — it was a
-BLIND SPOT. `GET /v1/tajweed-findings/{id}/audio` and `POST /v1/audio-chunks` have been registered
-since ADR-0037, and each puts an ADR note between `.route(` and its path, which the route parser's
-`\.route\(\s*"` could not cross. So the parser reported 40, the contract described those same 40,
-and the check comparing them agreed. Both routes are now contracted. Nothing about the SERVICE
-changed; what changed is that this package can now see two routes it was previously describing a
-world without.
+**Nothing described here is deployed as the public API.** Source-default standalone mode registers
+**41 executable routes**, including all 38 retained baseline operations. The current Compose shadow
+is explicitly compatibility-configured and serves **2 routes locally** (`/health`, `/ready`); Web
+and realtime still address Rust. Run `node scripts/cutover-readiness.mjs` for the current state.
 
 ---
 
 ## 1. What is actually new
 
-A second process — `services/node-api` — that would sit **in front of** the Rust `platform-api`.
+A package-owned process — `server/src/main.mjs` — with two explicit modes:
 
 ```
-client ──► node-api (Fastify) ──┬── a ported route  ──► Postgres
-                                └── everything else ──► platform-api (unchanged)
+standalone:    client ──► all executable Node routes ──► Postgres/workers
+compatibility: client ──┬── selected Node routes ─────► Postgres/workers
+                        └── unmatched routes ─────────► platform-api oracle/canary
 ```
 
 | addition | consequence for the boundary |
 |---|---|
 | a second process terminating client requests | one more place auth can be decided, and one more place it can be decided *wrongly* |
-| a proxy hop for every unported route | headers, cookies and bodies are copied by our code rather than passed by a kernel |
+| an explicit compatibility proxy | headers, cookies and bodies are copied by our code in parity/canary mode; standalone has no catch-all proxy |
 | a second Postgres client (`postgres`, porsager) | a second implementation of the tenant-isolation discipline (§3.1) |
-| 6 new runtime dependencies | fastify, @fastify/cors, postgres, zod, jose, ws — all inside `pnpm audit` |
-| `tests/node-api/*` + `services/node-api/*` | new code paths, none of them yet load-bearing |
+| 5 package runtime dependencies | fastify, @fastify/cors, postgres, pg, jose — all inside `pnpm audit` |
+| `tests/node-api/*` + `server/src/*` | package-owned code paths with standalone and compatibility proof; not yet the public traffic target |
 
 `services/platform-api` and `services/realtime-gateway` are **unchanged**. No production Rust was
 edited in Phases 7–9.
 
 ## 2. What it deliberately does NOT do
 
-**The pilot cookie path is delegated, not ported.** Any request carrying `__Host-qrai-pilot` is
-proxied to Rust untouched — `services/node-api/lib/authz.mjs`.
+**Pilot-cookie identity is local when Postgres is available.** Node performs the hash-only lookup,
+expiry checks, mutating-request Origin/CSRF checks, tenant-scoped idle roll, and learner-only role
+derivation in `server/src/lib/authz.mjs`. If the DB pool is unavailable, standalone fails closed
+with a generic 401. Delegation is compatibility-only and possible only when a Rust upstream was
+explicitly supplied.
 
-That is 306 lines of session lookup, idle-roll, CSRF digest and Origin allowlisting
-(`services/platform-api/src/handlers/pilot.rs`) that the Node service does not reimplement.
-Half-porting it is the regression this whole migration was structured to avoid, so it fails **safe**:
-the request goes to the implementation Phase 6 already proved.
-
-- Proven by: `tests/node-api/authz.test.mjs` — *"a pilot cookie DELEGATES rather than being
-  half-authenticated here"*.
+- Proven by: `tests/node-api/authz.test.mjs` and `tests/node-api/standalone.test.mjs` — including
+  DB-less compatibility delegation and the standalone no-fetch refusal.
 
 ## 3. The four security-critical primitives, and the evidence for each
 
@@ -69,7 +58,7 @@ released a client while still inside a transaction would return it to the pool *
 
 Phase 6 proved RLS fails **closed** on a *missing* context. It proved nothing about a *wrong* one.
 
-- Implementation: `services/node-api/lib/db.mjs` — `sql.begin()` binds the connection structurally;
+- Implementation: `server/src/lib/db.mjs` — `sql.begin()` binds the connection structurally;
   the caller never holds a handle to leak.
 - Proven by: `tests/node-api/db-tenant.test.mjs` — including a test that **demonstrates the
   fail-open** directly, and three that prove nothing leaks after a JS throw, after a server-side
@@ -79,7 +68,7 @@ Phase 6 proved RLS fails **closed** on a *missing* context. It proved nothing ab
 
 `undefined === undefined` is `true`. This is the only ownership check on 8 endpoints.
 
-- Implementation: `services/node-api/lib/authz.mjs` — refuses degenerate input **before** comparing.
+- Implementation: `server/src/lib/authz.mjs` — refuses degenerate input **before** comparing.
 - Proven by: `tests/node-api/authz.test.mjs` — 17 tests, most asserting refusal, including
   `undefined`, `null`, empty and whitespace-only pairs, a missing owner column, a malformed
   allowlist, a token missing a claim, and an `alg: none` token.
@@ -90,7 +79,7 @@ tower-http emits the literal `*`, which browsers refuse to combine with credenti
 what stops a cross-origin page sending the pilot cookie today. `@fastify/cors`'s `origin: true`
 **reflects** the request Origin, which *is* valid with credentials.
 
-- Implementation: `services/node-api/server.mjs` — literal `"*"`, never `true`; `credentials: true`
+- Implementation: `server/src/app.mjs` — literal `"*"`, never `true`; `credentials: true`
   refused at **boot**.
 - Proven by: `tests/node-api/shell.test.mjs` — asserts `access-control-allow-credentials` is absent
   from **every** response, and that configuring it throws.
@@ -148,7 +137,7 @@ the **unchanged** Rust gateway accepts.
 
 - Proven by: `specs/node-backend-port/evidence/n5-gateway-accepts-node-ticket.txt` — a live WebSocket
   handshake, plus rejection of a tampered signature and a swapped tenant.
-- Pinned by: `specs/node-backend-port/fixtures/ticket-vectors.json`, asserted in **both** languages.
+- Pinned by: `packages/contracts/fixtures/realtime/rt-v2-ticket-vectors.json`, asserted in **both** languages.
 
 **A reviewer should note how this was found.** The first Node implementation of this route was
 written before its coverage existed and was wrong four ways — it let **teacher and scholar mint a

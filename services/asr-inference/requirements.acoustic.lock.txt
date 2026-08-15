@@ -1,0 +1,26 @@
+# Optional Muaalem v3.2 shadow-candidate layer for the ASR runtime image.
+#
+# This is installed with --no-deps on top of requirements.lock.txt. Versions are the exact
+# Python 3.11 resolution from quran-muaalem's uv.lock at source commit
+# 2e444e040516781ecef72fe9bbc513bb34dedad4. Packages already fixed by the base ASR lock
+# (including torch, numpy, pydantic, requests, regex, and their shared dependencies) are not
+# duplicated here. The two project archives are immutable commits with verified archive hashes.
+attrs==25.4.0
+diff-match-patch==20241021
+fuzzysearch==0.8.1
+hf-xet==1.1.7
+huggingface-hub==0.34.4
+levenshtein==0.27.1
+markdown-it-py==4.0.0
+mdurl==0.1.2
+packaging==25.0
+pygments==2.19.2
+pyyaml==6.0.2
+rapidfuzz==3.13.0
+rich==14.1.0
+safetensors==0.6.2
+tokenizers==0.21.4
+transformers==4.55.2
+xmltodict==0.14.2
+quran-transcript @ https://codeload.github.com/obadx/quran-transcript/tar.gz/fb64a1a8b0d7f5c38ffe26de0c69cc4a2b840950#sha256=9f932f4193fec51601fe882d6cc013bcbf9d45c1beadcae8904ed6a3bca82718
+quran-muaalem @ https://codeload.github.com/obadx/quran-muaalem/tar.gz/2e444e040516781ecef72fe9bbc513bb34dedad4#sha256=564be24ba0f2b4ea7a3fde61ed8a73bd2b9451bac9f276a3153480de955bf978

@@ -381,8 +381,8 @@ mod tests {
     }
 }
 
-/// N1 — the Rust half of the cross-language ticket vectors.
-/// specs/node-backend-port/plan.md §5
+/// The Rust oracle for the language-neutral realtime ticket vectors.
+/// specs/lean-flutter-node-consolidation/W3.1-realtime-contract/plan.md
 ///
 /// The same file is asserted by `tests/node-api/ticket-vectors.test.mjs`. Both halves must agree,
 /// which is what lets a Node `platform-api` mint tickets the UNCHANGED Rust gateway accepts — so the
@@ -399,7 +399,7 @@ mod ticket_vectors {
         // CARGO_MANIFEST_DIR keeps this working regardless of the caller's cwd.
         let path = concat!(
             env!("CARGO_MANIFEST_DIR"),
-            "/../../specs/node-backend-port/fixtures/ticket-vectors.json"
+            "/../../packages/contracts/fixtures/realtime/rt-v2-ticket-vectors.json"
         );
         let raw = std::fs::read_to_string(path)
             .unwrap_or_else(|e| panic!("cannot read ticket vectors at {path}: {e}"));
@@ -475,7 +475,7 @@ mod ticket_vectors {
                 .collect();
         assert_eq!(
             covered, expected,
-            "the vector set must exercise every value infra/sql/0001_core_schema.sql permits"
+            "the vector set must exercise every value infra/migrations/0001_core_schema.sql permits"
         );
     }
 
@@ -485,13 +485,18 @@ mod ticket_vectors {
         // while both suites still report green.
         let raw = std::fs::read_to_string(concat!(
             env!("CARGO_MANIFEST_DIR"),
-            "/../../specs/node-backend-port/fixtures/ticket-vectors.json"
+            "/../../packages/contracts/fixtures/realtime/rt-v2-ticket-vectors.json"
         ))
         .unwrap();
         let doc: serde_json::Value = serde_json::from_str(&raw).unwrap();
         assert_eq!(
             doc["vectorCount"].as_u64().unwrap() as usize,
             doc["vectors"].as_array().unwrap().len()
+        );
+        assert_eq!(
+            doc["vectors"].as_array().unwrap().len(),
+            6,
+            "the Rust oracle commits exactly six divergence vectors"
         );
     }
 }

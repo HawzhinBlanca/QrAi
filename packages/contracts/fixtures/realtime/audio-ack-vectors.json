@@ -1,0 +1,43 @@
+{
+  "$comment": "Language-neutral audio.ack vectors generated only by the Rust realtime gateway oracle. message is diagnostic prose; consumers branch only on kind and accepted. Regenerate with services/realtime-gateway/tests/regenerate_ack_vectors.rs; never hand-author values as runtime or model evidence.",
+  "ackKind": "audio.ack",
+  "vectorCount": 3,
+  "vectors": [
+    {
+      "name": "accepted-with-trace",
+      "ack": {
+        "kind": "audio.ack",
+        "session_id": "session-1",
+        "chunk_id": "session-1-ws-0000",
+        "sequence": 0,
+        "accepted": true,
+        "trace_id": "trace-abc",
+        "message": "accepted"
+      }
+    },
+    {
+      "name": "backpressure-without-trace",
+      "ack": {
+        "kind": "audio.ack",
+        "session_id": "session-2",
+        "chunk_id": "session-2-ws-0007",
+        "sequence": 7,
+        "accepted": false,
+        "trace_id": null,
+        "message": "audio channel is applying backpressure for session: session-2"
+      }
+    },
+    {
+      "name": "session-start-refusal",
+      "ack": {
+        "kind": "audio.ack",
+        "session_id": "session-3",
+        "chunk_id": "session-start",
+        "sequence": 0,
+        "accepted": false,
+        "trace_id": "trace-start",
+        "message": "recitation session already exists: session-3"
+      }
+    }
+  ]
+}

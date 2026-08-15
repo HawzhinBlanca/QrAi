@@ -73,7 +73,7 @@ class _FindingTile extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final ThemeData theme = Theme.of(context);
-    // wordId+rule, not an id: findings arrive without one (services/ml-inference/tajweed.js).
+    // wordId+rule, not an id: live producer findings can arrive before persistence assigns one.
     final String key = '${finding.wordId}-${finding.rule}';
     return ListTile(
       key: ValueKey<String>('finding-$key'),

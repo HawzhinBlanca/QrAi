@@ -24,7 +24,6 @@ import 'streaming_recorder.dart';
 
 /// Mirrors `apps/web/src/lib/api.ts:210` so a session reads the same wherever it was created.
 const String _sourceChecksum = 'tanzil:uthmani:v1';
-const String _modelVersion = 'model-v0.3';
 const String _mode = 'guided-recite';
 
 class PracticeScreen extends StatefulWidget {
@@ -135,7 +134,6 @@ class _PracticeScreenState extends State<PracticeScreen> {
           display: 'Surah $_surah $_ayahStart-$_ayahEnd',
         ),
         sourceChecksum: _sourceChecksum,
-        modelVersion: _modelVersion,
         language: 'ar',
         mode: _mode,
         consent: consent,

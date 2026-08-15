@@ -1,0 +1,55 @@
+{
+  "schemaVersion": 1,
+  "selection": {
+    "status": "blocked-no-eligible-benchmark",
+    "selectedCandidateId": null,
+    "evidenceDigest": null,
+    "blockerCodes": [
+      "evaluation-protocol-approvals-missing",
+      "consented-sealed-kurdish-held-out-corpus-missing",
+      "candidate-license-reviews-pending",
+      "candidate-bound-measured-evidence-missing"
+    ]
+  },
+  "candidates": [
+    {
+      "id": "openai-whisper-base",
+      "role": "generic-baseline",
+      "executionStatus": "runnable",
+      "runtime": "openai-whisper",
+      "modelId": "base",
+      "revision": null,
+      "artifactFile": "base.pt",
+      "artifactDigest": "sha256:ed3a0b6b1c0edf879ad9b11b1af5a0e6ab5db9205f891f668f8b0e6c6326e34e",
+      "artifactDigestBasis": "verified-upstream-download-url",
+      "upstreamUrl": "https://openaipublic.azureedge.net/main/whisper/models/ed3a0b6b1c0edf879ad9b11b1af5a0e6ab5db9205f891f668f8b0e6c6326e34e/base.pt",
+      "trainingDataDisclosure": "aggregate-only-upstream",
+      "licenseSpdx": "MIT",
+      "licenseReviewStatus": "pending-independent-review",
+      "benchmarkEligibility": "candidate",
+      "outputCapabilities": [
+        "transcript",
+        "word-timestamps"
+      ]
+    },
+    {
+      "id": "tarteel-whisper-base-ar-quran",
+      "role": "quran-transcript-candidate",
+      "executionStatus": "packaging-required",
+      "runtime": "huggingface-transformers",
+      "modelId": "tarteel-ai/whisper-base-ar-quran",
+      "revision": "e3f4a5f3f5336a1f0e43a2c2bdae62a680c53a8c",
+      "artifactFile": "pytorch_model.bin",
+      "artifactDigest": "sha256:ec75894993a4570a237b2b1c19fd8a448f1e8f6e083cfab699574f7be53874fa",
+      "artifactDigestBasis": "upstream-lfs-sha256-at-immutable-commit",
+      "upstreamUrl": "https://huggingface.co/tarteel-ai/whisper-base-ar-quran/tree/e3f4a5f3f5336a1f0e43a2c2bdae62a680c53a8c",
+      "trainingDataDisclosure": "not-disclosed-in-model-card",
+      "licenseSpdx": "Apache-2.0",
+      "licenseReviewStatus": "pending-independent-review",
+      "benchmarkEligibility": "candidate",
+      "outputCapabilities": [
+        "transcript"
+      ]
+    }
+  ]
+}

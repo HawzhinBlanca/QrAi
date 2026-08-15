@@ -1,51 +1,91 @@
-# Prometheus alert rules for QrAi platform-api (P5.5), mapped to the proposed SLOs in
-# docs/readiness/OPERATIONS.md. Thresholds are engineering proposals — the owner/SRE ratify them
-# (P5.1) and SRE signs the live validation (P5.7). Metrics come from services/platform-api/src/metrics.rs:
-#   http_requests_total{method,path,status}   (counter)
-#   http_request_duration_ms_bucket{le} + _sum + _count   (GLOBAL histogram — not per-path)
+# W2.18 canary stop alerts. Labels are closed process/route/state vocabularies only.
+# Active privacy, isolation, chunk-integrity, and feedback-withholding probes feed the controller;
+# they never become high-cardinality Prometheus labels.
 groups:
-  - name: qrai-platform-api
+  - name: qrai-http-canary
     rules:
-      - alert: PlatformApiDown
+      - alert: NodeCanaryDown
+        expr: up{job="node-api"} == 0
+        for: 1m
+        labels: { severity: page, action: stop-canary }
+        annotations:
+          summary: "Node canary is unreachable"
+          runbook: "docs/STAGING_RUNBOOK.md — immutable HTTP canary and reversal"
+
+      - alert: JobWorkerDown
+        expr: up{job="job-worker"} == 0
+        for: 1m
+        labels: { severity: page, action: stop-canary }
+        annotations:
+          summary: "Candidate durable worker is unreachable"
+
+      - alert: NodeRealtimeShadowUnready
+        expr: up{job="node-realtime"} == 0 or realtime_process_ready{job="node-realtime"} == 0
+        for: 1m
+        labels: { severity: warning, action: investigate }
+        annotations:
+          summary: "Node realtime shadow process is unreachable or unready"
+
+      - alert: RustOracleDown
         expr: up{job="platform-api"} == 0
-        for: 2m
-        labels: { severity: page }
+        for: 1m
+        labels: { severity: page, action: stop-canary }
         annotations:
-          summary: "platform-api is unreachable by Prometheus"
-          runbook: "docs/STAGING_RUNBOOK.md — check container health / DB; consider kill-switch + rollback"
+          summary: "Rust compatibility and reversal oracle is unreachable"
 
-      - alert: HighErrorRate
-        # 5xx rate over 1% of traffic = error-budget burn (SLO: 99% success/day).
+      - alert: NodeCanaryHighErrorRate
         expr: |
-          sum(rate(http_requests_total{status=~"5.."}[5m]))
-            / clamp_min(sum(rate(http_requests_total[5m])), 1) > 0.01
+          sum(rate(http_requests_total{job="node-api",status=~"5.."}[5m]))
+            / clamp_min(sum(rate(http_requests_total{job="node-api"}[5m])), 1) > 0.01
         for: 5m
-        labels: { severity: page }
+        labels: { severity: page, action: stop-canary }
         annotations:
-          summary: "5xx error rate > 1% for 5m (error-budget burn)"
+          summary: "Node canary 5xx rate exceeds 1%"
 
-      - alert: HighAuthFailureRate
-        # Sustained 401s can indicate spoofing / brute-force / a broken deploy (ALLOW_HEADER_AUTH).
-        expr: sum(rate(http_requests_total{status="401"}[5m])) > 5
-        for: 10m
-        labels: { severity: ticket }
-        annotations:
-          summary: "Elevated 401 rate — investigate spoofing/brute-force or a misconfigured auth flag"
-
-      - alert: HighLatencyP95
-        # Global p95 (the histogram is not path-labelled). SLO proposal: p95 < 500ms for light routes;
-        # analysis routes are slower, so treat this as a global smell, not a hard per-route SLO.
+      - alert: NodeCanaryHighLatency
         expr: |
-          histogram_quantile(0.95, sum(rate(http_request_duration_ms_bucket[5m])) by (le)) > 1000
-        for: 10m
-        labels: { severity: ticket }
+          histogram_quantile(
+            0.95,
+            sum(rate(http_request_duration_ms_bucket{job="node-api"}[5m])) by (le)
+          ) > 1000
+        for: 5m
+        labels: { severity: page, action: stop-canary }
         annotations:
-          summary: "Global p95 request latency > 1000ms for 10m"
+          summary: "Node canary global p95 exceeds 1000ms"
 
-      - alert: NoTrafficReceived
-        # A live pilot should see requests; prolonged silence often means the web can't reach the API.
-        expr: sum(rate(http_requests_total[10m])) == 0
-        for: 15m
-        labels: { severity: ticket }
+      - alert: NodeCanaryFallbackShare
+        expr: |
+          sum(rate(http_requests_total{job="node-api",path="<unmatched>"}[5m]))
+            / clamp_min(sum(rate(http_requests_total{job="node-api"}[5m])), 1) > 0.05
+        for: 5m
+        labels: { severity: page, action: stop-canary }
         annotations:
-          summary: "No requests to platform-api for 15m — check the web→API path / DNS / TLS"
+          summary: "Rust compatibility fallback exceeds 5% of Node canary traffic"
+
+      - alert: DurableJobBacklog
+        expr: job_state{job="job-worker",status="queued"} > 100
+        for: 5m
+        labels: { severity: page, action: stop-canary }
+        annotations:
+          summary: "Candidate durable-job backlog exceeds 100"
+
+      - alert: DurableJobRetries
+        expr: job_state{job="job-worker",status="retry"} > 10
+        for: 5m
+        labels: { severity: page, action: stop-canary }
+        annotations:
+          summary: "Candidate durable-job retries exceed 10"
+
+      - alert: DurableJobDeadLetter
+        expr: job_state{job="job-worker",status="dead"} > 0
+        for: 0m
+        labels: { severity: page, action: stop-canary }
+        annotations:
+          summary: "Candidate produced a durable dead letter"
+
+      - alert: StoredAudioUnindexed
+        expr: realtime_gateway_chunks_stored_unindexed_total{job="realtime-gateway"} > 0
+        for: 0m
+        labels: { severity: page, action: stop-canary }
+        annotations:
+          summary: "Gateway stored audio that is not durably indexed"

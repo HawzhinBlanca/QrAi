@@ -23,7 +23,7 @@ import { fileURLToPath } from "node:url";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const root = join(here, "..", "..");
-const server = readFileSync(join(root, "services/node-api/server.mjs"), "utf8");
+const server = readFileSync(join(root, "server/src/app.mjs"), "utf8");
 
 test("both NUL SQLSTATEs are translated, not just the text-column one", () => {
   // 22021 is `text`; 22P05 is `jsonb`. The Rust original shipped with only 22021 and POST
@@ -69,17 +69,15 @@ test("the 400 does not forward the database's own error text", () => {
   );
 });
 
-test("the gate reads the ported route list from PORTABLE instead of a copy", () => {
-  // The whole point of widening the run. A hardcoded list in verify.sh is a second place to
-  // remember, and the forgotten one is always the gate: a route added to PORTABLE would be servable
-  // in production with nothing comparing it to the Rust original.
+test("the gate imports the executable route registry instead of parsing or copying keys", () => {
   const verify = readFileSync(join(root, "scripts/verify.sh"), "utf8");
   const line = verify
     .split("\n")
     .find((l) => l.includes("PARITY_THROUGH_SHELL=1") && l.includes("NODE_API_PORTED"));
   assert.ok(line, "verify.sh no longer runs the parity suite through the Node port at all");
-  assert.ok(
-    /PORTABLE/.test(verify.slice(verify.indexOf(line), verify.indexOf(line) + 900)),
-    "NODE_API_PORTED is being built from something other than PORTABLE, so the two can drift",
-  );
+  const derivation = verify.slice(verify.indexOf(line), verify.indexOf(line) + 700);
+  assert.match(derivation, /routes\/index\.mjs/);
+  assert.match(derivation, /ROUTES/);
+  assert.match(derivation, /ownerGate === undefined/);
+  assert.doesNotMatch(derivation, /readFileSync|matchAll|PORTABLE/);
 });

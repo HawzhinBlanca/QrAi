@@ -517,7 +517,7 @@ fn metrics_access_allowed(state: &AppState, headers: &axum::http::HeaderMap) -> 
 ///
 /// In dev the connection role is a superuser (RLS bypassed), so this is a no-op there and
 /// behavior is unchanged; in production (a restricted, non-superuser role) it activates the
-/// policies defined in infra/sql/0003 + 0009.
+/// policies defined in infra/migrations/0003 + 0009.
 pub async fn begin_tenant_tx<'a>(
     pool: &'a PgPool,
     tenant_id: &str,

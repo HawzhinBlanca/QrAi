@@ -19,7 +19,7 @@ import {
  * The erasure receipt must name what the erasure actually destroyed.
  *
  * `privacy_jobs.deleted_records` is the record that the request was honoured — `privacy.rs:56` calls
- * it "the authoritative audit trail that the audio was in fact deleted", and ADR-0045 leans on it as
+ * it "the authoritative audit trail that the audio was in fact deleted", and ADR-0061 leans on it as
  * the reason the receipt itself is retained after an erasure.
  *
  * It was built from five tables while the cascade deletes from twelve, because `deleted_ids` is a
@@ -243,7 +243,7 @@ test("the receipt names every row the erasure destroyed", async () => {
   const listed = JSON.stringify(receipt.deletedRecords ?? []);
 
   const missing = Object.entries(ids)
-    .filter(([category]) => category !== "audit") // deliberately retained; ADR-0045
+    .filter(([category]) => category !== "audit") // deliberately retained; ADR-0061
     .filter(([, id]) => !listed.includes(id))
     .map(([category, id]) => `${category} (${id})`);
 

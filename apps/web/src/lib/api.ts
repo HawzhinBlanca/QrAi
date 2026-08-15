@@ -2,7 +2,7 @@
  * Platform API client — talks to the real Postgres-backed Rust API.
  */
 
-import type { ReviewStatus, SourceReference } from "@quran-ai/contracts";
+import type { AcousticLearnerEvidence, ReviewStatus, SourceReference } from "@quran-ai/contracts";
 
 import { fetchWithTimeout } from "./http";
 import { getPilotCsrf, isPilotMode, setPilotIdentity, type PilotIdentity } from "./pilotSession";
@@ -191,17 +191,21 @@ export interface AlignmentResult {
   confidence: number;
 }
 
-export interface TajweedFinding {
+export interface TajweedFinding extends AcousticLearnerEvidence {
   wordId: string;
   rule: string;
+  analysisBasis: "acoustic";
   arabicName: string;
   category: string;
   severity: "practice" | "warning" | "critical";
   explanation: string;
   confidence: number;
-  /** Review state of this finding — "ai-suggested" for live practice output (not yet human-reviewed). */
+  /** Review state of this finding — live predictions are never human-approved. */
   reviewStatus: ReviewStatus;
   sources: SourceReference[];
+  evidenceId: string;
+  modelVersion: string;
+  auditEventId: string;
 }
 
 export interface RecitationConsent {
@@ -546,23 +550,12 @@ export async function predictTajweed(params: {
   surahNumber: number;
   ayahStart: number;
   ayahEnd: number;
-}): Promise<{ findings: TajweedFinding[]; confidence: number }> {
+}): Promise<{ findings: TajweedFinding[] }> {
   if (typeof window !== "undefined" && new URLSearchParams(window.location.search).has("smoke")) {
     return Promise.resolve({
-      findings: [
-        {
-          wordId: "1:1:1",
-          rule: "Ghunnah",
-          arabicName: "غنة",
-          category: "ghunnah",
-          severity: "warning",
-          explanation: "Ghunnah on Mushaddad",
-          confidence: 0.85,
-          reviewStatus: "teacher-review-required",
-          sources: []
-        }
-      ],
-      confidence: 0.85
+      // The deterministic analyser emits instructional annotations, not invented acoustic
+      // performance findings. The smoke path must preserve that same semantic boundary.
+      findings: []
     });
   }
   const response = await fetchWithTimeout(`${API_BASE}/v1/ml/tajweed-findings:predict`, {
@@ -585,4 +578,3 @@ export async function predictTajweed(params: {
   if (!response.ok) throw new Error(`ML tajweed ${response.status}`);
   return response.json();
 }
-

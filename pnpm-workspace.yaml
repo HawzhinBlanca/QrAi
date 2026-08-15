@@ -1,6 +1,7 @@
 packages:
   - apps/web
   - packages/*
+  - server
 
 minimumReleaseAgeExclude:
   - '@vitejs/plugin-react@6.0.3'

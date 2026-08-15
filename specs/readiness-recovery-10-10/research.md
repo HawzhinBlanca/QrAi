@@ -64,7 +64,7 @@ prior commit qualifies as proof by itself.
   `TopBar.tsx`, language metadata and all learner/teacher surfaces.
 - Domain and data: `packages/contracts`, `packages/quran-data`, platform API
   handlers/integration tests, inference services, scholar/source artifacts,
-  and `infra/sql/0003_tenant_rls.sql`.
+  and `infra/migrations/0003_tenant_rls.sql`.
 - Operations: Dockerfiles/compose, deployment/IaC, observability, backups,
   incident runbooks, security workflows, mobile builds, and pilot operations.
 

@@ -12,9 +12,9 @@ This research maps out the required code and configuration updates to address th
 
 ### C-2: `eval_runs` RLS Tenant Leakage
 - **Target Files:**
-  - [infra/sql/0001_core_schema.sql](file:///Users/hawzhin/QrAi/infra/sql/0001_core_schema.sql#L193) (add `tenant_id text not null references institutions(id)`)
-  - [infra/sql/0003_tenant_rls.sql](file:///Users/hawzhin/QrAi/infra/sql/0003_tenant_rls.sql) (enable RLS, force RLS, add `tenant_isolation_eval_runs` policy)
-  - [infra/sql/0006_seed_internal.sql](file:///Users/hawzhin/QrAi/infra/sql/0006_seed_internal.sql) (update seed statement with `tenant_id` and add `eval_runs` seed)
+  - [infra/migrations/0001_core_schema.sql](file:///Users/hawzhin/QrAi/infra/migrations/0001_core_schema.sql#L193) (add `tenant_id text not null references institutions(id)`)
+  - [infra/migrations/0003_tenant_rls.sql](file:///Users/hawzhin/QrAi/infra/migrations/0003_tenant_rls.sql) (enable RLS, force RLS, add `tenant_isolation_eval_runs` policy)
+  - [infra/migrations/0006_seed_internal.sql](file:///Users/hawzhin/QrAi/infra/migrations/0006_seed_internal.sql) (update seed statement with `tenant_id` and add `eval_runs` seed)
   - [scripts/smoke-sql.mjs](file:///Users/hawzhin/QrAi/scripts/smoke-sql.mjs) (add `"eval_runs"` to `tenantTables` and add inserts/assertions)
   - [platform-api/src/handlers/eval.rs](file:///Users/hawzhin/QrAi/services/platform-api/src/handlers/eval.rs) (update `get_eval_run` to use `begin_tenant_tx`)
 

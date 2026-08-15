@@ -1,7 +1,10 @@
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { spawn } from "node:child_process";
+
+/** @typedef {{ status: "failed", error: string } | { status: "passed", tenantTablesChecked: number, mode: string, stdout: string[] }} LiveRunResult */
+/** @typedef {LiveRunResult | { status: "pending" | "skipped", reason?: string }} LiveStatus */
+/** @typedef {{ code: number | null, stdout: string, stderr: string }} CommandResult */
 
 const tenantTables = [
   "users",
@@ -14,6 +17,8 @@ const tenantTables = [
   "scholar_approvals",
   "agent_runs",
   "realtime_session_tickets",
+  "realtime_ticket_replay_claims",
+  "realtime_audio_chunk_outcomes",
   "alignment_runs",
   "learner_progress",
   "privacy_jobs",
@@ -21,24 +26,36 @@ const tenantTables = [
   "eval_runs",
   "pilot_invitations",
   "pilot_sessions",
+  "background_jobs",
+  "device_enrollment_invitations",
+  "device_sessions",
 ];
 
 const coreSchemaPaths = [
-  join("infra", "sql", "0001_core_schema.sql"),
-  join("infra", "sql", "0005_learner_progress.sql"),
-  join("infra", "sql", "0018_agent_run_learner_id.sql"),
-  join("infra", "sql", "0021_pilot_identity.sql"),
+  join("infra", "migrations", "0001_core_schema.sql"),
+  join("infra", "migrations", "0005_learner_progress.sql"),
+  join("infra", "migrations", "0018_agent_run_learner_id.sql"),
+  join("infra", "migrations", "0021_pilot_identity.sql"),
+  join("infra", "migrations", "0034_background_jobs.sql"),
+  join("infra", "migrations", "0035_device_identity.sql"),
+  join("infra", "migrations", "0036_realtime_ticket_replay.sql"),
+  join("infra", "migrations", "0037_realtime_audio_chunk_outcomes.sql"),
+  join("infra", "migrations", "0038_realtime_recovery_report.sql"),
 ];
-const sessionMigrationPath = join("infra", "sql", "0008_session_language.sql");
+const sessionMigrationPath = join("infra", "migrations", "0008_session_language.sql");
 const reviewStatusMigrationPaths = [
-  join("infra", "sql", "0010_review_status_check.sql"),
-  join("infra", "sql", "0011_teacher_review_required_status.sql"),
+  join("infra", "migrations", "0010_review_status_check.sql"),
+  join("infra", "migrations", "0011_teacher_review_required_status.sql"),
 ];
 const rlsPaths = [
-  join("infra", "sql", "0003_tenant_rls.sql"),
-  join("infra", "sql", "0009_learner_progress_rls.sql"),
-  join("infra", "sql", "0012_superuser_only_rls_bypass.sql"),
-  join("infra", "sql", "0021_pilot_identity.sql"),
+  join("infra", "migrations", "0003_tenant_rls.sql"),
+  join("infra", "migrations", "0009_learner_progress_rls.sql"),
+  join("infra", "migrations", "0012_superuser_only_rls_bypass.sql"),
+  join("infra", "migrations", "0021_pilot_identity.sql"),
+  join("infra", "migrations", "0034_background_jobs.sql"),
+  join("infra", "migrations", "0035_device_identity.sql"),
+  join("infra", "migrations", "0036_realtime_ticket_replay.sql"),
+  join("infra", "migrations", "0037_realtime_audio_chunk_outcomes.sql"),
 ];
 const coreSchemaRaw = (await Promise.all(coreSchemaPaths.map((path) => readFile(path, "utf8")))).join("\n");
 const sessionMigrationRaw = await readFile(sessionMigrationPath, "utf8");
@@ -47,11 +64,12 @@ const rlsSchemaRaw = (await Promise.all(rlsPaths.map((path) => readFile(path, "u
 const coreSchema = normalizeSql(coreSchemaRaw);
 const reviewStatusSchema = normalizeSql(reviewStatusMigrationRaw);
 const rlsSchema = normalizeSql(rlsSchemaRaw);
-const pilotIdentitySchema = normalizeSql(await readFile(join("infra", "sql", "0021_pilot_identity.sql"), "utf8"));
+const pilotIdentitySchema = normalizeSql(await readFile(join("infra", "migrations", "0021_pilot_identity.sql"), "utf8"));
+const deviceIdentitySchema = normalizeSql(await readFile(join("infra", "migrations", "0035_device_identity.sql"), "utf8"));
 const postgresUrl = process.env.POSTGRES_RLS_SMOKE_URL ?? process.env.DATABASE_URL;
 const requireLive = process.env.SQL_SMOKE_REQUIRE_LIVE === "true";
 
-const failures = [];
+const failures = /** @type {string[]} */ ([]);
 
 for (const table of tenantTables) {
   assertRegex(
@@ -110,18 +128,41 @@ assertIncludes(
 if (pilotIdentitySchema.includes("drop table") || pilotIdentitySchema.includes("drop function")) {
   failures.push("0021_pilot_identity.sql must not contain destructive drops");
 }
+assertRegex(
+  deviceIdentitySchema,
+  /set search_path = public, pg_temp[\s\S]*set search_path = public, pg_temp[\s\S]*set search_path = public, pg_temp/,
+  "all device identity definer functions must pin search_path = public, pg_temp",
+);
+for (const signature of [
+  "app.consume_device_enrollment_invitation_by_hash(text)",
+  "app.get_device_session_by_access_hash(text)",
+  "app.get_device_session_by_refresh_hash(text)",
+]) {
+  assertIncludes(
+    deviceIdentitySchema,
+    `revoke execute on function ${signature} from public;`,
+    `${signature} must revoke PUBLIC execute`,
+  );
+}
+if (deviceIdentitySchema.includes("drop table") || deviceIdentitySchema.includes("drop function")) {
+  failures.push("0035_device_identity.sql must not contain destructive drops");
+}
 assertIncludes(
   reviewStatusSchema,
   "teacher-review-required",
   "review status constraint must allow teacher-review-required",
 );
 
-let live = { status: postgresUrl ? "pending" : "skipped", reason: postgresUrl ? undefined : "POSTGRES_RLS_SMOKE_URL or DATABASE_URL not set" };
+let live = /** @type {LiveStatus} */ ({
+  status: "skipped",
+  reason: "POSTGRES_RLS_SMOKE_URL or DATABASE_URL not set",
+});
 
 if (postgresUrl) {
-  live = await runLivePostgresSmoke(postgresUrl);
-  if (live.status !== "passed") {
-    failures.push(`live Postgres RLS smoke failed: ${live.error}`);
+  const liveResult = await runLivePostgresSmoke(postgresUrl);
+  live = liveResult;
+  if (liveResult.status === "failed") {
+    failures.push(`live Postgres RLS smoke failed: ${liveResult.error}`);
   }
 } else if (requireLive) {
   failures.push("live Postgres RLS smoke is required but POSTGRES_RLS_SMOKE_URL/DATABASE_URL is not set");
@@ -140,26 +181,32 @@ if (failures.length > 0) {
   );
 }
 
+/** @param {string} sql */
 function normalizeSql(sql) {
   return sql.replace(/\s+/g, " ").trim().toLowerCase();
 }
 
+/** @param {string} haystack @param {string} needle @param {string} message */
 function assertIncludes(haystack, needle, message) {
   if (!haystack.includes(needle.toLowerCase())) {
     failures.push(message);
   }
 }
 
+/** @param {string} haystack @param {RegExp} regex @param {string} message */
 function assertRegex(haystack, regex, message) {
   if (!regex.test(haystack)) {
     failures.push(message);
   }
 }
 
+/** @param {string} databaseUrl @returns {Promise<LiveRunResult>} */
 async function runLivePostgresSmoke(databaseUrl) {
   try {
     const sqlContent = buildLiveSmokeSql();
-    const result = await run("psql", ["--set", "ON_ERROR_STOP=1", "--dbname", databaseUrl], sqlContent);
+    const result = /** @type {CommandResult} */ (
+      await run("psql", ["--set", "ON_ERROR_STOP=1", "--dbname", databaseUrl], sqlContent)
+    );
     if (result.code !== 0) {
       return {
         status: "failed",
@@ -191,6 +238,8 @@ function buildLiveSmokeSql() {
     scholar_approvals: 1,
     agent_runs: 1,
     realtime_session_tickets: 1,
+    realtime_ticket_replay_claims: 1,
+    realtime_audio_chunk_outcomes: 1,
     alignment_runs: 1,
     learner_progress: 1,
     privacy_jobs: 1,
@@ -198,6 +247,9 @@ function buildLiveSmokeSql() {
     eval_runs: 1,
     pilot_invitations: 1,
     pilot_sessions: 1,
+    background_jobs: 1,
+    device_enrollment_invitations: 1,
+    device_sessions: 1,
   };
 
   const requiredVisibleChecks = tenantTables
@@ -223,18 +275,9 @@ end $$;`,
     )
     .join("\n");
 
-  // Wrap schema creation with IF NOT EXISTS to handle pre-existing tables and indexes
-  const coreSchemaSafe = coreSchemaRaw
-    .replace(/^create table (?!if not exists )/gim, "create table if not exists ")
-    .replace(/^create index (?!if not exists )/gim, "create index if not exists ");
-  const sessionMigrationSafe = sessionMigrationRaw;
-  const reviewStatusMigrationSafe = reviewStatusMigrationRaw;
-  // Drop existing policies before recreating to avoid duplicate policy errors
-  const dropPolicies = tenantTables
-    .map((t) => `drop policy if exists tenant_isolation_${t} on ${t};`)
-    .join("\n");
-  // Make the non-superuser RLS test role self-contained: ensure it exists and is granted
-  // every tenant table (learner_progress was added after the role was first bootstrapped).
+  // The live smoke never replays schema SQL. A migrated database is a precondition, and
+  // missing/drifted objects must fail rather than being repaired inside a rolled-back test.
+  // The temporary non-login role exists only to prove RLS as a non-superuser.
   const grantRlsRole = `do $$ begin
   if not exists (select 1 from pg_roles where rolname = 'quran_ai_rls_test') then
     create role quran_ai_rls_test nologin;
@@ -242,39 +285,10 @@ end $$;`,
 end $$;
 grant usage on schema public to quran_ai_rls_test;
 ${tenantTables.map((t) => `grant select, insert, update, delete on ${t} to quran_ai_rls_test;`).join("\n")}`;
-  const rlsSchemaSafe = rlsSchemaRaw;
 
   return `
 begin;
 set local app.bypass_rls = 'on';
-
-	${coreSchemaSafe}
-	${sessionMigrationSafe}
-	${reviewStatusMigrationSafe}
-	${dropPolicies}
-	${rlsSchemaSafe}
-
-	-- Clean up ALL existing data from all tables (transaction will roll back)
-	-- This is necessary because API smoke tests create records that block FK deletes
-	delete from learner_progress;
-	delete from privacy_jobs;
-delete from agent_runs;
-delete from scholar_approvals;
-delete from teacher_reviews;
-delete from tajweed_findings;
-delete from alignment_runs;
-delete from word_alignments;
-delete from audio_chunks;
-delete from realtime_session_tickets;
-delete from recitation_sessions;
-delete from consent_records;
-delete from eval_runs;
-delete from canonical_words;
-delete from canonical_ayahs;
-delete from audit_events;
-delete from model_versions;
-delete from users;
-delete from institutions;
 
 insert into institutions (id, name, region) values
   ('tenant-a', 'Tenant A', 'test'),
@@ -288,18 +302,18 @@ insert into users (id, tenant_id, display_name, role, language) values
   ('teacher-b', 'tenant-b', 'Teacher B', 'teacher', 'ckb'),
   ('scholar-b', 'tenant-b', 'Scholar B', 'scholar', 'ckb');
 
-insert into canonical_ayahs (id, surah_number, ayah_number, text_uthmani, source_id, edition, script_type, import_version, source_checksum)
-values ('ayah-1-1', 1, 1, 'bismillah', 'tanzil', 'uthmani', 'uthmani', 'smoke', 'checksum-ayah');
-
-insert into canonical_words (id, ayah_id, word_index, text_uthmani, source_checksum)
-values ('word-1-1-1', 'ayah-1-1', 1, 'bism', 'checksum-word');
-
 insert into model_versions (id, kind, version, status)
-values ('model-v0.3', 'alignment', '0.3', 'eval-passed');
+values ('qrai-smoke-model-v0.3', 'alignment', '0.3', 'eval-passed');
 
 insert into audit_events (id, tenant_id, actor_id, action, subject_type, subject_id) values
   ('audit-a', 'tenant-a', 'learner-a', 'smoke.seed', 'seed', 'tenant-a'),
   ('audit-b', 'tenant-b', 'learner-b', 'smoke.seed', 'seed', 'tenant-b');
+
+insert into background_jobs (
+  id, tenant_id, kind, subject_id, actor_id, idempotency_key, payload, audit_event_id
+) values
+  ('job-a', 'tenant-a', 'session.finalize', 'session-a', 'learner-a', 'smoke-a', '{}', 'audit-a'),
+  ('job-b', 'tenant-b', 'session.finalize', 'session-b', 'learner-b', 'smoke-b', '{}', 'audit-b');
 
 insert into consent_records (id, tenant_id, user_id, audio_retention, anonymized_learning, external_asr_processing, guardian_approved, audit_event_id) values
   ('consent-a', 'tenant-a', 'learner-a', 'discard', true, true, true, 'audit-a'),
@@ -309,8 +323,13 @@ insert into consent_records (id, tenant_id, user_id, audio_retention, anonymized
 	  id, tenant_id, learner_id, quran_ref, source_checksum, model_version_id, mode, practice_plan_id,
 	  external_processing_allowed, confidence, review_status, started_at, latency_ms, consent_record_id, consent_snapshot, audit_event_id
 	) values
-	  ('session-a', 'tenant-a', 'learner-a', '{"surahNumber":1,"ayahStart":1,"ayahEnd":1}', 'checksum-a', 'model-v0.3', 'guided-recite', 'plan-a', true, 0, 'teacher-review-required', now(), 0, 'consent-a', '{"externalAsrProcessing":true}', 'audit-a'),
-	  ('session-b', 'tenant-b', 'learner-b', '{"surahNumber":1,"ayahStart":1,"ayahEnd":1}', 'checksum-b', 'model-v0.3', 'guided-recite', 'plan-b', true, 0, 'draft', now(), 0, 'consent-b', '{"externalAsrProcessing":true}', 'audit-b');
+	  ('session-a', 'tenant-a', 'learner-a', '{"surahNumber":1,"ayahStart":1,"ayahEnd":1}', 'checksum-a', 'qrai-smoke-model-v0.3', 'guided-recite', 'plan-a', true, 0, 'teacher-review-required', now(), 0, 'consent-a', '{"externalAsrProcessing":true}', 'audit-a'),
+	  ('session-b', 'tenant-b', 'learner-b', '{"surahNumber":1,"ayahStart":1,"ayahEnd":1}', 'checksum-b', 'qrai-smoke-model-v0.3', 'guided-recite', 'plan-b', true, 0, 'draft', now(), 0, 'consent-b', '{"externalAsrProcessing":true}', 'audit-b');
+
+insert into realtime_ticket_replay_claims
+  (tenant_id, session_id, nonce_hash, expires_at_unix_seconds) values
+  ('tenant-a', 'session-a', repeat('1', 64), floor(extract(epoch from clock_timestamp())) + 300),
+  ('tenant-b', 'session-b', repeat('2', 64), floor(extract(epoch from clock_timestamp())) + 300);
 
 	insert into learner_progress (tenant_id, learner_id, ayah_ref, easiness_factor, interval_days, repetitions, last_quality, next_review_at) values
 	  ('tenant-a', 'learner-a', '1:1', 2.5, 1, 1, 5, now() + interval '1 day'),
@@ -324,17 +343,26 @@ insert into audio_chunks (id, tenant_id, session_id, evidence_id, start_ms, end_
   ('chunk-a', 'tenant-a', 'session-a', 'evidence-a', 0, 100, 16000, 'queued', 'tenant-a/audio.wav', 'audit-a'),
   ('chunk-b', 'tenant-b', 'session-b', 'evidence-b', 0, 100, 16000, 'queued', 'tenant-b/audio.wav', 'audit-b');
 
+insert into realtime_audio_chunk_outcomes
+  (tenant_id, session_id, chunk_id, start_ms, end_ms, sample_rate,
+   initial_outcome, reason_code, repaired_at) values
+  ('tenant-a', 'session-a', 'chunk-a', 0, 100, 16000, 'stored-unindexed', 'index-failed', now()),
+  ('tenant-b', 'session-b', 'chunk-b', 0, 100, 16000, 'stored-unindexed', 'index-failed', now());
+
 insert into word_alignments (id, tenant_id, session_id, word_id, heard_text, start_ms, end_ms, confidence, status, model_version_id, audit_event_id) values
-  ('alignment-a', 'tenant-a', 'session-a', 'word-1-1-1', 'bism', 0, 100, 0.95, 'matched', 'model-v0.3', 'audit-a'),
-  ('alignment-b', 'tenant-b', 'session-b', 'word-1-1-1', 'bism', 0, 100, 0.95, 'matched', 'model-v0.3', 'audit-b');
+  ('alignment-a', 'tenant-a', 'session-a', '1:1:1', 'bism', 0, 100, 0.95, 'matched', 'qrai-smoke-model-v0.3', 'audit-a'),
+  ('alignment-b', 'tenant-b', 'session-b', '1:1:1', 'bism', 0, 100, 0.95, 'matched', 'qrai-smoke-model-v0.3', 'audit-b');
 
 insert into alignment_runs (id, tenant_id, session_id, model_version_id, dataset_version, latency_ms, evidence_ids, consent_snapshot, audit_event_id) values
-  ('run-a', 'tenant-a', 'session-a', 'model-v0.3', 'smoke', 10, '["evidence-a"]', '{"externalAsrProcessing":true}', 'audit-a'),
-  ('run-b', 'tenant-b', 'session-b', 'model-v0.3', 'smoke', 10, '["evidence-b"]', '{"externalAsrProcessing":true}', 'audit-b');
+  ('run-a', 'tenant-a', 'session-a', 'qrai-smoke-model-v0.3', 'smoke', 10, '["evidence-a"]', '{"externalAsrProcessing":true}', 'audit-a'),
+  ('run-b', 'tenant-b', 'session-b', 'qrai-smoke-model-v0.3', 'smoke', 10, '["evidence-b"]', '{"externalAsrProcessing":true}', 'audit-b');
 
-insert into tajweed_findings (id, tenant_id, alignment_id, rule, severity, confidence, explanation, review_status, source_refs, model_version_id, audit_event_id) values
-  ('finding-a', 'tenant-a', 'alignment-a', 'madd', 'practice', 0.9, 'source-backed', 'ai-suggested', '[{"id":"source-a"}]', 'model-v0.3', 'audit-a'),
-  ('finding-b', 'tenant-b', 'alignment-b', 'madd', 'practice', 0.9, 'source-backed', 'ai-suggested', '[{"id":"source-b"}]', 'model-v0.3', 'audit-b');
+insert into tajweed_findings (
+  id, tenant_id, alignment_id, rule, severity, confidence, analysis_basis, explanation,
+  review_status, source_refs, model_version_id, audit_event_id
+) values
+  ('finding-a', 'tenant-a', 'alignment-a', 'madd', 'practice', null, 'text-rule', 'source-backed', 'ai-suggested', '[{"id":"source-a"}]', 'qrai-smoke-model-v0.3', 'audit-a'),
+  ('finding-b', 'tenant-b', 'alignment-b', 'madd', 'practice', null, 'text-rule', 'source-backed', 'ai-suggested', '[{"id":"source-b"}]', 'qrai-smoke-model-v0.3', 'audit-b');
 
 insert into teacher_reviews (id, tenant_id, finding_id, teacher_id, decision, note, audit_event_id) values
   ('review-a', 'tenant-a', 'finding-a', 'teacher-a', 'accepted', 'ok', 'audit-a'),
@@ -353,8 +381,8 @@ insert into privacy_jobs (id, tenant_id, learner_id, kind, included_records, del
   ('privacy-b', 'tenant-b', 'learner-b', 'export', '["session-b"]', '[]', '[]', 'audit-b');
 
 insert into eval_runs (id, tenant_id, model_version_id, dataset_version, metrics, word_alignment_f1, tajweed_f1, false_positive_rate, teacher_agreement_rate, unsourced_learner_outputs, passed) values
-  ('eval-a', 'tenant-a', 'model-v0.3', 'smoke', '{}', 0.95, 0.85, 0.05, 0.95, 0, true),
-  ('eval-b', 'tenant-b', 'model-v0.3', 'smoke', '{}', 0.95, 0.85, 0.05, 0.95, 0, true);
+  ('eval-a', 'tenant-a', 'qrai-smoke-model-v0.3', 'smoke', '{}', 0.95, 0.85, 0.05, 0.95, 0, true),
+  ('eval-b', 'tenant-b', 'qrai-smoke-model-v0.3', 'smoke', '{}', 0.95, 0.85, 0.05, 0.95, 0, true);
 
 insert into pilot_invitations (id, tenant_id, learner_id, token_hash, expires_at, consumed_at) values
   ('invite-a', 'tenant-a', 'learner-a', 'hash-invite-a', now() + interval '1 day', null),
@@ -363,6 +391,19 @@ insert into pilot_invitations (id, tenant_id, learner_id, token_hash, expires_at
 insert into pilot_sessions (id, tenant_id, learner_id, token_hash, csrf_token, created_at, last_seen_at, idle_expires_at, absolute_expires_at, revoked_at) values
   ('session-cookie-a', 'tenant-a', 'learner-a', 'hash-session-cookie-a', 'csrf-a', now(), now(), now() + interval '1 day', now() + interval '1 day', null),
   ('session-cookie-b', 'tenant-b', 'learner-b', 'hash-session-cookie-b', 'csrf-b', now(), now(), now() + interval '1 day', now() + interval '1 day', null);
+
+insert into device_enrollment_invitations
+  (id, tenant_id, user_id, created_by, token_hash, expires_at, audit_event_id) values
+  ('device-invite-a', 'tenant-a', 'learner-a', 'learner-a', repeat('a', 64), now() + interval '1 day', 'audit-a'),
+  ('device-invite-b', 'tenant-b', 'learner-b', 'learner-b', repeat('b', 64), now() + interval '1 day', 'audit-b');
+
+insert into device_sessions
+  (id, family_id, tenant_id, user_id, generation, access_token_hash, refresh_token_hash,
+   status, access_expires_at, idle_expires_at, absolute_expires_at, audit_event_id) values
+  ('device-session-a', 'device-family-a', 'tenant-a', 'learner-a', 0, repeat('c', 64), repeat('d', 64),
+   'active', now() + interval '15 minutes', now() + interval '7 days', now() + interval '30 days', 'audit-a'),
+  ('device-session-b', 'device-family-b', 'tenant-b', 'learner-b', 0, repeat('e', 64), repeat('f', 64),
+   'active', now() + interval '15 minutes', now() + interval '7 days', now() + interval '30 days', 'audit-b');
 
 	${grantRlsRole}
 
@@ -393,7 +434,7 @@ begin
 	    external_processing_allowed, confidence, review_status, started_at, latency_ms, consent_record_id, consent_snapshot, audit_event_id
 	  ) values (
 	    'session-cross-tenant', 'tenant-b', 'learner-b', '{"surahNumber":1,"ayahStart":1,"ayahEnd":1}',
-	    'checksum-cross', 'model-v0.3', 'guided-recite', 'plan-cross', true, 0, 'draft', now(), 0, 'consent-b',
+	    'checksum-cross', 'qrai-smoke-model-v0.3', 'guided-recite', 'plan-cross', true, 0, 'draft', now(), 0, 'consent-b',
 	    '{"externalAsrProcessing":true}', 'audit-b'
 	  );
   raise exception 'cross-tenant insert unexpectedly succeeded';
@@ -408,34 +449,43 @@ rollback;
 `;
 }
 
+/**
+ * @param {string} command
+ * @param {string[]} args
+ * @param {string | undefined} stdinContent
+ * @returns {Promise<CommandResult>}
+ */
 function run(command, args, stdinContent) {
   let finalCommand = command;
   let finalArgs = args;
   if (command === "psql" && process.env.PSQL) {
     const parts = process.env.PSQL.split(" ");
     finalCommand = parts[0];
-    const rewrittenArgs = args.map(arg => arg.replace("localhost:5433", "localhost:5432"));
+    const rewrittenArgs = args.map((arg) => arg.replace("localhost:5433", "localhost:5432"));
     finalArgs = [...parts.slice(1), ...rewrittenArgs];
   }
-  return new Promise((resolve, reject) => {
+  return /** @type {Promise<CommandResult>} */ (new Promise((resolve, reject) => {
     const child = spawn(finalCommand, finalArgs, {
       cwd: process.cwd(),
       env: process.env,
-      stdio: [stdinContent ? "pipe" : "ignore", "pipe", "pipe"]
+      stdio: [stdinContent ? "pipe" : "ignore", "pipe", "pipe"],
     });
-    const stdout = [];
-    const stderr = [];
-    child.stdout.on("data", (chunk) => stdout.push(String(chunk)));
-    child.stderr.on("data", (chunk) => stderr.push(String(chunk)));
+    const stdout = /** @type {string[]} */ ([]);
+    const stderr = /** @type {string[]} */ ([]);
+    child.stdout?.on("data", (chunk) => stdout.push(String(chunk)));
+    child.stderr?.on("data", (chunk) => stderr.push(String(chunk)));
     child.on("error", reject);
     child.on("close", (code) => resolve({ code, stdout: stdout.join(""), stderr: stderr.join("") }));
-    if (stdinContent) {
-      child.stdin.write(stdinContent);
-      child.stdin.end();
+    if (stdinContent && child.stdin) {
+      child.stdin.on("error", (error) => {
+        if (!("code" in error) || error.code !== "EPIPE") reject(error);
+      });
+      child.stdin.end(stdinContent);
     }
-  });
+  }));
 }
 
+/** @param {string} value */
 function redactDatabaseUrl(value) {
   return value.replace(/(postgres(?:ql)?:\/\/[^:\s]+:)[^@\s]+@/gi, "$1[REDACTED]@");
 }

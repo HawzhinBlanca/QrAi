@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 
-import { issueRealtimeTicket } from "../services/node-api/lib/ticket.mjs";
+import { issueRealtimeTicket } from "../server/src/lib/ticket.mjs";
 
 const baseUrl = process.env.REALTIME_GATEWAY_BASE_URL ?? "ws://127.0.0.1:8081";
 const secret = process.env.REALTIME_GATEWAY_TICKET_SECRET ?? "smoke-secret";

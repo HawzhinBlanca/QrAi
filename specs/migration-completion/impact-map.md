@@ -20,7 +20,7 @@ at least one automated test (`AGENTS.md` §Acceptance criteria format).
 | **N15** | `+routes/review.mjs` | `apps/web` teacher/scholar surfaces, `tests/api-parity/db-endpoints.test.mjs` |
 | **N16** | `+routes/ml-proxy.mjs` | `services/{ml,asr}-inference`, `tests/api-parity/ml-proxy.test.mjs`, `scripts/smoke-ml.mjs` |
 | **N17** | `+routes/privacy.mjs` | `scripts/smoke-privacy.mjs`, ML blob storage, `tests/api-parity/db-endpoints.test.mjs` |
-| **F-A** | `+apps/flutter/**` | none in-repo — new tree; consumes `specs/flutter-client/openapi.yaml` |
+| **F-A** | `+apps/flutter/**` | none in-repo — new tree; consumes `packages/contracts/openapi.yaml` |
 
 **Nothing in `services/platform-api` or `services/realtime-gateway` is edited by any wave.** Rust
 stays authoritative and unchanged; that is what makes the A/B a real oracle rather than two ports

@@ -1,5 +1,5 @@
 /**
- * One learner request, two services, one trace — provably joinable. (P5.3)
+ * One learner request, one server-authoritative trace, and no invented performance evidence. (P5.3)
  *
  *   node --test tests/observability/trace-join.test.mjs
  *
@@ -7,7 +7,7 @@
  * `tests/api-parity/ml-asr-proxy-parity.test.mjs` asserts that the caller's `x-trace-id` is
  * forwarded into the ML request body. That is a claim about the WIRE. The claim anyone actually
  * relies on is about the OUTCOME: that after a learner's audio has been analysed, an operator asking
- * "which ML call produced this finding" can answer it from what was written down.
+ * "which ML call produced this analysis" can answer it from what was written down.
  *
  * Those are different claims, and the wire test cannot tell them apart. ml-inference could receive
  * `traceId` and drop it on the floor; platform-api could stop writing `metadata.trace_id`; the two
@@ -17,13 +17,15 @@
  *
  * So this test starts the REAL ml-inference — not the mock the parity suite uses, because a mock
  * records whatever the test tells it to and can never fail this way — issues one request, and then
- * performs the join for real:
+ * proves the boundary for real:
  *
- *   platform-api  ->  audit_events.metadata->>'trace_id'   (Postgres, tenant-scoped by RLS)
+ *   platform-api  ->  forwards the server-seen trace and persists no performance finding
  *   ml-inference  ->  <AUDIO_STORAGE_DIR>/audit-log/<tenant>.jsonl, `traceId` per line
  *
- * The assertion is that both sides carry the same trace AND name the same session. Either half alone
- * is a trail that leads nowhere.
+ * Deterministic Quran-text rules are instructional annotations. They do not inspect learner audio,
+ * so manufacturing a Postgres performance finding merely to preserve the former two-row join would
+ * be a false provenance claim. The durable ML event and returned annotation must carry the trace,
+ * while the performance table and its persistence audit must remain empty for this session.
  */
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
@@ -43,7 +45,7 @@ import {
 } from "../api-parity/lib/harness.mjs";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
-const ML_ENTRY = join(root, "services/ml-inference/server.mjs");
+const ML_ENTRY = join(root, "tests/inference/lib/worker-compatibility-harness.mjs");
 const ML_KEY = "trace-join-ml-key";
 
 let ml;
@@ -127,7 +129,7 @@ async function createSession() {
       learnerId: learner,
       quranRef: { surahNumber: 1, ayahStart: 1, ayahEnd: 1, display: "Al-Fatihah 1:1" },
       sourceChecksum: "fnv1a32:tracejoin",
-      modelVersion: "model-v0.3",
+
       language: "ckb",
       mode: "guided-recite",
       practicePlanId: "fatihah-mastery-v1",
@@ -172,7 +174,7 @@ async function createSession() {
   return { learner, sessionId: id };
 }
 
-test("an operator can join a finding to the ML call that produced it", async () => {
+test("an operator can trace instructional analysis without a fabricated performance finding", async () => {
   const { learner, sessionId } = await createSession();
 
   const trace = `trace-join-${uniqueSuffix()}`;
@@ -187,32 +189,49 @@ test("an operator can join a finding to the ML call that produced it", async () 
     },
   });
   assert.equal(predicted.status, 200, `predict failed: ${predicted.text}`);
+  assert.ok(predicted.body.annotations.length > 0, "real Quran instruction produced no annotations");
+  assert.deepEqual(predicted.body.findings, [], "text-only analysis invented learner findings");
+  assert.equal(predicted.body.traceId, trace, "the response lost the server-seen trace");
+  for (const annotation of predicted.body.annotations) {
+    assert.equal(annotation.analysisBasis, "text-rule");
+    assert.equal(annotation.instructional, true);
+    assert.equal(annotation.traceId, trace);
+    for (const forbidden of ["confidence", "severity", "reviewStatus"]) {
+      assert.equal(Object.hasOwn(annotation, forbidden), false, `${forbidden} leaked into instruction`);
+    }
+  }
 
-  // ── Side 1: what platform-api wrote down ────────────────────────────────────────────────────────
+  // The platform must not create the performance-side half of the former join. There was no
+  // acoustic finding to persist, so such a row would itself be fabricated evidence.
   const platformRows = await queryJson(
-    `SELECT subject_id, metadata->>'trace_id' AS trace_id
+    `SELECT action, subject_id, metadata->>'trace_id' AS trace_id
        FROM audit_events
       WHERE metadata->>'trace_id' = $1`,
     [trace],
   );
-  assert.ok(
-    platformRows.length > 0,
-    `platform-api recorded no audit row for trace ${trace} — its own half of the trail is missing`,
+  assert.deepEqual(
+    platformRows.filter((row) => row.action === "ml.tajweed.persisted"),
+    [],
+    "platform-api claimed it persisted learner performance for text-only instruction",
   );
+  const persistedFindings = await queryJson(
+    `SELECT tf.id
+       FROM tajweed_findings tf
+       JOIN word_alignments wa ON wa.id = tf.alignment_id
+      WHERE wa.session_id = $1`,
+    [sessionId],
+  );
+  assert.deepEqual(persistedFindings, [], "text-only instruction created performance rows");
 
-  // ── Side 2: what ml-inference wrote down ────────────────────────────────────────────────────────
+  // The real producer still records exactly which analysis ran for which session.
   const mlRows = mlAuditEvents().filter((e) => e.traceId === trace);
   assert.ok(
     mlRows.length > 0,
-    `ml-inference recorded no audit event for trace ${trace}. platform-api recorded ` +
-      `${platformRows.length}, so the finding exists and the call that produced it does not — ` +
-      `"which ML call produced this finding" has no answer. ` +
+    `ml-inference recorded no audit event for trace ${trace}. ` +
+      `"which ML call produced this instruction" has no answer. ` +
       `Traces it did record: ${JSON.stringify(mlAuditEvents().map((e) => e.traceId))}`,
   );
 
-  // ── The join itself ─────────────────────────────────────────────────────────────────────────────
-  // Same trace on both sides is necessary but not sufficient: two records that agree on the trace and
-  // disagree on the session join to a contradiction, which is worse than no trail at all.
   assert.equal(
     mlRows[0].action,
     "ml.tajweed.predicted",
@@ -223,17 +242,14 @@ test("an operator can join a finding to the ML call that produced it", async () 
     sessionId,
     "ml-inference attributed the trace to a different session than the one requested",
   );
-  assert.ok(
-    platformRows.some((r) => r.subject_id === sessionId),
-    `platform-api attributed trace ${trace} to ${JSON.stringify(platformRows.map((r) => r.subject_id))}, ` +
-      `not to session ${sessionId}`,
-  );
+  assert.ok(mlRows[0].details.annotationCount > 0, "the audit omitted its instructional output count");
+  assert.equal(mlRows[0].details.findingCount, 0, "the audit claimed learner-performance findings");
+  assert.equal(predicted.body.auditEventId, mlRows[0].id, "the response cannot join to its ML audit");
 });
 
 test("a trace the caller invents in the body cannot displace the one the server saw", async () => {
-  // The forged-trace parity test asserts what crosses the wire. This asserts what is DURABLE: if the
-  // body could win, the two trails would be joinable to each other but not to the server's own
-  // record of who called, which is the property the audit trail exists to provide.
+  // The forged-trace parity test asserts what crosses the wire. This asserts what is DURABLE: the
+  // caller cannot redirect the producer's audit record away from the server-observed request.
   const { learner, sessionId } = await createSession();
 
   const served = `trace-served-${uniqueSuffix()}`;

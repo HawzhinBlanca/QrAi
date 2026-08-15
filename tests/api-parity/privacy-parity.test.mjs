@@ -15,10 +15,21 @@
  * job is to pin its position, because every one of them reads like a detail and none of them is.
  */
 import assert from "node:assert/strict";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import test, { after, before } from "node:test";
+
+import { createInferenceRuntime } from "../../server/src/inference/local.mjs";
+import { createJobRuntime } from "../../server/src/jobs/runtime.mjs";
+import { createJobStore } from "../../server/src/jobs/store.mjs";
+import { createWorkflowHandlers } from "../../server/src/jobs/workflows.mjs";
+import { createDb } from "../../server/src/lib/db.mjs";
+import { createFilesystemAudioObjectStore } from "../../server/src/storage/audio-object-store.mjs";
 
 import { assertABMutating } from "./lib/ab.mjs";
 import {
+  DATABASE_URL,
   TENANT,
   queryJson,
   request,
@@ -61,23 +72,93 @@ let shell;
 let rustUrl;
 let mlMock;
 let mlCalls;
+let storageDir;
+let objectStore;
+let workerDb;
+let workerLoop;
+let workerRunning = false;
+const ownedLearners = new Set();
 
 before(async () => {
+  storageDir = mkdtempSync(join(tmpdir(), "qrai-privacy-store-"));
+  objectStore = createFilesystemAudioObjectStore({ rootDir: storageDir });
   mlCalls = [];
   mlMock = await startMockUpstream(({ path, body }) => {
     mlCalls.push({ path, body });
     return { status: 200, body: { deletedAudioObjectKeys: ["a/1.wav"], deletedMetadataObjectKeys: ["a/1.json"] } };
   });
+  const inference = createInferenceRuntime({
+    predictAlignment: async () => assert.fail("privacy work must not run alignment"),
+    predictTajweed: async () => assert.fail("privacy work must not run Tajweed"),
+    transcribeSession: async () => assert.fail("privacy work must not run transcription"),
+  });
+  workerDb = createDb(DATABASE_URL);
+  const workerRuntime = createJobRuntime({
+    store: createJobStore({ db: workerDb }),
+    handlers: createWorkflowHandlers({
+      db: workerDb,
+      inference,
+      audioObjectStore: objectStore,
+      upstreamTimeoutMs: 1_000,
+    }),
+    workerId: "privacy-parity-worker",
+    leaseMs: 2_000,
+    operationTimeoutMs: 1_500,
+    retryBaseMs: 10,
+    retryMaxMs: 100,
+  });
+  workerRunning = true;
+  workerLoop = (async () => {
+    while (workerRunning) {
+      const learners = [...ownedLearners];
+      if (learners.length === 0) {
+        await new Promise((resolve) => setTimeout(resolve, 5));
+        continue;
+      }
+      const jobId = await workerDb.withTenant(TENANT, async (tx) => {
+        const [row] = await tx`
+          SELECT id
+          FROM background_jobs
+          WHERE tenant_id = ${TENANT}
+            AND kind IN ('privacy.export', 'privacy.delete')
+            AND subject_id = ANY(${learners})
+            AND status IN ('queued', 'retry')
+            AND available_at <= now()
+          ORDER BY priority DESC, created_at, id
+          LIMIT 1`;
+        return row?.id ?? null;
+      });
+      if (jobId === null) {
+        await new Promise((resolve) => setTimeout(resolve, 5));
+      } else {
+        await workerRuntime.runOne(TENANT, { jobId });
+      }
+    }
+  })();
+
   const env = { ML_INFERENCE_URL: mlMock.url };
   api = await startApi({ env });
   rustUrl = api.upstreamUrl ?? api.baseUrl;
-  shell = await startShell({ upstream: rustUrl, env: { ...env, NODE_API_PORTED: PORTED } });
+  shell = await startShell({
+    upstream: rustUrl,
+    env: { ...env, NODE_API_PORTED: PORTED, AUDIO_STORAGE_DIR: storageDir },
+  });
 });
 
 after(async () => {
+  let workerFailure = null;
+  workerRunning = false;
+  try {
+    await workerLoop;
+  } catch (error) {
+    workerFailure = error;
+  }
+  await workerDb?.end();
   await shell?.stop();
   await api?.stop();
   await mlMock?.stop();
+  if (storageDir) rmSync(storageDir, { recursive: true, force: true });
+  if (workerFailure) throw workerFailure;
 });
 
 /** A learner with a session, an alignment-free but real footprint, created fresh per test. */
@@ -136,6 +217,7 @@ async function seedLearner(label) {
     [`arun-${id}`, TENANT, sessionId, auditId],
   );
 
+  ownedLearners.add(id);
   return { id, sessionId };
 }
 
@@ -152,6 +234,20 @@ async function footprint(learnerId) {
     [TENANT, learnerId],
   );
   return row;
+}
+
+async function storeLearnerAudio(learner) {
+  return objectStore.put({
+    tenantId: TENANT,
+    learnerId: learner.id,
+    sessionId: learner.sessionId,
+    chunkId: `chunk-${learner.id}`,
+    startMs: 0,
+    endMs: 100,
+    sampleRate: 16000,
+    audioRetention: "teacher-review",
+    audioBytes: Buffer.alloc(3200, 7),
+  });
 }
 
 // ── export ─────────────────────────────────────────────────────────────────────────────────────
@@ -208,6 +304,7 @@ test("export returns the manifest shape and DELETES NOTHING", async () => {
 
 test("export never calls the ML erase endpoint", async () => {
   const l = await seedLearner("exp-noml");
+  const stored = await storeLearnerAudio(l);
   mlCalls.length = 0;
   const res = await request(shell.baseUrl, "/v1/privacy/export", {
     method: "POST",
@@ -216,6 +313,15 @@ test("export never calls the ML erase endpoint", async () => {
   });
   assert.equal(res.status, 200, res.text);
   assert.equal(mlCalls.length, 0, "an export must not reach the audio-erasure service at all");
+  assert.ok(
+    res.body.includedRecords.includes(`audio_object:${stored.objectKey}`),
+    "privacy export omitted a retained private audio object",
+  );
+  assert.equal(
+    (await objectStore.listLearner({ tenantId: TENANT, learnerId: l.id })).length,
+    1,
+    "privacy export deleted the recording it was inventorying",
+  );
 });
 
 // ── delete ─────────────────────────────────────────────────────────────────────────────────────
@@ -246,8 +352,9 @@ test("delete erases the learner's footprint — verified in the DATABASE, not by
   assert.equal(after.runs, 0, "alignment_runs survived a delete");
 });
 
-test("delete erases the ML AUDIO, and reports the keys the service returned", async () => {
+test("delete erases private object storage directly and reports the derived keys", async () => {
   const l = await seedLearner("del-audio");
+  const stored = await storeLearnerAudio(l);
   mlCalls.length = 0;
 
   const res = await request(shell.baseUrl, "/v1/privacy/delete", {
@@ -257,18 +364,9 @@ test("delete erases the ML AUDIO, and reports the keys the service returned", as
   });
   assert.equal(res.status, 200, res.text);
 
-  // The DB cascade removes DERIVED records; the raw audio is the sensitive PII and lives in the ML
-  // service. Without this call a "delete" leaves the recordings on disk.
-  assert.equal(mlCalls.length, 1, "delete must call the audio-erasure service exactly once");
-  assert.equal(mlCalls[0].path, "/v1/privacy/delete");
-  assert.equal(mlCalls[0].body.learnerId, l.id);
-  assert.equal(mlCalls[0].body.tenantId, TENANT, "the tenant is the actor's, not the client's");
-
-  assert.deepEqual(
-    res.body.audioObjectKeysDeleted,
-    ["a/1.wav", "a/1.json"],
-    "BOTH deletedAudioObjectKeys and deletedMetadataObjectKeys are collected, in that order",
-  );
+  assert.deepEqual(mlCalls, [], "Node delegated erasure back to transitional ML");
+  assert.deepEqual(res.body.audioObjectKeysDeleted, [stored.objectKey]);
+  assert.deepEqual(await objectStore.listLearner({ tenantId: TENANT, learnerId: l.id }), []);
 });
 
 test("delete does NOT touch another learner's rows", async () => {
@@ -342,10 +440,19 @@ test("ORDER 2 vs 3: an unknown learner is 404 even when the ML service is DOWN",
   // "permanent, do not". Wrong-signal-for-retry is the defect the ordering exists to fix, so it
   // must not survive in the outage case.
   const deadUrl = "http://127.0.0.1:1";
+  const deadStorage = mkdtempSync(join(tmpdir(), "qrai-privacy-fault-store-"));
   const deadApi = await startApi({ env: { ML_INFERENCE_URL: deadUrl } });
-  const deadShell = await startShell({ upstream: deadApi.upstreamUrl ?? deadApi.baseUrl, env: { NODE_API_PORTED: PORTED, ML_INFERENCE_URL: deadUrl } });
+  const deadShell = await startShell({
+    upstream: deadApi.upstreamUrl ?? deadApi.baseUrl,
+    env: {
+      NODE_API_PORTED: PORTED,
+      ML_INFERENCE_URL: deadUrl,
+      AUDIO_STORAGE_DIR: deadStorage,
+    },
+  });
   try {
-    const { shell: s } = await assertABMutating(deadShell.baseUrl, deadApi.baseUrl, {
+    const deadRustUrl = deadApi.upstreamUrl ?? deadApi.baseUrl;
+    const { shell: s } = await assertABMutating(deadShell.baseUrl, deadRustUrl, {
       name: "delete an unknown learner with ML down",
       probeFor: () => ({
         path: "/v1/privacy/delete",
@@ -357,9 +464,15 @@ test("ORDER 2 vs 3: an unknown learner is 404 even when the ML service is DOWN",
     });
     assert.equal(s.status, 404, "a 502 here tells the caller to retry something that cannot succeed");
 
-    // …and a REAL learner with the ML service down is a 502, with the database untouched.
+    // Make the direct Node store unreadable with a deterministic ENOTDIR while Rust observes its
+    // equivalent ML dependency outage. The fault is injected only after the unknown-user probe,
+    // proving that existence/authorization precede storage access.
+    rmSync(deadStorage, { recursive: true, force: true });
+    writeFileSync(deadStorage, "planned storage fault");
+
+    // …and a REAL learner with storage down is a 502, with the database untouched.
     const l = await seedLearner("mldown");
-    const { shell: down } = await assertABMutating(deadShell.baseUrl, deadApi.baseUrl, {
+    const { shell: down } = await assertABMutating(deadShell.baseUrl, deadRustUrl, {
       name: "delete a real learner with ML down",
       probeFor: () => ({
         path: "/v1/privacy/delete",
@@ -376,6 +489,7 @@ test("ORDER 2 vs 3: an unknown learner is 404 even when the ML service is DOWN",
   } finally {
     await deadShell.stop();
     await deadApi.stop();
+    rmSync(deadStorage, { recursive: true, force: true });
   }
 });
 

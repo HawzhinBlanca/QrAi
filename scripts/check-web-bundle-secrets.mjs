@@ -1,7 +1,12 @@
 import { readdir, readFile } from "node:fs/promises";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 
-const distDir = join(process.cwd(), "apps", "web", "dist");
+// The bundle to scan. Defaults to the real production output; an explicit path exists so the guard
+// itself can be tested. Until now nothing tested it: it ran in `verify.sh` on every gate, always
+// passed, and no case anywhere demonstrated that it can detect anything. The directory could not be
+// faked either, because AGENTS.md forbids writing under any `dist/` path — so a fixture bundle was
+// impossible to build and the guard was, in practice, unfalsifiable.
+const distDir = process.argv[2] ? resolve(process.argv[2]) : join(process.cwd(), "apps", "web", "dist");
 const forbidden = [
   { label: "dev auto-login password", pattern: /dev-bypass-[A-Za-z0-9_-]+/i },
   { label: "dev auto-login email/domain", pattern: /bypass\.local/i },
@@ -20,6 +25,19 @@ for (const file of files) {
       findings.push({ file, label: item.label });
     }
   }
+}
+
+// A scan that examined nothing is not a clean bill of health.
+//
+// `walk` only collects .css/.html/.js/.json/.map/.svg/.txt, so a dist directory that exists but is
+// empty — a cleaned tree, or a build that failed after creating the folder — yielded zero files and
+// printed "web bundle secret scan passed (0 files)" with exit 0. The gate then reported a secret
+// scan it never performed. A missing directory already fails loudly (readdir rejects); an empty one
+// must too.
+if (files.length === 0) {
+  console.error(`web bundle secret scan found no scannable files in ${distDir}`);
+  console.error("  build the web bundle first — a scan of nothing is not a pass");
+  process.exit(1);
 }
 
 if (findings.length > 0) {

@@ -27,6 +27,9 @@
 # That is why tests/security/legacy-insecure-flag.test.mjs deliberately does NOT list it among the
 # relaxations that must never ship enabled — read that file's comment before adding it there.
 services:
+  node-realtime:
+    environment:
+      GATEWAY_ALLOW_MISSING_ORIGIN: "1"
   realtime-gateway:
     environment:
       GATEWAY_ALLOW_MISSING_ORIGIN: "1"

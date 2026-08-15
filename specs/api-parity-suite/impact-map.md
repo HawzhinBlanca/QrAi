@@ -45,7 +45,7 @@ only the number of test cases inside `default.test.mjs` grows.
 ### `.github/workflows/ci.yml`
 
 **Caller: the required status check on every PR.** Needs a step that builds the platform-api binary
-and makes it findable by `startApi`. The `postgres:16-alpine` service, all `infra/sql` migrations,
+and makes it findable by `startApi`. The `postgres:16-alpine` service, all `infra/migrations` migrations,
 and `rls-app-role.sql` are already applied (`ci.yml:10-12,88,91`) — no new service.
 
 Added CI wall-clock is process startup, not compilation: `cargo test --manifest-path $API` already

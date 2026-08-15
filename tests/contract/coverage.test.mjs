@@ -4,22 +4,26 @@ import { dirname, join } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 
+import { ROUTES } from "../../server/src/routes/index.mjs";
 import { loadOpenapi, routePairsFromRust } from "./lib/openapi.mjs";
 
 /**
- * F1 — every route in the service is contracted, exactly once.
+ * F1 — every active route is contracted, exactly once.
  * specs/flutter-client/plan.md
  *
- * Parses `services/platform-api/src/lib.rs` and compares against the hand-authored spec, so adding a
- * route fails this gate until it is contracted. Same deliberate coupling as PAR6's parser on
- * `integration.rs`; if that is why your build is red, add the path to `specs/flutter-client/openapi.yaml`.
+ * The Rust router remains the immutable 42-operation baseline. During the strangler transition,
+ * route-manifest.json may classify a target addition as implemented-node; only those additions may
+ * extend the active OpenAPI surface, and each must exist in the executable Node route table.
  *
  * Hermetic: no database, no service, no network.
  */
 
 const here = dirname(fileURLToPath(import.meta.url));
 const repoRoot = join(here, "..", "..");
-const spec = loadOpenapi(join(repoRoot, "specs/flutter-client/openapi.yaml"));
+const spec = loadOpenapi(join(repoRoot, "packages/contracts/openapi.yaml"));
+const manifest = JSON.parse(
+  readFileSync(join(repoRoot, "packages/contracts/route-manifest.json"), "utf8"),
+);
 const rustPairs = routePairsFromRust(
   readFileSync(join(repoRoot, "services/platform-api/src/lib.rs"), "utf8"),
 );
@@ -35,58 +39,52 @@ const specPairs = new Set(
   ),
 );
 const rustSet = new Set(rustPairs.map(({ method, path }) => `${method} ${shape(path)}`));
+const nodeSet = new Set(ROUTES.map(({ key }) => shape(key)));
+const implementedAdditionSet = new Set(
+  manifest.targetAdditions
+    .filter(({ implementationStatus }) =>
+      ["implemented-node", "implemented-owner-gated"].includes(implementationStatus),
+    )
+    .map(({ method, path }) => `${method.toUpperCase()} ${shape(path)}`),
+);
+const activeSet = new Set([...rustSet, ...implementedAdditionSet]);
 
-test("every route the service registers is present in the contract", () => {
-  const missing = [...rustSet].filter((p) => !specPairs.has(p)).sort();
+test("every active transition route is present in the contract", () => {
+  const missing = [...activeSet].filter((p) => !specPairs.has(p)).sort();
   assert.deepEqual(
     missing,
     [],
-    `these routes exist in lib.rs but are NOT contracted:\n  ${missing.join("\n  ")}\n` +
-      `Add them to specs/flutter-client/openapi.yaml. Do not delete this check.`,
+    `these active routes are NOT contracted:\n  ${missing.join("\n  ")}\n` +
+      `Add them to packages/contracts/openapi.yaml. Do not delete this check.`,
   );
 });
 
-test("the contract describes no route the service does not serve", () => {
+test("implemented target additions exist in the Node route table", () => {
+  const missing = [...implementedAdditionSet].filter((pair) => !nodeSet.has(pair)).sort();
+  assert.deepEqual(missing, [], `implemented addition but NOT declared by Node:\n  ${missing.join("\n  ")}`);
+});
+
+test("the contract describes no route the active transition does not serve", () => {
   // The other direction: a contract promising a route that does not exist is worse than a missing
   // one, because a client will code against it.
-  const phantom = [...specPairs].filter((p) => !rustSet.has(p)).sort();
+  const phantom = [...specPairs].filter((p) => !activeSet.has(p)).sort();
   assert.deepEqual(phantom, [], `contracted but NOT served:\n  ${phantom.join("\n  ")}`);
 });
 
-test("the pair count is 42, CORRECTING Phase 7's 34", () => {
-  // Phase 7's research counted 34 by matching only `axum::routing::<verb>(`. Five methods are
-  // registered CHAINED on an existing MethodRouter — `axum::routing::get(h).post(h2)` — on
-  // /v1/recitation-sessions, /v1/recitation-sessions/{id}/alignments, /v1/scholar-approvals,
-  // /v1/agent-runs, and /v1/learner/progress. Those were invisible to that pattern.
-  //
-  // Found because the hand-authored contract listed them and this test reported them as routes the
-  // service does not serve. Two independently-derived lists disagreeing is exactly what a contract
-  // is for; pinning the number keeps a future under-count from passing quietly.
-  //
-  // 38 -> 39 (2026-08-02, ADR-0027 action item 4): GET /v1/recitation-sessions/{id}/tajweed-findings.
-  // A learner had no route that READ a finding — `/v1/tajweed-findings` is staff-only and the ML
-  // predict route re-analyses instead of reading — so a teacher's promotion moved a row nothing
-  // learner-facing could reach.
-  //
-  // 39 -> 40 (2026-08-02, ADR-0027 item 5): POST /v1/recitation-sessions/{id}/finalize. A
-  // gateway-streamed recitation had no transcript and so no alignment; this derives both
-  // server-side, without letting the client say what the learner recited.
-  //
-  // 40 -> 42 (2026-08-11): GET /v1/tajweed-findings/{id}/audio and POST /v1/audio-chunks. NOT new
-  // routes — both have been registered since ADR-0037. They were INVISIBLE. Each puts an ADR note
-  // between `.route(` and its path string, and `routePairsFromRust` split on `\.route\(\s*"`, which
-  // does not cross a comment. So the parser reported 40, the contract described those same 40, and
-  // the two checks above compared one blind list against another and agreed.
-  //
-  // This pin is the check that was supposed to catch exactly that, and it did not — because the
-  // number it was pinned to came from the same broken parser. A count derived from the thing it is
-  // meant to guard cannot guard it. What actually surfaced it was a THIRD list, built from a
-  // different source: the paths the TypeScript clients request
-  // (tests/contract/client-routes.test.mjs), which reported the finding-audio route as contracted
-  // by nothing. That is the same lesson as Phase 7's 34 — two independently-derived lists
-  // disagreeing is what a contract is for — and the reason the client list now exists.
+test("the route inventory contains all 42 method/path pairs", () => {
+  // The original correction found 40 routes by recognizing chained MethodRouter verbs, but two
+  // registrations still disappeared because comments sit between `.route(` and the path:
+  //   GET  /v1/tajweed-findings/{id}/audio
+  //   POST /v1/audio-chunks
+  // Pin both names as well as the total so another parser defect cannot preserve the count by losing
+  // one route while accidentally gaining another.
   assert.equal(rustPairs.length, 42, "lib.rs no longer registers 42 method+path pairs");
-  assert.equal(specPairs.size, 42);
+  assert.equal(specPairs.size, activeSet.size, "OpenAPI must equal baseline plus implemented additions");
+  assert.ok(
+    rustSet.has("GET /v1/tajweed-findings/{}/audio"),
+    "finding-audio route disappeared from the Rust inventory",
+  );
+  assert.ok(rustSet.has("POST /v1/audio-chunks"), "audio-index route disappeared from the Rust inventory");
 });
 
 test("every operation declares at least one response, and error codes reference the shared shape", () => {
@@ -103,26 +101,10 @@ test("every operation declares at least one response, and error codes reference 
   }
 });
 
-test("x-unvalidated is USED, and its count is pinned so it can only shrink deliberately", () => {
-  // A permissive schema that was NOT marked would validate anything and read as coverage — the
-  // exact false-green this repo keeps finding. Marking it makes the gap countable.
-  //
-  // 15 → 3 (C3). The 12 that shrank all gained a schema written from a RESPONSE OBSERVED against a
-  // running server, never from reading a Rust struct.
-  //
-  // ── Why the last 3 are NOT going to zero ───────────────────────────────────────────────────────
-  // They are the ML/ASR proxies. Each returns `Json<serde_json::Value>` straight from an upstream
-  // service: the platform API parses the body and forwards it verbatim, so the SHAPE belongs to the
-  // ML/ASR contract, not to this one. Writing a schema here would assert a shape this service does
-  // not control and cannot keep.
-  //
-  // Not even `type: object` is true — `serde_json::Value` passes an array or a scalar through just
-  // as happily. The only accurate schema is "any JSON", which validates nothing, which is precisely
-  // what x-unvalidated exists to mark.
-  //
-  // So `response-schemas-validated` in scripts/cutover-readiness.mjs stays UNMET, and closing it
-  // requires giving these routes a real contract — a PRODUCT change, not a documentation one. See
-  // specs/contract-coverage-closure/tasks.md.
+test("no operation is marked x-unvalidated", () => {
+  // W0.2 closes the three producer-owned ML/ASR gaps with schemas derived from the real
+  // inference response models. Any future permissive operation must fail this gate by name rather
+  // than silently turning the cutover metric green.
   const unvalidated = [];
   for (const [path, item] of Object.entries(spec.paths)) {
     for (const [method, op] of Object.entries(item)) {
@@ -132,14 +114,9 @@ test("x-unvalidated is USED, and its count is pinned so it can only shrink delib
     }
   }
   assert.deepEqual(
-    unvalidated.sort(),
-    [
-      "POST /v1/asr/force-align",
-      "POST /v1/asr/transcribe",
-      "POST /v1/ml/tajweed-findings:predict",
-    ],
-    "the remainder is pinned BY NAME, not by count: a different route becoming unvalidated is a " +
-      "regression even when the total stays at 3, and a count alone would not notice the swap.",
+    unvalidated,
+    [],
+    `permissive response contracts remain:\n  ${unvalidated.join("\n  ")}`,
   );
 });
 
@@ -151,6 +128,53 @@ test("the security schemes cover all three auth paths the service accepts", () =
     "devHeaderAuth",
     "pilotCookie",
   ]);
+});
+
+test("route inventory keeps a route whose path follows a line comment", () => {
+  const pairs = routePairsFromRust(`
+    Router::new().route(
+      // Finding audio is intentionally adjacent to its authorization note.
+      "/v1/line-comment",
+      axum::routing::get(handler),
+    )
+  `);
+
+  assert.deepEqual(pairs, [{ method: "GET", path: "/v1/line-comment" }]);
+});
+
+test("route inventory keeps a route whose path follows a block comment", () => {
+  const pairs = routePairsFromRust(`
+    Router::new().route(
+      /* Audio indexing is internal. /* Rust block comments can nest. */ Tenant-scoped. */
+      "/v1/block-comment",
+      axum::routing::post(handler),
+    )
+  `);
+
+  assert.deepEqual(pairs, [{ method: "POST", path: "/v1/block-comment" }]);
+});
+
+test("the two recovered audio routes have strict success contracts", () => {
+  const routes = [
+    ["post", "/v1/audio-chunks", "AudioChunkIndexResult"],
+    ["get", "/v1/tajweed-findings/{id}/audio", "FindingAudio"],
+  ];
+
+  for (const [method, path, schemaName] of routes) {
+    const operation = spec.paths[path]?.[method];
+    assert.ok(operation, `${method.toUpperCase()} ${path}: operation is missing`);
+    assert.notEqual(operation["x-unvalidated"], true, `${method.toUpperCase()} ${path}: permissive`);
+    assert.deepEqual(
+      operation.responses["200"]?.content?.["application/json"]?.schema,
+      { $ref: `#/components/schemas/${schemaName}` },
+      `${method.toUpperCase()} ${path}: success response is not bound to ${schemaName}`,
+    );
+    assert.equal(
+      spec.components.schemas[schemaName]?.additionalProperties,
+      false,
+      `${schemaName}: undeclared response fields are accepted`,
+    );
+  }
 });
 
 /**
@@ -170,6 +194,7 @@ test("the security schemes cover all three auth paths the service accepts", () =
  * where the only accurate schema really is "any JSON" — these four shapes are built by handlers in
  * this repository. They were observed from a running server and written down.
  */
+
 test("an array response may not hide behind `items: { type: object }`", () => {
   const permissive = [];
 
@@ -209,5 +234,34 @@ test("an array response may not hide behind `items: { type: object }`", () => {
       "\n\nEither give the items a schema — observed from a running server, not read off a struct —" +
       "\nor mark the operation x-unvalidated so it is COUNTED. Silence is the false-green the" +
       "\nx-unvalidated test above exists to prevent, and it does not look inside arrays.",
+  );
+});
+
+
+test("an object response may not hide behind a bare `type: object`", () => {
+  const permissive = [];
+  for (const [path, item] of Object.entries(spec.paths)) {
+    for (const [method, operation] of Object.entries(item)) {
+      if (!operation || typeof operation !== "object" || !operation.responses) continue;
+      for (const [code, response] of Object.entries(operation.responses)) {
+        const schema = response?.content?.["application/json"]?.schema;
+        if (
+          schema?.type === "object" &&
+          !schema.$ref &&
+          !schema.properties &&
+          !schema.oneOf &&
+          !schema.anyOf &&
+          !schema.allOf
+        ) {
+          permissive.push(`${method.toUpperCase()} ${path} -> ${code}`);
+        }
+      }
+    }
+  }
+
+  assert.deepEqual(
+    permissive,
+    [],
+    `these object responses validate no fields:\n  ${permissive.join("\n  ")}`,
   );
 });

@@ -23,7 +23,7 @@ two. There is no third caller and no external one — it is not `pub`.
 **So option B is not really a smaller change.** Fixing "delete only" would mean branching on `kind`
 inside a function whose entire design is that the two kinds share everything except a flag.
 
-### `specs/flutter-client/openapi.yaml`
+### `packages/contracts/openapi.yaml`
 
 **Callers: the `contract: openapi vs real responses` gate and
 `tests/api-parity/lib/contract.mjs`.** Adding a `404` response to both operations is additive; the

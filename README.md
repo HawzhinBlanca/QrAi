@@ -6,13 +6,25 @@ Quran AI is being built into a Quran Recitation Intelligence OS: learner recitat
 
 This repo implements a meaningful, testable vertical slice of the 10/10 platform:
 
-- `apps/web` is the React/Vite learner practice app, with a pilot-invite session path and an internal review surface kept out of the default learner route.
+- `apps/flutter` is the lean target learner client; React/Vite `apps/web` and Expo `apps/mobile`
+  remain measured compatibility surfaces until their caller-removal gates pass.
 - `packages/contracts` owns shared API, data, canonical-checksum, retention, and learner-facing source/review gate contracts.
 - `packages/quran-data` owns immutable, checksum-validated Quran and translation import bundles plus SQL seed generation.
 - `services/platform-api` is a Rust/Axum + SQLx/Postgres tenant-scoped API for recitation, progress, reviews, approvals, privacy, audit events, pilot sessions, and realtime tickets. Its tenant-owned data paths use Postgres RLS.
 - `services/realtime-gateway` is a Rust/Tokio gateway with ticket-gated WebSocket ingress, bounded backpressure, metrics, and reconnect coverage.
-- `services/ml-inference` performs Quran-constrained alignment and rule-based tajweed finding generation, while consent-gated ASR is proxied to the self-hosted inference service.
-- `infra/sql` defines the core schema, forced tenant RLS, and structured `agent_runs.learner_id` support so privacy export/delete can include learner-linked agent runs.
+- `server` is the single Node production package and image. Compose runs it as `node-api`,
+  `job-worker`, and the internal no-traffic `node-realtime` process. The realtime role proves strict
+  ticket/Origin/rate admission plus cross-instance Postgres single-use replay on one shadow route,
+  then closes 1013 without consuming audio; Rust
+  remains the traffic target. The worker owns durable
+  execution, retained-audio lifecycle, Quran-constrained
+  alignment, and deterministic Tajweed instruction. A pinned Muaalem v3.2 adapter runs only as
+  private, uncalibrated shadow evaluation on retained audio and server-derived spans; it returns no
+  learner findings until calibration, evaluation, scholar, licence, and review gates pass.
+- `infra/migrations` is the immutable, checksum-pinned schema history. The one-shot Node runner
+  serializes application with a Postgres advisory lock, records each file in `schema_migrations`,
+  and refuses source/database drift. Restricted runtime-role provisioning lives separately under
+  `infra/provision`.
 - `docs/architecture/10-10-platform.md`, `docs/readiness/`, and `specs/readiness-recovery-10-10/tasks.md` describe the architecture, proof gates, and current release status.
 
 It is **not release-ready**: candidate-bound model evaluation, independent security/privacy review, live operational proof, human sign-offs, and production deployment evidence remain open. The running ASR deployment uses generic Whisper `base`, not a Quran-tuned production model; learner-facing AI feedback remains source- and review-gated.
@@ -22,7 +34,9 @@ It is **not release-ready**: candidate-bound model evaluation, independent secur
 - Web: React 19, Vite 8, TypeScript 6, Tailwind CSS 4, Lucide, Motion, Recharts, Vitest.
 - Contracts: TypeScript, Vitest.
 - Realtime foundation: Rust 1.96, Tokio, bounded `mpsc` channels.
-- Planned platform services: Rust/Tokio/Axum, Python/PyTorch/FastAPI, Postgres + pgvector, NATS JetStream, object storage, Redis, OpenTelemetry/Sentry.
+- Backend: one modular Node 22 package/image for API, worker, and realtime roles, retained Rust compatibility
+  oracles, Python/FastAPI ASR, Postgres RLS, and private S3-compatible object storage. The lean
+  boundary deliberately adds neither Redis nor NATS.
 
 ## Run Locally
 
@@ -48,6 +62,34 @@ pnpm api:dev
 ```
 
 By default it listens on `127.0.0.1:8080`, matching `VITE_PLATFORM_API_URL` in `.env.example`.
+
+Apply schema changes only through the shared migration boundary, using an administrative URL;
+then provision or rotate the restricted runtime role separately:
+
+```bash
+MIGRATION_DATABASE_URL="postgresql://admin@localhost:5432/quran_ai" pnpm db:migrate
+MIGRATION_DATABASE_URL="postgresql://admin@localhost:5432/quran_ai" \
+APP_DATABASE_PASSWORD="<strong-runtime-password>" pnpm db:provision
+```
+
+Compose, CI, staging recreation, restore, and release use these same three Node entry points. The
+application itself must use the resulting `quran_ai_app` credential, never the migration URL.
+
+The transitional gateway must set `PLATFORM_API_URL` so a stored retained chunk becomes a durable
+tenant-scoped index before teacher playback can find it. Compose wires the internal URL. If
+`realtime_gateway_chunks_stored_unindexed_total` rises, preview and then apply the ownership-safe
+repair against a mounted audio store:
+
+```bash
+DATABASE_URL="postgresql://quran_ai_app@localhost:5432/quran_ai" \
+AUDIO_STORAGE_DIR=/path/to/audio-storage pnpm db:repair-audio-index
+DATABASE_URL="postgresql://quran_ai_app@localhost:5432/quran_ai" \
+AUDIO_STORAGE_DIR=/path/to/audio-storage pnpm db:repair-audio-index -- --apply
+```
+
+The command never derives ownership from a path alone: path, sidecar, retained bytes, and the
+tenant-scoped session/learner row must agree. Compose operators can use the read-only volume profile
+documented in `docs/STAGING_RUNBOOK.md`.
 
 With the gateway running, smoke-test binary WebSocket audio ingestion:
 

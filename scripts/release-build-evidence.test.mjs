@@ -6,15 +6,16 @@ import { join } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 
+import { DEPLOYABLE_IMAGE_KEYS } from "./lib/deployable-images.mjs";
+
 const buildEvidenceScript = fileURLToPath(new URL("./release-build-evidence.mjs", import.meta.url));
-const services = ["platform-api", "realtime-gateway", "ml-inference", "asr-inference", "web"];
 
 function git(repo, args) {
   return execFileSync("git", args, { cwd: repo, encoding: "utf8" }).trim();
 }
 
 function imageDigests() {
-  return Object.fromEntries(services.map((service, index) => [service, `sha256:${String(index + 1).repeat(64)}`]));
+  return Object.fromEntries(DEPLOYABLE_IMAGE_KEYS.map((service, index) => [service, `sha256:${String(index + 1).repeat(64)}`]));
 }
 
 function prepareCandidate(t) {

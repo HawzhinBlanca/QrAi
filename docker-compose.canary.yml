@@ -1,0 +1,34 @@
+# Explicit isolated HTTP canary. Applying this overlay switches Web API requests and realtime audio
+# indexing together to the Node compatibility shell. Rust stays healthy as the transition-route
+# oracle and immediate reversal target. No request is randomly split or shadow-written.
+services:
+  node-api:
+    environment:
+      NODE_API_ROUTE_MODE: "retained-canary"
+      NODE_API_PORTED: ""
+      PLATFORM_API_UPSTREAM: "http://platform-api:8080"
+      TRUST_PROXY_HEADERS: "1"
+      TRUST_PROXY_HOPS: "1"
+    depends_on:
+      platform-api:
+        condition: service_healthy
+
+  realtime-gateway:
+    environment:
+      PLATFORM_API_URL: "http://node-api:8082"
+    depends_on:
+      node-api:
+        condition: service_healthy
+      platform-api:
+        condition: service_healthy
+
+  web:
+    environment:
+      WEB_PLATFORM_API_UPSTREAM: "node-api:8082"
+    depends_on:
+      node-api:
+        condition: service_healthy
+      platform-api:
+        condition: service_healthy
+      realtime-gateway:
+        condition: service_healthy

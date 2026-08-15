@@ -1,11 +1,12 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 
 import { SignJWT } from "jose";
 
-import { ApiError, requireSelfOrAny, resolveActor } from "../../services/node-api/lib/authz.mjs";
+import { ApiError, requireSelfOrAny, resolveActor } from "../../server/src/lib/authz.mjs";
 
 /**
  * N3 §2.3 — the ownership gate.
@@ -172,16 +173,25 @@ test("a token signed with the WRONG secret is rejected", async () => {
   );
 });
 
-test("a pilot cookie DELEGATES rather than being half-authenticated here", async () => {
-  // 306 lines of session lookup, idle-roll, CSRF and Origin checks are not ported. Delegating to the
-  // implementation that Phase 6 already proved is the fail-SAFE choice; half-porting it would be
-  // exactly the regression this phase exists to avoid.
+test("a no-database compatibility request delegates only when an upstream is explicit", async () => {
+  // DB-backed pilot lookup is local. This vector isolates the reversible compatibility fallback.
   const { delegate, actor } = await resolveActor(
     req({ cookie: "__Host-qrai-pilot=sometoken" }),
-    { jwtSecret: SECRET, allowHeaderAuth: true },
+    { jwtSecret: SECRET, allowHeaderAuth: true, upstream: "http://127.0.0.1:1" },
   );
-  assert.ok(delegate, "a cookie-bearing request must be delegated");
+  assert.ok(delegate, "compatibility must identify the no-database request for delegation");
   assert.equal(actor, undefined);
+});
+
+test("a no-database standalone pilot request fails closed", async () => {
+  await assert.rejects(
+    () => resolveActor(req({ cookie: "__Host-qrai-pilot=sometoken" }), {
+      jwtSecret: SECRET,
+      allowHeaderAuth: true,
+      upstream: null,
+    }),
+    (error) => error instanceof ApiError && error.status === 401,
+  );
 });
 
 test("a Bearer token wins over dev headers when both are present", async () => {
@@ -205,17 +215,19 @@ test("a Bearer token wins over dev headers when both are present", async () => {
 //
 // It was covered only by A/B parity, which compares the shell to Rust and is blind to a change
 // applied to both — the hole this whole session opened with.
-import { readFileSync } from "node:fs";
 
-import { clearsLearnerGate } from "../../services/node-api/routes/ml-proxy.mjs";
+import { clearsLearnerGate } from "../../server/src/routes/ml-proxy.mjs";
 
 const GATE_CORPUS = JSON.parse(
-  readFileSync(new URL("../../packages/contracts/fixtures/canonical-gates.json", import.meta.url), "utf8"),
-)["canShowLearnerFacingAiOutput"];
+  readFileSync(
+    new URL("../../packages/contracts/fixtures/learner-feedback-gate.json", import.meta.url),
+    "utf8",
+  ),
+);
 
 test("the ml-proxy learner gate agrees with the shared corpus on every case", () => {
   const cases = GATE_CORPUS?.cases;
-  assert.ok(Array.isArray(cases), "canonical-gates.json has no canShowLearnerFacingAiOutput.cases");
+  assert.ok(Array.isArray(cases), "learner-feedback-gate.json has no cases");
 
   // Fail CLOSED on a shrinking corpus: an empty `cases` makes the loop below vacuous and this test
   // green while asserting nothing — the same shape as the licence gate that once reported
@@ -231,10 +243,13 @@ test("the ml-proxy learner gate agrees with the shared corpus on every case", ()
   );
 
   for (const c of cases) {
+    const input = structuredClone(GATE_CORPUS.base);
+    Object.assign(input, c.patch ?? {});
+    for (const field of c.remove ?? []) delete input[field];
     assert.equal(
-      clearsLearnerGate(c.input),
+      clearsLearnerGate(input),
       c.expected,
-      `ml-proxy disagrees with the shared corpus.\n  case: ${c.name}\n  input: ${JSON.stringify(c.input)}`,
+      `ml-proxy disagrees with the shared corpus.\n  case: ${c.name}\n  input: ${JSON.stringify(input)}`,
     );
   }
 });
@@ -246,21 +261,21 @@ const read = (rel) => readFileSync(join(repoRoot, rel), "utf8");
 
 test("both ml_proxy implementations forward the learner from the row they authorised against", () => {
   // The ownership gate above reads `learner_id` off the session row. That same value must also be
-  // FORWARDED to ml-inference, because ml-inference keys its external-ASR and prediction audit rows
+  // FORWARDED to the consolidated inference runtime, because it keys external-ASR and prediction rows
   // by sessionId: with no learner on the request those rows are attributable to nobody, and a
   // learner-scoped privacy export has to drop them. The Rust side sends it; the Node port did not,
   // so a cutover to node-api would have silently reverted it — the drift ADR-0034 exists for.
   //
-  // A source check, deliberately: node-api's proxy needs a live Postgres to reach that branch, so a
+  // A source check, deliberately: the Node proxy needs a live Postgres to reach that branch, so a
   // behavioural test of it is DB-gated and would not run in this hermetic step. Weaker than driving
   // the code, and still enough to catch one implementation losing the line.
-  const node = read("services/node-api/routes/ml-proxy.mjs");
+  const node = read("server/src/routes/ml-proxy.mjs");
   const rust = read("services/platform-api/src/handlers/ml_proxy.rs");
 
   assert.match(
     node,
     /forwarded\.learnerId\s*=\s*row\.learner_id/,
-    "node-api's ML proxy does not forward the session row's learner to ml-inference",
+    "the Node ML proxy does not forward the session row's learner to inference",
   );
   assert.match(
     rust,
@@ -285,7 +300,7 @@ test("node-api's learner redaction fails CLOSED on malformed ML responses, like 
   // kept the old behaviour, so a cutover to node-api would have silently reopened an ADR-0028 gate
   // the Rust side had already closed. Reachable without anyone editing the gate: a partially
   // migrated model server, a debug build with a different schema, a compromised ML service.
-  const { redactWithheldFindings } = await import("../../services/node-api/routes/ml-proxy.mjs");
+  const { redactWithheldFindings } = await import("../../server/src/routes/ml-proxy.mjs");
 
   // 1. `findings` present but not an array — drop it, do not forward it.
   const notAnArray = { findings: "MODEL-TEXT-A-LEARNER-MUST-NOT-SEE" };

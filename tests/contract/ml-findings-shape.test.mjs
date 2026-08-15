@@ -4,94 +4,82 @@ import { dirname, join } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 
-import { analyzeWord } from "../../services/ml-inference/tajweed.js";
+import { analyzeWord } from "../../server/src/inference/tajweed.mjs";
 
 /**
- * P3.2 — the one proxy response platform-api actually READS.
+ * W1.9 — deterministic Quran instruction and learner-performance findings are disjoint types.
  *
- * `POST /v1/ml/tajweed-findings:predict` is one of the three `x-unvalidated` routes: platform-api
- * deserializes the upstream body as `serde_json::Value` and forwards it verbatim, so the contract
- * asserts nothing about its shape. That is the right call for a passthrough — but this one stopped
- * being a pure passthrough when `persist_tajweed_findings` started writing the findings down
- * (ADR-0027 item 4). It now reaches into the response by field name.
- *
- * ── The failure this exists to catch ────────────────────────────────────────────────────────────
- * Rename `wordId` to `word_id` in `services/ml-inference/tajweed.js` and every finding hits the
- * `continue` in ml_proxy.rs:265. `written` stays 0, `unanchored` stays 0, so even the "skipped N"
- * log never fires. Analysis keeps returning 200 with findings in the body, the learner keeps seeing
- * them in the panel, and NOTHING is ever persisted — so no teacher ever reviews one and no approved
- * finding ever reaches anybody. A silent, total, indefinite failure of the review loop, produced by
- * renaming a field in a service whose tests would all still pass.
- *
- * Neither side's own suite can see this: ml-inference tests what it emits, platform-api's
- * integration tests use a mock ML service that this repo also writes. The two agree with themselves.
+ * The text-rule detector sees no learner audio. Its output must therefore never satisfy either
+ * persistence path. Acoustic findings remain persistable for the declared evaluation fixture and
+ * the future real acoustic producer, but only after the runtime boundary validates their basis.
  */
 
 const here = dirname(fileURLToPath(import.meta.url));
 const repo = join(here, "..", "..");
-const ML_PROXY = readFileSync(
+const RUST_PROXY = readFileSync(
   join(repo, "services", "platform-api", "src", "handlers", "ml_proxy.rs"),
   "utf8",
 );
-const TAJWEED_JS = readFileSync(join(repo, "services", "ml-inference", "tajweed.js"), "utf8");
+const NODE_PROXY = readFileSync(
+  join(repo, "server", "src", "routes", "ml-proxy.mjs"),
+  "utf8",
+);
 
-/** The body of `persist_tajweed_findings`, so a `finding.get()` elsewhere in the file is not read. */
-function persistBody(source) {
-  const start = source.indexOf("async fn persist_tajweed_findings");
-  assert.notEqual(start, -1, "persist_tajweed_findings is gone from ml_proxy.rs");
-  const next = source.indexOf("\nasync fn ", start + 1);
-  return source.slice(start, next === -1 ? undefined : next);
-}
+// A bare final noon triggers a real deterministic rule. Arabic combining classes remain escaped in
+// the detector itself; this fixture contains letters only and is not canonical corpus text.
+const WORD_WITH_INSTRUCTION = "من";
 
-/** Every field name the Rust persist path reads off an individual finding. */
-function consumedFields(source) {
-  return new Set([...persistBody(source).matchAll(/finding\s*\.\s*get\("([^"]+)"\)/g)].map((m) => m[1]));
-}
+test("deterministic Tajweed output is instructional and carries no performance fields", () => {
+  const annotations = analyzeWord("1:1:1", WORD_WITH_INSTRUCTION);
+  assert.ok(annotations.length > 0, "the fixture word no longer produces instruction");
 
-// A word ending in a bare noon — enough to trigger the ghunnah rule. Escapes, never literal
-// combining marks: AGENTS.md, and the merged-range bug in forced_align.py that rule came from.
-const WORD_WITH_A_FINDING = "من";
-
-test("ml-inference emits every field the platform-api persist path reads", () => {
-  const findings = analyzeWord("1:1:1", WORD_WITH_A_FINDING);
-  assert.ok(findings.length > 0, "the fixture word no longer produces a finding; pick another");
-
-  const consumed = consumedFields(ML_PROXY);
-  assert.ok(
-    consumed.has("wordId") && consumed.size >= 5,
-    `expected the persist path to read several fields, found ${JSON.stringify([...consumed])} — ` +
-      "if it was rewritten to deserialize into a struct, replace this extraction with that struct",
-  );
-
-  for (const finding of findings) {
-    const missing = [...consumed].filter((field) => finding[field] === undefined);
-    assert.deepEqual(
-      missing,
-      [],
-      `ml-inference emits a finding without ${JSON.stringify(missing)}, which ` +
-        "persist_tajweed_findings reads by name. Anything it cannot find is skipped silently: the " +
-        `finding is shown to the learner and never written down. Emitted: ${JSON.stringify(Object.keys(finding))}`,
-    );
+  for (const annotation of annotations) {
+    assert.equal(annotation.analysisBasis, "text-rule");
+    assert.equal(annotation.instructional, true);
+    assert.ok(annotation.sources.length > 0, "instruction lost its source");
+    for (const forbidden of ["confidence", "severity", "reviewStatus"]) {
+      assert.equal(
+        Object.hasOwn(annotation, forbidden),
+        false,
+        `text-rule annotation invented learner-performance field ${forbidden}`,
+      );
+    }
   }
 });
 
-test("every severity ml-inference can emit survives the persist path's allowlist", () => {
-  // ml_proxy.rs SKIPS a finding whose severity is not one of these — the column has a CHECK
-  // constraint and an unknown value would be a 500 on a learner's request. Correct, and it means a
-  // new severity added to tajweed.js alone would be dropped rather than stored.
-  const allowlist = ML_PROXY.match(/const SEVERITIES: \[&str; \d+\] = \[([^\]]+)\]/);
-  assert.ok(allowlist, "the SEVERITIES allowlist is gone from ml_proxy.rs");
-  const allowed = new Set([...allowlist[1].matchAll(/"([^"]+)"/g)].map((m) => m[1]));
+test("both runtime boundaries validate the disjoint annotations/findings envelope", () => {
+  for (const [name, source] of [
+    ["rust", RUST_PROXY],
+    ["node", NODE_PROXY],
+  ]) {
+    assert.match(source, /annotations/, `${name}: no annotations boundary`);
+    assert.match(source, /findings/, `${name}: no findings boundary`);
+    assert.match(source, /text-rule/, `${name}: no text-rule validation`);
+    assert.match(source, /instructional/, `${name}: no instructional validation`);
+    assert.match(source, /acoustic/, `${name}: no acoustic validation`);
+    for (const forbidden of ["confidence", "severity", "reviewStatus"]) {
+      assert.match(
+        source,
+        new RegExp(forbidden),
+        `${name}: the boundary no longer checks performance field ${forbidden}`,
+      );
+    }
+  }
+});
 
-  const emitted = new Set([...TAJWEED_JS.matchAll(/severity:\s*"([^"]+)"/g)].map((m) => m[1]));
-  assert.ok(emitted.size > 0, "no severity literals found in tajweed.js; the extraction broke");
+test("both persistence paths consume only findings and write an acoustic basis literal", () => {
+  const rustPersist = RUST_PROXY.slice(RUST_PROXY.indexOf("async fn persist_tajweed_findings"));
+  const nodePersist = NODE_PROXY.slice(NODE_PROXY.indexOf("async function persistTajweedFindings"));
 
-  const dropped = [...emitted].filter((s) => !allowed.has(s));
-  assert.deepEqual(
-    dropped,
-    [],
-    `tajweed.js emits ${JSON.stringify(dropped)}, which the persist path silently discards. ` +
-      `It accepts ${JSON.stringify([...allowed])}. Add the value to the DB CHECK constraint and ` +
-      "the allowlist, or do not emit it.",
-  );
+  assert.match(rustPersist, /get\("findings"\)/, "Rust persistence does not read findings[]");
+  assert.doesNotMatch(rustPersist, /get\("annotations"\)/, "Rust persistence reads annotations[]");
+  assert.match(rustPersist, /'acoustic'/, "Rust persistence does not write acoustic literally");
+  assert.doesNotMatch(rustPersist, /\.clamp\(/, "Rust persistence still clamps model scores");
+  assert.match(rustPersist, /evaluation_evidence_id/, "Rust persistence drops evaluation provenance");
+
+  assert.match(nodePersist, /result\.findings/, "Node persistence does not read findings[]");
+  assert.doesNotMatch(nodePersist, /result\.annotations/, "Node persistence reads annotations[]");
+  assert.match(nodePersist, /'acoustic'/, "Node persistence does not write acoustic literally");
+  assert.doesNotMatch(nodePersist, /Math\.min\(1/, "Node persistence still clamps model scores");
+  assert.match(nodePersist, /evaluation_evidence_id/, "Node persistence drops evaluation provenance");
 });

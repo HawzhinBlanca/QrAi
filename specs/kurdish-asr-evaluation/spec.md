@@ -1,24 +1,20 @@
 # Kurdish-L1 Quranic Recitation Evaluation Protocol
 
 **Status:** DRAFT — awaiting owner + scholar + legal approval before any data collection
-**Satisfies:** readiness ledger **P3.4** (protocol definition). **P3.5** (execution) requires this approved + real data collected.
-**Written against:** `services/asr-inference` at commit `e0f37c1`
+**Maps to:** consolidation ledger **W1.5**. Execution requires this protocol approved + real data collected.
+**Last grounded:** 2026-08-06 against the immutable ASR candidate registry and readiness controller
 **Author:** engineering. **Requires sign-off from:** owner (P0.1), scholar (P3.6), legal/privacy (P4.6).
 
 ---
 
-## 0. Prior art warning — do not reuse the existing eval
+## 0. Prior art warning — do not recreate the removed fake eval
 
-`scripts/evaluate-model.mjs` **does not evaluate anything**. It generates results with `Math.random()`
-and writes them to `specs/number-one-release/evaluation-results.md`, which reports
-"Word Alignment F1 `0.9973` **PASSED**", "Tajweed F1 `0.9964` **PASSED**", and a
-"Kurdish Sorani | 150 samples | 0.910" row. The dataset it names
-(`fatihah-juz-amma-reviewed-v1`, 500 sessions) **does not exist** — there are zero audio files in
-the repository.
+The former `scripts/evaluate-model.mjs` generated random metrics and its report named a nonexistent
+500-session dataset. Both files are now absent, and the repository contains zero tracked audio.
+The database's `fatihah-juz-amma-smoke-v1` row remains seed/smoke data, not benchmark evidence.
 
-**Those numbers are not measurements and must never be cited as evidence.** This protocol
-replaces them. Recommended action: delete or quarantine both files before anyone mistakes them
-for real results.
+**No historical number is a measurement.** `model-candidates.json` therefore selects no winner,
+and `candidate_evidence.py` makes every declared fixture ineligible for selection.
 
 ---
 

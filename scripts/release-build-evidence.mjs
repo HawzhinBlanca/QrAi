@@ -3,9 +3,9 @@ import { createHash } from "node:crypto";
 import { existsSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 
+import { parseImageDigestDocument } from "./lib/deployable-images.mjs";
+
 const candidateShaPattern = /^[a-f0-9]{40}$/;
-const imageDigestPattern = /^sha256:[a-f0-9]{64}$/;
-const deployableServices = ["platform-api", "realtime-gateway", "ml-inference", "asr-inference", "web"];
 const valuePattern = /^[A-Za-z0-9._:/@+=, -]{1,512}$/;
 
 function fail(message) {
@@ -73,21 +73,11 @@ function sha256(filePath) {
 }
 
 function parseImageDigests(filePath) {
-  let imageDigests;
   try {
-    imageDigests = JSON.parse(readFileSync(filePath, "utf8"));
-  } catch {
-    fail("--image-digests must contain valid JSON.");
+    return parseImageDigestDocument(readFileSync(filePath, "utf8"));
+  } catch (error) {
+    fail(`--image-digests ${error.message}.`);
   }
-  if (!imageDigests || typeof imageDigests !== "object" || Array.isArray(imageDigests)) {
-    fail("--image-digests must contain an object.");
-  }
-  for (const service of deployableServices) {
-    if (typeof imageDigests[service] !== "string" || !imageDigestPattern.test(imageDigests[service])) {
-      fail(`imageDigests.${service} must be a non-empty sha256 digest.`);
-    }
-  }
-  return imageDigests;
 }
 
 function parseArguments(argv) {

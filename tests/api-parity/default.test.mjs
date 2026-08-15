@@ -1,16 +1,36 @@
 import assert from "node:assert/strict";
 import test, { after, before } from "node:test";
 
+import { createInferenceRuntime } from "../../server/src/inference/local.mjs";
+import { createJobRuntime } from "../../server/src/jobs/runtime.mjs";
+import { createJobStore } from "../../server/src/jobs/store.mjs";
+import { createWorkflowHandlers } from "../../server/src/jobs/workflows.mjs";
+import { createDb } from "../../server/src/lib/db.mjs";
+
 import {
+  DATABASE_URL,
   OTHER_TENANT,
   RLS_PROBE_ROLE,
   TENANT,
+  insertDeclaredTestAcousticFinding,
+  purgeSessionsByChecksum,
   queryJson,
   request,
   startApi,
   uniqueSuffix,
   withDb,
 } from "./lib/harness.mjs";
+
+// Run-scoped session checksums, so the teardown at the end of this file deletes exactly this run's
+// rows and nothing else. These suites created sessions and never removed them: measured, the shared
+// staging database had accumulated 64,869 recitation sessions across ~8 fixed checksums, growing by
+// thousands a day. Leaked rows already broke a review-parity assertion and a Rust integration test
+// once in this program (`seedQueued`), and an unbounded corpus is what makes ORDER BY without a
+// unique tiebreaker, row-count deltas, and other suites' bulk teardown intermittently fail.
+// Per-run rather than a shared literal: two agents run this gate against the same Postgres.
+const RUN_CK_PRIVACY = `fnv1a32:privacy-scope-${uniqueSuffix()}`;
+const RUN_CK_CONSENT = `fnv1a32:consent-gate-${uniqueSuffix()}`;
+
 
 /**
  * PAR2 — the 18 incident-class tests that run under the default server configuration.
@@ -23,11 +43,71 @@ import {
  */
 
 let api;
+let workerDb;
+let workerLoop;
+let workerRunning = false;
+const privacyExportLearners = new Set();
 before(async () => {
+  workerDb = createDb(DATABASE_URL);
+  const inference = createInferenceRuntime({
+    predictAlignment: async () => assert.fail("privacy export must not align"),
+    predictTajweed: async () => assert.fail("privacy export must not evaluate Tajweed"),
+    transcribeSession: async () => assert.fail("privacy export must not transcribe"),
+  });
+  const workerRuntime = createJobRuntime({
+    store: createJobStore({ db: workerDb }),
+    handlers: createWorkflowHandlers({
+      db: workerDb,
+      inference,
+      upstreamTimeoutMs: 1_000,
+    }),
+    workerId: "default-parity-privacy-export-worker",
+    leaseMs: 2_000,
+    operationTimeoutMs: 1_500,
+    retryBaseMs: 10,
+    retryMaxMs: 100,
+  });
+  workerRunning = true;
+  workerLoop = (async () => {
+    while (workerRunning) {
+      const learners = [...privacyExportLearners];
+      if (learners.length === 0) {
+        await new Promise((resolve) => setTimeout(resolve, 5));
+        continue;
+      }
+      const jobId = await workerDb.withTenant(TENANT, async (tx) => {
+        const [row] = await tx`
+          SELECT id
+          FROM background_jobs
+          WHERE tenant_id = ${TENANT}
+            AND kind = 'privacy.export'
+            AND subject_id = ANY(${learners})
+            AND status IN ('queued', 'retry')
+            AND available_at <= now()
+          ORDER BY priority DESC, created_at, id
+          LIMIT 1`;
+        return row?.id ?? null;
+      });
+      if (jobId === null) {
+        await new Promise((resolve) => setTimeout(resolve, 5));
+      } else {
+        await workerRuntime.runOne(TENANT, { jobId });
+      }
+    }
+  })();
   api = await startApi();
 });
 after(async () => {
+  let workerFailure = null;
+  workerRunning = false;
+  try {
+    await workerLoop;
+  } catch (error) {
+    workerFailure = error;
+  }
+  await workerDb?.end();
   await api?.stop();
+  if (workerFailure) throw workerFailure;
 });
 
 const seedLearner = async (id, tenant = TENANT) => {
@@ -64,8 +144,8 @@ const createSession = async (learnerId) => {
     body: {
       learnerId,
       quranRef: FATIHAH_REF,
-      sourceChecksum: "fnv1a32:privacy-scope",
-      modelVersion: "model-v0.3",
+      sourceChecksum: RUN_CK_PRIVACY,
+
       language: "ckb",
       mode: "guided-recite",
       practicePlanId: "fatihah-mastery-v1",
@@ -113,14 +193,13 @@ const seedReviewedFinding = async (sessionId, label) => {
      VALUES ($1, $4, $2, '1:1:1', 'بسم', 0, 100, 0.9, 'matched', 'model-v0.3', $3)`,
     [ids.alignment, sessionId, ids.alignmentAudit, TENANT],
   );
-  await queryJson(
-    `INSERT INTO tajweed_findings
-       (id, tenant_id, alignment_id, rule, severity, confidence, explanation, review_status,
-        source_refs, model_version_id, audit_event_id)
-     VALUES ($1, $4, $2, 'Ghunnah', 'warning', 0.8, 'x', 'teacher-review-required', '[]'::jsonb,
-             'model-v0.3', $3)`,
-    [ids.finding, ids.alignment, ids.findingAudit, TENANT],
-  );
+  await insertDeclaredTestAcousticFinding({
+    id: ids.finding,
+    alignmentId: ids.alignment,
+    confidence: 0.8,
+    reviewStatus: "teacher-review-required",
+    auditEventId: ids.findingAudit,
+  });
   await queryJson(
     `INSERT INTO teacher_reviews (id, tenant_id, finding_id, teacher_id, decision, note, audit_event_id)
      VALUES ($1, $4, $2, 'teacher-1', 'accepted', 'parity suite seed', $3)`,
@@ -258,7 +337,7 @@ test("a foreign tenant cannot WRITE a session for this tenant's learner", async 
       learnerId,
       quranRef: FATIHAH_REF,
       sourceChecksum: "fnv1a32:adversarial-write",
-      modelVersion: "model-v0.3",
+
       language: "ckb",
       mode: "guided-recite",
       practicePlanId: "fatihah-mastery-v1",
@@ -343,6 +422,17 @@ test("a teacher of another tenant reads none of this tenant's session, alignment
   });
   assert.equal(stolenFindings.status, 200);
   assert.deepEqual(stolenFindings.body, [], "findings leaked into another tenant's teacher queue");
+
+  const stolenSessionFindings = await request(
+    api.baseUrl,
+    `/v1/recitation-sessions/${sessionId}/tajweed-findings`,
+    { role: "teacher", tenant: tenantB },
+  );
+  assert.equal(
+    stolenSessionFindings.status,
+    404,
+    "another tenant must not learn whether this session has learner-performance findings",
+  );
 });
 
 // ════════════════════════════════════════════════════════════════════════════════════════════════
@@ -502,6 +592,7 @@ test("ML analysis against a nonexistent session is refused BEFORE any upstream f
 // integration.rs:1664 — privacy_export_reports_included_records_but_deletes_nothing
 test("a privacy EXPORT lists what it found and deletes nothing", async () => {
   const learnerId = await seedLearner(`learner-privacy-export-${uniqueSuffix()}`);
+  privacyExportLearners.add(learnerId);
   const sessionId = await createSession(learnerId);
 
   const exported = await request(api.baseUrl, "/v1/privacy/export", {
@@ -536,8 +627,8 @@ test("external processing requires BOTH ASR consent and guardian approval, not e
       body: {
         learnerId,
         quranRef: FATIHAH_REF,
-        sourceChecksum: "fnv1a32:consent-gate",
-        modelVersion: "model-v0.3",
+        sourceChecksum: RUN_CK_CONSENT,
+
         language: "ckb",
         mode: "guided-recite",
         practicePlanId: "fatihah-mastery-v1",
@@ -689,4 +780,13 @@ test("a scholar-approved decision at HIGH risk is rejected even with sources", a
     },
   });
   assert.equal(res.status, 400, "high risk must be rejected regardless of sources");
+});
+
+// Registered last: node:test runs `after` hooks in registration order, so this drains the
+// rows once the hooks above have stopped the services still able to write them.
+after(async () => {
+  let left = 0;
+  left += await purgeSessionsByChecksum(RUN_CK_PRIVACY);
+  left += await purgeSessionsByChecksum(RUN_CK_CONSENT);
+  assert.equal(left, 0, `teardown left ${left} session(s) behind`);
 });

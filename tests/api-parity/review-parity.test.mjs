@@ -16,7 +16,14 @@ import assert from "node:assert/strict";
 import test, { after, before } from "node:test";
 
 import { assertAB, assertABMutating } from "./lib/ab.mjs";
-import { TENANT, queryJson, request, startApi, startShell } from "./lib/harness.mjs";
+import {
+  TENANT,
+  insertDeclaredTestAcousticFinding,
+  queryJson,
+  request,
+  startApi,
+  startShell,
+} from "./lib/harness.mjs";
 
 /**
  * The routes this file is ABOUT, served by the shell rather than proxied to Rust.
@@ -50,16 +57,23 @@ let shell;
  */
 let rustUrl;
 let findingId;
+let textRuleFindingId;
 
 before(async () => {
   api = await startApi({});
   rustUrl = api.upstreamUrl ?? api.baseUrl;
   shell = await startShell({ upstream: rustUrl, env: { NODE_API_PORTED: PORTED } });
-  const [f] = await queryJson(
-    "SELECT id FROM tajweed_findings WHERE tenant_id = $1 ORDER BY id LIMIT 1",
+  findingId = await seedQueued({
+    label: "reviewable",
+    reviewStatus: "ai-suggested",
+    confidence: 0.9,
+    startedAtSql: "now() - interval '24 years'",
+  });
+  const [textRule] = await queryJson(
+    "SELECT id FROM tajweed_findings WHERE tenant_id = $1 AND analysis_basis = 'text-rule' ORDER BY id LIMIT 1",
     [TENANT],
   );
-  findingId = f?.id ?? null;
+  textRuleFindingId = textRule?.id ?? null;
 });
 
 after(async () => {
@@ -229,14 +243,24 @@ test("tajweed-findings key order is alphabetical, and the sort has a unique tieb
     "a finding was just seeded at the front of the queue and the route returned none",
   );
   assert.deepEqual(Object.keys(res.body[0]), [
-    // ADR-0033: what the finding is ABOUT. Today always `canonical-text` — the analyser reads the
-    // passage's Uthmani text, so a finding is "a rule applies here", not "you recited this wrongly".
+    "acousticDatasetManifestSha256",
+    "acousticDatasetVersion",
     "analysisBasis",
-    // Whether a reviewer can HEAR the recitation this finding is about, and if not, why not.
     "audioStatus",
+    "auditEventId",
+    "calibrationStatus",
+    "calibratorArtifactSha256",
+    "calibratorId",
     "confidence",
+    "endMs",
+    "evaluationEvidenceId",
+    "evaluationEvidenceSha256",
+    "evaluationEvidenceStatus",
+    "evidenceId",
     "explanation",
     "id",
+    "modelArtifactSha256",
+    "modelVersion",
     "reviewStatus",
     "rule",
     // Which session this finding is about. The queue fetches tenant-wide and used to attribute
@@ -246,10 +270,9 @@ test("tajweed-findings key order is alphabetical, and the sort has a unique tieb
     "sessionId",
     "severity",
     "sources",
-    // ADR-0030: what this finding's evidence rests on. A finding anchored to a `client-reported`
-    // alignment rests on words the learner's browser supplied; promoting it to teacher-reviewed
-    // makes it learner-visible feedback about a recitation nobody can show happened.
+    "startMs",
     "transcriptSource",
+    "withheld",
     "wordId",
   ]);
 
@@ -434,6 +457,25 @@ test("a teacher review is attributed to the caller, and needs a REAL finding", a
 
   const [row] = await queryJson("SELECT teacher_id FROM teacher_reviews WHERE id = $1", [res.body.id]);
   assert.equal(row.teacher_id, res.body.teacherId);
+});
+
+test("an instructional text rule cannot be accepted as learner-performance feedback", async () => {
+  if (!textRuleFindingId) {
+    assert.ok(true, "SKIP — this database has no historical text-rule row");
+    return;
+  }
+  for (const [impl, base] of [["shell", shell.baseUrl], ["rust", rustUrl]]) {
+    const res = await request(base, "/v1/teacher-reviews", {
+      method: "POST",
+      role: "teacher",
+      body: { findingId: textRuleFindingId, teacherId: "ignored", decision: "accepted", note: "" },
+    });
+    assert.equal(res.status, 400, `${impl}: ${res.text}`);
+    assert.equal(
+      res.body.error,
+      "an instructional text rule cannot be released as learner-performance feedback",
+    );
+  }
 });
 
 test("reviewing a nonexistent finding is 404, not a 500 from the FK", async () => {
@@ -690,13 +732,16 @@ async function seedQueued({ label, reviewStatus, confidence, startedAtSql }) {
      VALUES ($1, $2, $3, $4, 'x', 0, 100, 0.9, 'matched', $5, $6, 'client-reported')`,
     [ids.alignment, TENANT, ids.session, word.id, model.id, ids.audit],
   );
-  await queryJson(
-    `INSERT INTO tajweed_findings
-       (id, tenant_id, alignment_id, rule, severity, confidence, explanation, review_status,
-        source_refs, model_version_id, audit_event_id, analysis_basis)
-     VALUES ($1, $2, $3, 'ghunnah', 'practice', $4, 'e', $5, '[]'::jsonb, $6, $7, 'canonical-text')`,
-    [ids.finding, TENANT, ids.alignment, confidence, reviewStatus, model.id, ids.audit],
-  );
+  await insertDeclaredTestAcousticFinding({
+    id: ids.finding,
+    alignmentId: ids.alignment,
+    rule: "ghunnah",
+    severity: "practice",
+    confidence,
+    reviewStatus,
+    sources: [{ id: "s1", title: "Board", citation: "declared fixture" }],
+    auditEventId: ids.audit,
+  });
   seeded.push(ids);
   return ids.finding;
 }
@@ -710,10 +755,17 @@ async function seedQueued({ label, reviewStatus, confidence, startedAtSql }) {
  */
 after(async () => {
   for (const ids of seeded.reverse()) {
+    const reviews = await queryJson(
+      "DELETE FROM teacher_reviews WHERE finding_id = $1 RETURNING audit_event_id",
+      [ids.finding],
+    );
     await queryJson("DELETE FROM tajweed_findings WHERE id = $1", [ids.finding]);
     await queryJson("DELETE FROM word_alignments WHERE id = $1", [ids.alignment]);
     await queryJson("DELETE FROM recitation_sessions WHERE id = $1", [ids.session]);
     await queryJson("DELETE FROM consent_records WHERE id = $1", [ids.consent]);
+    for (const review of reviews) {
+      await queryJson("DELETE FROM audit_events WHERE id = $1", [review.audit_event_id]);
+    }
     await queryJson("DELETE FROM audit_events WHERE id = $1", [ids.audit]);
   }
 });
@@ -821,7 +873,7 @@ test("the page is exactly the longest-waiting awaiting findings — not a confid
      FROM tajweed_findings tf
      JOIN word_alignments wa ON wa.id = tf.alignment_id
      LEFT JOIN recitation_sessions rs ON rs.id = wa.session_id
-     WHERE tf.tenant_id = $1
+     WHERE tf.tenant_id = $1 AND tf.analysis_basis = 'acoustic'
      ORDER BY (tf.review_status IN ('teacher-reviewed','blocked','scholar-approved')),
               rs.started_at ASC NULLS FIRST, tf.id
      LIMIT 200`,
@@ -854,7 +906,8 @@ test("the page is exactly the longest-waiting awaiting findings — not a confid
 test("the queue is truncated and nothing on the wire says so — a recorded gap", async () => {
   const [{ awaiting }] = await queryJson(
     `SELECT count(*)::int AS awaiting FROM tajweed_findings
-     WHERE tenant_id = $1 AND review_status NOT IN ('teacher-reviewed','blocked','scholar-approved')`,
+     WHERE tenant_id = $1 AND analysis_basis = 'acoustic'
+       AND review_status NOT IN ('teacher-reviewed','blocked','scholar-approved')`,
     [TENANT],
   );
   const res = await request(shell.baseUrl, "/v1/tajweed-findings", { role: "teacher" });
@@ -893,7 +946,8 @@ test("the queue is truncated and nothing on the wire says so — a recorded gap"
 test("the queue is traversable past its first page", async () => {
   const [{ awaiting }] = await queryJson(
     `SELECT count(*)::int AS awaiting FROM tajweed_findings
-     WHERE tenant_id = $1 AND review_status NOT IN ('teacher-reviewed','blocked','scholar-approved')`,
+     WHERE tenant_id = $1 AND analysis_basis = 'acoustic'
+       AND review_status NOT IN ('teacher-reviewed','blocked','scholar-approved')`,
     [TENANT],
   );
   if (awaiting <= 200) {
@@ -922,7 +976,8 @@ test("the queue is traversable past its first page", async () => {
 test("the queue says how deep it is, so truncation is not silent", async () => {
   const [{ awaiting }] = await queryJson(
     `SELECT count(*)::int AS awaiting FROM tajweed_findings
-     WHERE tenant_id = $1 AND review_status NOT IN ('teacher-reviewed','blocked','scholar-approved')`,
+     WHERE tenant_id = $1 AND analysis_basis = 'acoustic'
+       AND review_status NOT IN ('teacher-reviewed','blocked','scholar-approved')`,
     [TENANT],
   );
 

@@ -13,11 +13,17 @@
 const APPROVED_REVIEW_STATES = new Set(["teacher-reviewed", "scholar-approved"]);
 
 /**
- * @param {{ reviewStatus: string, confidence: number, sources: unknown[] }} record
+ * @param {{ reviewStatus: string, confidence: number, sources: unknown[], analysisBasis?: string }} record
  * @returns {boolean} whether this output may be shown directly to a learner.
  */
 export function canShowLearnerFacingAiOutput(record) {
   if (!APPROVED_REVIEW_STATES.has(record.reviewStatus)) {
+    return false;
+  }
+  // Text rules describe the canonical Quran passage. They do not measure this learner's audio, so
+  // approval of the instruction can never turn it into learner-performance feedback. Keep the
+  // field optional because this shared agent gate also handles non-Tajweed AgentRun records.
+  if (record.analysisBasis !== undefined && record.analysisBasis !== "acoustic") {
     return false;
   }
   const sourceCount = Array.isArray(record.sources) ? record.sources.length : 0;

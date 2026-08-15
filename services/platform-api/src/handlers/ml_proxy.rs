@@ -43,17 +43,35 @@ async fn proxy_ml(
         .as_object_mut()
         .ok_or_else(|| ApiError::BadRequest("request body must be a JSON object".to_owned()))?;
 
-    // Runtime guard: reject unapproved / experimental model configurations
-    const APPROVED_MODELS: &[&str] = &["ml-aligner-v0.2"];
-    if let Some(model_str) = obj
-        .get("modelVersion")
-        .and_then(|v| v.as_str())
-        .filter(|s| !APPROVED_MODELS.contains(s))
-    {
-        return Err(ApiError::BadRequest(format!(
-            "Model version '{}' is not approved for production use",
-            model_str
-        )));
+    if obj.contains_key("modelVersion") || obj.contains_key("modelAttribution") {
+        return Err(ApiError::BadRequest(
+            "model identity is server-selected and must not be supplied".to_owned(),
+        ));
+    }
+    if obj.contains_key("learnerId") {
+        return Err(ApiError::BadRequest(
+            "learnerId is server-derived and must not be supplied".to_owned(),
+        ));
+    }
+    if obj.contains_key("acousticSegments") {
+        return Err(ApiError::BadRequest(
+            "acousticSegments are server-derived and must not be supplied".to_owned(),
+        ));
+    }
+    if obj.contains_key("recognizedTokens") {
+        // The internal finalize chain may turn measured tokens into persisted evidence. This
+        // client-facing proxy must never let a caller manufacture those timestamps and cross the
+        // same path under a server-derived label.
+        return Err(ApiError::BadRequest(
+            "recognizedTokens are server-derived and must not be supplied".to_owned(),
+        ));
+    }
+    if obj.contains_key("transcriptModelAttribution") {
+        // This private envelope identifies the ASR/forced-aligner workers that authored the
+        // measured spans. A public caller must never be able to forge that producer chain.
+        return Err(ApiError::BadRequest(
+            "transcriptModelAttribution is server-derived and must not be supplied".to_owned(),
+        ));
     }
 
     // Server-authoritative tenant: ignore whatever the client claimed.
@@ -92,7 +110,8 @@ async fn proxy_ml(
     {
         let mut tx = crate::begin_tenant_tx(&state.pool, &actor.tenant_id).await?;
         let row = sqlx::query(
-            "SELECT s.learner_id, c.guardian_approved, c.external_asr_processing, c.audio_retention
+            "SELECT s.learner_id, s.quran_ref, s.source_checksum,
+                    c.guardian_approved, c.external_asr_processing, c.audio_retention
              FROM recitation_sessions s
              JOIN consent_records c ON c.id = s.consent_record_id
              WHERE s.id = $1 AND s.tenant_id = $2",
@@ -101,7 +120,6 @@ async fn proxy_ml(
         .bind(&actor.tenant_id)
         .fetch_optional(&mut *tx)
         .await?;
-        tx.commit().await?;
 
         let row = row.ok_or(ApiError::Forbidden)?;
         // The session must belong to the caller: a learner may only run analysis against their OWN
@@ -114,6 +132,38 @@ async fn proxy_ml(
         let external_asr_processing: bool = row.try_get("external_asr_processing")?;
         let audio_retention: String = row.try_get("audio_retention")?;
 
+        let acoustic_segments = if label == "tajweed" {
+            sqlx::query(
+                "SELECT word_id, start_ms, end_ms
+                 FROM word_alignments
+                 WHERE session_id = $1
+                   AND tenant_id = $2
+                   AND transcript_source = 'server-derived'
+                   AND status IN ('matched', 'misread')
+                   AND start_ms >= 0
+                   AND end_ms > start_ms
+                 ORDER BY start_ms, end_ms, word_id",
+            )
+            .bind(&session_id)
+            .bind(&actor.tenant_id)
+            .fetch_all(&mut *tx)
+            .await?
+            .into_iter()
+            .map(|segment| {
+                Ok(serde_json::json!({
+                    "wordId": segment.try_get::<String, _>("word_id")?,
+                    "startMs": segment.try_get::<i32, _>("start_ms")?,
+                    "endMs": segment.try_get::<i32, _>("end_ms")?,
+                }))
+            })
+            .collect::<Result<Vec<_>, sqlx::Error>>()?
+        } else {
+            Vec::new()
+        };
+        let stored_quran_ref: serde_json::Value = row.try_get("quran_ref")?;
+        let stored_source_checksum: String = row.try_get("source_checksum")?;
+        tx.commit().await?;
+
         obj.insert(
             "consent".to_owned(),
             serde_json::json!({
@@ -122,16 +172,26 @@ async fn proxy_ml(
                 "audioRetention": audio_retention,
             }),
         );
-        // Forward WHOSE session this is, from the same row the authz check above just read, for the
-        // same reason `consent` is overwritten rather than trusted: this is the server's answer, not
-        // the client's claim. ml-inference keys its external-ASR audit rows by sessionId, so without
-        // a learner on the request those rows are attributable to nobody -- and a learner-scoped
-        // privacy export has to drop them. Sending it here is what keeps a learner's own ASR history
-        // in their export while another learner's stays out of it.
+        // Forward WHOSE session this is from the row the authorization check just read. This is
+        // server-authored for the same reason consent is overwritten above: allowing the caller to
+        // choose it would file audit history under another learner. Alignment and tajweed audit
+        // rows are session-keyed, so the inference runtime needs this attribution to build a
+        // learner-scoped privacy export without exposing the rest of the tenant.
         obj.insert(
             "learnerId".to_owned(),
             serde_json::Value::String(session_learner_id.clone()),
         );
+        if label == "tajweed" {
+            obj.insert("quranRef".to_owned(), stored_quran_ref);
+            obj.insert(
+                "sourceChecksum".to_owned(),
+                serde_json::Value::String(stored_source_checksum),
+            );
+            obj.insert(
+                "acousticSegments".to_owned(),
+                serde_json::Value::Array(acoustic_segments),
+            );
+        }
     }
 
     // The trace has to be in the FAILURE record too, not only the success one.
@@ -171,6 +231,13 @@ async fn proxy_ml(
         ApiError::Upstream("ML service returned an invalid response".to_owned())
     })?;
 
+    if label == "alignment" {
+        require_producer_attribution(&result, "quran-aligner", "ML")?;
+    }
+    if label == "tajweed" {
+        require_tajweed_semantics(&result)?;
+    }
+
     // Tajweed findings existed only for the length of this response until now: nothing wrote them
     // down, so no teacher could ever review one and no learner could ever be shown one. See
     // `persist_tajweed_findings`.
@@ -203,6 +270,119 @@ async fn proxy_ml(
     }
 
     Ok(Json(result))
+}
+
+/// Enforce the instruction/performance boundary before any upstream value is persisted or returned.
+fn require_tajweed_semantics(result: &serde_json::Value) -> Result<(), ApiError> {
+    let invalid = || ApiError::Upstream("ML service returned an invalid response".to_owned());
+    let annotations = result
+        .get("annotations")
+        .and_then(serde_json::Value::as_array)
+        .ok_or_else(&invalid)?;
+    let findings = result
+        .get("findings")
+        .and_then(serde_json::Value::as_array)
+        .ok_or_else(&invalid)?;
+
+    for annotation in annotations {
+        let object = annotation.as_object().ok_or_else(&invalid)?;
+        if object.get("analysisBasis").and_then(|v| v.as_str()) != Some("text-rule")
+            || object.get("instructional").and_then(|v| v.as_bool()) != Some(true)
+            || ["confidence", "severity", "reviewStatus"]
+                .iter()
+                .any(|field| object.contains_key(*field))
+        {
+            tracing::error!("ML proxy: invalid instructional Tajweed annotation semantics");
+            return Err(invalid());
+        }
+    }
+
+    let result_model_version = result
+        .get("modelVersion")
+        .and_then(serde_json::Value::as_str);
+    let is_sha256 = |value: Option<&serde_json::Value>| {
+        value
+            .and_then(serde_json::Value::as_str)
+            .and_then(|digest| digest.strip_prefix("sha256:"))
+            .is_some_and(|hex| {
+                hex.len() == 64
+                    && hex
+                        .bytes()
+                        .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+            })
+    };
+    const REQUIRED_IDS: [&str; 4] = [
+        "modelVersion",
+        "acousticDatasetVersion",
+        "calibratorId",
+        "evaluationEvidenceId",
+    ];
+    const REQUIRED_DIGESTS: [&str; 4] = [
+        "modelArtifactSha256",
+        "acousticDatasetManifestSha256",
+        "calibratorArtifactSha256",
+        "evaluationEvidenceSha256",
+    ];
+    const SEVERITIES: [&str; 3] = ["practice", "warning", "critical"];
+
+    for finding in findings {
+        let object = finding.as_object().ok_or_else(&invalid)?;
+        let confidence = object.get("confidence").and_then(|v| v.as_f64());
+        let sources_are_complete = object
+            .get("sources")
+            .and_then(serde_json::Value::as_array)
+            .is_some_and(|sources| {
+                !sources.is_empty()
+                    && sources.iter().all(|source| {
+                        source.as_object().is_some_and(|source| {
+                            ["id", "title", "citation"].iter().all(|field| {
+                                source
+                                    .get(*field)
+                                    .and_then(serde_json::Value::as_str)
+                                    .is_some_and(|value| !value.is_empty())
+                            })
+                        })
+                    })
+            });
+        if object.get("analysisBasis").and_then(|v| v.as_str()) != Some("acoustic")
+            || object.get("reviewStatus").and_then(|v| v.as_str()) != Some("ai-suggested")
+            || object
+                .get("wordId")
+                .and_then(serde_json::Value::as_str)
+                .is_none_or(str::is_empty)
+            || object
+                .get("rule")
+                .and_then(serde_json::Value::as_str)
+                .is_none_or(str::is_empty)
+            || !object
+                .get("explanation")
+                .is_some_and(serde_json::Value::is_string)
+            || !object
+                .get("severity")
+                .and_then(serde_json::Value::as_str)
+                .is_some_and(|severity| SEVERITIES.contains(&severity))
+            || confidence.is_none_or(|value| !value.is_finite() || !(0.0..=1.0).contains(&value))
+            || object.contains_key("instructional")
+            || REQUIRED_IDS.iter().any(|field| {
+                object
+                    .get(*field)
+                    .and_then(serde_json::Value::as_str)
+                    .is_none_or(str::is_empty)
+            })
+            || REQUIRED_DIGESTS
+                .iter()
+                .any(|field| !is_sha256(object.get(*field)))
+            || object
+                .get("modelVersion")
+                .and_then(serde_json::Value::as_str)
+                != result_model_version
+            || !sources_are_complete
+        {
+            tracing::error!("ML proxy: invalid acoustic Tajweed finding semantics");
+            return Err(invalid());
+        }
+    }
+    Ok(())
 }
 
 /// Strip, in place, the content of every finding in an ML response that a learner may not be shown.
@@ -241,6 +421,7 @@ fn redact_withheld_findings(result: &mut serde_json::Value) {
     };
 
     for finding in findings.iter_mut() {
+        let learner_visible = crate::handlers::review::clears_learner_gate(finding);
         let Some(obj) = finding.as_object_mut() else {
             // Not an object, so its fields cannot be cleared one by one. Replace it wholesale with a
             // withheld placeholder rather than passing it through: the array keeps its length, which
@@ -256,20 +437,7 @@ fn redact_withheld_findings(result: &mut serde_json::Value) {
             });
             continue;
         };
-        let status = obj
-            .get("reviewStatus")
-            .and_then(|v| v.as_str())
-            .unwrap_or("")
-            .to_owned();
-        let confidence = obj
-            .get("confidence")
-            .and_then(|v| v.as_f64())
-            .unwrap_or(0.0);
-        let sources = obj
-            .get("sources")
-            .cloned()
-            .unwrap_or_else(|| serde_json::json!([]));
-        if crate::handlers::review::clears_learner_gate(&status, confidence, &sources) {
+        if learner_visible {
             continue;
         }
 
@@ -313,11 +481,11 @@ fn redact_withheld_findings(result: &mut serde_json::Value) {
 /// deterministic over canonical text, so a second run has nothing new to say: if the session
 /// already has findings, this is a no-op.
 ///
-/// **3. The response's own `modelVersion` is not a usable FK.** ml-inference reports
-/// `ml-aligner-v0.2` — its global model name, an ALIGNMENT model — on a tajweed response, and no
-/// such row exists in `model_versions`. Rather than substitute silently (the failure
-/// `persist_session_alignments` documents at length), the tajweed model is resolved by kind, and
-/// anything other than exactly one match refuses rather than guesses.
+/// **3. Attribution is exact, never inferred.** Every finding names the model artifact, dataset,
+/// calibrator, and release-candidate evaluation that produced its calibrated score. Persistence
+/// requires one exact same-tenant `eval_runs` match before the audit or finding is written. A
+/// service response that omits or mismatches any identity is refused; model kind is never used as a
+/// proxy for producer identity.
 async fn persist_tajweed_findings(
     state: &AppState,
     tenant_id: &str,
@@ -372,21 +540,77 @@ async fn persist_tajweed_findings(
         return Ok(());
     }
 
-    // Constraint 3 — resolve the tajweed model by kind.
-    let model_versions: Vec<String> =
-        sqlx::query_scalar("SELECT id FROM model_versions WHERE kind = 'tajweed' ORDER BY id")
-            .fetch_all(&mut *tx)
-            .await?;
-    let [model_version] = model_versions.as_slice() else {
-        tracing::error!(
-            "cannot persist tajweed findings: model_versions has {} rows of kind 'tajweed', \
-             expected exactly 1 — refusing to guess which produced these findings",
-            model_versions.len()
-        );
-        return Err(ApiError::Upstream(
-            "tajweed findings could not be recorded for review".to_owned(),
-        ));
-    };
+    let storable = findings
+        .iter()
+        .filter_map(|finding| {
+            let word_id = finding.get("wordId")?.as_str()?;
+            Some((finding, alignments.get(word_id)?))
+        })
+        .collect::<Vec<_>>();
+    if storable.is_empty() {
+        tx.commit().await?;
+        return Ok(());
+    }
+
+    // Constraint 3 — every exact producer/evaluation identity must resolve before any audit or
+    // learner-performance row is written. Migration 0033 repeats this check as the database
+    // backstop for every future writer.
+    for (finding, _) in &storable {
+        let authority = sqlx::query(
+            "SELECT 1
+               FROM eval_runs
+              WHERE tenant_id = $1
+                AND model_version_id = $2
+                AND evaluation_task = 'acoustic-tajweed'
+                AND evidence_kind = 'row-level-computed-evaluation'
+                AND evidence_eligibility = 'release-candidate'
+                AND release_eligible
+                AND passed
+                AND evidence_id = $3
+                AND evidence_payload_sha256 = $4
+                AND model_artifact_sha256 = $5
+                AND dataset_version = $6
+                AND dataset_manifest_sha256 = $7
+                AND calibrator_id = $8
+                AND calibrator_artifact_sha256 = $9
+              FOR KEY SHARE",
+        )
+        .bind(tenant_id)
+        .bind(finding.get("modelVersion").and_then(|v| v.as_str()))
+        .bind(finding.get("evaluationEvidenceId").and_then(|v| v.as_str()))
+        .bind(
+            finding
+                .get("evaluationEvidenceSha256")
+                .and_then(|v| v.as_str()),
+        )
+        .bind(finding.get("modelArtifactSha256").and_then(|v| v.as_str()))
+        .bind(
+            finding
+                .get("acousticDatasetVersion")
+                .and_then(|v| v.as_str()),
+        )
+        .bind(
+            finding
+                .get("acousticDatasetManifestSha256")
+                .and_then(|v| v.as_str()),
+        )
+        .bind(finding.get("calibratorId").and_then(|v| v.as_str()))
+        .bind(
+            finding
+                .get("calibratorArtifactSha256")
+                .and_then(|v| v.as_str()),
+        )
+        .fetch_optional(&mut *tx)
+        .await?;
+        if authority.is_none() {
+            tracing::error!(
+                "cannot persist tajweed finding: exact release-eligible evidence was not found"
+            );
+            return Err(ApiError::Upstream(
+                "tajweed findings could not be recorded for review".to_owned(),
+            ));
+        }
+    }
 
     let audit_id = next_id("audit");
     // Ordered before the findings, which FK-reference this row.
@@ -401,66 +625,36 @@ async fn persist_tajweed_findings(
     .bind(tenant_id)
     .bind(actor_id)
     .bind(session_id)
-    .bind(serde_json::json!({"trace_id": trace_id, "findingCount": findings.len()}))
+    .bind(serde_json::json!({"trace_id": trace_id, "findingCount": storable.len()}))
     .execute(&mut *tx)
     .await?;
 
-    // `severity` has a CHECK constraint; an unknown value would be a 500 on a learner's request.
-    const SEVERITIES: [&str; 3] = ["practice", "warning", "critical"];
     let mut written = 0usize;
-    let mut unanchored = 0usize;
-    for finding in findings {
-        let Some(word_id) = finding.get("wordId").and_then(|v| v.as_str()) else {
-            continue;
-        };
-        let Some(alignment_id) = alignments.get(word_id) else {
-            unanchored += 1;
-            continue;
-        };
-        let severity = finding
-            .get("severity")
-            .and_then(|v| v.as_str())
-            .unwrap_or("");
-        if !SEVERITIES.contains(&severity) {
-            unanchored += 1;
-            continue;
-        }
-
+    for (finding, alignment_id) in storable {
         sqlx::query(
-            // `analysis_basis` is a LITERAL, not a field read from the ML response.
-            //
-            // `analyzeAyah` inspects `word.text` — the canonical Uthmani text — and nothing else: no
-            // audio, no heard text, no timing, no pitch. Every finding it produces is "a rule applies
-            // at this position in the passage", which is true of the text and identical for every
-            // learner who ever recites it. Recording that is what lets a teacher tell it apart from a
-            // judgement about how THIS learner recited.
-            //
-            // Hardcoded for the same reason `TranscriptSource::ClientReported` is (ADR-0030): a value
-            // read from a response is one refactor away from being caller-controlled, and this one
-            // decides whether a teacher trusts what they are looking at. When an acoustic analyser
-            // exists, writing `acoustic` will be a deliberate code change with its own review.
+            // `analysis_basis` is a literal after require_tajweed_semantics has proved that this item
+            // came from `findings[]`. Canonical rules live in `annotations[]` and never reach this
+            // performance table.
             "INSERT INTO tajweed_findings
                (id, tenant_id, alignment_id, rule, severity, confidence, explanation,
-                review_status, source_refs, model_version_id, audit_event_id, analysis_basis)
-             VALUES ($1, $2, $3, $4, $5, $6::float8::numeric, $7, 'ai-suggested', $8, $9, $10, 'canonical-text')",
+                review_status, source_refs, model_version_id, audit_event_id, analysis_basis,
+                evaluation_evidence_id, evaluation_evidence_sha256, model_artifact_sha256,
+                acoustic_dataset_version, acoustic_dataset_manifest_sha256, calibrator_id,
+                calibrator_artifact_sha256)
+             VALUES ($1, $2, $3, $4, $5, $6::float8::numeric, $7, 'ai-suggested', $8, $9,
+                     $10, 'acoustic', $11, $12, $13, $14, $15, $16, $17)",
         )
         .bind(next_id("tajweed-finding"))
         .bind(tenant_id)
         .bind(alignment_id)
         .bind(finding.get("rule").and_then(|v| v.as_str()).unwrap_or(""))
-        .bind(severity)
+        .bind(finding.get("severity").and_then(|v| v.as_str()))
         // `ai-suggested` is not negotiable here and is written as a literal above: this is a model's
         // opinion, and only `create_teacher_review` may move it (ADR-0027).
         // `::float8::numeric` in the VALUES list, matching persist_session_alignments: the column
         // is `numeric` and sqlx binds an f64 as float8, which Postgres will not coerce. Without
         // the cast this is a 500 on a learner's analysis request.
-        .bind(
-            finding
-                .get("confidence")
-                .and_then(|v| v.as_f64())
-                .unwrap_or(0.0)
-                .clamp(0.0, 1.0),
-        )
+        .bind(finding.get("confidence").and_then(|v| v.as_f64()))
         .bind(
             finding
                 .get("explanation")
@@ -473,18 +667,42 @@ async fn persist_tajweed_findings(
                 .cloned()
                 .unwrap_or_else(|| serde_json::json!([])),
         )
-        .bind(model_version)
+        .bind(finding.get("modelVersion").and_then(|v| v.as_str()))
         .bind(&audit_id)
+        .bind(finding.get("evaluationEvidenceId").and_then(|v| v.as_str()))
+        .bind(
+            finding
+                .get("evaluationEvidenceSha256")
+                .and_then(|v| v.as_str()),
+        )
+        .bind(finding.get("modelArtifactSha256").and_then(|v| v.as_str()))
+        .bind(
+            finding
+                .get("acousticDatasetVersion")
+                .and_then(|v| v.as_str()),
+        )
+        .bind(
+            finding
+                .get("acousticDatasetManifestSha256")
+                .and_then(|v| v.as_str()),
+        )
+        .bind(finding.get("calibratorId").and_then(|v| v.as_str()))
+        .bind(
+            finding
+                .get("calibratorArtifactSha256")
+                .and_then(|v| v.as_str()),
+        )
         .execute(&mut *tx)
         .await?;
         written += 1;
     }
 
     tx.commit().await?;
+    let unanchored = findings.len().saturating_sub(written);
     if unanchored > 0 {
         tracing::info!(
             "session {session_id}: persisted {written} tajweed findings, skipped {unanchored} with \
-             no matching alignment or an unknown severity"
+             no matching alignment"
         );
     }
     Ok(())
@@ -618,8 +836,205 @@ async fn proxy_asr(
         return Err(ApiError::Upstream("ASR service error".to_owned()));
     }
 
-    response.json().await.map(Json).map_err(|e| {
+    let result: serde_json::Value = response.json().await.map_err(|e| {
         tracing::error!("ASR proxy {label} parse error [trace_id={trace}]: {e}");
         ApiError::Upstream("ASR service returned an invalid response".to_owned())
-    })
+    })?;
+    let expected = if label == "force-align" {
+        "forced-aligner"
+    } else {
+        "asr"
+    };
+    require_producer_attribution(&result, expected, "ASR")?;
+    Ok(Json(result))
+}
+
+pub(crate) fn require_producer_attribution(
+    result: &serde_json::Value,
+    expected_primary: &str,
+    label: &str,
+) -> Result<(), ApiError> {
+    fn validate(result: &serde_json::Value, expected_primary: &str) -> Result<(), String> {
+        const COMPONENTS: [&str; 5] = [
+            "asr",
+            "forced-aligner",
+            "quran-aligner",
+            "acoustic-scorer",
+            "calibrator",
+        ];
+        const BASES: [&str; 3] = ["acoustic", "quran-constrained", "text-rule"];
+        let attribution = result
+            .get("modelAttribution")
+            .and_then(serde_json::Value::as_object)
+            .ok_or("missing modelAttribution")?;
+        if attribution
+            .get("schemaVersion")
+            .and_then(serde_json::Value::as_u64)
+            != Some(1)
+        {
+            return Err("schemaVersion must be 1".to_owned());
+        }
+        let primary = attribution
+            .get("primaryComponent")
+            .and_then(serde_json::Value::as_str)
+            .ok_or("missing primaryComponent")?;
+        if primary != expected_primary || !COMPONENTS.contains(&primary) {
+            return Err("unexpected primary component".to_owned());
+        }
+        let components = attribution
+            .get("components")
+            .and_then(serde_json::Value::as_array)
+            .filter(|items| !items.is_empty())
+            .ok_or("components must be non-empty")?;
+
+        let mut seen = std::collections::HashSet::new();
+        let mut active = std::collections::HashMap::new();
+        let mut calibrator_references = Vec::new();
+        for component in components {
+            let record = component.as_object().ok_or("component must be an object")?;
+            let name = record
+                .get("component")
+                .and_then(serde_json::Value::as_str)
+                .ok_or("component name is required")?;
+            if !COMPONENTS.contains(&name) {
+                return Err("unknown component".to_owned());
+            }
+            if !seen.insert(name) {
+                return Err("duplicate component".to_owned());
+            }
+            match record.get("status").and_then(serde_json::Value::as_str) {
+                Some("unavailable") => {
+                    if record.get("artifactDigest").is_some()
+                        || record
+                            .get("reason")
+                            .and_then(serde_json::Value::as_str)
+                            .is_none_or(str::is_empty)
+                    {
+                        return Err("invalid unavailable component".to_owned());
+                    }
+                }
+                Some("active") => {
+                    let implementation = record
+                        .get("implementationId")
+                        .and_then(serde_json::Value::as_str)
+                        .filter(|value| !value.is_empty())
+                        .ok_or("implementationId is required")?;
+                    let digest = record
+                        .get("artifactDigest")
+                        .and_then(serde_json::Value::as_str)
+                        .ok_or("artifactDigest is required")?;
+                    let hex = digest
+                        .strip_prefix("sha256:")
+                        .filter(|hex| {
+                            hex.len() == 64
+                                && hex.bytes().all(|byte| {
+                                    byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte)
+                                })
+                        })
+                        .ok_or("artifactDigest is malformed")?;
+                    let _ = hex;
+                    record
+                        .get("datasetVersion")
+                        .and_then(serde_json::Value::as_str)
+                        .filter(|value| !value.is_empty())
+                        .ok_or("datasetVersion is required")?;
+                    let basis = record
+                        .get("analysisBasis")
+                        .and_then(serde_json::Value::as_str)
+                        .ok_or("analysisBasis is required")?;
+                    if !BASES.contains(&basis) {
+                        return Err("unknown analysisBasis".to_owned());
+                    }
+                    match record.get("calibratorId") {
+                        Some(serde_json::Value::Null) => {}
+                        Some(serde_json::Value::String(id)) if !id.is_empty() => {
+                            calibrator_references.push(id.clone());
+                        }
+                        _ => return Err("calibratorId must be a string or null".to_owned()),
+                    }
+                    active.insert(name, implementation);
+                }
+                _ => return Err("unknown component status".to_owned()),
+            }
+        }
+
+        let primary_implementation = active
+            .get(primary)
+            .ok_or("primary component must be active")?;
+        let legacy = result
+            .get("modelVersion")
+            .and_then(serde_json::Value::as_str)
+            .ok_or("modelVersion is required during compatibility window")?;
+        if legacy != *primary_implementation {
+            return Err("modelVersion disagrees with primary component".to_owned());
+        }
+        if let Some(calibrator) = active.get("calibrator") {
+            if calibrator_references
+                .iter()
+                .any(|reference| reference.as_str() != *calibrator)
+            {
+                return Err("calibrator reference mismatch".to_owned());
+            }
+        } else if !calibrator_references.is_empty() {
+            return Err("calibrator is unavailable".to_owned());
+        }
+        Ok(())
+    }
+
+    if let Err(reason) = validate(result, expected_primary) {
+        tracing::error!("{label} service returned invalid model attribution: {reason}");
+        return Err(ApiError::Upstream(format!(
+            "{label} service returned invalid model attribution"
+        )));
+    }
+    Ok(())
+}
+
+/// Require a composed producer document to preserve every upstream component exactly and add only
+/// the named downstream component. Validation of each envelope happens first; this function checks
+/// the chain rather than accepting two individually valid but unrelated model documents.
+pub(crate) fn require_exact_attribution_extension(
+    upstream: &serde_json::Value,
+    composed: &serde_json::Value,
+    downstream_component: &str,
+    label: &str,
+) -> Result<(), ApiError> {
+    let invalid = || {
+        tracing::error!("{label} service returned a model attribution unrelated to its input");
+        ApiError::Upstream(format!(
+            "{label} service returned invalid model attribution"
+        ))
+    };
+
+    let upstream_components = upstream
+        .get("modelAttribution")
+        .and_then(|value| value.get("components"))
+        .and_then(serde_json::Value::as_array)
+        .ok_or_else(&invalid)?;
+    let composed_components = composed
+        .get("modelAttribution")
+        .and_then(|value| value.get("components"))
+        .and_then(serde_json::Value::as_array)
+        .ok_or_else(&invalid)?;
+
+    if composed_components.len() != upstream_components.len() + 1
+        || upstream_components
+            .iter()
+            .any(|component| !composed_components.contains(component))
+    {
+        return Err(invalid());
+    }
+    let downstream_count = composed_components
+        .iter()
+        .filter(|component| {
+            component
+                .get("component")
+                .and_then(serde_json::Value::as_str)
+                == Some(downstream_component)
+        })
+        .count();
+    if downstream_count != 1 {
+        return Err(invalid());
+    }
+    Ok(())
 }

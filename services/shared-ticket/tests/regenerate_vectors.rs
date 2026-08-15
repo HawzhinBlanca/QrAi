@@ -1,4 +1,4 @@
-//! Generator for specs/node-backend-port/fixtures/ticket-vectors.json.
+//! Generator for packages/contracts/fixtures/realtime/rt-v2-ticket-vectors.json.
 //!
 //! The fixture's own $comment mandates this path: vectors are GENERATED FROM RUST, never
 //! hand-written and never derived from the Node port. Run with:
@@ -100,19 +100,16 @@ const VECTORS: &[Vector] = &[
 #[ignore = "one-shot generator, not a gate"]
 fn regenerate() {
     let comment = concat!(
-        "N1 — cross-language golden vectors for the realtime ticket ",
-        "(services/shared-ticket/src/lib.rs). Asserted by BOTH a Rust test in that crate and ",
-        "tests/node-api/ticket-vectors.test.mjs, so platform-api and realtime-gateway can be ported ",
-        "independently instead of cutting over together (specs/node-backend-port/plan.md §1). ",
-        "GENERATED FROM RUST, never from a port: vectors derived from the port would pin the port's ",
-        "behaviour including its bugs, and both suites would agree while both were wrong. To ",
-        "regenerate, add a temporary generator test to shared-ticket — do not hand-edit ",
-        "expectedTicket. expiresAtUnixSeconds is a STRING, not a JSON number: Rust's u64 range ",
-        "exceeds JS's Number.MAX_SAFE_INTEGER, and the max-u64 vector proved it — JSON.parse turned ",
-        "18446744073709551615 into 18446744073709552000. Any u64 crossing a JSON boundary in this ",
-        "port has the same hazard. audioRetention joined the payload on 2026-08-03 (rt_v1 -> rt_v2) ",
-        "so the gateway can tell ml-inference how long a learner agreed their audio may be kept; ",
-        "every value the database CHECK permits appears in the set below."
+        "Language-neutral golden vectors for the realtime ticket ",
+        "(services/shared-ticket/src/lib.rs). Asserted by BOTH the Rust oracle and ",
+        "tests/node-api/ticket-vectors.test.mjs. GENERATED FROM RUST, never from a port: vectors ",
+        "derived from a consumer would pin its bugs and allow both suites to agree while both were ",
+        "wrong. Regenerate only with the committed ignored ",
+        "services/shared-ticket/tests/regenerate_vectors.rs tool; do not hand-edit expectedTicket. ",
+        "expiresAtUnixSeconds is a STRING, not a JSON number: Rust's u64 range exceeds JS's ",
+        "Number.MAX_SAFE_INTEGER, and the max-u64 vector proved it — JSON.parse turned ",
+        "18446744073709551615 into 18446744073709552000. audioRetention joined the payload on ",
+        "2026-08-03 (rt_v1 -> rt_v2); every value the database CHECK permits appears below."
     );
 
     let mut out = String::new();
@@ -179,7 +176,7 @@ fn regenerate() {
 
     let path = concat!(
         env!("CARGO_MANIFEST_DIR"),
-        "/../../specs/node-backend-port/fixtures/ticket-vectors.json"
+        "/../../packages/contracts/fixtures/realtime/rt-v2-ticket-vectors.json"
     );
     std::fs::write(path, &out).unwrap();
     println!("wrote {} vectors to {path}", VECTORS.len());

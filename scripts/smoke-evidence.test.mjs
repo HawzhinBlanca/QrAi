@@ -5,8 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { createCandidateBoundSmokeSummary } from "./smoke-evidence.mjs";
-
-const deployableServices = ["platform-api", "realtime-gateway", "ml-inference", "asr-inference", "web"];
+import { DEPLOYABLE_IMAGE_KEYS } from "./lib/deployable-images.mjs";
 
 function git(repo, args) {
   return execFileSync("git", args, { cwd: repo, encoding: "utf8" }).trim();
@@ -25,7 +24,7 @@ function prepareCandidate(t) {
 }
 
 function imageDigests() {
-  return Object.fromEntries(deployableServices.map((service, index) => [service, `sha256:${String(index + 1).repeat(64)}`]));
+  return Object.fromEntries(DEPLOYABLE_IMAGE_KEYS.map((service, index) => [service, `sha256:${String(index + 1).repeat(64)}`]));
 }
 
 function passedInput(candidate, overrides = {}) {

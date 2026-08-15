@@ -17,14 +17,103 @@ pub const LEARNER_MIN_CONFIDENCE: f64 = 0.82;
 /// source. An ALLOWLIST of statuses, for the reason the TypeScript original spells out — a denylist
 /// fails OPEN on any status this code has not heard of, and failing open here means handing a
 /// learner an unreviewed judgement about their recitation.
-pub(crate) fn clears_learner_gate(
-    review_status: &str,
-    confidence: f64,
-    sources: &serde_json::Value,
-) -> bool {
-    let approved = review_status == "teacher-reviewed" || review_status == "scholar-approved";
-    let has_source = sources.as_array().is_some_and(|s| !s.is_empty());
-    approved && confidence >= LEARNER_MIN_CONFIDENCE && has_source
+pub(crate) fn clears_learner_gate(finding: &serde_json::Value) -> bool {
+    let Some(record) = finding.as_object() else {
+        return false;
+    };
+    let approved = matches!(
+        record
+            .get("reviewStatus")
+            .and_then(serde_json::Value::as_str),
+        Some("teacher-reviewed" | "scholar-approved")
+    );
+    let confidence = record
+        .get("confidence")
+        .and_then(serde_json::Value::as_f64)
+        .unwrap_or(f64::NAN);
+    let valid_sources = record
+        .get("sources")
+        .and_then(serde_json::Value::as_array)
+        .is_some_and(|sources| {
+            !sources.is_empty()
+                && sources.iter().all(|source| {
+                    source.as_object().is_some_and(|source| {
+                        ["id", "title", "citation"].iter().all(|field| {
+                            source
+                                .get(*field)
+                                .and_then(serde_json::Value::as_str)
+                                .is_some_and(|value| !value.is_empty())
+                        })
+                    })
+                })
+        });
+    let start_ms = record.get("startMs").and_then(serde_json::Value::as_i64);
+    let end_ms = record.get("endMs").and_then(serde_json::Value::as_i64);
+    let valid_span = start_ms
+        .zip(end_ms)
+        .is_some_and(|(start, end)| start >= 0 && end > start);
+    let valid_ids = [
+        "evidenceId",
+        "modelVersion",
+        "acousticDatasetVersion",
+        "calibratorId",
+        "evaluationEvidenceId",
+        "auditEventId",
+    ]
+    .iter()
+    .all(|field| {
+        record
+            .get(*field)
+            .and_then(serde_json::Value::as_str)
+            .is_some_and(|value| !value.is_empty())
+    });
+    let valid_digests = [
+        "modelArtifactSha256",
+        "acousticDatasetManifestSha256",
+        "calibratorArtifactSha256",
+        "evaluationEvidenceSha256",
+    ]
+    .iter()
+    .all(|field| {
+        record
+            .get(*field)
+            .and_then(serde_json::Value::as_str)
+            .is_some_and(is_sha256_digest)
+    });
+
+    record
+        .get("analysisBasis")
+        .and_then(serde_json::Value::as_str)
+        == Some("acoustic")
+        && approved
+        && confidence.is_finite()
+        && (LEARNER_MIN_CONFIDENCE..=1.0).contains(&confidence)
+        && valid_sources
+        && record.get("withheld").and_then(serde_json::Value::as_bool) == Some(false)
+        && valid_span
+        && record
+            .get("audioStatus")
+            .and_then(serde_json::Value::as_str)
+            == Some("available")
+        && valid_ids
+        && valid_digests
+        && record
+            .get("calibrationStatus")
+            .and_then(serde_json::Value::as_str)
+            == Some("calibrated")
+        && record
+            .get("evaluationEvidenceStatus")
+            .and_then(serde_json::Value::as_str)
+            == Some("release-trusted")
+}
+
+fn is_sha256_digest(value: &str) -> bool {
+    value.strip_prefix("sha256:").is_some_and(|hex| {
+        hex.len() == 64
+            && hex
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    })
 }
 
 /// What a reviewer can do with this finding's audio.
@@ -244,7 +333,7 @@ pub async fn create_teacher_review(
     // snapshot is of the row this decision was actually made against. Re-reading it afterwards would
     // leave a window in which the finding changed between the check and the copy.
     let finding = sqlx::query(
-        "SELECT jsonb_array_length(tf.source_refs) AS source_count,
+        "SELECT jsonb_array_length(tf.source_refs) AS source_count, tf.analysis_basis,
                 jsonb_build_object(
                   'findingId',    tf.id,
                   'wordId',       wa.word_id,
@@ -268,6 +357,16 @@ pub async fn create_teacher_review(
     let reviewed_finding: serde_json::Value = finding
         .try_get("reviewed_finding")
         .unwrap_or_else(|_| serde_json::json!({}));
+
+    let analysis_basis = finding
+        .try_get::<String, _>("analysis_basis")
+        .unwrap_or_default();
+    if req.decision == TeacherDecision::Accepted && analysis_basis != "acoustic" {
+        return Err(ApiError::BadRequest(
+            "an instructional text rule cannot be released as learner-performance feedback"
+                .to_owned(),
+        ));
+    }
 
     // ── Accepting an UNSOURCED finding is refused ───────────────────────────────────────────────
     // `create_scholar_approval` already refuses the same hazard (`ApiError::MissingSources`) and a
@@ -623,16 +722,15 @@ pub async fn list_tajweed_findings(
         // session by matching `wordId`. word_id is the CANONICAL id (e.g. "1:1:2"), identical for
         // every learner reciting that passage, so another learner's findings were attributed to the
         // session on screen — and a teacher's accept/reject was submitted against that finding id.
-        "SELECT tf.id, tf.alignment_id, wa.session_id, wa.word_id, wa.transcript_source, tf.analysis_basis,
-                tf.rule, tf.severity,
+        "SELECT tf.id, tf.alignment_id, tf.tenant_id, wa.session_id, wa.word_id, wa.transcript_source,
+                wa.start_ms, wa.end_ms, tf.analysis_basis, tf.rule, tf.severity,
                 tf.confidence::float8 AS confidence, tf.explanation, tf.review_status, tf.source_refs,
-                cr.audio_retention,
-                EXISTS (
-                  SELECT 1 FROM audio_chunks ac
-                  WHERE ac.session_id = wa.session_id
-                    AND ac.tenant_id = tf.tenant_id
-                    AND ac.start_ms < wa.end_ms AND ac.end_ms > wa.start_ms
-                ) AS has_audio
+                tf.model_version_id, tf.audit_event_id, tf.evaluation_evidence_id,
+                tf.evaluation_evidence_sha256, tf.model_artifact_sha256,
+                tf.acoustic_dataset_version, tf.acoustic_dataset_manifest_sha256,
+                tf.calibrator_id, tf.calibrator_artifact_sha256, cr.audio_retention,
+                audio.evidence_id AS audio_evidence_id, er.id AS matching_eval_id,
+                er.evidence_payload AS evaluation_evidence_payload
          FROM tajweed_findings tf
          JOIN word_alignments wa ON wa.id = tf.alignment_id
          -- LEFT, both of them. An INNER join here would silently DROP any finding whose session or
@@ -640,7 +738,30 @@ pub async fn list_tajweed_findings(
          -- finding vanishing from a review queue is worse than one that cannot be played.
          LEFT JOIN recitation_sessions rs ON rs.id = wa.session_id
          LEFT JOIN consent_records cr ON cr.id = rs.consent_record_id
-         WHERE tf.tenant_id = $1
+         LEFT JOIN LATERAL (
+           SELECT ac.evidence_id
+             FROM audio_chunks ac
+            WHERE ac.session_id = wa.session_id
+              AND ac.tenant_id = tf.tenant_id
+              AND ac.start_ms < wa.end_ms AND ac.end_ms > wa.start_ms
+            ORDER BY ac.start_ms, ac.id
+            LIMIT 1
+         ) audio ON true
+         LEFT JOIN eval_runs er
+           ON er.tenant_id = tf.tenant_id
+          AND er.model_version_id = tf.model_version_id
+          AND er.evaluation_task = 'acoustic-tajweed'
+          AND er.evidence_kind = 'row-level-computed-evaluation'
+          AND er.evidence_eligibility = 'release-candidate'
+          AND er.release_eligible AND er.passed
+          AND er.evidence_id = tf.evaluation_evidence_id
+          AND er.evidence_payload_sha256 = tf.evaluation_evidence_sha256
+          AND er.model_artifact_sha256 = tf.model_artifact_sha256
+          AND er.dataset_version = tf.acoustic_dataset_version
+          AND er.dataset_manifest_sha256 = tf.acoustic_dataset_manifest_sha256
+          AND er.calibrator_id = tf.calibrator_id
+          AND er.calibrator_artifact_sha256 = tf.calibrator_artifact_sha256
+         WHERE tf.tenant_id = $1 AND tf.analysis_basis = 'acoustic'
          -- ── What this queue is FOR ──────────────────────────────────────────────────────────────
          -- A teacher opens this to decide what to work on, so it sorts by whether work is NEEDED and
          -- then by how long it has waited. It used to sort by confidence DESC, which is unrelated to
@@ -683,7 +804,7 @@ pub async fn list_tajweed_findings(
     // per cent of it — measured at the time of writing, 1986 awaited review.
     let total_awaiting: i64 = sqlx::query_scalar(
         "SELECT count(*) FROM tajweed_findings
-         WHERE tenant_id = $1
+         WHERE tenant_id = $1 AND analysis_basis = 'acoustic'
            AND review_status NOT IN ('teacher-reviewed', 'blocked', 'scholar-approved')",
     )
     .bind(&actor.tenant_id)
@@ -695,7 +816,63 @@ pub async fn list_tajweed_findings(
         .map(|r| {
             let sources: serde_json::Value =
                 r.try_get("source_refs").unwrap_or(serde_json::json!([]));
+            let evidence_payload = r
+                .try_get::<Option<serde_json::Value>, _>("evaluation_evidence_payload")
+                .unwrap_or(None);
+            let evaluation_status = if evidence_payload
+                .as_ref()
+                .and_then(|payload| payload.get("declaredFixture"))
+                .and_then(serde_json::Value::as_bool)
+                == Some(true)
+            {
+                "fixture"
+            } else if r
+                .try_get::<Option<String>, _>("matching_eval_id")
+                .unwrap_or(None)
+                .is_none()
+                && r
+                    .try_get::<Option<String>, _>("evaluation_evidence_id")
+                    .unwrap_or(None)
+                    .is_some()
+            {
+                "stale"
+            } else {
+                // Production trust is intentionally empty. T10's calibrator/evidence registry is
+                // the only component allowed to promote this to `release-trusted`.
+                "unverified"
+            };
+            let audio_evidence_id = r
+                .try_get::<Option<String>, _>("audio_evidence_id")
+                .unwrap_or(None);
+            let gate_input = serde_json::json!({
+                "analysisBasis": "acoustic",
+                "acousticDatasetManifestSha256": r.try_get::<Option<String>, _>("acoustic_dataset_manifest_sha256").unwrap_or(None),
+                "acousticDatasetVersion": r.try_get::<Option<String>, _>("acoustic_dataset_version").unwrap_or(None),
+                "audioStatus": audio_status(
+                    r.try_get::<Option<String>, _>("audio_retention").unwrap_or(None),
+                    audio_evidence_id.is_some(),
+                ),
+                "auditEventId": r.try_get::<String, _>("audit_event_id").unwrap_or_default(),
+                "calibrationStatus": "uncalibrated",
+                "calibratorArtifactSha256": r.try_get::<Option<String>, _>("calibrator_artifact_sha256").unwrap_or(None),
+                "calibratorId": r.try_get::<Option<String>, _>("calibrator_id").unwrap_or(None),
+                "confidence": r.try_get::<f64, _>("confidence").unwrap_or(0.0),
+                "endMs": r.try_get::<i32, _>("end_ms").ok(),
+                "evaluationEvidenceId": r.try_get::<Option<String>, _>("evaluation_evidence_id").unwrap_or(None),
+                "evaluationEvidenceSha256": r.try_get::<Option<String>, _>("evaluation_evidence_sha256").unwrap_or(None),
+                "evaluationEvidenceStatus": evaluation_status,
+                "evidenceId": audio_evidence_id,
+                "modelArtifactSha256": r.try_get::<Option<String>, _>("model_artifact_sha256").unwrap_or(None),
+                "modelVersion": r.try_get::<String, _>("model_version_id").unwrap_or_default(),
+                "reviewStatus": r.try_get::<String, _>("review_status").unwrap_or_default(),
+                "sources": sources.clone(),
+                "startMs": r.try_get::<i32, _>("start_ms").ok(),
+                "withheld": false,
+            });
+            let withheld = !clears_learner_gate(&gate_input);
             serde_json::json!({
+                "acousticDatasetManifestSha256": gate_input["acousticDatasetManifestSha256"],
+                "acousticDatasetVersion": gate_input["acousticDatasetVersion"],
                 "id": r.try_get::<String, _>("id").unwrap_or_default(),
                 "sessionId": r.try_get::<String, _>("session_id").unwrap_or_default(),
                 "wordId": r.try_get::<String, _>("word_id").unwrap_or_default(),
@@ -703,21 +880,8 @@ pub async fn list_tajweed_findings(
                 "transcriptSource": r
                     .try_get::<String, _>("transcript_source")
                     .unwrap_or_else(|_| "client-reported".to_owned()),
-                // `canonical-text` | `acoustic` — what the finding is ABOUT (ADR-0033).
-                //
-                // The two answer different questions and a teacher needs both. `transcriptSource`
-                // says whether the platform heard the recitation at all; `analysisBasis` says
-                // whether this judgement was derived from it. Today every finding is
-                // `canonical-text`: the analyser reads the passage's Uthmani text and detects where
-                // a rule applies, which is true of the text and identical for every learner.
-                //
-                // Accepting one promotes it to learner-visible feedback about that learner's
-                // recitation (ADR-0028). Whether that is the right thing to do with a text-derived
-                // finding is a scholar's call; this is what makes it a call rather than an
-                // assumption.
-                "analysisBasis": r
-                    .try_get::<String, _>("analysis_basis")
-                    .unwrap_or_else(|_| "canonical-text".to_owned()),
+                // This performance queue excludes instructional text rules in SQL.
+                "analysisBasis": "acoustic",
                 // Whether a reviewer can HEAR the recitation this finding is about, and if not, why.
                 //
                 // A teacher opening this queue is asked to accept or reject a claim about how a
@@ -727,14 +891,27 @@ pub async fn list_tajweed_findings(
                 // the same as if it were sitting there unplayed.
                 "audioStatus": audio_status(
                     r.try_get::<Option<String>, _>("audio_retention").unwrap_or(None),
-                    r.try_get::<bool, _>("has_audio").unwrap_or(false),
+                    gate_input["evidenceId"].is_string(),
                 ),
+                "auditEventId": gate_input["auditEventId"],
+                "calibrationStatus": gate_input["calibrationStatus"],
+                "calibratorArtifactSha256": gate_input["calibratorArtifactSha256"],
+                "calibratorId": gate_input["calibratorId"],
                 "rule": r.try_get::<String, _>("rule").unwrap_or_default(),
                 "severity": r.try_get::<String, _>("severity").unwrap_or_default(),
                 "confidence": r.try_get::<f64, _>("confidence").unwrap_or(0.0),
+                "endMs": gate_input["endMs"],
+                "evaluationEvidenceId": gate_input["evaluationEvidenceId"],
+                "evaluationEvidenceSha256": gate_input["evaluationEvidenceSha256"],
+                "evaluationEvidenceStatus": gate_input["evaluationEvidenceStatus"],
+                "evidenceId": gate_input["evidenceId"],
                 "explanation": r.try_get::<String, _>("explanation").unwrap_or_default(),
+                "modelArtifactSha256": gate_input["modelArtifactSha256"],
+                "modelVersion": gate_input["modelVersion"],
                 "reviewStatus": r.try_get::<String, _>("review_status").unwrap_or_default(),
                 "sources": sources,
+                "startMs": gate_input["startMs"],
+                "withheld": withheld,
             })
         })
         .collect();
@@ -810,11 +987,43 @@ pub async fn list_session_tajweed_findings(
     // Same columns and the same ordering as the staff queue, so the two cannot describe a finding
     // differently. `tf.id` breaks the confidence tie for a stable order.
     let rows = sqlx::query(
-        "SELECT tf.id, wa.word_id, tf.rule, tf.severity, tf.confidence::float8 AS confidence,
-                tf.explanation, tf.review_status, tf.source_refs
+        "SELECT tf.id, wa.word_id, wa.start_ms, wa.end_ms, tf.rule, tf.severity,
+                tf.confidence::float8 AS confidence, tf.explanation, tf.review_status,
+                tf.source_refs, tf.model_version_id, tf.audit_event_id,
+                tf.evaluation_evidence_id, tf.evaluation_evidence_sha256,
+                tf.model_artifact_sha256, tf.acoustic_dataset_version,
+                tf.acoustic_dataset_manifest_sha256, tf.calibrator_id,
+                tf.calibrator_artifact_sha256, cr.audio_retention,
+                audio.evidence_id AS audio_evidence_id, er.id AS matching_eval_id,
+                er.evidence_payload AS evaluation_evidence_payload
          FROM tajweed_findings tf
          JOIN word_alignments wa ON wa.id = tf.alignment_id
-         WHERE wa.session_id = $1 AND wa.tenant_id = $2
+         LEFT JOIN recitation_sessions rs ON rs.id = wa.session_id
+         LEFT JOIN consent_records cr ON cr.id = rs.consent_record_id
+         LEFT JOIN LATERAL (
+           SELECT ac.evidence_id
+             FROM audio_chunks ac
+            WHERE ac.session_id = wa.session_id
+              AND ac.tenant_id = tf.tenant_id
+              AND ac.start_ms < wa.end_ms AND ac.end_ms > wa.start_ms
+            ORDER BY ac.start_ms, ac.id
+            LIMIT 1
+         ) audio ON true
+         LEFT JOIN eval_runs er
+           ON er.tenant_id = tf.tenant_id
+          AND er.model_version_id = tf.model_version_id
+          AND er.evaluation_task = 'acoustic-tajweed'
+          AND er.evidence_kind = 'row-level-computed-evaluation'
+          AND er.evidence_eligibility = 'release-candidate'
+          AND er.release_eligible AND er.passed
+          AND er.evidence_id = tf.evaluation_evidence_id
+          AND er.evidence_payload_sha256 = tf.evaluation_evidence_sha256
+          AND er.model_artifact_sha256 = tf.model_artifact_sha256
+          AND er.dataset_version = tf.acoustic_dataset_version
+          AND er.dataset_manifest_sha256 = tf.acoustic_dataset_manifest_sha256
+          AND er.calibrator_id = tf.calibrator_id
+          AND er.calibrator_artifact_sha256 = tf.calibrator_artifact_sha256
+         WHERE wa.session_id = $1 AND wa.tenant_id = $2 AND tf.analysis_basis = 'acoustic'
          ORDER BY tf.confidence DESC, tf.id",
     )
     .bind(&id)
@@ -831,37 +1040,120 @@ pub async fn list_session_tajweed_findings(
             let sources = r
                 .try_get::<serde_json::Value, _>("source_refs")
                 .unwrap_or_else(|_| serde_json::json!([]));
+            let evidence_payload = r
+                .try_get::<Option<serde_json::Value>, _>("evaluation_evidence_payload")
+                .unwrap_or(None);
+            let evaluation_status = if evidence_payload
+                .as_ref()
+                .and_then(|payload| payload.get("declaredFixture"))
+                .and_then(serde_json::Value::as_bool)
+                == Some(true)
+            {
+                "fixture"
+            } else if r
+                .try_get::<Option<String>, _>("matching_eval_id")
+                .unwrap_or(None)
+                .is_none()
+                && r
+                    .try_get::<Option<String>, _>("evaluation_evidence_id")
+                    .unwrap_or(None)
+                    .is_some()
+            {
+                "stale"
+            } else {
+                "unverified"
+            };
+            let audio_evidence_id = r
+                .try_get::<Option<String>, _>("audio_evidence_id")
+                .unwrap_or(None);
+            let gate_input = serde_json::json!({
+                "analysisBasis": "acoustic",
+                "acousticDatasetManifestSha256": r.try_get::<Option<String>, _>("acoustic_dataset_manifest_sha256").unwrap_or(None),
+                "acousticDatasetVersion": r.try_get::<Option<String>, _>("acoustic_dataset_version").unwrap_or(None),
+                "audioStatus": audio_status(
+                    r.try_get::<Option<String>, _>("audio_retention").unwrap_or(None),
+                    audio_evidence_id.is_some(),
+                ),
+                "auditEventId": r.try_get::<String, _>("audit_event_id").unwrap_or_default(),
+                "calibrationStatus": "uncalibrated",
+                "calibratorArtifactSha256": r.try_get::<Option<String>, _>("calibrator_artifact_sha256").unwrap_or(None),
+                "calibratorId": r.try_get::<Option<String>, _>("calibrator_id").unwrap_or(None),
+                "confidence": confidence,
+                "endMs": r.try_get::<i32, _>("end_ms").ok(),
+                "evaluationEvidenceId": r.try_get::<Option<String>, _>("evaluation_evidence_id").unwrap_or(None),
+                "evaluationEvidenceSha256": r.try_get::<Option<String>, _>("evaluation_evidence_sha256").unwrap_or(None),
+                "evaluationEvidenceStatus": evaluation_status,
+                "evidenceId": audio_evidence_id,
+                "modelArtifactSha256": r.try_get::<Option<String>, _>("model_artifact_sha256").unwrap_or(None),
+                "modelVersion": r.try_get::<String, _>("model_version_id").unwrap_or_default(),
+                "reviewStatus": review_status,
+                "sources": sources.clone(),
+                "startMs": r.try_get::<i32, _>("start_ms").ok(),
+                "withheld": false,
+            });
 
             // Reported to BOTH audiences and meaning the same thing to each: staff read it as
             // "still withheld from the learner", the learner as "a note you cannot see yet".
-            let withheld = !clears_learner_gate(&review_status, confidence, &sources);
+            let withheld = !clears_learner_gate(&gate_input);
 
             if withheld && !is_staff {
                 // `confidence: 0` and `sources: []` are not filler. They make the redacted row fail
                 // `canShowLearnerFacingAiOutput` and `isLearnerVisible` on their own, so a client
                 // that never learns what `withheld` means still cannot display one as feedback.
                 return serde_json::json!({
+                    "acousticDatasetManifestSha256": gate_input["acousticDatasetManifestSha256"],
+                    "acousticDatasetVersion": gate_input["acousticDatasetVersion"],
                     "id": id,
+                    "analysisBasis": "acoustic",
+                    "audioStatus": gate_input["audioStatus"],
+                    "auditEventId": gate_input["auditEventId"],
+                    "calibrationStatus": gate_input["calibrationStatus"],
+                    "calibratorArtifactSha256": gate_input["calibratorArtifactSha256"],
+                    "calibratorId": gate_input["calibratorId"],
                     "wordId": "",
                     "rule": "",
                     "severity": "",
                     "confidence": 0.0,
+                    "endMs": gate_input["endMs"],
+                    "evaluationEvidenceId": gate_input["evaluationEvidenceId"],
+                    "evaluationEvidenceSha256": gate_input["evaluationEvidenceSha256"],
+                    "evaluationEvidenceStatus": gate_input["evaluationEvidenceStatus"],
+                    "evidenceId": gate_input["evidenceId"],
                     "explanation": "",
+                    "modelArtifactSha256": gate_input["modelArtifactSha256"],
+                    "modelVersion": gate_input["modelVersion"],
                     "reviewStatus": review_status,
                     "sources": [],
+                    "startMs": gate_input["startMs"],
                     "withheld": true,
                 });
             }
 
             serde_json::json!({
+                "acousticDatasetManifestSha256": gate_input["acousticDatasetManifestSha256"],
+                "acousticDatasetVersion": gate_input["acousticDatasetVersion"],
                 "id": id,
+                "analysisBasis": "acoustic",
+                "audioStatus": gate_input["audioStatus"],
+                "auditEventId": gate_input["auditEventId"],
+                "calibrationStatus": gate_input["calibrationStatus"],
+                "calibratorArtifactSha256": gate_input["calibratorArtifactSha256"],
+                "calibratorId": gate_input["calibratorId"],
                 "wordId": r.try_get::<String, _>("word_id").unwrap_or_default(),
                 "rule": r.try_get::<String, _>("rule").unwrap_or_default(),
                 "severity": r.try_get::<String, _>("severity").unwrap_or_default(),
                 "confidence": confidence,
+                "endMs": gate_input["endMs"],
+                "evaluationEvidenceId": gate_input["evaluationEvidenceId"],
+                "evaluationEvidenceSha256": gate_input["evaluationEvidenceSha256"],
+                "evaluationEvidenceStatus": gate_input["evaluationEvidenceStatus"],
+                "evidenceId": gate_input["evidenceId"],
                 "explanation": r.try_get::<String, _>("explanation").unwrap_or_default(),
+                "modelArtifactSha256": gate_input["modelArtifactSha256"],
+                "modelVersion": gate_input["modelVersion"],
                 "reviewStatus": review_status,
                 "sources": sources,
+                "startMs": gate_input["startMs"],
                 "withheld": withheld,
             })
         })
@@ -940,37 +1232,45 @@ mod learner_gate_tests {
     use super::{LEARNER_MIN_CONFIDENCE, clears_learner_gate};
     use serde_json::json;
 
-    /// `tests/contract/tajweed-gate-parity.test.mjs` proves the TypeScript and Dart gates agree, and
-    /// pins this file's confidence FLOOR by reading the constant out of the source. What it cannot
-    /// do is execute this function: Rust cannot be called from Node.
-    ///
-    /// So the term it never checked here is the STATUS ALLOWLIST — and this is the authoritative
-    /// implementation. ADR-0028 moved enforcement server-side precisely because a client-side gate
-    /// is a display choice, not an authorization boundary. A learner with `curl` and their own token
-    /// gets whatever this function returns.
-    fn sources() -> serde_json::Value {
-        json!([{ "id": "s1", "title": "Tajweed reference", "citation": "Rule 1" }])
+    fn complete_finding() -> serde_json::Value {
+        json!({
+            "analysisBasis": "acoustic",
+            "reviewStatus": "teacher-reviewed",
+            "confidence": 0.91,
+            "sources": [{ "id": "s1", "title": "Tajweed reference", "citation": "Rule 1" }],
+            "withheld": false,
+            "startMs": 120,
+            "endMs": 460,
+            "audioStatus": "available",
+            "evidenceId": "audio-evidence-1",
+            "modelVersion": "acoustic-model-v1",
+            "modelArtifactSha256": format!("sha256:{}", "1".repeat(64)),
+            "acousticDatasetVersion": "dataset-v1",
+            "acousticDatasetManifestSha256": format!("sha256:{}", "2".repeat(64)),
+            "calibratorId": "calibrator-v1",
+            "calibratorArtifactSha256": format!("sha256:{}", "3".repeat(64)),
+            "calibrationStatus": "calibrated",
+            "evaluationEvidenceId": "evaluation-v1",
+            "evaluationEvidenceSha256": format!("sha256:{}", "4".repeat(64)),
+            "evaluationEvidenceStatus": "release-trusted",
+            "auditEventId": "audit-1"
+        })
     }
 
     #[test]
     fn an_unrecognised_status_is_refused_because_this_is_an_allowlist() {
-        // The failure a denylist produces: any status nobody thought of — a typo, one added upstream
-        // without updating this gate — reaches a learner. Mirrors the "invented status" case the
-        // TypeScript and Dart gates are already held to.
-        assert!(
-            !clears_learner_gate("definitely-fine-honest", 1.0, &sources()),
-            "an unknown review status cleared the server-side learner gate"
-        );
+        let mut finding = complete_finding();
+        finding["reviewStatus"] = json!("definitely-fine-honest");
+        assert!(!clears_learner_gate(&finding));
     }
 
     #[test]
     fn exactly_two_statuses_clear_the_gate() {
-        // The control, and it is not optional: every negative assertion in this module is satisfied
-        // by a function hardcoded to `false`, which would withhold ALL feedback — a different bug,
-        // and one no other test here would catch.
         for status in ["teacher-reviewed", "scholar-approved"] {
+            let mut finding = complete_finding();
+            finding["reviewStatus"] = json!(status);
             assert!(
-                clears_learner_gate(status, 0.9, &sources()),
+                clears_learner_gate(&finding),
                 "{status} should clear the gate"
             );
         }
@@ -980,8 +1280,10 @@ mod learner_gate_tests {
             "teacher-review-required",
             "blocked",
         ] {
+            let mut finding = complete_finding();
+            finding["reviewStatus"] = json!(status);
             assert!(
-                !clears_learner_gate(status, 0.9, &sources()),
+                !clears_learner_gate(&finding),
                 "{status} must never clear the gate"
             );
         }
@@ -989,39 +1291,38 @@ mod learner_gate_tests {
 
     #[test]
     fn the_confidence_floor_is_inclusive() {
-        // Which side of 0.82 clears is a real decision and the parity test pins only the NUMBER, not
-        // the comparison. `>` instead of `>=` withholds every finding that lands exactly on the
-        // floor, silently and forever.
-        assert!(clears_learner_gate(
-            "teacher-reviewed",
-            LEARNER_MIN_CONFIDENCE,
-            &sources()
-        ));
-        assert!(!clears_learner_gate(
-            "teacher-reviewed",
-            LEARNER_MIN_CONFIDENCE - 0.001,
-            &sources()
-        ));
+        let mut finding = complete_finding();
+        finding["confidence"] = json!(LEARNER_MIN_CONFIDENCE);
+        assert!(clears_learner_gate(&finding));
+        finding["confidence"] = json!(LEARNER_MIN_CONFIDENCE - 0.001);
+        assert!(!clears_learner_gate(&finding));
     }
 
     #[test]
     fn a_finding_with_no_source_is_refused_however_confident_it_is() {
-        // The whole point of the source term: "never expose learner-facing AI feedback without
-        // source". Confidence cannot buy its way past it.
-        assert!(!clears_learner_gate("teacher-reviewed", 1.0, &json!([])));
+        let mut finding = complete_finding();
+        finding["sources"] = json!([]);
+        finding["confidence"] = json!(1.0);
+        assert!(!clears_learner_gate(&finding));
     }
 
     #[test]
     fn a_sources_field_that_is_not_an_array_is_refused_rather_than_assumed_present() {
-        // `sources.as_array()` returns None for a string, an object or null. Treating "not an array"
-        // as "has a source" is the fail-OPEN direction, and it is reachable: this value is
-        // deserialized from ml-inference's JSON, which enforces no schema.
         for shape in [json!(null), json!("s1"), json!({ "id": "s1" }), json!(1)] {
+            let mut finding = complete_finding();
+            finding["sources"] = shape.clone();
             assert!(
-                !clears_learner_gate("teacher-reviewed", 1.0, &shape),
-                "a non-array sources value ({shape}) was treated as having a source"
+                !clears_learner_gate(&finding),
+                "invalid sources {shape} cleared the gate"
             );
         }
+    }
+
+    #[test]
+    fn instructional_text_rules_never_clear_the_performance_gate() {
+        let mut finding = complete_finding();
+        finding["analysisBasis"] = json!("text-rule");
+        assert!(!clears_learner_gate(&finding));
     }
 }
 
@@ -1029,47 +1330,27 @@ mod learner_gate_tests {
 mod learner_gate_corpus_tests {
     use super::clears_learner_gate;
 
-    /// The shared corpus, executed against THIS implementation.
-    ///
-    /// `packages/contracts/fixtures/canonical-gates.json` opens by stating its own purpose: the
-    /// gates "are currently implemented once, in TypeScript. Any second implementation (a Node
-    /// service, a Dart client, a Python check) must agree EXACTLY, and prose in a design doc cannot
-    /// enforce that. This corpus can: every runtime loads this same file and asserts the same
-    /// expectations."
-    ///
-    /// That last sentence was not true. `canShowLearnerFacingAiOutput` has five implementations
-    /// outside TypeScript — this one, `services/node-api/routes/ml-proxy.mjs`,
-    /// `services/node-api/routes/agent-write.mjs`, `services/agents/lib/gate.mjs` and
-    /// `apps/flutter/lib/src/api/models.dart` — and not one of them read the file. The corpus was
-    /// loaded only by the TypeScript suite, which is the language that already owns the reference
-    /// implementation, so it proved that TypeScript agreed with itself.
-    ///
-    /// This is the authoritative gate: ADR-0028 moved enforcement server-side because a client-side
-    /// check is a display choice, not an authorization boundary. A learner with `curl` and their own
-    /// token gets whatever this function returns. If any implementation had to read the corpus, it
-    /// was this one.
-    ///
-    /// The hand-written cases in `learner_gate_tests` above stay. They are not redundant: they were
-    /// written against this function's own reasoning, and a corpus can only ever check the cases
-    /// somebody added to it.
     const CORPUS: &str =
-        include_str!("../../../../packages/contracts/fixtures/canonical-gates.json");
+        include_str!("../../../../packages/contracts/fixtures/learner-feedback-gate.json");
 
     #[test]
     fn rust_agrees_with_the_shared_gate_corpus_on_every_case() {
         let corpus: serde_json::Value =
-            serde_json::from_str(CORPUS).expect("canonical-gates.json is not valid JSON");
+            serde_json::from_str(CORPUS).expect("learner-feedback-gate.json is not valid JSON");
 
-        let cases = corpus["canShowLearnerFacingAiOutput"]["cases"]
+        let cases = corpus["cases"]
             .as_array()
-            .expect("canonical-gates.json has no canShowLearnerFacingAiOutput.cases array");
+            .expect("learner-feedback-gate.json has no cases array");
+        let base = corpus["base"]
+            .as_object()
+            .expect("corpus has no base object");
 
         // Fail CLOSED on an empty corpus. Without this, deleting every case — or renaming the key,
         // which `as_array()` on a missing value would have turned into an empty iteration had it not
         // panicked — leaves a green test that asserts nothing. Same shape as the licence gate that
         // once reported "0 unapproved" because it had received zero packages.
         assert!(
-            cases.len() >= 8,
+            cases.len() >= 24,
             "the shared corpus is down to {} cases for the learner gate; it had 11. A corpus that \
              shrinks silently is how this check stops meaning anything.",
             cases.len()
@@ -1078,25 +1359,24 @@ mod learner_gate_corpus_tests {
         let mut checked = 0;
         for case in cases {
             let name = case["name"].as_str().unwrap_or("<unnamed>");
-            let input = &case["input"];
             let expected = case["expected"]
                 .as_bool()
                 .unwrap_or_else(|| panic!("case {name:?} has no boolean `expected`"));
-
-            let review_status = input["reviewStatus"]
-                .as_str()
-                .unwrap_or_else(|| panic!("case {name:?} has no string `reviewStatus`"));
-            let confidence = input["confidence"]
-                .as_f64()
-                .unwrap_or_else(|| panic!("case {name:?} has no numeric `confidence`"));
-            let sources = &input["sources"];
-
-            let actual = clears_learner_gate(review_status, confidence, sources);
+            let mut input = base.clone();
+            if let Some(patch) = case.get("patch").and_then(serde_json::Value::as_object) {
+                input.extend(patch.clone());
+            }
+            if let Some(remove) = case.get("remove").and_then(serde_json::Value::as_array) {
+                for field in remove.iter().filter_map(serde_json::Value::as_str) {
+                    input.remove(field);
+                }
+            }
+            let input = serde_json::Value::Object(input);
+            let actual = clears_learner_gate(&input);
             assert_eq!(
                 actual, expected,
-                "the server-side gate disagrees with the shared corpus.\n  case:     {name}\n  \
-                 input:    reviewStatus={review_status:?} confidence={confidence} \
-                 sources={sources}\n  corpus:   {expected}\n  this impl: {actual}"
+                "the server-side gate disagrees with the shared corpus.\n  case: {name}\n  \
+                 input: {input}\n  corpus: {expected}\n  this impl: {actual}"
             );
             checked += 1;
         }
@@ -1112,9 +1392,7 @@ mod learner_gate_corpus_tests {
         // A corpus of only-false cases is satisfied by a gate hardcoded to `false`, which withholds
         // every finding from every learner — silent, and no negative case would notice.
         let corpus: serde_json::Value = serde_json::from_str(CORPUS).unwrap();
-        let cases = corpus["canShowLearnerFacingAiOutput"]["cases"]
-            .as_array()
-            .unwrap();
+        let cases = corpus["cases"].as_array().unwrap();
         let passing = cases.iter().filter(|c| c["expected"] == true).count();
         let failing = cases.iter().filter(|c| c["expected"] == false).count();
         assert!(

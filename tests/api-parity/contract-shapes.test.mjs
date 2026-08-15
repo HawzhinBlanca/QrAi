@@ -1,8 +1,26 @@
 import assert from "node:assert/strict";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import test, { after, before } from "node:test";
 
+import { createInferenceRuntime } from "../../server/src/inference/local.mjs";
+import { createJobRuntime } from "../../server/src/jobs/runtime.mjs";
+import { createJobStore } from "../../server/src/jobs/store.mjs";
+import { createWorkflowHandlers } from "../../server/src/jobs/workflows.mjs";
+import { createDb } from "../../server/src/lib/db.mjs";
+import { createFilesystemAudioObjectStore } from "../../server/src/storage/audio-object-store.mjs";
+
 import { assertMatchesContract } from "./lib/contract.mjs";
-import { queryJson, request, startApi, startMockUpstream, uniqueSuffix } from "./lib/harness.mjs";
+import {
+  DATABASE_URL,
+  TENANT,
+  queryJson,
+  request,
+  startApi,
+  startMockUpstream,
+  uniqueSuffix,
+} from "./lib/harness.mjs";
 
 /**
  * C3 — the seven operations that had a parity test but NO validated response schema.
@@ -23,19 +41,88 @@ import { queryJson, request, startApi, startMockUpstream, uniqueSuffix } from ".
 
 let api;
 let ml;
+let workerDb;
+let workerLoop;
+let workerRunning = false;
+let audioObjectStore;
+let audioStorageDir;
+const ownedPrivacyLearners = new Set();
 
 before(async () => {
-  // privacy/delete calls the ML service to erase audio blobs. Without a mock it 502s, so the
-  // success shape is unreachable — which is exactly why this route had no shape evidence.
+  // Rust still exercises the compatibility erasure surface. Node's durable API is paired with a
+  // separate worker below, so neither side can silently execute privacy work on the API loop.
   ml = await startMockUpstream(() => ({
     status: 200,
     body: { deletedAudioObjectKeys: [], deletedMetadataObjectKeys: [] },
   }));
-  api = await startApi({ env: { ML_INFERENCE_URL: ml.url } });
+  audioStorageDir = mkdtempSync(join(tmpdir(), "qrai-contract-shapes-audio-"));
+  audioObjectStore = createFilesystemAudioObjectStore({ rootDir: audioStorageDir });
+  workerDb = createDb(DATABASE_URL);
+  const inference = createInferenceRuntime({
+    predictAlignment: async () => assert.fail("privacy shape work must not align"),
+    predictTajweed: async () => assert.fail("privacy shape work must not evaluate Tajweed"),
+    transcribeSession: async () => assert.fail("privacy shape work must not transcribe"),
+  });
+  const workerRuntime = createJobRuntime({
+    store: createJobStore({ db: workerDb }),
+    handlers: createWorkflowHandlers({
+      db: workerDb,
+      inference,
+      audioObjectStore,
+      upstreamTimeoutMs: 1_000,
+    }),
+    workerId: "contract-shapes-privacy-worker",
+    leaseMs: 2_000,
+    operationTimeoutMs: 1_500,
+    retryBaseMs: 10,
+    retryMaxMs: 100,
+  });
+  workerRunning = true;
+  workerLoop = (async () => {
+    while (workerRunning) {
+      const learners = [...ownedPrivacyLearners];
+      if (learners.length === 0) {
+        await new Promise((resolve) => setTimeout(resolve, 5));
+        continue;
+      }
+      const jobId = await workerDb.withTenant(TENANT, async (tx) => {
+        const [row] = await tx`
+          SELECT id
+          FROM background_jobs
+          WHERE tenant_id = ${TENANT}
+            AND kind = 'privacy.delete'
+            AND subject_id = ANY(${learners})
+            AND status IN ('queued', 'retry')
+            AND available_at <= now()
+          ORDER BY priority DESC, created_at, id
+          LIMIT 1`;
+        return row?.id ?? null;
+      });
+      if (jobId === null) {
+        await new Promise((resolve) => setTimeout(resolve, 5));
+      } else {
+        await workerRuntime.runOne(TENANT, { jobId });
+      }
+    }
+  })();
+  api = await startApi({
+    env: { ML_INFERENCE_URL: ml.url, AUDIO_STORAGE_DIR: audioStorageDir },
+  });
 });
 after(async () => {
+  let workerFailure = null;
+  workerRunning = false;
+  try {
+    await workerLoop;
+  } catch (error) {
+    workerFailure = error;
+  }
+  await workerDb?.end();
   await api?.stop();
   await ml?.stop();
+  await audioObjectStore?.close();
+  if (audioStorageDir) rmSync(audioStorageDir, { recursive: true, force: true });
+  if (workerFailure) throw workerFailure;
 });
 
 /**
@@ -213,6 +300,7 @@ test("POST /v1/privacy/delete matches PrivacyJob", async () => {
     },
   });
   assert.equal(created.status, 200);
+  ownedPrivacyLearners.add(created.body.userId);
 
   const res = await request(api.baseUrl, "/v1/privacy/delete", {
     method: "POST",

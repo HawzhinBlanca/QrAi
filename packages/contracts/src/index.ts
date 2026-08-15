@@ -69,7 +69,7 @@ export const PUBLIC_API_ROUTES = [
   { method: "GET", path: "/v1/eval-runs/:modelVersion", transport: "http" },
   { method: "POST", path: "/v1/privacy/export", transport: "http" },
   { method: "POST", path: "/v1/privacy/delete", transport: "http" },
-  // Server-side ML proxy: the browser calls these; platform-api forwards to ml-inference with the
+  // Server-side inference proxy: the browser calls these; platform-api forwards to the worker with the
   // server-held ML_API_KEY and the actor's authoritative tenant (never the client-supplied tenantId).
   { method: "POST", path: "/v1/ml/alignments:predict", transport: "http" },
   { method: "POST", path: "/v1/ml/tajweed-findings:predict", transport: "http" },
@@ -92,10 +92,13 @@ export const CORE_TABLES = [
   "eval_runs",
   "consent_records",
   "realtime_session_tickets",
+  "realtime_ticket_replay_claims",
+  "realtime_audio_chunk_outcomes",
   "privacy_jobs",
   "alignment_runs",
   "pilot_invitations",
   "pilot_sessions",
+  "background_jobs",
 ] as const;
 
 export const PROOF_GATES = [
@@ -107,6 +110,192 @@ export const PROOF_GATES = [
   "audio-retention-tests",
   "model-eval-regression-gates",
 ] as const;
+
+export const MODEL_COMPONENTS = [
+  "asr",
+  "forced-aligner",
+  "quran-aligner",
+  "acoustic-scorer",
+  "calibrator",
+] as const;
+
+export const MODEL_ANALYSIS_BASES = ["acoustic", "quran-constrained", "text-rule"] as const;
+
+export type ModelComponent = (typeof MODEL_COMPONENTS)[number];
+export type ModelAnalysisBasis = (typeof MODEL_ANALYSIS_BASES)[number];
+export type Sha256Digest = `sha256:${string}`;
+
+export interface ActiveModelComponentAttribution {
+  component: ModelComponent;
+  status: "active";
+  implementationId: string;
+  artifactDigest: Sha256Digest;
+  datasetVersion: string;
+  analysisBasis: ModelAnalysisBasis;
+  calibratorId: string | null;
+}
+
+export interface UnavailableModelComponentAttribution {
+  component: ModelComponent;
+  status: "unavailable";
+  reason: string;
+}
+
+export type ModelComponentAttribution =
+  | ActiveModelComponentAttribution
+  | UnavailableModelComponentAttribution;
+
+export interface ModelAttribution {
+  schemaVersion: 1;
+  primaryComponent: ModelComponent;
+  components: ModelComponentAttribution[];
+}
+
+export interface ModelAttributionValidationOptions {
+  expectedDigests?: Partial<Record<ModelComponent, Sha256Digest>>;
+  legacyModelVersion?: string;
+}
+
+const SHA256_DIGEST_PATTERN = /^sha256:[a-f0-9]{64}$/;
+
+function isModelComponent(value: unknown): value is ModelComponent {
+  return typeof value === "string" && (MODEL_COMPONENTS as readonly string[]).includes(value);
+}
+
+function isModelAnalysisBasis(value: unknown): value is ModelAnalysisBasis {
+  return typeof value === "string" && (MODEL_ANALYSIS_BASES as readonly string[]).includes(value);
+}
+
+function isNonEmptyString(value: unknown): value is string {
+  return typeof value === "string" && value.length > 0;
+}
+
+function modelAttributionError(message: string): never {
+  throw new Error(`invalid model attribution: ${message}`);
+}
+
+/**
+ * Validate model attribution at every runtime boundary.
+ *
+ * The validator deliberately does not infer, default, or rename a producer. Its output is the same
+ * object it was given so callers can validate before forwarding or persisting without rewriting
+ * provenance. The expected-digests option is the deployment/release allowlist; a producer cannot
+ * authorize its own unexpected artifact merely by returning a well-formed digest.
+ */
+export function validateModelAttribution(
+  value: unknown,
+  options: ModelAttributionValidationOptions = {},
+): ModelAttribution {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+    return modelAttributionError("value must be an object");
+  }
+
+  const attribution = value as Record<string, unknown>;
+  if (attribution.schemaVersion !== 1) {
+    return modelAttributionError("schemaVersion must be 1");
+  }
+  if (!isModelComponent(attribution.primaryComponent)) {
+    return modelAttributionError(`unknown model component: ${String(attribution.primaryComponent)}`);
+  }
+  if (!Array.isArray(attribution.components) || attribution.components.length === 0) {
+    return modelAttributionError("components must be a non-empty array");
+  }
+
+  const seen = new Set<ModelComponent>();
+  const active = new Map<ModelComponent, ActiveModelComponentAttribution>();
+
+  for (const raw of attribution.components) {
+    if (raw === null || typeof raw !== "object" || Array.isArray(raw)) {
+      return modelAttributionError("each component record must be an object");
+    }
+    const record = raw as Record<string, unknown>;
+    if (!isModelComponent(record.component)) {
+      return modelAttributionError(`unknown model component: ${String(record.component)}`);
+    }
+    if (seen.has(record.component)) {
+      return modelAttributionError(`duplicate model component: ${record.component}`);
+    }
+    seen.add(record.component);
+
+    if (record.status === "unavailable") {
+      if (!isNonEmptyString(record.reason)) {
+        return modelAttributionError(`unavailable component ${record.component} requires a reason`);
+      }
+      if ("artifactDigest" in record) {
+        return modelAttributionError(
+          `unavailable component ${record.component} cannot claim an artifact digest`,
+        );
+      }
+      continue;
+    }
+
+    if (record.status !== "active") {
+      return modelAttributionError(`component ${record.component} has an unknown status`);
+    }
+    if (!isNonEmptyString(record.implementationId)) {
+      return modelAttributionError(`component ${record.component} requires implementationId`);
+    }
+    if (!isNonEmptyString(record.artifactDigest) || !SHA256_DIGEST_PATTERN.test(record.artifactDigest)) {
+      return modelAttributionError(
+        `component ${record.component} artifactDigest must be sha256 plus 64 lowercase hex characters`,
+      );
+    }
+    if (!isNonEmptyString(record.datasetVersion)) {
+      return modelAttributionError(`component ${record.component} requires datasetVersion`);
+    }
+    if (!isModelAnalysisBasis(record.analysisBasis)) {
+      return modelAttributionError(`component ${record.component} has an unknown analysisBasis`);
+    }
+    if (
+      record.calibratorId !== null &&
+      (typeof record.calibratorId !== "string" || record.calibratorId.length === 0)
+    ) {
+      return modelAttributionError(`component ${record.component} has an invalid calibratorId`);
+    }
+
+    active.set(record.component, record as unknown as ActiveModelComponentAttribution);
+  }
+
+  const primary = active.get(attribution.primaryComponent);
+  if (primary === undefined) {
+    return modelAttributionError(
+      `primary component ${attribution.primaryComponent} must be active`,
+    );
+  }
+
+  for (const record of active.values()) {
+    if (record.calibratorId === null) continue;
+    const calibrator = active.get("calibrator");
+    if (calibrator === undefined || calibrator.implementationId !== record.calibratorId) {
+      return modelAttributionError(
+        `component ${record.component} names an unavailable or mismatched calibrator`,
+      );
+    }
+  }
+
+  if (
+    options.legacyModelVersion !== undefined &&
+    options.legacyModelVersion !== primary.implementationId
+  ) {
+    return modelAttributionError(
+      `modelVersion must equal the primary component implementationId ${primary.implementationId}`,
+    );
+  }
+
+  if (options.expectedDigests !== undefined) {
+    for (const [componentName, expectedDigest] of Object.entries(options.expectedDigests)) {
+      if (!isModelComponent(componentName)) {
+        return modelAttributionError(`unknown expected model component: ${componentName}`);
+      }
+      const record = active.get(componentName);
+      if (record === undefined || record.artifactDigest !== expectedDigest) {
+        return modelAttributionError(`artifact digest mismatch for ${componentName}`);
+      }
+    }
+  }
+
+  return value as ModelAttribution;
+}
 
 export interface SourceReference {
   id: string;
@@ -151,7 +340,7 @@ export interface CanonicalWordRecord {
   ayahId: string;
   wordIndex: number;
   text: string;
-  sourceId: "quran-foundation" | "tanzil";
+  sourceId: "alquran-cloud" | "quran-foundation" | "tanzil";
   edition: string;
   scriptType: "uthmani" | "indopak" | "plain";
   importVersion: string;
@@ -163,7 +352,7 @@ export interface CanonicalAyahRecord {
   quranRef: QuranReference;
   text: string;
   wordCount: number;
-  sourceId: "quran-foundation" | "tanzil";
+  sourceId: "alquran-cloud" | "quran-foundation" | "tanzil";
   edition: string;
   scriptType: "uthmani" | "indopak" | "plain";
   importVersion: string;
@@ -171,7 +360,7 @@ export interface CanonicalAyahRecord {
 }
 
 export interface CanonicalSourceManifest {
-  id: "quran-foundation" | "tanzil";
+  id: "alquran-cloud" | "quran-foundation" | "tanzil";
   title: string;
   url: string;
   edition: string;
@@ -200,7 +389,7 @@ export interface RealtimeSessionTicket {
   tenantId: string;
   learnerId: string;
   expiresAt: string;
-  allowedSampleRates: Array<16000 | 24000 | 48000>;
+  allowedSampleRates: Array<16000>;
   externalAsrProcessing: boolean;
   token: string;
   auditEventId: string;
@@ -219,18 +408,62 @@ export interface WordAlignment extends TraceableRecord {
   wordId: string;
   canonicalText: string;
   heardText: string;
-  startMs: number;
-  endMs: number;
+  startMs: number | null;
+  endMs: number | null;
   status: "matched" | "misread" | "missed" | "extra" | "needs-review";
+  transcriptSource?: "server-derived" | "client-reported";
+  modelAttribution?: ModelAttribution | null;
+  datasetVersion?: string | null;
+  evidenceIds?: string[];
 }
 
-export interface TajweedFinding extends TraceableRecord {
+export interface RecognizedToken {
+  text: string;
+  startMs: number;
+  endMs: number;
+  confidence: number;
+}
+
+export interface AcousticLearnerEvidence {
+  startMs: number;
+  endMs: number;
+  audioStatus: "available" | "discarded" | "not-captured" | "unknown";
+  modelArtifactSha256: Sha256Digest;
+  acousticDatasetVersion: string;
+  acousticDatasetManifestSha256: Sha256Digest;
+  calibratorId: string;
+  calibratorArtifactSha256: Sha256Digest;
+  calibrationStatus: "calibrated" | "uncalibrated";
+  evaluationEvidenceId: string;
+  evaluationEvidenceSha256: Sha256Digest;
+  evaluationEvidenceStatus: "release-trusted" | "fixture" | "stale" | "unverified";
+  withheld: boolean;
+}
+
+export interface TajweedFinding extends TraceableRecord, AcousticLearnerEvidence {
   id: string;
   wordId: string;
   rule: string;
+  analysisBasis: "acoustic";
   severity: "practice" | "warning" | "critical";
   explanation: string;
   sources: SourceReference[];
+}
+
+export interface TajweedInstructionalAnnotation {
+  id?: string;
+  wordId: string;
+  rule: string;
+  arabicName?: string;
+  category?: string;
+  analysisBasis: "text-rule";
+  instructional: true;
+  explanation: string;
+  sources: SourceReference[];
+  tenantId: string;
+  sourceChecksum: string;
+  evidenceId: string;
+  auditEventId: string;
 }
 
 export interface AlignmentPredictionRequest {
@@ -247,13 +480,24 @@ export interface AlignmentPredictionRequest {
 export interface AlignmentPredictionResponse extends TraceableRecord {
   sessionId: string;
   alignments: WordAlignment[];
+  modelAttribution: ModelAttribution;
+  finalizable: boolean;
+  nonFinalizedReason: string | null;
   latencyMs: number;
   datasetVersion: string;
 }
 
-export interface TajweedPredictionResponse extends TraceableRecord {
+export interface TajweedPredictionResponse {
+  tenantId: string;
   sessionId: string;
+  quranRef: QuranReference;
+  sourceChecksum: string;
+  evidenceId: string;
+  modelVersion: string;
+  auditEventId: string;
+  annotations: TajweedInstructionalAnnotation[];
   findings: TajweedFinding[];
+  latencyMs: number;
   datasetVersion: string;
 }
 
@@ -266,6 +510,49 @@ export interface ModelEvalRun {
   teacherAgreementRate: number;
   unsourcedLearnerOutputs: number;
   passed: boolean;
+  evaluationTask: "quran-word-alignment" | "acoustic-tajweed" | null;
+  evidenceId: string | null;
+  evidenceKind: "legacy-aggregate" | "row-level-computed-evaluation";
+  evidenceEligibility: "fixture-regression" | "research-only" | "release-candidate";
+  releaseEligible: boolean;
+  evidencePayload: Record<string, unknown> | null;
+  evidencePayloadSha256: string | null;
+  candidateId: string | null;
+  modelArtifactSha256: string | null;
+  datasetManifestSha256: string | null;
+  splitManifestSha256: string | null;
+  splitId: string | null;
+  evaluatorVersion: string | null;
+  evaluatorSourceSha256: string | null;
+  evaluatorProtocolSha256: string | null;
+  rawRowManifestSha256: string | null;
+  rawResultsSha256: string | null;
+  calibratorId: string | null;
+  calibratorArtifactSha256: string | null;
+  signerKeyId: string | null;
+  signatureAlgorithm: "Ed25519" | null;
+  signatureBase64Url: string | null;
+  signedAt: string | null;
+  evaluationCounts: Record<string, unknown> | null;
+  sliceMetrics: unknown[] | null;
+}
+
+/**
+ * Output of the detached Ed25519 evidence verifier. The release gate accepts this separately from
+ * the database projection so a caller-supplied `passed` boolean can never stand in for verified
+ * row-level evidence.
+ */
+export interface ModelEvidenceVerification {
+  cryptographicallyValid: true;
+  evidence: Record<string, unknown>;
+  evidenceId: string;
+  keyId: string;
+  payloadSha256: string;
+  releaseTrusted: boolean;
+  trustClass: "test-only" | "release";
+  signatureAlgorithm: "Ed25519";
+  signatureBase64Url: string;
+  signedAt: string;
 }
 
 export interface MemorizationPlan extends TraceableRecord {
@@ -370,22 +657,105 @@ export function hasCanonicalTextChanged(before: CanonicalWordRecord, after: Cano
   return before.id !== after.id || before.text !== after.text || before.sourceChecksum !== after.sourceChecksum;
 }
 
-export function canShowLearnerFacingAiOutput(record: Pick<AgentRun | TajweedFinding, "confidence" | "reviewStatus" | "sources">): boolean {
-  // Allowlist, not a denylist: only these two statuses ever clear the gate. reviewStatus is a
-  // closed TypeScript union at compile time, but its runtime value on both AgentRun and
-  // TajweedFinding is deserialized straight from an HTTP JSON response (services/ml-inference's
-  // Node code sets it via a literal string with no server-side schema enforcement, unlike
-  // platform-api's Rust enum) — TypeScript's type gives no runtime guarantee. A denylist of the
-  // four known-unapproved statuses would fail OPEN for any unexpected value (a typo, a future
-  // status added upstream without updating this gate), letting unreviewed content through to a
-  // learner. An allowlist fails CLOSED instead: anything that isn't explicitly one of the two
-  // genuinely-approved statuses is blocked, matching this gate's actual purpose.
-  const isApprovedStatus = record.reviewStatus === "teacher-reviewed" || record.reviewStatus === "scholar-approved";
-  if (!isApprovedStatus) {
+function hasCompleteAcousticLearnerEvidence(record: {
+  withheld?: unknown;
+  startMs?: unknown;
+  endMs?: unknown;
+  audioStatus?: unknown;
+  evidenceId?: unknown;
+  modelVersion?: unknown;
+  modelArtifactSha256?: unknown;
+  acousticDatasetVersion?: unknown;
+  acousticDatasetManifestSha256?: unknown;
+  calibratorId?: unknown;
+  calibratorArtifactSha256?: unknown;
+  calibrationStatus?: unknown;
+  evaluationEvidenceId?: unknown;
+  evaluationEvidenceSha256?: unknown;
+  evaluationEvidenceStatus?: unknown;
+  auditEventId?: unknown;
+  sources: unknown;
+}): boolean {
+  const sources = Array.isArray(record.sources) ? record.sources : [];
+  const validSources =
+    sources.length > 0 &&
+    sources.every(
+      (source) =>
+        source !== null &&
+        typeof source === "object" &&
+        isNonEmptyString((source as Record<string, unknown>).id) &&
+        isNonEmptyString((source as Record<string, unknown>).title) &&
+        isNonEmptyString((source as Record<string, unknown>).citation),
+    );
+  const validSpan =
+    Number.isInteger(record.startMs) &&
+    Number.isInteger(record.endMs) &&
+    (record.startMs as number) >= 0 &&
+    (record.endMs as number) > (record.startMs as number);
+  const validIds = [
+    record.evidenceId,
+    record.modelVersion,
+    record.acousticDatasetVersion,
+    record.calibratorId,
+    record.evaluationEvidenceId,
+    record.auditEventId,
+  ].every(isNonEmptyString);
+  const validDigests = [
+    record.modelArtifactSha256,
+    record.acousticDatasetManifestSha256,
+    record.calibratorArtifactSha256,
+    record.evaluationEvidenceSha256,
+  ].every((value) => typeof value === "string" && SHA256_DIGEST_PATTERN.test(value));
+
+  return (
+    record.withheld === false &&
+    validSpan &&
+    record.audioStatus === "available" &&
+    validSources &&
+    validIds &&
+    validDigests &&
+    record.calibrationStatus === "calibrated" &&
+    record.evaluationEvidenceStatus === "release-trusted"
+  );
+}
+
+export function canShowLearnerFacingAiOutput(
+  record: Pick<AgentRun, "confidence" | "reviewStatus" | "sources"> & {
+    analysisBasis?: ModelAnalysisBasis | "canonical-text";
+    withheld?: unknown;
+    startMs?: unknown;
+    endMs?: unknown;
+    audioStatus?: unknown;
+    evidenceId?: unknown;
+    modelVersion?: unknown;
+    modelArtifactSha256?: unknown;
+    acousticDatasetVersion?: unknown;
+    acousticDatasetManifestSha256?: unknown;
+    calibratorId?: unknown;
+    calibratorArtifactSha256?: unknown;
+    calibrationStatus?: unknown;
+    evaluationEvidenceId?: unknown;
+    evaluationEvidenceSha256?: unknown;
+    evaluationEvidenceStatus?: unknown;
+    auditEventId?: unknown;
+  },
+): boolean {
+  const approved =
+    record.reviewStatus === "teacher-reviewed" || record.reviewStatus === "scholar-approved";
+  if (!approved || !Number.isFinite(record.confidence) || record.confidence < 0.82 || record.confidence > 1) {
     return false;
   }
 
-  return record.confidence >= 0.82 && record.sources.length > 0;
+  // Generic agent runs predate acoustic findings and have no analysisBasis. Preserve that separate
+  // gate, while every explicit learner-performance record takes the complete acoustic path below.
+  if (record.analysisBasis === undefined) {
+    return Array.isArray(record.sources) && record.sources.length > 0;
+  }
+  if (record.analysisBasis !== "acoustic") {
+    return false;
+  }
+
+  return hasCompleteAcousticLearnerEvidence(record);
 }
 
 /**
@@ -467,7 +837,7 @@ export function isNonRecitedMark(text: string): boolean {
  * `audio_retention` reaches this from a consent record and from a realtime ticket claim that
  * `services/shared-ticket` carries as a deliberately UNVALIDATED string, on the stated grounds that
  * an unknown value "can only shorten retention; it can never extend it". That is only true if every
- * consumer treats unknown as discard. `services/ml-inference`'s retention sweep always did — it
+ * consumer treats unknown as discard. The worker inference retention sweep always did — it
  * keeps `training-opt-in` forever, gives `teacher-review` its own TTL, and applies the discard TTL
  * to everything else. This function did not, and nothing had ever noticed, because it had no caller
  * and no case in the corpus had shown either implementation an out-of-vocabulary value.
@@ -485,14 +855,264 @@ export function canUseExternalAsr(consent: Pick<ConsentSnapshot, "externalAsrPro
   return consent.externalAsrProcessing && consent.guardianApproved;
 }
 
-export function modelEvalPassesReleaseGate(evalRun: ModelEvalRun): boolean {
+function jsonRecord(value: unknown): Record<string, unknown> | null {
+  return value !== null && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : null;
+}
+
+function finiteNumber(value: unknown): value is number {
+  return typeof value === "number" && Number.isFinite(value);
+}
+
+function jsonValuesEqual(left: unknown, right: unknown): boolean {
+  if (Object.is(left, right)) return true;
+  if (Array.isArray(left) || Array.isArray(right)) {
+    return (
+      Array.isArray(left) &&
+      Array.isArray(right) &&
+      left.length === right.length &&
+      left.every((value, index) => jsonValuesEqual(value, right[index]))
+    );
+  }
+  const leftRecord = jsonRecord(left);
+  const rightRecord = jsonRecord(right);
+  if (!leftRecord || !rightRecord) return false;
+  const leftKeys = Object.keys(leftRecord).sort();
+  const rightKeys = Object.keys(rightRecord).sort();
   return (
-    evalRun.wordAlignmentF1 >= 0.9 &&
-    evalRun.tajweedF1 >= 0.82 &&
-    evalRun.falsePositiveRate <= 0.08 &&
-    evalRun.teacherAgreementRate >= 0.9 &&
-    evalRun.unsourcedLearnerOutputs === 0 &&
-    evalRun.passed
+    leftKeys.length === rightKeys.length &&
+    leftKeys.every(
+      (key, index) => key === rightKeys[index] && jsonValuesEqual(leftRecord[key], rightRecord[key]),
+    )
+  );
+}
+
+function metricsClearReleaseGate(value: unknown, task: ModelEvalRun["evaluationTask"]): boolean {
+  const metrics = jsonRecord(value);
+  const operatingPoint = jsonRecord(metrics?.operatingPoint);
+  if (
+    !metrics ||
+    !operatingPoint ||
+    !finiteNumber(operatingPoint.precision) ||
+    !finiteNumber(operatingPoint.f1) ||
+    !finiteNumber(operatingPoint.falsePositiveRate) ||
+    !finiteNumber(metrics.expectedCalibrationError) ||
+    !finiteNumber(metrics.teacherAgreementRate)
+  ) {
+    return false;
+  }
+  const taskMetricPasses =
+    task === "acoustic-tajweed"
+      ? operatingPoint.precision >= 0.7 && operatingPoint.f1 >= 0.82
+      : task === "quran-word-alignment" && operatingPoint.f1 >= 0.9;
+  return (
+    taskMetricPasses &&
+    operatingPoint.falsePositiveRate <= 0.08 &&
+    metrics.teacherAgreementRate >= 0.9 &&
+    metrics.expectedCalibrationError >= 0 &&
+    metrics.expectedCalibrationError <= 1
+  );
+}
+
+const RELEASE_UNCERTAINTY_METRICS = [
+  "averagePrecision",
+  "rocAuc",
+  "precision",
+  "recall",
+  "f1",
+  "falsePositiveRate",
+  "expectedCalibrationError",
+  "teacherAgreementRate",
+] as const;
+
+function metricPointEstimate(metricsValue: unknown, metric: string): number | null {
+  const metrics = jsonRecord(metricsValue);
+  const operatingPoint = jsonRecord(metrics?.operatingPoint);
+  const value =
+    metric === "averagePrecision" ||
+    metric === "rocAuc" ||
+    metric === "expectedCalibrationError" ||
+    metric === "teacherAgreementRate"
+      ? metrics?.[metric]
+      : operatingPoint?.[metric];
+  return finiteNumber(value) ? value : null;
+}
+
+function uncertaintyMatchesComputedMetrics(uncertainty: Record<string, unknown>, metrics: unknown): boolean {
+  const intervals = uncertainty.intervals;
+  const replicateCount = uncertainty.replicateCount;
+  if (
+    !Array.isArray(intervals) ||
+    intervals.length !== RELEASE_UNCERTAINTY_METRICS.length ||
+    !Number.isInteger(replicateCount) ||
+    (replicateCount as number) < 10_000
+  ) {
+    return false;
+  }
+
+  const expectedMetrics = new Set<string>(RELEASE_UNCERTAINTY_METRICS);
+  const observedMetrics = new Set<string>();
+  for (const interval of intervals) {
+    const item = jsonRecord(interval);
+    const metric = item?.metric;
+    if (
+      !item ||
+      typeof metric !== "string" ||
+      !expectedMetrics.has(metric) ||
+      observedMetrics.has(metric) ||
+      !finiteNumber(item.pointEstimate) ||
+      !finiteNumber(item.lower) ||
+      !finiteNumber(item.upper) ||
+      item.lower > item.upper ||
+      item.pointEstimate !== metricPointEstimate(metrics, metric) ||
+      !Number.isInteger(item.validReplicateCount) ||
+      (item.validReplicateCount as number) < 10_000 ||
+      (item.validReplicateCount as number) > (replicateCount as number)
+    ) {
+      return false;
+    }
+    observedMetrics.add(metric);
+  }
+  return observedMetrics.size === RELEASE_UNCERTAINTY_METRICS.length;
+}
+
+/**
+ * Fail-closed release authority. Every persisted projection must match the exact signed payload;
+ * aggregate metrics, fixtures, test signers, or a caller-supplied `passed` flag are never enough.
+ */
+export function modelEvalPassesReleaseGate(
+  evalRun: ModelEvalRun,
+  verification?: ModelEvidenceVerification,
+): boolean {
+  if (
+    !verification ||
+    verification.cryptographicallyValid !== true ||
+    verification.trustClass !== "release" ||
+    verification.releaseTrusted !== true ||
+    evalRun.passed !== true ||
+    evalRun.evidenceKind !== "row-level-computed-evaluation" ||
+    evalRun.evidenceEligibility !== "release-candidate" ||
+    evalRun.releaseEligible !== true ||
+    evalRun.signatureAlgorithm !== "Ed25519" ||
+    evalRun.unsourcedLearnerOutputs !== 0
+  ) {
+    return false;
+  }
+
+  const evidence = jsonRecord(verification.evidence);
+  const candidate = jsonRecord(evidence?.candidate);
+  const dataset = jsonRecord(evidence?.dataset);
+  const evaluator = jsonRecord(evidence?.evaluator);
+  const rawResults = jsonRecord(evidence?.rawResults);
+  const counts = jsonRecord(evidence?.counts);
+  const uncertainty = jsonRecord(evidence?.uncertainty);
+  const calibration = jsonRecord(evidence?.calibration);
+  const slices = evidence?.slices;
+  if (
+    !evidence ||
+    !candidate ||
+    !dataset ||
+    !evaluator ||
+    !rawResults ||
+    !counts ||
+    !uncertainty ||
+    !calibration ||
+    !Array.isArray(slices)
+  ) {
+    return false;
+  }
+
+  if (
+    evidence.evidenceId !== verification.evidenceId ||
+    evidence.evidenceId !== evalRun.evidenceId ||
+    evidence.evidenceKind !== evalRun.evidenceKind ||
+    evidence.eligibility !== evalRun.evidenceEligibility ||
+    evidence.evaluationTask !== evalRun.evaluationTask ||
+    verification.keyId !== evalRun.signerKeyId ||
+    verification.payloadSha256 !== evalRun.evidencePayloadSha256 ||
+    verification.signatureAlgorithm !== evalRun.signatureAlgorithm ||
+    verification.signatureBase64Url !== evalRun.signatureBase64Url ||
+    verification.signedAt !== evalRun.signedAt ||
+    !jsonValuesEqual(evidence, evalRun.evidencePayload) ||
+    !jsonValuesEqual(counts, evalRun.evaluationCounts) ||
+    !jsonValuesEqual(slices, evalRun.sliceMetrics)
+  ) {
+    return false;
+  }
+
+  if (
+    candidate.candidateId !== evalRun.candidateId ||
+    candidate.modelVersion !== evalRun.modelVersion ||
+    candidate.modelArtifactSha256 !== evalRun.modelArtifactSha256 ||
+    dataset.datasetVersion !== evalRun.datasetVersion ||
+    dataset.manifestSha256 !== evalRun.datasetManifestSha256 ||
+    dataset.splitManifestSha256 !== evalRun.splitManifestSha256 ||
+    dataset.splitId !== evalRun.splitId ||
+    evaluator.evaluatorVersion !== evalRun.evaluatorVersion ||
+    evaluator.sourceSha256 !== evalRun.evaluatorSourceSha256 ||
+    evaluator.protocolSha256 !== evalRun.evaluatorProtocolSha256 ||
+    rawResults.rowManifestSha256 !== evalRun.rawRowManifestSha256 ||
+    rawResults.rowResultsSha256 !== evalRun.rawResultsSha256 ||
+    calibration.calibratorId !== evalRun.calibratorId ||
+    calibration.artifactSha256 !== evalRun.calibratorArtifactSha256 ||
+    calibration.fitDatasetManifestSha256 !== dataset.manifestSha256 ||
+    calibration.fitSplitManifestSha256 !== dataset.splitManifestSha256
+  ) {
+    return false;
+  }
+
+  if (
+    !Number.isInteger(counts.rowCount) ||
+    !Number.isInteger(counts.positiveCount) ||
+    !Number.isInteger(counts.negativeCount) ||
+    !Number.isInteger(counts.reciterCount) ||
+    !Number.isInteger(counts.sourceBackedFindingCount) ||
+    counts.rowCount !== (counts.positiveCount as number) + (counts.negativeCount as number) ||
+    (counts.reciterCount as number) < 18 ||
+    counts.unsourcedLearnerOutputCount !== 0 ||
+    (evalRun.evaluationTask === "acoustic-tajweed" &&
+      counts.sourceBackedFindingCount !== counts.rowCount) ||
+    uncertainty.method !== "reciter-cluster-bootstrap" ||
+    !Number.isInteger(uncertainty.replicateCount) ||
+    (uncertainty.replicateCount as number) < 10_000
+  ) {
+    return false;
+  }
+
+  if (
+    !uncertaintyMatchesComputedMetrics(uncertainty, evidence.metrics) ||
+    slices.length < 2 ||
+    slices.some((slice) => {
+      const item = jsonRecord(slice);
+      return (
+        !item ||
+        !Number.isInteger(item.rowCount) ||
+        !Number.isInteger(item.positiveCount) ||
+        !Number.isInteger(item.negativeCount) ||
+        !Number.isInteger(item.reciterCount) ||
+        item.rowCount !== (item.positiveCount as number) + (item.negativeCount as number) ||
+        (item.reciterCount as number) < 2 ||
+        !metricsClearReleaseGate(item.metrics, evalRun.evaluationTask)
+      );
+    }) ||
+    !metricsClearReleaseGate(evidence.metrics, evalRun.evaluationTask)
+  ) {
+    return false;
+  }
+
+  const metrics = jsonRecord(evidence.metrics);
+  const operatingPoint = jsonRecord(metrics?.operatingPoint);
+  if (!metrics || !operatingPoint) return false;
+  const taskMetricMatches =
+    evalRun.evaluationTask === "acoustic-tajweed"
+      ? evalRun.tajweedF1 === operatingPoint.f1
+      : evalRun.evaluationTask === "quran-word-alignment" &&
+        evalRun.wordAlignmentF1 === operatingPoint.f1;
+  return (
+    taskMetricMatches &&
+    evalRun.falsePositiveRate === operatingPoint.falsePositiveRate &&
+    evalRun.teacherAgreementRate === metrics.teacherAgreementRate
   );
 }
 

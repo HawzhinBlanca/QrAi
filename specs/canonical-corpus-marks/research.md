@@ -71,7 +71,7 @@ The plan claimed `word_alignments` / `tajweed_findings` / `teacher_reviews` all 
 Measured — **only one column** references `canonical_words`:
 
 ```
-infra/sql/0001_core_schema.sql:119   word_id text not null references canonical_words(id)
+infra/migrations/0001_core_schema.sql:119   word_id text not null references canonical_words(id)
 ```
 
 The chain is transitive, not direct:

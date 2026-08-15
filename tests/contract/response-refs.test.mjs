@@ -31,7 +31,7 @@ import { compileResponseValidators, derefResponse, loadOpenapi } from "./lib/ope
  */
 
 const spec = loadOpenapi(
-  join(dirname(fileURLToPath(import.meta.url)), "..", "..", "specs/flutter-client/openapi.yaml"),
+  join(dirname(fileURLToPath(import.meta.url)), "..", "..", "packages/contracts/openapi.yaml"),
 );
 
 // --- derefResponse ---
@@ -103,7 +103,7 @@ test("the error responses are $ref'd, so the case above is the majority of them"
   // invariant still passes while no longer exercising deref at all — and the next $ref added would
   // be unprotected. This fails first, and says so.
   const src = readFileSync(
-    join(dirname(fileURLToPath(import.meta.url)), "..", "..", "specs/flutter-client/openapi.yaml"),
+    join(dirname(fileURLToPath(import.meta.url)), "..", "..", "packages/contracts/openapi.yaml"),
     "utf8",
   );
   const refd = (src.match(/\$ref: '#\/components\/responses\//g) ?? []).length;

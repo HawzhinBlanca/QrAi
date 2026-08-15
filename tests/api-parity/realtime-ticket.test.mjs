@@ -1,7 +1,17 @@
 import assert from "node:assert/strict";
 import test, { after, before } from "node:test";
 
-import { TENANT, queryJson, request, startApi, uniqueSuffix } from "./lib/harness.mjs";
+import { TENANT, purgeSessionsByChecksum, queryJson, request, startApi, uniqueSuffix } from "./lib/harness.mjs";
+
+// Run-scoped session checksums, so the teardown at the end of this file deletes exactly this run's
+// rows and nothing else. These suites created sessions and never removed them: measured, the shared
+// staging database had accumulated 64,869 recitation sessions across ~8 fixed checksums, growing by
+// thousands a day. Leaked rows already broke a review-parity assertion and a Rust integration test
+// once in this program (`seedQueued`), and an unbounded corpus is what makes ORDER BY without a
+// unique tiebreaker, row-count deltas, and other suites' bulk teardown intermittently fail.
+// Per-run rather than a shared literal: two agents run this gate against the same Postgres.
+const RUN_CK_TICKET = `fnv1a32:ticket-cov-${uniqueSuffix()}`;
+
 
 /**
  * N5 — coverage for `POST /v1/realtime-session-tickets`, which had NONE.
@@ -37,8 +47,8 @@ const createSession = async (learnerId, consent = {}) => {
     body: {
       learnerId,
       quranRef: { surahNumber: 1, ayahStart: 1, ayahEnd: 7, display: "Al-Fatihah 1:1-7" },
-      sourceChecksum: "fnv1a32:ticket-cov",
-      modelVersion: "model-v0.3",
+      sourceChecksum: RUN_CK_TICKET,
+
       language: "ckb",
       mode: "guided-recite",
       practicePlanId: "fatihah-mastery-v1",
@@ -169,13 +179,17 @@ test("external processing stays FALSE when guardian approval is missing, whateve
 
 // --- sample-rate negotiation ---
 
-test("sample rates default to [16000] and unsupported values are filtered out", async () => {
+test("the realtime product profile is fixed at [16000] even when clients request other rates", async () => {
   const sessionId = await createSession("learner-1");
   const dflt = await mint(sessionId);
   assert.deepEqual(dflt.body.allowedSampleRates, [16000], "no request means 16 kHz");
 
   const some = await mint(sessionId, { body: { requestedSampleRates: [48000, 22050, 24000] } });
-  assert.deepEqual(some.body.allowedSampleRates, [48000, 24000], "22050 is not supported");
+  assert.deepEqual(
+    some.body.allowedSampleRates,
+    [16000],
+    "the raw binary wire cannot truthfully negotiate 24/48 kHz",
+  );
 
   const none = await mint(sessionId, { body: { requestedSampleRates: [22050, 8000] } });
   assert.deepEqual(none.body.allowedSampleRates, [16000], "an empty result falls back to 16 kHz");
@@ -263,4 +277,12 @@ test("minting writes an audit event AND a realtime_session_tickets row storing o
   assert.match(tickets[0].token_hash, /^[0-9a-f]{64}$/, "sha256 hex");
   assert.notEqual(tickets[0].token_hash, body.token, "the RAW token must never be stored");
   assert.deepEqual(tickets[0].allowed_sample_rates, [16000]);
+});
+
+// Registered last: node:test runs `after` hooks in registration order, so this drains the
+// rows once the hooks above have stopped the services still able to write them.
+after(async () => {
+  let left = 0;
+  left += await purgeSessionsByChecksum(RUN_CK_TICKET);
+  assert.equal(left, 0, `teardown left ${left} session(s) behind`);
 });

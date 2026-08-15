@@ -1,198 +1,193 @@
 /**
- * k6 load test for the QrAi platform critical paths.
+ * Candidate-bound k6 classroom/burst/soak proof.
  *
- * Targets:
- *   - platform-api /health (baseline latency)
- *   - platform-api /v1/quran/surahs (read path)
- *   - ml-inference /health (ML service latency)
- *   - ml-inference /v1/alignments:predict (the hot path: word alignment)
- *   - ml-inference /v1/tajweed-findings:predict (rule-based tajweed analysis)
+ * Required environment:
+ *   CANDIDATE_HTTP, JOB_WORKER_HTTP, CANARY_BEARER_TOKEN,
+ *   CANDIDATE_SOURCE_SHA, NODE_BACKEND_IMAGE_ID, CANARY_TOPOLOGY_SHA256,
+ *   CANARY_LOAD_PROFILE=classroom|burst|soak, CANARY_LOAD_EVIDENCE_PATH
  *
- * Usage:
- *   # Quick smoke (10s, 5 VUs):
- *   k6 run scripts/load-test.js
- *
- *   # Sustained load (60s, 20 VUs):
- *   k6 run --vus 20 --duration 60s scripts/load-test.js
- *
- *   # Target a deployed stack:
- *   PLATFORM_API=http://deployed-host:8080 ML_API=http://deployed-host:8090 k6 run scripts/load-test.js
- *
- * Thresholds:
- *   - /health p95 < 100ms
- *   - /v1/quran/surahs p95 < 500ms
- *   - /v1/alignments:predict p95 < 2000ms (Needleman-Wunsch alignment is CPU-bound)
- *   - /v1/tajweed-findings:predict p95 < 500ms (regex-based rule scan)
- *   - error rate < 1%
- *
- * KNOWN CONSTRAINT: ml-inference has a hardcoded, non-configurable per-IP rate limit of 100
- * requests/minute (services/ml-inference/server.mjs). Verified empirically: even this script's
- * default "quick smoke" config (5 VUs, 10s, hitting ml-inference 3x per ~100ms iteration) trips
- * it from a single source IP — which is exactly what happens in local/CI runs, since every VU
- * shares one loopback address. When k6's error-rate threshold fails and the JSON summary shows
- * a high error_rate but LOW latencies on every *_latency metric, that is this rate limiter
- * rejecting requests with 429s, NOT a real backend failure — check the summary's latency
- * numbers, not just the errors threshold, before concluding something is actually broken.
+ * The target, token, identities, scenarios, and thresholds have no release-mode fallback. Run only
+ * against the disposable candidate environment; durable scenarios create real tenant-owned rows.
  */
-
 import http from "k6/http";
+import exec from "k6/execution";
 import { check, group, sleep } from "k6";
-import { Rate, Trend } from "k6/metrics";
+import { Rate } from "k6/metrics";
 
-// Configurable endpoints (override with env vars for non-local deployments).
-const PLATFORM_API = __ENV.PLATFORM_API || "http://127.0.0.1:8080";
-const ML_API = __ENV.ML_API || "http://127.0.0.1:8090";
-const ML_API_KEY = __ENV.ML_API_KEY || "smoke-ml-api-key";
+import {
+  CANARY_LOAD_PROFILES,
+  CANARY_LOAD_THRESHOLDS,
+  createCanaryLoadEvidence,
+} from "./lib/canary-load-evidence.mjs";
 
-// Custom metrics for per-endpoint tracking.
-const healthLatency = new Trend("health_latency", true);
-const surahsLatency = new Trend("surahs_latency", true);
-const alignmentLatency = new Trend("alignment_latency", true);
-const tajweedLatency = new Trend("tajweed_latency", true);
-const errorRate = new Rate("errors");
+function required(name) {
+  const value = __ENV[name];
+  if (!value) throw new Error(`${name} is required for candidate load evidence`);
+  return value;
+}
+
+function httpTarget(name) {
+  const value = required(name).replace(/\/$/, "");
+  if (!/^https?:\/\//.test(value) || /@/.test(value)) {
+    throw new Error(`${name} must be an http(s) URL without embedded credentials`);
+  }
+  return value;
+}
+
+const CANDIDATE_HTTP = httpTarget("CANDIDATE_HTTP");
+const JOB_WORKER_HTTP = httpTarget("JOB_WORKER_HTTP");
+const CANARY_BEARER_TOKEN = required("CANARY_BEARER_TOKEN");
+const CANDIDATE_SOURCE_SHA = required("CANDIDATE_SOURCE_SHA");
+const NODE_BACKEND_IMAGE_ID = required("NODE_BACKEND_IMAGE_ID");
+const CANARY_TOPOLOGY_SHA256 = required("CANARY_TOPOLOGY_SHA256");
+const CANARY_LOAD_EVIDENCE_PATH = required("CANARY_LOAD_EVIDENCE_PATH");
+const profile = required("CANARY_LOAD_PROFILE");
+if (!(profile in CANARY_LOAD_PROFILES)) throw new Error("CANARY_LOAD_PROFILE is unsupported");
+const startedAt = new Date().toISOString();
+
+const errors = new Rate("errors");
+const thresholdOptions = Object.fromEntries(
+  Object.entries(CANARY_LOAD_THRESHOLDS).map(([metric, expression]) => [metric, [expression]]),
+);
 
 export const options = {
-  vus: 5,
-  duration: "10s",
-  thresholds: {
-    health_latency: ["p(95)<100"],       // /health must be fast
-    surahs_latency: ["p(95)<500"],       // read path is cached
-    alignment_latency: ["p(95)<2000"],   // alignment DP is CPU-bound
-    tajweed_latency: ["p(95)<500"],      // regex rule scan is cheap
-    errors: ["rate<0.01"],               // < 1% error rate
-    http_req_duration: ["p(95)<2000"],   // overall p95
+  scenarios: {
+    [profile]: {
+      ...CANARY_LOAD_PROFILES[profile],
+      exec: "canaryScenario",
+      tags: { profile },
+    },
   },
+  thresholds: thresholdOptions,
+  noConnectionReuse: false,
+  discardResponseBodies: false,
 };
 
-// Minimal valid request bodies (Al-Fatihah 1:1 = 4 words, perfect recitation).
-const QURAN_REF = { surahNumber: 1, ayahStart: 1, ayahEnd: 1, display: "Al-Fatihah 1:1" };
-
-const ALIGNMENT_BODY = JSON.stringify({
-  tenantId: "loadtest-tenant",
-  sessionId: "loadtest-session",
-  quranRef: QURAN_REF,
-  recognizedText: ["بِسْمِ", "ٱللَّهِ", "ٱلرَّحْمَٰنِ", "ٱلرَّحِيمِ"],
-  sourceChecksum: "fnv1a32:loadtest",
-  consent: { externalAsrProcessing: false, guardianApproved: false },
-});
-
-const TAJWEED_BODY = JSON.stringify({
-  tenantId: "loadtest-tenant",
-  sessionId: "loadtest-session",
-  quranRef: QURAN_REF,
-  sourceChecksum: "fnv1a32:loadtest",
-});
-
-const ML_HEADERS = {
+const identityHeaders = {
+  authorization: `Bearer ${CANARY_BEARER_TOKEN}`,
   "content-type": "application/json",
-  "x-ml-api-key": ML_API_KEY,
 };
 
-export default function () {
-  // 1. Platform API health
-  group("platform-api /health", () => {
-    const res = http.get(`${PLATFORM_API}/health`);
-    healthLatency.add(res.timings.duration);
-    const ok = check(res, {
-      "status 200": (r) => r.status === 200,
-    });
-    errorRate.add(!ok);
-  });
+function record(response, predicates) {
+  const ok = check(response, predicates);
+  errors.add(!ok);
+  return ok;
+}
 
-  // 2. Surah list (read path)
-  group("platform-api /v1/quran/surahs", () => {
-    const res = http.get(`${PLATFORM_API}/v1/quran/surahs`, {
-      headers: {
-        "x-tenant-id": "loadtest-tenant",
-        "x-user-id": "loadtest-user",
-        "x-user-role": "learner",
+function classroomRead() {
+  group("candidate classroom read", () => {
+    const health = http.get(`${CANDIDATE_HTTP}/health`, { tags: { surface: "node-http" } });
+    record(health, { "candidate health 200": (response) => response.status === 200 });
+
+    const surahs = http.get(`${CANDIDATE_HTTP}/v1/quran/surahs`, {
+      tags: { surface: "node-http" },
+    });
+    record(surahs, {
+      "surah list 200": (response) => response.status === 200,
+      "surah list complete": (response) => {
+        try { return JSON.parse(response.body).length >= 114; } catch { return false; }
       },
     });
-    surahsLatency.add(res.timings.duration);
-    const ok = check(res, {
-      "status 200": (r) => r.status === 200,
-      "has surahs": (r) => {
-        try { return JSON.parse(r.body).length >= 114; } catch { return false; }
+
+    const worker = http.get(`${JOB_WORKER_HTTP}/ready`, { tags: { surface: "job-worker" } });
+    record(worker, { "worker ready 200": (response) => response.status === 200 });
+  });
+}
+
+function progressWrite(iteration) {
+  group("candidate classroom effect", () => {
+    const response = http.post(
+      `${CANDIDATE_HTTP}/v1/learner/progress`,
+      JSON.stringify({ quality: iteration % 6, ayahRef: `1:${iteration % 7 + 1}` }),
+      { headers: identityHeaders, tags: { surface: "node-http" } },
+    );
+    record(response, {
+      "progress write 200": (result) => result.status === 200,
+      "progress effect returned": (result) => {
+        try { return typeof JSON.parse(result.body).sm2State === "object"; } catch { return false; }
       },
     });
-    errorRate.add(!ok);
   });
+}
 
-  // 3. ML inference health
-  group("ml-inference /health", () => {
-    const res = http.get(`${ML_API}/health`);
-    healthLatency.add(res.timings.duration);
-    const ok = check(res, {
-      "status 200": (r) => r.status === 200,
+function durableJob(iteration) {
+  group("candidate durable job", () => {
+    const suffix = `${exec.vu.idInTest}-${iteration}-${Date.now()}`;
+    const create = http.post(
+      `${CANDIDATE_HTTP}/v1/recitation-sessions`,
+      JSON.stringify({
+        learnerId: "learner-1",
+        quranRef: { surahNumber: 1, ayahStart: 1, ayahEnd: 1, display: "1:1" },
+        sourceChecksum: `fnv1a32:canary-load-${suffix}`,
+        language: "ckb",
+        consent: {
+          audioRetention: "discard",
+          anonymizedLearning: false,
+          externalAsrProcessing: false,
+          guardianApproved: true,
+          consentVersion: "pilot-v1",
+        },
+      }),
+      { headers: identityHeaders, tags: { surface: "node-http" } },
+    );
+    if (!record(create, { "session create 200": (response) => response.status === 200 })) return;
+    let sessionId;
+    try { sessionId = JSON.parse(create.body).id; } catch { sessionId = null; }
+    if (!sessionId) {
+      errors.add(true);
+      return;
+    }
+    const finalize = http.post(
+      `${CANDIDATE_HTTP}/v1/recitation-sessions/${encodeURIComponent(sessionId)}/finalize`,
+      "{}",
+      { headers: identityHeaders, tags: { surface: "durable-job" }, timeout: "65s" },
+    );
+    record(finalize, {
+      "durable finalization completed": (response) => response.status === 200,
     });
-    errorRate.add(!ok);
   });
+}
 
-  // 4. Word alignment (the hot path)
-  group("ml-inference /v1/alignments:predict", () => {
-    const res = http.post(`${ML_API}/v1/alignments:predict`, ALIGNMENT_BODY, {
-      headers: ML_HEADERS,
-    });
-    alignmentLatency.add(res.timings.duration);
-    const ok = check(res, {
-      "status 200": (r) => r.status === 200,
-      "has alignments": (r) => {
-        try {
-          const body = JSON.parse(r.body);
-          return Array.isArray(body.alignments) && body.alignments.length > 0;
-        } catch { return false; }
-      },
-    });
-    errorRate.add(!ok);
-  });
+export function canaryScenario() {
+  const iteration = exec.scenario.iterationInTest;
+  if (iteration % 10 === 9) durableJob(iteration);
+  else if (iteration % 5 === 4) progressWrite(iteration);
+  else classroomRead();
+  sleep(0.05);
+}
 
-  // 5. Tajweed findings (rule-based, separate endpoint from alignment)
-  group("ml-inference /v1/tajweed-findings:predict", () => {
-    const res = http.post(`${ML_API}/v1/tajweed-findings:predict`, TAJWEED_BODY, {
-      headers: ML_HEADERS,
-    });
-    tajweedLatency.add(res.timings.duration);
-    const ok = check(res, {
-      "status 200": (r) => r.status === 200,
-      "has findings array": (r) => {
-        try {
-          const body = JSON.parse(r.body);
-          return Array.isArray(body.findings);
-        } catch { return false; }
-      },
-    });
-    errorRate.add(!ok);
-  });
-
-  sleep(0.1); // small pause between iterations
+function thresholdResults(data) {
+  return Object.fromEntries(
+    Object.entries(CANARY_LOAD_THRESHOLDS).map(([metricName, expression]) => {
+      const result = data.metrics[metricName]?.thresholds?.[expression]?.ok;
+      if (typeof result !== "boolean") {
+        throw new Error(`k6 omitted threshold result ${metricName}:${expression}`);
+      }
+      return [metricName, result];
+    }),
+  );
 }
 
 export function handleSummary(data) {
-  const summary = {
-    timestamp: new Date().toISOString(),
+  const evidence = createCanaryLoadEvidence({
+    sourceSha: CANDIDATE_SOURCE_SHA,
+    nodeImageId: NODE_BACKEND_IMAGE_ID,
+    topologySha256: CANARY_TOPOLOGY_SHA256,
+    profile,
+    startedAt,
+    completedAt: new Date().toISOString(),
     metrics: {
-      health_p95_ms: data.metrics.health_latency?.values?.["p(95)"] ?? null,
-      surahs_p95_ms: data.metrics.surahs_latency?.values?.["p(95)"] ?? null,
-      alignment_p95_ms: data.metrics.alignment_latency?.values?.["p(95)"] ?? null,
-      tajweed_p95_ms: data.metrics.tajweed_latency?.values?.["p(95)"] ?? null,
-      error_rate: data.metrics.errors?.values?.rate ?? null,
-      http_req_duration_p95_ms: data.metrics.http_req_duration?.values?.["p(95)"] ?? null,
-      total_requests: data.metrics.http_reqs?.values?.count ?? null,
+      httpP95Ms: data.metrics.http_req_duration?.values?.["p(95)"],
+      errorRate: data.metrics.errors?.values?.rate,
+      checksRate: data.metrics.checks?.values?.rate,
+      totalRequests: data.metrics.http_reqs?.values?.count,
+      droppedIterations: data.metrics.dropped_iterations?.values?.count ?? 0,
     },
-    // Every check() call in this script's default function runs inside a group(...) block, so
-    // k6 files them under data.root_group.groups[i].checks -- the top-level data.root_group.checks
-    // array only holds checks made OUTSIDE any group, which this script has none of. Reading
-    // root_group.checks here always sees an empty array, and Object.values([]).every(...) is
-    // vacuously true regardless of real pass/fail -- confirmed empirically: a forced-failing check
-    // inside a group still produced thresholds_passed: true. Also, this field is named
-    // *thresholds*_passed but the old code recomputed it from *checks* -- two different k6
-    // concepts. Read the actual configured thresholds (options.thresholds above) instead, via
-    // each metric's own `.thresholds` object (`{ "<expression>": { ok: boolean } }`).
-    thresholds_passed: Object.values(data.metrics)
-      .flatMap((metric) => Object.values(metric.thresholds ?? {}))
-      .every((threshold) => threshold.ok === true),
-  };
+    thresholds: thresholdResults(data),
+  });
+  const output = `${JSON.stringify(evidence, null, 2)}\n`;
   return {
-    stdout: JSON.stringify(summary, null, 2) + "\n",
+    stdout: output,
+    [CANARY_LOAD_EVIDENCE_PATH]: output,
   };
 }

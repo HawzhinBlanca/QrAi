@@ -22,7 +22,7 @@ import { queryJson } from "../api-parity/lib/harness.mjs";
  * has no database connection at all. The erasure's
  * `DELETE FROM realtime_session_tickets` therefore deletes a record, not an authorization.
  *
- * Reproduced against a real gateway and a real ml-inference (ADR-0047): an erasure completed and
+ * Reproduced against a real gateway and a real ml-inference (ADR-0063): an erasure completed and
  * reported success, then a ticket minted before it wrote the learner's audio back to disk.
  *
  * ── The two lists ───────────────────────────────────────────────────────────────────────────────
@@ -75,7 +75,7 @@ const DECLARED = {
     why:
       "nothing reads it. The realtime ticket is a stateless 300s HMAC and realtime-gateway holds " +
       "no database connection, so deleting this row cannot stop a ticket already minted. An " +
-      "erasure can therefore be raced by an in-flight ticket — reproduced, ADR-0047, which holds " +
+      "erasure can therefore be raced by an in-flight ticket — reproduced, ADR-0063, which holds " +
       "the choice between a gateway database dependency, a Redis revocation set, a shorter TTL, " +
       "and a deferred re-erase.",
   },
@@ -174,22 +174,22 @@ test("no declaration names a column the schema no longer has", async () => {
   assert.deepEqual(stale, [], `declarations for columns gone from the schema:\n  ${stale.join("\n  ")}`);
 });
 
-test("the realtime gateway still holds no database connection, and ADR-0047 is still open", () => {
+test("the realtime gateway still holds no database connection, and ADR-0063 is still open", () => {
   // The load-bearing fact under the `realtime_session_tickets` declaration. If the gateway gains a
   // database dependency, that declaration is out of date — the ticket may now be checkable, and the
   // reason written above stops being true.
   const manifest = readFileSync(join(root, "services/realtime-gateway/Cargo.toml"), "utf8");
   assert.ok(
     !/^\s*sqlx\b/m.test(manifest) && !/^\s*tokio-postgres\b/m.test(manifest),
-    "realtime-gateway now depends on a database driver — revisit ADR-0047 and this declaration: " +
+    "realtime-gateway now depends on a database driver — revisit ADR-0063 and this declaration: " +
       "the realtime ticket may now be revocable, and if it is, it should be revoked.",
   );
 
   const adrs = readFileSync(join(root, "docs/DECISIONS.md"), "utf8");
-  assert.match(adrs, /## ADR-0047 —/, "ADR-0047 is gone, so an unrevocable token has no recorded reason");
+  assert.match(adrs, /## ADR-0063 —/, "ADR-0063 is gone, so an unrevocable token has no recorded reason");
   assert.match(
-    adrs.slice(adrs.indexOf("## ADR-0047 —")),
+    adrs.slice(adrs.indexOf("## ADR-0063 —")),
     /\*\*Status:\*\* Proposed/,
-    "ADR-0047 is no longer Proposed — if the ruling was made, the ticket needs code, not a declaration",
+    "ADR-0063 is no longer Proposed — if the ruling was made, the ticket needs code, not a declaration",
   );
 });

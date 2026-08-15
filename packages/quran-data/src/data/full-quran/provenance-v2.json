@@ -1,0 +1,88 @@
+{
+  "schemaVersion": 2,
+  "provenanceId": "full-quran-2026-06-26-provenance-v2",
+  "supersedes": {
+    "provenanceId": "full-quran-2026-06-26-provenance-v1",
+    "file": "provenance-v1.json",
+    "sha256": "66bac75ce095970d7d40f21f9d3ffa24884d8153068808b3b0e412fc14c7449c"
+  },
+  "canonicalSourceId": "alquran-cloud",
+  "directProvider": {
+    "name": "Al Quran Cloud",
+    "apiDocumentationUrl": "https://alquran.cloud/api",
+    "acquisitionEndpoint": "https://api.alquran.cloud/v1/surah",
+    "verificationEndpoint": "https://api.alquran.cloud/v1/quran/quran-uthmani"
+  },
+  "edition": {
+    "identifier": "quran-uthmani",
+    "language": "ar",
+    "englishName": "Uthmani",
+    "format": "text",
+    "type": "quran",
+    "scriptType": "uthmani"
+  },
+  "importVersion": "full-quran-2026-06-26",
+  "acquiredOn": "2026-06-26",
+  "reviewedOn": "2026-08-06",
+  "reviewArtifact": "specs/lean-flutter-node-consolidation/evidence/W1.2-corpus-integrity-review.md",
+  "integrity": {
+    "algorithm": "sha256",
+    "encoding": "utf8",
+    "lengthPrefix": "uint64be",
+    "recordFraming": "length-prefixed-record-of-length-prefixed-fields",
+    "recordOrder": "surah-ascending,ayah-ascending,word-index-ascending",
+    "domains": {
+      "ayahs": "qrai.full-quran.ayahs.v1",
+      "wordTokens": "qrai.full-quran.word-tokens.v1"
+    },
+    "ayahs": {
+      "fields": [
+        "surahNumber",
+        "ayahNumber",
+        "text"
+      ],
+      "count": 6236,
+      "sha256": "be19912bd87d3a8ad941ab458e5c4e167e49b3749fab704526a2f1430f532fbb"
+    },
+    "wordTokens": {
+      "fields": [
+        "surahNumber",
+        "ayahNumber",
+        "wordIndex",
+        "text"
+      ],
+      "count": 82456,
+      "sha256": "580276af15ecb4756b8a02afb922e33867f06faf77482ac6c5b393fc729e23a4"
+    },
+    "tokenization": {
+      "reconstruction": "join tokens with one U+0020 in stored order",
+      "exceptions": [
+        {
+          "ref": "1:1",
+          "preservedPrefix": "U+FEFF"
+        }
+      ]
+    }
+  },
+  "seed": {
+    "generator": "packages/quran-data/scripts/write-full-quran-sql-seed.mjs",
+    "integrityPreflightRequired": true
+  },
+  "terms": {
+    "providerTermsUrl": "https://alquran.cloud/terms-and-conditions",
+    "providerTermsLastUpdated": "2026-06-14",
+    "checkedOn": "2026-08-06",
+    "requiredAttribution": "Quran text via Al Quran Cloud (quran-uthmani).",
+    "preservationRequired": true
+  },
+  "upstreamAttribution": {
+    "status": "provider-does-not-map-edition-to-exact-upstream",
+    "namedProviderSources": [
+      "GlobalQuran.com",
+      "Tanzil.net",
+      "Quran Academy"
+    ],
+    "decision": "Do not label this corpus as Tanzil without edition-level evidence.",
+    "conditionalTanzilLicenseUrl": "https://tanzil.net/docs/Text_License"
+  }
+}

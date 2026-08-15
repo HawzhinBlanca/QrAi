@@ -26,7 +26,8 @@ fn parse_review_status(value: &str) -> Result<ReviewStatus, ApiError> {
 pub struct IndexAudioChunkRequest {
     pub session_id: String,
     pub chunk_id: String,
-    pub object_key: String,
+    #[serde(default)]
+    pub object_key: Option<String>,
     #[serde(default)]
     pub start_ms: serde_json::Value,
     #[serde(default)]
@@ -37,6 +38,29 @@ pub struct IndexAudioChunkRequest {
     // a row deciding whose recording a teacher is later played; both come from the signed ticket.
     // serde drops unknown fields, so sending them is not an error — it simply has no effect, which
     // `tests/api-parity/audio-index-parity.test.mjs` asserts rather than assumes.
+}
+
+fn audio_storage_segment(value: &str) -> bool {
+    let bytes = value.as_bytes();
+    !bytes.is_empty()
+        && bytes.len() <= 128
+        && bytes[0].is_ascii_alphanumeric()
+        && !value.contains("..")
+        && bytes
+            .iter()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b':' | b'-'))
+}
+
+fn audio_object_key(
+    tenant_id: &str,
+    learner_id: &str,
+    session_id: &str,
+    chunk_id: &str,
+) -> Option<String> {
+    [tenant_id, learner_id, session_id, chunk_id]
+        .iter()
+        .all(|value| audio_storage_segment(value))
+        .then(|| format!("audio/v1/{tenant_id}/{learner_id}/{session_id}/{chunk_id}.pcm"))
 }
 
 /// `POST /v1/audio-chunks` — the gateway records that a chunk of audio exists (ADR-0037).
@@ -104,11 +128,21 @@ pub async fn index_audio_chunk(
     // Reusing the session's audit event rather than minting one per chunk: a chunk arrives every few
     // seconds per learner, and an audit row each would bury the events a human actually reads.
     let audit_event_id: String = session.try_get("audit_event_id").unwrap_or_default();
+    let object_key = audio_object_key(
+        &claims.tenant_id,
+        &claims.learner_id,
+        &claims.session_id,
+        &req.chunk_id,
+    )
+    .ok_or_else(|| {
+        ApiError::BadRequest("chunk identity cannot form a safe object key".to_owned())
+    })?;
 
     // ON CONFLICT DO NOTHING, because the gateway RETRIES a chunk whose response was lost. Failing a
     // retry would make a delivered chunk look undelivered and the gateway would count a loss that did
     // not happen — the opposite of what its lossy-session accounting is for.
-    sqlx::query(
+    let sample_rate = req.sample_rate.unwrap_or(16_000);
+    let inserted = sqlx::query(
         "INSERT INTO audio_chunks
             (id, tenant_id, session_id, evidence_id, start_ms, end_ms, sample_rate, status,
              object_key, audit_event_id)
@@ -121,11 +155,36 @@ pub async fn index_audio_chunk(
     .bind(&req.chunk_id)
     .bind(start_ms)
     .bind(end_ms)
-    .bind(req.sample_rate.unwrap_or(16_000))
-    .bind(&req.object_key)
+    .bind(sample_rate)
+    .bind(&object_key)
     .bind(&audit_event_id)
     .execute(&mut *tx)
     .await?;
+
+    if inserted.rows_affected() == 0 {
+        let existing = sqlx::query(
+            "SELECT session_id, start_ms, end_ms, sample_rate, object_key
+             FROM audio_chunks WHERE id = $1 AND tenant_id = $2",
+        )
+        .bind(&req.chunk_id)
+        .bind(&claims.tenant_id)
+        .fetch_optional(&mut *tx)
+        .await?;
+        let identical = existing.is_some_and(|row| {
+            row.try_get::<String, _>("session_id").ok().as_deref()
+                == Some(claims.session_id.as_str())
+                && row.try_get::<i32, _>("start_ms").ok() == Some(start_ms)
+                && row.try_get::<i32, _>("end_ms").ok() == Some(end_ms)
+                && row.try_get::<i32, _>("sample_rate").ok() == Some(sample_rate)
+                && row.try_get::<String, _>("object_key").ok().as_deref()
+                    == Some(object_key.as_str())
+        });
+        if !identical {
+            return Err(ApiError::Conflict(
+                "chunk id already indexes different immutable audio metadata".to_owned(),
+            ));
+        }
+    }
 
     tx.commit().await?;
 
@@ -148,6 +207,11 @@ pub async fn create_session(
     // caller is still refused before their body is parsed, which is the disclosure that mattered.
     let Json(req) = body?;
     actor.require_self_or_any(&req.learner_id, &[ActorRole::Admin, ActorRole::Ops])?;
+    if req.model_version.is_some() {
+        return Err(ApiError::BadRequest(
+            "model identity is server-selected and must not be supplied".to_owned(),
+        ));
+    }
 
     if !is_supported_language(&req.language) {
         return Err(ApiError::BadRequest(format!(
@@ -180,22 +244,24 @@ pub async fn create_session(
         return Err(ApiError::NotFound);
     }
 
-    // FK3 — `recitation_sessions.model_version_id` REFERENCES model_versions(id).
-    //
-    // 400 NAMING the value, not 404. model_version is chosen from a fixed server-side vocabulary,
-    // like the agent-run status enum that already 400s this way — and this endpoint can fail on
-    // learnerId OR modelVersion, so a shared "record not found" would leave a caller guessing
-    // between two very different fixes. model_versions is global, so no tenant predicate.
-    let model_exists = sqlx::query("SELECT 1 FROM model_versions WHERE id = $1")
-        .bind(&req.model_version)
-        .fetch_optional(&mut *tx)
-        .await?;
-    if model_exists.is_none() {
-        return Err(ApiError::BadRequest(format!(
-            "unknown model version: {}",
-            req.model_version
-        )));
-    }
+    // Server-selected provenance. Zero or multiple alignment rows is a deployment fault, never a
+    // reason to guess or accept a caller label.
+    let models: Vec<String> = sqlx::query_scalar(
+        "SELECT id FROM model_versions
+         WHERE kind = 'alignment' AND runtime_selected
+         ORDER BY id",
+    )
+    .fetch_all(&mut *tx)
+    .await?;
+    let [model_version] = models.as_slice() else {
+        tracing::error!(
+            "model_versions has {} runtime-selected alignment rows; expected exactly one",
+            models.len()
+        );
+        return Err(ApiError::Unavailable(
+            "server model configuration unavailable".to_owned(),
+        ));
+    };
 
     sqlx::query(
         "INSERT INTO audit_events (id, tenant_id, actor_id, action, subject_type, subject_id, metadata)
@@ -205,7 +271,7 @@ pub async fn create_session(
     .bind(&actor.tenant_id)
     .bind(&actor.user_id)
     .bind(&session_id)
-    .bind(serde_json::json!({"trace_id": trace_id, "model_version": req.model_version}))
+    .bind(serde_json::json!({"trace_id": trace_id, "model_version": model_version}))
     .execute(&mut *tx)
     .await?;
 
@@ -258,7 +324,7 @@ pub async fn create_session(
     .bind(&req.learner_id)
     .bind(&quran_ref_json)
     .bind(&req.source_checksum)
-    .bind(&req.model_version)
+    .bind(model_version)
     .bind(mode_str)
     .bind(&req.practice_plan_id)
     .bind(external_processing_allowed)
@@ -277,7 +343,7 @@ pub async fn create_session(
         learner_id: req.learner_id,
         quran_ref: req.quran_ref,
         source_checksum: req.source_checksum,
-        model_version: req.model_version,
+        model_version: model_version.clone(),
         language: req.language,
         mode: req.mode,
         practice_plan_id: req.practice_plan_id,
@@ -481,19 +547,9 @@ pub async fn create_realtime_ticket(
 
     actor.require_self_or_any(&learner_id, &[ActorRole::Admin, ActorRole::Ops])?;
 
-    let allowed_sample_rates = if req.requested_sample_rates.is_empty() {
-        vec![16_000u32]
-    } else {
-        req.requested_sample_rates
-            .into_iter()
-            .filter(|sr| matches!(sr, 16_000 | 24_000 | 48_000))
-            .collect::<Vec<_>>()
-    };
-    let allowed_sample_rates = if allowed_sample_rates.is_empty() {
-        vec![16_000u32]
-    } else {
-        allowed_sample_rates
-    };
+    // rt_v2 carries raw audio bytes but no codec/rate metadata. Keep the public oracle truthful
+    // during migration: both issuers advertise only the mono PCM16LE/16 kHz product profile.
+    let allowed_sample_rates = vec![16_000u32];
 
     let audit_id = next_id("audit");
     let ticket_id = next_id("rt-ticket");
@@ -575,9 +631,15 @@ pub async fn list_session_alignments(
 
     let rows = sqlx::query(
         "SELECT wa.word_id, cw.text_uthmani, wa.heard_text, wa.start_ms, wa.end_ms,
-                wa.confidence::float8 AS confidence, wa.status
+                wa.confidence::float8 AS confidence, wa.status, wa.transcript_source,
+                wa.model_version_id, wa.audit_event_id, ar.dataset_version,
+                ar.model_attribution, COALESCE(ar.evidence_ids, '[]'::jsonb) AS evidence_ids
          FROM word_alignments wa
          JOIN canonical_words cw ON cw.id = wa.word_id
+         LEFT JOIN alignment_runs ar
+           ON ar.id = wa.alignment_run_id
+          AND ar.tenant_id = wa.tenant_id
+          AND ar.session_id = wa.session_id
          WHERE wa.session_id = $1 AND wa.tenant_id = $2
          ORDER BY wa.start_ms ASC",
     )
@@ -590,6 +652,7 @@ pub async fn list_session_alignments(
         .into_iter()
         .map(|r| {
             serde_json::json!({
+                "auditEventId": r.try_get::<String, _>("audit_event_id").unwrap_or_default(),
                 "wordId": r.try_get::<String, _>("word_id").unwrap_or_default(),
                 "canonicalText": r.try_get::<String, _>("text_uthmani").unwrap_or_default(),
                 "heardText": r.try_get::<String, _>("heard_text").unwrap_or_default(),
@@ -597,6 +660,11 @@ pub async fn list_session_alignments(
                 "endMs": r.try_get::<i32, _>("end_ms").unwrap_or(0),
                 "confidence": r.try_get::<f64, _>("confidence").unwrap_or(0.0),
                 "status": r.try_get::<String, _>("status").unwrap_or_default(),
+                "transcriptSource": r.try_get::<String, _>("transcript_source").unwrap_or_default(),
+                "modelVersion": r.try_get::<String, _>("model_version_id").unwrap_or_default(),
+                "datasetVersion": r.try_get::<Option<String>, _>("dataset_version").unwrap_or(None),
+                "modelAttribution": r.try_get::<Option<serde_json::Value>, _>("model_attribution").unwrap_or(None),
+                "evidenceIds": r.try_get::<serde_json::Value, _>("evidence_ids").unwrap_or_else(|_| serde_json::json!([])),
             })
         })
         .collect();
@@ -702,6 +770,16 @@ impl TranscriptSource {
     }
 }
 
+#[derive(Debug, Clone)]
+struct AlignmentRunProvenance {
+    model_version: String,
+    dataset_version: String,
+    latency_ms: i32,
+    evidence_ids: serde_json::Value,
+    consent_snapshot: serde_json::Value,
+    model_attribution: serde_json::Value,
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn persist_alignments_in_tx(
     tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
@@ -710,31 +788,50 @@ async fn persist_alignments_in_tx(
     session_id: &str,
     req: PersistAlignmentsRequest,
     transcript_source: TranscriptSource,
+    provenance: Option<AlignmentRunProvenance>,
     trace_id: Option<String>,
 ) -> Result<serde_json::Value, ApiError> {
-    // FK3 — model_version must satisfy the FK against model_versions(id).
-    //
-    // This used to fall back to "model-v0.3" when the requested model was unknown, and return 200.
-    // That is worse than the 500s it was avoiding: a caller says "this alignment came from model X",
-    // the row is stored as model-v0.3, and the caller is never told the label changed. Every
-    // downstream "which model produced this?" — tajweed_findings, the Command console — then has a
-    // confidently wrong answer, and unlike a 500 nothing surfaces it.
-    //
-    // ABSENT still defaults. That is a default, not a substitution: the caller asserted nothing, so
-    // nothing is being overridden. Only a PRESENT-and-unknown value is now refused.
-    let model_version = match req.model_version {
-        None => "model-v0.3".to_owned(),
-        Some(requested) => {
-            let known: Option<String> =
-                sqlx::query_scalar("SELECT id FROM model_versions WHERE id = $1")
-                    .bind(&requested)
-                    .fetch_optional(&mut **tx)
-                    .await?;
-            known.ok_or(ApiError::BadRequest(format!(
-                "unknown model version: {requested}"
-            )))?
+    if req.model_version.is_some() {
+        return Err(ApiError::BadRequest(
+            "model identity is server-selected and must not be supplied".to_owned(),
+        ));
+    }
+    // Alignment rows inherit the server-selected identity already stored on the session. This is
+    // one authority for both client-reported and server-derived finalization paths, with no
+    // independent `model-v0.3` fallback that can drift.
+    let model_version: String = sqlx::query_scalar(
+        "SELECT model_version_id FROM recitation_sessions WHERE id = $1 AND tenant_id = $2",
+    )
+    .bind(session_id)
+    .bind(tenant_id)
+    .fetch_optional(&mut **tx)
+    .await?
+    .ok_or(ApiError::NotFound)?;
+
+    match (transcript_source, provenance.as_ref()) {
+        (TranscriptSource::ServerDerived, None) | (TranscriptSource::ClientReported, Some(_)) => {
+            tracing::error!(
+                session_id,
+                "alignment persistence source and run provenance disagree"
+            );
+            return Err(ApiError::Upstream(
+                "ML service returned invalid model provenance".to_owned(),
+            ));
         }
-    };
+        _ => {}
+    }
+    if provenance
+        .as_ref()
+        .is_some_and(|run| run.model_version != model_version)
+    {
+        tracing::error!(
+            session_id,
+            "alignment run model disagrees with session model"
+        );
+        return Err(ApiError::Upstream(
+            "ML service returned invalid model provenance".to_owned(),
+        ));
+    }
 
     // Replace-on-write: clear the session's prior alignment first, in FK-safe order.
     // tajweed_findings.alignment_id and teacher_reviews.finding_id both RESTRICT, so a naked
@@ -785,6 +882,17 @@ async fn persist_alignments_in_tx(
         .execute(&mut **tx)
         .await?;
 
+    // Once the words are gone, their old run document is stale by definition. Removing it here is
+    // what makes replace-on-write safe: a later client-reported practice write cannot be joined to
+    // the server provenance of an earlier recording merely because both share a session id.
+    let deleted_alignment_runs =
+        sqlx::query("DELETE FROM alignment_runs WHERE session_id = $1 AND tenant_id = $2")
+            .bind(session_id)
+            .bind(tenant_id)
+            .execute(&mut **tx)
+            .await?
+            .rows_affected();
+
     // Audit AFTER the cascade, recording what this request ACTUALLY did. The cascade above is
     // authorized for the session OWNER (require_self_or_any), so a learner re-recording their own
     // session used to silently erase any teacher_reviews a teacher had already submitted on it — with
@@ -812,9 +920,38 @@ async fn persist_alignments_in_tx(
         "count": req.alignments.len(),
         "deletedTeacherReviews": deleted_teacher_reviews,
         "deletedTajweedFindings": deleted_tajweed_findings,
+        "deletedAlignmentRuns": deleted_alignment_runs,
+        "transcriptSource": transcript_source.as_str(),
+        "modelVersion": model_version,
     }))
     .execute(&mut **tx)
     .await?;
+
+    let alignment_run_id = if let Some(run) = provenance.as_ref() {
+        let run_id = next_id("alignment-run");
+        sqlx::query(
+            "INSERT INTO alignment_runs
+                (id, tenant_id, session_id, model_version_id, dataset_version, latency_ms,
+                 evidence_ids, consent_snapshot, audit_event_id, transcript_source, model_attribution)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)",
+        )
+        .bind(&run_id)
+        .bind(tenant_id)
+        .bind(session_id)
+        .bind(&model_version)
+        .bind(&run.dataset_version)
+        .bind(run.latency_ms)
+        .bind(&run.evidence_ids)
+        .bind(&run.consent_snapshot)
+        .bind(&audit_id)
+        .bind(transcript_source.as_str())
+        .bind(&run.model_attribution)
+        .execute(&mut **tx)
+        .await?;
+        Some(run_id)
+    } else {
+        None
+    };
 
     const VALID_STATUS: [&str; 5] = ["matched", "misread", "missed", "extra", "needs-review"];
     // Partition once. An UNRECOGNISED status is a data-quality signal from the ML service (e.g. a typo
@@ -857,8 +994,9 @@ async fn persist_alignments_in_tx(
         let wa_id = next_id("word-alignment");
         sqlx::query(
             "INSERT INTO word_alignments
-                (id, tenant_id, session_id, word_id, heard_text, start_ms, end_ms, confidence, status, model_version_id, audit_event_id, transcript_source)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8::float8::numeric, $9, $10, $11, $12)",
+                (id, tenant_id, session_id, word_id, heard_text, start_ms, end_ms, confidence,
+                 status, model_version_id, audit_event_id, transcript_source, alignment_run_id)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8::float8::numeric, $9, $10, $11, $12, $13)",
         )
         .bind(&wa_id)
         .bind(tenant_id)
@@ -872,6 +1010,7 @@ async fn persist_alignments_in_tx(
         .bind(&model_version)
         .bind(&audit_id)
         .bind(transcript_source.as_str())
+        .bind(alignment_run_id.as_deref())
         .execute(&mut **tx)
         .await?;
         persisted += 1;
@@ -945,6 +1084,7 @@ pub async fn persist_session_alignments(
         // `finalize_session` is the path that earns `ServerDerived`, by never taking words from a
         // caller at all.
         TranscriptSource::ClientReported,
+        None,
         crate::auth::extract_trace_id(&headers),
     )
     .await?;
@@ -1031,41 +1171,6 @@ pub async fn request_teacher_review(
     })))
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn parse_review_status_round_trips_every_known_value() {
-        assert_eq!(parse_review_status("draft").unwrap(), ReviewStatus::Draft);
-        assert_eq!(
-            parse_review_status("ai-suggested").unwrap(),
-            ReviewStatus::AiSuggested
-        );
-        assert_eq!(
-            parse_review_status("teacher-review-required").unwrap(),
-            ReviewStatus::TeacherReviewRequired
-        );
-        assert_eq!(
-            parse_review_status("teacher-reviewed").unwrap(),
-            ReviewStatus::TeacherReviewed
-        );
-        assert_eq!(
-            parse_review_status("scholar-approved").unwrap(),
-            ReviewStatus::ScholarApproved
-        );
-        assert_eq!(
-            parse_review_status("blocked").unwrap(),
-            ReviewStatus::Blocked
-        );
-    }
-
-    #[test]
-    fn parse_review_status_rejects_an_unknown_value() {
-        assert!(parse_review_status("not-a-real-status").is_err());
-    }
-}
-
 /// `POST /v1/recitation-sessions/{id}/finalize` — turn a streamed recitation into a reviewable one.
 ///
 /// ── The link this closes ────────────────────────────────────────────────────────────────────────
@@ -1103,7 +1208,8 @@ pub async fn finalize_session(
     // pool exhaustion for every other request.
     let mut tx = crate::begin_tenant_tx(&state.pool, &actor.tenant_id).await?;
     let row = sqlx::query(
-        "SELECT s.learner_id, s.quran_ref, c.guardian_approved, c.external_asr_processing
+        "SELECT s.learner_id, s.quran_ref, s.model_version_id, s.consent_snapshot,
+                c.guardian_approved, c.external_asr_processing
          FROM recitation_sessions s
          JOIN consent_records c ON c.id = s.consent_record_id
          WHERE s.id = $1 AND s.tenant_id = $2",
@@ -1121,6 +1227,8 @@ pub async fn finalize_session(
         &[ActorRole::Teacher, ActorRole::Admin, ActorRole::Ops],
     )?;
     let quran_ref: serde_json::Value = row.try_get("quran_ref")?;
+    let session_model_version: String = row.try_get("model_version_id")?;
+    let consent_snapshot: serde_json::Value = row.try_get("consent_snapshot")?;
     let consent = serde_json::json!({
         "guardianApproved": row.try_get::<bool, _>("guardian_approved")?,
         "externalAsrProcessing": row.try_get::<bool, _>("external_asr_processing")?,
@@ -1155,11 +1263,35 @@ pub async fn finalize_session(
         })));
     }
 
+    if transcript
+        .get("transcriptSource")
+        .and_then(|value| value.as_str())
+        != Some("server-derived")
+    {
+        tracing::error!(session_id = %id, "ML transcript omitted its server-derived source label");
+        return Err(ApiError::Upstream(
+            "ML service returned invalid model provenance".to_owned(),
+        ));
+    }
+    crate::handlers::ml_proxy::require_producer_attribution(&transcript, "asr", "ML")?;
+    let transcript_model_attribution =
+        transcript.get("modelAttribution").cloned().ok_or_else(|| {
+            ApiError::Upstream("ML service returned invalid model provenance".to_owned())
+        })?;
+
     // ── 3. Align the real words against the canonical text ─────────────────────────────────────
-    let recognized = transcript
-        .get("recognizedText")
+    let recognized_tokens = transcript
+        .get("recognizedTokens")
         .cloned()
-        .unwrap_or_else(|| serde_json::json!([]));
+        .filter(|value| value.as_array().is_some_and(|tokens| !tokens.is_empty()));
+    let Some(recognized_tokens) = recognized_tokens else {
+        return Ok(Json(serde_json::json!({
+            "sessionId": id,
+            "finalized": false,
+            "reason": "invalid-recognized-spans",
+            "persisted": 0,
+        })));
+    };
     let alignment = ml_post(
         &state,
         "/v1/alignments:predict",
@@ -1167,48 +1299,157 @@ pub async fn finalize_session(
             "tenantId": actor.tenant_id,
             "sessionId": id,
             "quranRef": quran_ref,
-            "recognizedText": recognized,
-            // Index-parallel to `recognizedText`. Transcription and alignment are two separate
-            // requests to the ML service, so a timing that is not carried across this hop is a
-            // timing the aligner never has — which is exactly how every alignment this endpoint
-            // produced came back spanless and was refused by `usable_span` below.
-            "recognizedTimings": transcript.get("recognizedTimings").cloned().unwrap_or(serde_json::Value::Null),
+            // The projection `recognizedText` is deliberately not forwarded. Only these measured
+            // tokens can earn finalization; the public proxy rejects this field from callers.
+            "recognizedTokens": recognized_tokens,
+            // Private server-to-server field. The public Rust and Node proxies both reject it, so
+            // only this finalizer can bind measured spans to the workers that produced them.
+            "transcriptModelAttribution": transcript_model_attribution,
             "consent": consent,
         }),
     )
     .await?;
 
-    // ── 4. Persist, through the SAME code the client-facing route uses ─────────────────────────
-    let inputs: Vec<PersistAlignmentInput> = alignment
-        .get("alignments")
-        .and_then(|v| v.as_array())
-        .map(|rows| {
-            rows.iter()
-                .filter_map(|a| {
-                    Some(PersistAlignmentInput {
-                        word_id: a.get("wordId")?.as_str()?.to_owned(),
-                        heard_text: a
-                            .get("heardText")
-                            .and_then(|v| v.as_str())
-                            .unwrap_or_default()
-                            .to_owned(),
-                        // Passed through as raw JSON, absent included, so the ML-derived path is held
-                        // to the same `usable_span` rule as the client-reported one. It had the
-                        // identical `.unwrap_or(0)`: an aligner that returned no timing produced a
-                        // 0ms-to-0ms row indistinguishable from a real one.
-                        start_ms: a.get("startMs").cloned().unwrap_or(serde_json::Value::Null),
-                        end_ms: a.get("endMs").cloned().unwrap_or(serde_json::Value::Null),
-                        confidence: a.get("confidence").and_then(|v| v.as_f64()).unwrap_or(0.0),
-                        status: a
-                            .get("status")
-                            .and_then(|v| v.as_str())
-                            .unwrap_or("needs-review")
-                            .to_owned(),
-                    })
-                })
-                .collect()
-        })
+    if !alignment
+        .get("finalizable")
+        .and_then(|value| value.as_bool())
+        .unwrap_or(false)
+    {
+        return Ok(Json(serde_json::json!({
+            "sessionId": id,
+            "finalized": false,
+            "reason": alignment
+                .get("nonFinalizedReason")
+                .and_then(|value| value.as_str())
+                .unwrap_or("invalid-recognized-spans"),
+            "persisted": 0,
+        })));
+    }
+
+    crate::handlers::ml_proxy::require_producer_attribution(&alignment, "quran-aligner", "ML")?;
+    crate::handlers::ml_proxy::require_exact_attribution_extension(
+        &transcript,
+        &alignment,
+        "quran-aligner",
+        "ML",
+    )?;
+
+    let alignment_model_version = alignment
+        .get("modelVersion")
+        .and_then(|value| value.as_str())
         .unwrap_or_default();
+    if alignment_model_version != session_model_version {
+        tracing::warn!(
+            session_id = %id,
+            session_model = %session_model_version,
+            producer_model = %alignment_model_version,
+            "finalization refused because the session and producer models disagree"
+        );
+        return Ok(Json(serde_json::json!({
+            "sessionId": id,
+            "finalized": false,
+            "reason": "model-version-mismatch",
+            "persisted": 0,
+        })));
+    }
+
+    let invalid_provenance =
+        || ApiError::Upstream("ML service returned invalid model provenance".to_owned());
+    let dataset_version = alignment
+        .get("datasetVersion")
+        .and_then(|value| value.as_str())
+        .filter(|value| !value.is_empty())
+        .ok_or_else(&invalid_provenance)?
+        .to_owned();
+    let evidence_id = alignment
+        .get("evidenceId")
+        .and_then(|value| value.as_str())
+        .filter(|value| !value.is_empty())
+        .ok_or_else(&invalid_provenance)?
+        .to_owned();
+    let latency_ms = alignment
+        .get("latencyMs")
+        .and_then(|value| value.as_u64())
+        .and_then(|value| i32::try_from(value).ok())
+        .filter(|value| *value > 0)
+        .ok_or_else(&invalid_provenance)?;
+    let model_attribution = alignment
+        .get("modelAttribution")
+        .cloned()
+        .ok_or_else(invalid_provenance)?;
+    let provenance = AlignmentRunProvenance {
+        model_version: alignment_model_version.to_owned(),
+        dataset_version,
+        latency_ms,
+        evidence_ids: serde_json::json!([evidence_id]),
+        consent_snapshot,
+        model_attribution,
+    };
+
+    // ── 4. Persist, through the SAME code the client-facing route uses ─────────────────────────
+    let mut invalid_alignment_output = false;
+    let mut inputs: Vec<PersistAlignmentInput> = Vec::new();
+    if let Some(rows) = alignment
+        .get("alignments")
+        .and_then(|value| value.as_array())
+    {
+        for row in rows {
+            let Some(status) = row.get("status").and_then(|value| value.as_str()) else {
+                invalid_alignment_output = true;
+                break;
+            };
+            match status {
+                // Only an actually heard canonical match/misread becomes a word_alignments row.
+                // Misses have no source span; extras have no canonical FK; needs-review is not a
+                // learner-performance fact until a reviewer resolves it.
+                "matched" | "misread" => {
+                    let Some(word_id) = row.get("wordId").and_then(|value| value.as_str()) else {
+                        invalid_alignment_output = true;
+                        break;
+                    };
+                    let Some(heard_text) = row.get("heardText").and_then(|value| value.as_str())
+                    else {
+                        invalid_alignment_output = true;
+                        break;
+                    };
+                    inputs.push(PersistAlignmentInput {
+                        word_id: word_id.to_owned(),
+                        heard_text: heard_text.to_owned(),
+                        start_ms: row
+                            .get("startMs")
+                            .cloned()
+                            .unwrap_or(serde_json::Value::Null),
+                        end_ms: row.get("endMs").cloned().unwrap_or(serde_json::Value::Null),
+                        confidence: row
+                            .get("confidence")
+                            .and_then(|value| value.as_f64())
+                            .unwrap_or(0.0),
+                        status: status.to_owned(),
+                    });
+                }
+                "missed" | "extra" | "needs-review" => {}
+                _ => {
+                    invalid_alignment_output = true;
+                    break;
+                }
+            }
+        }
+    } else {
+        invalid_alignment_output = true;
+    }
+
+    if invalid_alignment_output || inputs.is_empty() {
+        return Ok(Json(serde_json::json!({
+            "sessionId": id,
+            "finalized": false,
+            "reason": if invalid_alignment_output {
+                "invalid-alignment-output"
+            } else {
+                "no-persistable-alignments"
+            },
+            "persisted": 0,
+        })));
+    }
 
     // Counted before the move into the request below: the response needs to distinguish "the
     // aligner offered nothing" from "it offered rows and every one was refused".
@@ -1231,9 +1472,42 @@ pub async fn finalize_session(
         // server-to-server from the service holding the audio (step 2 above) — the caller named a
         // session id and supplied no words at all.
         TranscriptSource::ServerDerived,
+        Some(provenance),
         crate::auth::extract_trace_id(&headers),
     )
     .await?;
+
+    let persisted_count = persisted
+        .get("persisted")
+        .and_then(|value| value.as_i64())
+        .unwrap_or(0);
+    let skipped_invalid_status = persisted
+        .get("skippedInvalidStatus")
+        .and_then(|value| value.as_i64())
+        .unwrap_or(0);
+    let skipped_unknown_word = persisted
+        .get("skippedUnknownWord")
+        .and_then(|value| value.as_i64())
+        .unwrap_or(0);
+    let skipped_unusable_span = persisted
+        .get("skippedUnusableSpan")
+        .and_then(|value| value.as_i64())
+        .unwrap_or(0);
+    if persisted_count == 0
+        || skipped_invalid_status > 0
+        || skipped_unknown_word > 0
+        || skipped_unusable_span > 0
+    {
+        // `persist_alignments_in_tx` may have inserted a valid prefix before encountering an
+        // invalid row. Roll the whole transaction back: QA-2 forbids a partial evidence set.
+        tx.rollback().await?;
+        return Ok(Json(serde_json::json!({
+            "sessionId": id,
+            "finalized": false,
+            "reason": "invalid-alignment-output",
+            "persisted": 0,
+        })));
+    }
 
     // Record what the session did NOT get, on the session.
     //
@@ -1355,4 +1629,39 @@ async fn ml_post(
         tracing::error!("finalize: {path} parse error: {e}");
         ApiError::Upstream("ML service returned an invalid response".to_owned())
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_review_status_round_trips_every_known_value() {
+        assert_eq!(parse_review_status("draft").unwrap(), ReviewStatus::Draft);
+        assert_eq!(
+            parse_review_status("ai-suggested").unwrap(),
+            ReviewStatus::AiSuggested
+        );
+        assert_eq!(
+            parse_review_status("teacher-review-required").unwrap(),
+            ReviewStatus::TeacherReviewRequired
+        );
+        assert_eq!(
+            parse_review_status("teacher-reviewed").unwrap(),
+            ReviewStatus::TeacherReviewed
+        );
+        assert_eq!(
+            parse_review_status("scholar-approved").unwrap(),
+            ReviewStatus::ScholarApproved
+        );
+        assert_eq!(
+            parse_review_status("blocked").unwrap(),
+            ReviewStatus::Blocked
+        );
+    }
+
+    #[test]
+    fn parse_review_status_rejects_an_unknown_value() {
+        assert!(parse_review_status("not-a-real-status").is_err());
+    }
 }

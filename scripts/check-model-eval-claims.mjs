@@ -1,214 +1,259 @@
 #!/usr/bin/env node
 /**
- * A model version may not CLAIM it passed evaluation without an evaluation that passes.
- *
- *   node scripts/check-model-eval-claims.mjs --self-test   # prove the checker can fail
- *   node scripts/check-model-eval-claims.mjs               # check the live database
- *
- * ── Why this exists ─────────────────────────────────────────────────────────────────────────────
- * `modelEvalPassesReleaseGate` (packages/contracts) encodes the bar a model must clear to ship:
- * wordAlignmentF1 >= 0.9, tajweedF1 >= 0.82, falsePositiveRate <= 0.08, teacherAgreementRate >= 0.9,
- * zero unsourced learner outputs, and `passed`. It was written, unit-tested against fixtures, and
- * CALLED BY NOTHING — one reference in the whole repository outside its own test, its own
- * definition. A release gate that no release runs.
- *
- * Meanwhile `model_versions.status` can say `eval-passed`, and nothing checked that against
- * `eval_runs`. Measured when this was written:
- *
- *     model-v0.3    eval-passed   0.93 / 0.86 / 0.05 / 0.92 / 0 / passed
- *     tajweed-v0.1  eval-passed   NO EVAL RUN AT ALL
- *
- * A model asserting it met a bar nobody measured is a fabricated evaluation — the standing rule this
- * project holds itself to says not to produce one, and the database was carrying one anyway.
- *
- * `status` is read by no service; it is pure EVIDENCE. That is exactly why a false value matters:
- * evidence nothing acts on is evidence nobody re-derives, and it is read years later as fact.
- *
- * ── What it does NOT do ─────────────────────────────────────────────────────────────────────────
- * It does not evaluate anything. Running a real evaluation is P3.4/P3.5 — a protocol, a held-out
- * set, representative slices, and a scholar. This only refuses the CLAIM when the evidence is
- * absent or fails, which is the part that can be automated honestly.
+ * Refuse `eval-passed` or `released` unless exactly one signed, release-trusted evidence identity
+ * clears the shared contract gate. Every tenant-visible row is considered: insertion order cannot
+ * hide an older authority, and conflicting release-labelled evidence fails closed.
  */
+import { readFileSync } from "node:fs";
+import { dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+
 import pg from "pg";
 
 import { modelEvalPassesReleaseGate } from "../packages/contracts/src/index.ts";
+import { verifyModelEvidenceBundle } from "./model-evidence-verifier.mjs";
+
+const here = dirname(fileURLToPath(import.meta.url));
+const productionTrustPolicy = JSON.parse(
+  readFileSync(
+    resolve(here, "..", "packages", "contracts", "model-evaluation-trusted-signers-v1.json"),
+    "utf8",
+  ),
+);
 
 /** Statuses that assert an evaluation was passed. `draft` and `blocked` claim nothing. */
 const CLAIMS_EVALUATION = new Set(["eval-passed", "released"]);
 
-/**
- * The gate's own verdict on one model, or a sentence saying why it has none.
- *
- * Deliberately delegates to `modelEvalPassesReleaseGate` rather than re-checking the thresholds
- * here. A second copy of the bar is a second bar, and the whole finding is that the first one had no
- * caller — reimplementing it would leave that true.
- */
-export function claimProblem(model, evalRun) {
-  if (!CLAIMS_EVALUATION.has(model.status)) return null;
+function releaseLabelled(row) {
+  return row.releaseEligible === true || row.evidenceEligibility === "release-candidate";
+}
 
-  if (!evalRun) {
-    return `${model.id} claims status "${model.status}" and has NO eval run — nothing measured it`;
+/**
+ * Select one authority by verified identity, never by creation time.
+ *
+ * Ordinary fixture/research history is irrelevant. Every release-labelled row must verify and
+ * clear the gate; one invalid row conflicts with every valid row. Exact copies visible through
+ * multiple tenants collapse to one identity, while distinct valid identities are ambiguous.
+ */
+export function selectUniqueReleaseAuthority(rows, evaluateRow) {
+  const candidates = rows.filter(releaseLabelled);
+  if (candidates.length === 0) return { authority: null, problem: null };
+
+  const authorities = new Map();
+  const invalid = [];
+  for (const row of candidates) {
+    try {
+      const result = evaluateRow(row);
+      if (!result || typeof result.identity !== "string" || result.identity.length === 0) {
+        throw new Error("evaluator returned no stable evidence identity");
+      }
+      if (!authorities.has(result.identity)) authorities.set(result.identity, result.authority);
+    } catch (error) {
+      invalid.push(`${row.id ?? "unknown-row"}: ${error instanceof Error ? error.message : String(error)}`);
+    }
   }
-  if (!modelEvalPassesReleaseGate(evalRun)) {
-    const detail = [
-      `wordAlignmentF1=${evalRun.wordAlignmentF1}`,
-      `tajweedF1=${evalRun.tajweedF1}`,
-      `falsePositiveRate=${evalRun.falsePositiveRate}`,
-      `teacherAgreementRate=${evalRun.teacherAgreementRate}`,
-      `unsourcedLearnerOutputs=${evalRun.unsourcedLearnerOutputs}`,
-      `passed=${evalRun.passed}`,
-    ].join(" ");
-    return `${model.id} claims status "${model.status}" but its eval run does not clear the gate: ${detail}`;
+
+  if (invalid.length > 0) {
+    return {
+      authority: null,
+      problem: `invalid release-labelled evidence (${invalid.join("; ")})`,
+    };
+  }
+  if (authorities.size !== 1) {
+    return {
+      authority: null,
+      problem: `ambiguous release authority: ${authorities.size} distinct verified identities`,
+    };
+  }
+  return { authority: authorities.values().next().value, problem: null };
+}
+
+/** The model's evidence problem, if its status makes a release claim. */
+export function claimProblem(model, resolution) {
+  if (!CLAIMS_EVALUATION.has(model.status)) return null;
+  if (resolution.problem) {
+    return `${model.id} claims status "${model.status}" but ${resolution.problem}`;
+  }
+  if (!resolution.authority) {
+    return `${model.id} claims status "${model.status}" with no verified release authority`;
   }
   return null;
 }
 
-/**
- * Prove the checker can fail before trusting it to pass.
- *
- * The licence gate learned this the hard way: it once reported "0 unapproved" because it had been
- * handed zero packages. A checker that has never been shown a bad input is a checker nobody has
- * seen work.
- */
-function selfTest() {
-  const passing = {
-    wordAlignmentF1: 0.93,
-    tajweedF1: 0.86,
-    falsePositiveRate: 0.05,
-    teacherAgreementRate: 0.92,
-    unsourcedLearnerOutputs: 0,
-    passed: true,
+function evidenceBundleFromRow(row) {
+  return {
+    schemaVersion: "qrai-model-evaluation-bundle/v1",
+    canonicalization: "RFC8785",
+    evidence: row.evidencePayload,
+    signature: {
+      schemaVersion: "qrai-model-evaluation-signature/v1",
+      algorithm: row.signatureAlgorithm,
+      keyId: row.signerKeyId,
+      payloadSha256: row.evidencePayloadSha256,
+      signatureBase64Url: row.signatureBase64Url,
+      signedAt: row.signedAt,
+    },
   };
+}
+
+function evaluateReleaseRow(row) {
+  const verification = verifyModelEvidenceBundle(
+    evidenceBundleFromRow(row),
+    productionTrustPolicy,
+    { requireReleaseTrust: true },
+  );
+  if (!modelEvalPassesReleaseGate(row, verification)) {
+    throw new Error("verified payload does not exactly match the database projection or release gates");
+  }
+  return {
+    authority: {
+      rowId: row.id,
+      evidenceId: verification.evidenceId,
+      payloadSha256: verification.payloadSha256,
+      modelArtifactSha256: row.modelArtifactSha256,
+    },
+    identity: [
+      verification.evidenceId,
+      verification.payloadSha256,
+      row.modelArtifactSha256,
+      row.datasetManifestSha256,
+      row.calibratorArtifactSha256,
+    ].join("|"),
+  };
+}
+
+/** Prove the status checker and authority selector can both fail before trusting a live pass. */
+function selfTest() {
+  const authority = { rowId: "r", evidenceId: "e" };
   const cases = [
-    ["a draft model needs no evidence", { id: "m", status: "draft" }, null, false],
-    ["a blocked model needs no evidence", { id: "m", status: "blocked" }, null, false],
-    ["eval-passed with a passing run is fine", { id: "m", status: "eval-passed" }, passing, false],
-    ["released with a passing run is fine", { id: "m", status: "released" }, passing, false],
-    ["eval-passed with NO run is refused", { id: "m", status: "eval-passed" }, null, true],
-    ["released with NO run is refused", { id: "m", status: "released" }, null, true],
-    [
-      "a run below the alignment bar is refused",
-      { id: "m", status: "eval-passed" },
-      { ...passing, wordAlignmentF1: 0.89 },
-      true,
-    ],
-    [
-      "a run above the false-positive ceiling is refused",
-      { id: "m", status: "eval-passed" },
-      { ...passing, falsePositiveRate: 0.081 },
-      true,
-    ],
-    [
-      "a run with unsourced learner outputs is refused",
-      { id: "m", status: "eval-passed" },
-      { ...passing, unsourcedLearnerOutputs: 1 },
-      true,
-    ],
-    [
-      "a run whose own `passed` is false is refused",
-      { id: "m", status: "eval-passed" },
-      { ...passing, passed: false },
-      true,
-    ],
+    ["draft needs no authority", { id: "m", status: "draft" }, { authority: null, problem: null }, false],
+    ["blocked needs no authority", { id: "m", status: "blocked" }, { authority: null, problem: null }, false],
+    ["eval-passed accepts one authority", { id: "m", status: "eval-passed" }, { authority, problem: null }, false],
+    ["released accepts one authority", { id: "m", status: "released" }, { authority, problem: null }, false],
+    ["eval-passed without authority fails", { id: "m", status: "eval-passed" }, { authority: null, problem: null }, true],
+    ["a conflict fails", { id: "m", status: "released" }, { authority: null, problem: "conflict" }, true],
   ];
 
   let failures = 0;
-  for (const [name, model, evalRun, shouldProblem] of cases) {
-    const problem = claimProblem(model, evalRun);
-    if (Boolean(problem) !== shouldProblem) {
-      console.error(`  ✗ self-test: ${name} — expected ${shouldProblem ? "a problem" : "none"}`);
+  for (const [name, model, resolution, shouldProblem] of cases) {
+    if (Boolean(claimProblem(model, resolution)) !== shouldProblem) {
+      console.error(`  ✗ self-test: ${name}`);
       failures += 1;
     }
   }
-  if (failures > 0) {
-    console.error(`check-model-eval-claims self-test FAILED (${failures})`);
-    process.exit(1);
+  const selected = selectUniqueReleaseAuthority(
+    [
+      { id: "fixture", evidenceEligibility: "fixture-regression", releaseEligible: false },
+      { id: "release", evidenceEligibility: "release-candidate", releaseEligible: true },
+    ],
+    (row) => ({ authority: row, identity: "one" }),
+  );
+  if (selected.authority?.id !== "release" || selected.problem !== null) failures += 1;
+
+  const conflict = selectUniqueReleaseAuthority(
+    [
+      { id: "first", evidenceEligibility: "release-candidate", releaseEligible: true },
+      { id: "second", evidenceEligibility: "release-candidate", releaseEligible: true },
+    ],
+    (row) => ({ authority: row, identity: row.id }),
+  );
+  if (conflict.authority !== null || !conflict.problem) failures += 1;
+
+  if (failures > 0) throw new Error(`check-model-eval-claims self-test FAILED (${failures})`);
+  console.log(`check-model-eval-claims self-test OK (${cases.length + 2} cases)`);
+}
+
+async function readTenantEvalRows(client, tenantId) {
+  await client.query("BEGIN");
+  try {
+    await client.query("SELECT set_config('app.tenant_id', $1, true)", [tenantId]);
+    const { rows } = await client.query(
+      `SELECT id,
+              to_char(created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS "createdAt",
+              model_version_id AS "modelVersion", dataset_version AS "datasetVersion",
+              word_alignment_f1::float8 AS "wordAlignmentF1",
+              tajweed_f1::float8 AS "tajweedF1",
+              false_positive_rate::float8 AS "falsePositiveRate",
+              teacher_agreement_rate::float8 AS "teacherAgreementRate",
+              unsourced_learner_outputs AS "unsourcedLearnerOutputs", passed,
+              evaluation_task AS "evaluationTask", evidence_id AS "evidenceId",
+              evidence_kind AS "evidenceKind", evidence_eligibility AS "evidenceEligibility",
+              release_eligible AS "releaseEligible", evidence_payload AS "evidencePayload",
+              evidence_payload_sha256 AS "evidencePayloadSha256", candidate_id AS "candidateId",
+              model_artifact_sha256 AS "modelArtifactSha256",
+              dataset_manifest_sha256 AS "datasetManifestSha256",
+              split_manifest_sha256 AS "splitManifestSha256", split_id AS "splitId",
+              evaluator_version AS "evaluatorVersion",
+              evaluator_source_sha256 AS "evaluatorSourceSha256",
+              evaluator_protocol_sha256 AS "evaluatorProtocolSha256",
+              raw_row_manifest_sha256 AS "rawRowManifestSha256",
+              raw_results_sha256 AS "rawResultsSha256", calibrator_id AS "calibratorId",
+              calibrator_artifact_sha256 AS "calibratorArtifactSha256",
+              signer_key_id AS "signerKeyId", signature_algorithm AS "signatureAlgorithm",
+              signature_base64url AS "signatureBase64Url",
+              to_char(signed_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS "signedAt",
+              evaluation_counts AS "evaluationCounts", slice_metrics AS "sliceMetrics"
+       FROM eval_runs
+       ORDER BY model_version_id, created_at, id`,
+    );
+    return rows;
+  } finally {
+    await client.query("ROLLBACK");
   }
-  console.log(`check-model-eval-claims self-test OK (${cases.length} cases)`);
 }
 
 async function checkDatabase() {
   const connectionString = process.env.DATABASE_URL;
-  if (!connectionString) {
-    console.error("DATABASE_URL is required — this check reads model_versions and eval_runs.");
-    process.exit(1);
-  }
+  if (!connectionString) throw new Error("DATABASE_URL is required to read model evaluation claims");
+
   const client = new pg.Client({ connectionString });
   await client.connect();
   try {
-    // ── model_versions is GLOBAL; eval_runs is TENANT-OWNED ─────────────────────────────────────
-    // A release asks "has this model been evaluated at all", which crosses tenants — but this
-    // connects as `quran_ai_app` (nosuperuser, nobypassrls), so eval_runs is invisible until
-    // `app.tenant_id` is set. The first version of this checker did not set it, read zero eval rows,
-    // and reported that BOTH models had no evaluation — including the one that demonstrably does.
-    // A gate that fails for a reason it invented is worse than one that passes: it teaches people
-    // that its findings are noise.
-    //
-    // So the tenants are enumerated and each is asked in turn, which also keeps the RLS boundary
-    // explicit rather than defeated.
-    const { rows: models } = await client.query(
-      "SELECT id, status FROM model_versions ORDER BY id",
-    );
-    if (models.length === 0) {
-      console.error("✗ no model_versions rows at all — refusing to report a pass on an empty read");
-      process.exit(1);
-    }
+    const { rows: models } = await client.query("SELECT id, status FROM model_versions ORDER BY id");
+    if (models.length === 0) throw new Error("no model_versions rows; refusing a vacuous pass");
 
     const { rows: tenants } = await client.query("SELECT id FROM institutions ORDER BY id");
-    if (tenants.length === 0) {
-      console.error("✗ no institutions — eval_runs is tenant-owned, so nothing could be read");
-      process.exit(1);
-    }
+    if (tenants.length === 0) throw new Error("no institutions; tenant-owned eval evidence is unreadable");
 
-    /** The most recent eval run for a model, in whichever tenant holds one. */
-    const latestEval = new Map();
+    const byModel = new Map();
     for (const { id: tenantId } of tenants) {
-      await client.query("BEGIN");
-      await client.query("SELECT set_config('app.tenant_id', $1, true)", [tenantId]);
-      const { rows } = await client.query(
-        `SELECT DISTINCT ON (model_version_id)
-                model_version_id,
-                word_alignment_f1::float8      AS "wordAlignmentF1",
-                tajweed_f1::float8             AS "tajweedF1",
-                false_positive_rate::float8    AS "falsePositiveRate",
-                teacher_agreement_rate::float8 AS "teacherAgreementRate",
-                unsourced_learner_outputs      AS "unsourcedLearnerOutputs",
-                passed
-         FROM eval_runs
-         ORDER BY model_version_id, created_at DESC`,
-      );
-      await client.query("ROLLBACK");
-      for (const r of rows) {
-        if (!latestEval.has(r.model_version_id)) latestEval.set(r.model_version_id, r);
+      for (const row of await readTenantEvalRows(client, tenantId)) {
+        const rows = byModel.get(row.modelVersion) ?? [];
+        rows.push(row);
+        byModel.set(row.modelVersion, rows);
       }
     }
 
+    const resolutions = new Map(
+      models.map((model) => [
+        model.id,
+        selectUniqueReleaseAuthority(byModel.get(model.id) ?? [], evaluateReleaseRow),
+      ]),
+    );
     const problems = models
-      .map((m) => claimProblem(m, latestEval.get(m.id) ?? null))
+      .map((model) => claimProblem(model, resolutions.get(model.id)))
       .filter(Boolean);
-
     if (problems.length > 0) {
-      console.error("✗ model versions claim an evaluation they do not have:");
-      for (const p of problems) console.error(`    ${p}`);
-      console.error(
-        "\n  A status of eval-passed/released asserts a bar was measured. Either attach a passing\n" +
-          "  eval run, or set the status to draft — do not leave the claim standing.",
-      );
-      process.exit(1);
+      throw new Error(`model evaluation claims are not evidenced:\n    ${problems.join("\n    ")}`);
     }
 
-    const claiming = models.filter((m) => CLAIMS_EVALUATION.has(m.status)).length;
+    const claiming = models.filter((model) => CLAIMS_EVALUATION.has(model.status)).length;
     console.log(
       `✓ model eval claims: ${models.length} model version(s), ${claiming} claiming an evaluation, ` +
-        `all evidenced (${latestEval.size} with an eval run across ${tenants.length} tenant(s))`,
+        `all uniquely release-evidenced (${[...byModel.values()].flat().length} visible row(s))`,
     );
   } finally {
     await client.end();
   }
 }
 
-if (process.argv.includes("--self-test")) {
-  selfTest();
-} else {
-  await checkDatabase();
+const isMain = process.argv[1] !== undefined && fileURLToPath(import.meta.url) === resolve(process.argv[1]);
+if (isMain) {
+  try {
+    if (process.argv.includes("--self-test")) selfTest();
+    else await checkDatabase();
+  } catch (error) {
+    console.error(`✗ ${error instanceof Error ? error.message : String(error)}`);
+    process.exitCode = 1;
+  }
 }

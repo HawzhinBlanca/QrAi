@@ -20,7 +20,7 @@ MODEL_ID = os.environ.get("FORCE_ALIGN_MODEL", "jonatasgrosman/wav2vec2-large-xl
 # Arabic combining marks (harakat/tanwin/tatweel/quranic annotation) absent from the model vocab.
 #
 # Written as \u escapes, NOT literal characters, and kept identical to the reference implementation
-# in services/ml-inference/alignment.js:7. The previous version of this line was a literal-character
+# in server/src/inference/alignment.mjs:7. The previous version of this line was a literal-character
 # transcription of that JS class, and the transcription silently merged two ranges into
 # U+0610-U+0670 — which swallows the entire Arabic LETTER block (U+0621-U+064A). It stripped every
 # letter ("بِسْمِ" -> ""), so align_words fell through to <unk> for every word and returned
@@ -79,7 +79,16 @@ def align_words(waveform: torch.Tensor, arabic_words: list[str]) -> list[tuple[i
         )
     targets = torch.tensor([tokens], dtype=torch.int32)
     aligned, scores = F.forced_align(emission, targets, blank=blank)
-    token_spans = F.merge_tokens(aligned[0], scores[0])
+    # `blank=blank` on BOTH calls. merge_tokens defaults to blank=0, so omitting it here silently
+    # used a different blank than the alignment that produced `aligned`: whichever symbol sat at
+    # index 0 was stripped as padding, and the real <pad> frames survived as if they were spoken.
+    # token_spans then held more entries than `tokens`, so every token_spans[a:b] slice below
+    # landed on a neighbour's tokens and each word was returned with someone else's timing —
+    # still positive, still ordered, still inside the audio, and still wrong. It worked only
+    # because the default checkpoint puts <pad> at 0; FORCE_ALIGN_MODEL is documented as
+    # swappable, and vocab ordering is the checkpoint author's choice, not ours.
+    # See test_forced_align_spans.py::test_the_blank_index_is_read_from_the_vocab_...
+    token_spans = F.merge_tokens(aligned[0], scores[0], blank=blank)
 
     ratio = waveform.size(1) / emission.size(1) / 16000.0
     out = []

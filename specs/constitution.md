@@ -15,7 +15,7 @@
 - **No fabricated model/eval output.** Numbers shown as model/eval results come from a real
   service or a declared fixture — never hand-authored.
 - **Tenant isolation.** Tenant-owned tables stay behind Postgres RLS
-  (`infra/sql/0003_tenant_rls.sql`); no query path bypasses it.
+  (`infra/migrations/0003_tenant_rls.sql`); no query path bypasses it.
 - **Privacy by contract.** Audio retention + export/delete follow `packages/contracts`;
   consent-gated for any external ASR.
 

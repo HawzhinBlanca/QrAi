@@ -9,8 +9,8 @@ We will address the findings identified in the audit report systematically.
 - Modify `docker-compose.yml` to remove the default values for `JWT_SECRET` and `REALTIME_GATEWAY_TICKET_SECRET` and require they be set on the host using the `${VAR:?error}` syntax. Remove `ALLOW_HEADER_AUTH: "1"`.
 
 ### 2. Tenant Isolation & Database Security (C-2)
-- Add `tenant_id` to `eval_runs` in `infra/sql/0001_core_schema.sql` and apply RLS/force RLS and policy `tenant_isolation_eval_runs` in `infra/sql/0003_tenant_rls.sql`.
-- Update `infra/sql/0006_seed_internal.sql` to include `tenant_id` for seeded `eval_runs` records.
+- Add `tenant_id` to `eval_runs` in `infra/migrations/0001_core_schema.sql` and apply RLS/force RLS and policy `tenant_isolation_eval_runs` in `infra/migrations/0003_tenant_rls.sql`.
+- Update `infra/migrations/0006_seed_internal.sql` to include `tenant_id` for seeded `eval_runs` records.
 - Update `scripts/smoke-sql.mjs` to add `"eval_runs"` to `tenantTables` and seed `eval_runs` records in the RLS test run.
 - Update `platform-api/src/handlers/eval.rs` to use `begin_tenant_tx` for fetching eval runs.
 

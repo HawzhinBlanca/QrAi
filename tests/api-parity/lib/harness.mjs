@@ -21,9 +21,11 @@
  */
 import { spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { existsSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { createServer } from "node:http";
 import { createServer as createNetServer } from "node:net";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 
 import pg from "pg";
@@ -341,6 +343,196 @@ export async function queryJson(sql, params = [], opts = {}) {
   return withDb(async (client) => (await client.query(sql, params)).rows, opts);
 }
 
+/**
+ * Delete every recitation session carrying `sourceChecksum`, children first, and prove it emptied.
+ *
+ * Parity suites create sessions and, until now, none of them removed what they wrote. Measured on
+ * the shared staging database: 64,869 recitation sessions had accumulated across ~8 fixed
+ * checksums, growing by thousands a day — `sha256:test` alone reached 21,699.
+ *
+ * That is the failure `seedQueued` already caused once in this program: leaked rows broke a
+ * review-parity assertion and a Rust integration test. An unbounded corpus makes any ORDER BY
+ * without a unique tiebreaker non-deterministic, makes before/after row-count deltas noisy, and
+ * makes bulk teardown elsewhere fail on foreign keys pointing at rows nobody owns — all of which
+ * were observed as intermittent gate failures before this existed.
+ *
+ * Pass a checksum unique to the RUN, not the shared literal. Two agents run this repository's gate
+ * against the same Postgres, so anything scoped by a shared marker (or by a time window over one)
+ * would reap a concurrent run's rows out from under it. `uniqueSuffix()` is the intended source.
+ *
+ * `audit_events` are deliberately not touched: an audit trail is not a test's to erase, and those
+ * rows are one per session rather than one per assertion.
+ */
+export async function purgeSessionsByChecksum(sourceChecksum, { tenant = TENANT } = {}) {
+  if (typeof sourceChecksum !== "string" || sourceChecksum.trim() === "") {
+    throw new HarnessError("purgeSessionsByChecksum needs a non-empty run-scoped source checksum");
+  }
+  return purgeOwnedSessions(
+    "SELECT id FROM recitation_sessions WHERE tenant_id = $1 AND source_checksum = $2",
+    [tenant, sourceChecksum],
+  );
+}
+
+/**
+ * The same FK-complete teardown, for suites that hold session ids rather than a checksum.
+ *
+ * `authz-matrix.test.mjs` deleted its session directly and its `after` hook failed intermittently
+ * with `23503 word_alignments_session_id_fkey` — whenever the session happened to have alignments,
+ * the whole file failed as `hookFailed`. Deleting a session is never a single statement; the order
+ * below is the reason this exists in one place instead of being rediscovered per suite.
+ */
+export async function purgeSessionsById(ids, { tenant = TENANT } = {}) {
+  const list = (Array.isArray(ids) ? ids : [ids]).filter(Boolean);
+  if (list.length === 0) return 0;
+  return purgeOwnedSessions(
+    "SELECT id FROM recitation_sessions WHERE tenant_id = $1 AND id = ANY($2)",
+    [tenant, list],
+  );
+}
+
+/**
+ * Delete the sessions selected by `owned` and everything referencing them, deepest first.
+ *
+ * The closure is derived from information_schema rather than guessed: teacher_reviews.finding_id ->
+ * tajweed_findings was missed on the first attempt and failed loudly with a 23503, which is the only
+ * reason this list is now complete. Note word_alignments.alignment_run_id -> alignment_runs, so
+ * alignment_runs must go AFTER word_alignments even though both hang off the session.
+ *
+ * `audit_events` are deliberately left: an audit trail is not a test's to erase.
+ */
+async function purgeOwnedSessions(owned, scope) {
+  const consents = await queryJson(
+    `SELECT DISTINCT consent_record_id AS id FROM (${owned}) s
+       JOIN recitation_sessions r ON r.id = s.id
+      WHERE r.consent_record_id IS NOT NULL`,
+    scope,
+  );
+
+  const findings = `SELECT id FROM tajweed_findings WHERE alignment_id IN
+       (SELECT id FROM word_alignments WHERE session_id IN (${owned}))`;
+  await queryJson(`DELETE FROM teacher_reviews WHERE finding_id IN (${findings})`, scope);
+  await queryJson(`DELETE FROM tajweed_findings WHERE id IN (${findings})`, scope);
+  for (const table of ["word_alignments", "alignment_runs", "audio_chunks", "realtime_session_tickets"]) {
+    await queryJson(`DELETE FROM ${table} WHERE session_id IN (${owned})`, scope);
+  }
+  await queryJson(`DELETE FROM recitation_sessions WHERE id IN (${owned})`, scope);
+  if (consents.length > 0) {
+    await queryJson("DELETE FROM consent_records WHERE id = ANY($1)", [consents.map((c) => c.id)]);
+  }
+
+  // A teardown that quietly fails is the same defect class as a guard that quietly passes, so this
+  // reports rather than assumes. Callers assert on the count.
+  const [{ n }] = await queryJson(`SELECT count(*)::int AS n FROM (${owned}) s`, scope);
+  return n;
+}
+
+/**
+ * Explicit DB-mechanics fixture for migration 0033. Its signer is test-only and production trust is
+ * empty, so this release-labelled row can exercise exact provenance without becoming release proof.
+ */
+export const DECLARED_TEST_ACOUSTIC_EVIDENCE = Object.freeze({
+  modelVersion: "model-v0.3",
+  evidenceId: "declared-test-acoustic-evidence-v1",
+  evidenceSha256: "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+  modelArtifactSha256:
+    "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+  datasetVersion: "declared-test-acoustic-dataset-v1",
+  datasetManifestSha256:
+    "sha256:3333333333333333333333333333333333333333333333333333333333333333",
+  calibratorId: "declared-test-calibrator-v1",
+  calibratorArtifactSha256:
+    "sha256:9999999999999999999999999999999999999999999999999999999999999999",
+});
+
+export async function ensureDeclaredTestAcousticEvidence() {
+  const p = DECLARED_TEST_ACOUSTIC_EVIDENCE;
+  await queryJson(
+    `INSERT INTO eval_runs
+       (id, tenant_id, model_version_id, dataset_version, metrics, word_alignment_f1, tajweed_f1,
+        false_positive_rate, teacher_agreement_rate, unsourced_learner_outputs, passed,
+        evaluation_task, evidence_id, evidence_kind, evidence_eligibility, release_eligible,
+        evidence_payload, evidence_payload_sha256, candidate_id, model_artifact_sha256,
+        dataset_manifest_sha256, split_manifest_sha256, split_id, evaluator_version,
+        evaluator_source_sha256, evaluator_protocol_sha256, raw_row_manifest_sha256,
+        raw_results_sha256, calibrator_id, calibrator_artifact_sha256, signer_key_id,
+        signature_algorithm, signature_base64url, signed_at, evaluation_counts, slice_metrics,
+        created_at)
+     VALUES
+       ('declared-test-acoustic-eval-v1', $1, $2, $3, '{}'::jsonb, 0, 0, 1, 0, 0, true,
+        'acoustic-tajweed', $4, 'row-level-computed-evaluation', 'release-candidate', true,
+        '{"declaredFixture":true}'::jsonb, $5, 'declared-test-candidate-v1', $6, $7,
+        'sha256:4444444444444444444444444444444444444444444444444444444444444444',
+        'held-out', 'declared-test-evaluator-v1',
+        'sha256:5555555555555555555555555555555555555555555555555555555555555555',
+        'sha256:6666666666666666666666666666666666666666666666666666666666666666',
+        'sha256:7777777777777777777777777777777777777777777777777777777777777777',
+        'sha256:8888888888888888888888888888888888888888888888888888888888888888',
+        $8, $9, 'test-only-ephemeral', 'Ed25519',
+        'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA',
+        '2026-08-07T00:00:00Z',
+        '{"negativeCount":1,"positiveCount":1,"reciterCount":2,"rowCount":2}'::jsonb,
+        '[{"declaredFixture":true,"sliceId":"fixture-slice"}]'::jsonb,
+        '1900-01-01T00:00:00Z')
+     ON CONFLICT (id) DO UPDATE SET created_at = excluded.created_at`,
+    [
+      TENANT,
+      p.modelVersion,
+      p.datasetVersion,
+      p.evidenceId,
+      p.evidenceSha256,
+      p.modelArtifactSha256,
+      p.datasetManifestSha256,
+      p.calibratorId,
+      p.calibratorArtifactSha256,
+    ],
+  );
+}
+
+export async function insertDeclaredTestAcousticFinding({
+  id,
+  alignmentId,
+  rule = "Ghunnah",
+  severity = "warning",
+  confidence = 0.9,
+  explanation = "declared acoustic fixture",
+  reviewStatus = "ai-suggested",
+  sources = [],
+  auditEventId,
+}) {
+  await ensureDeclaredTestAcousticEvidence();
+  const p = DECLARED_TEST_ACOUSTIC_EVIDENCE;
+  await queryJson(
+    `INSERT INTO tajweed_findings
+       (id, tenant_id, alignment_id, rule, severity, confidence, explanation, review_status,
+        source_refs, model_version_id, audit_event_id, analysis_basis,
+        evaluation_evidence_id, evaluation_evidence_sha256, model_artifact_sha256,
+        acoustic_dataset_version, acoustic_dataset_manifest_sha256, calibrator_id,
+        calibrator_artifact_sha256)
+     VALUES ($1, $2, $3, $4, $5, $6::float8::numeric, $7, $8, $9::jsonb, $10, $11,
+             'acoustic', $12, $13, $14, $15, $16, $17, $18)`,
+    [
+      id,
+      TENANT,
+      alignmentId,
+      rule,
+      severity,
+      confidence,
+      explanation,
+      reviewStatus,
+      JSON.stringify(sources),
+      p.modelVersion,
+      auditEventId,
+      p.evidenceId,
+      p.evidenceSha256,
+      p.modelArtifactSha256,
+      p.datasetVersion,
+      p.datasetManifestSha256,
+      p.calibratorId,
+      p.calibratorArtifactSha256,
+    ],
+  );
+}
+
 /** Build a connection string for a different role against the same database. */
 export function urlForRole(user, password, base = DATABASE_URL) {
   const url = new URL(requireDatabaseUrl() && base);
@@ -448,12 +640,16 @@ export const SHELL_URLS = new Set();
 
 export async function startShell({ upstream, env = {}, timeoutMs = 20_000 }) {
   const port = await reservePort();
-  const child = spawn(process.execPath, ["services/node-api/server.mjs"], {
+  const ownsAudioStorage = !env.AUDIO_STORAGE_DIR;
+  const audioStorageDir = env.AUDIO_STORAGE_DIR ?? mkdtempSync(join(tmpdir(), "qrai-node-shell-audio-"));
+  const child = spawn(process.execPath, ["server/src/main.mjs"], {
     env: {
       PATH: process.env.PATH,
       HOME: process.env.HOME,
       DATABASE_URL,
       ...BASE_ENV,
+      AUDIO_STORAGE_DRIVER: "filesystem",
+      AUDIO_STORAGE_DIR: audioStorageDir,
       ...env,
       ...(MUTATION ? (MUTATIONS[MUTATION] ?? {}) : {}),
       PLATFORM_API_UPSTREAM: upstream,
@@ -526,6 +722,7 @@ export async function startShell({ upstream, env = {}, timeoutMs = 20_000 }) {
       while (!exited && Date.now() < hard) await sleep(25);
       if (!exited) child.kill("SIGKILL");
       while (!exited) await sleep(25);
+      if (ownsAudioStorage) rmSync(audioStorageDir, { recursive: true, force: true });
     },
   };
 }

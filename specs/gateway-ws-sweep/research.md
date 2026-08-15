@@ -10,7 +10,7 @@ covers the realtime gateway's WebSocket frames."*
 ## 1. Method
 
 A real `quran-ai-realtime-gateway` process, real HMAC tickets minted with the Phase-7 Node signer
-(`services/node-api/lib/ticket.mjs`), and Node's built-in `WebSocket`. 23 probes:
+(`server/src/lib/ticket.mjs`), and Node's built-in `WebSocket`. 23 probes:
 
 - **13 ticket-string mutations**, pre-upgrade
 - **7 frame sizes**, post-upgrade on a valid ticket

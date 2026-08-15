@@ -1,0 +1,36 @@
+{
+  "$schema": "qrai://contracts/realtime-recovery-policy/v1",
+  "$comment": "Language-neutral v1 recovery policy. Raw binary frames have no client idempotency key, so an ambiguous sent frame is never replayed.",
+  "version": 1,
+  "retry": {
+    "baseDelayMs": 500,
+    "maxDelayMs": 15000,
+    "maxRetries": 6,
+    "jitter": "equal"
+  },
+  "buffer": {
+    "maxChunks": 125,
+    "maxBytes": 2097152,
+    "maxInFlight": 1
+  },
+  "drainTimeoutMs": 5000,
+  "maxReportCount": 2147483647,
+  "stopReasons": [
+    "completed",
+    "retry-exhausted",
+    "buffer-overflow",
+    "ack-ambiguous",
+    "ack-invalid",
+    "rejected-exhausted",
+    "drain-timeout",
+    "device-failure"
+  ],
+  "retryVectors": [
+    { "attempt": 1, "random": 0, "action": "retry", "delayMs": 250 },
+    { "attempt": 1, "random": 1, "action": "retry", "delayMs": 500 },
+    { "attempt": 2, "random": 0.5, "action": "retry", "delayMs": 750 },
+    { "attempt": 6, "random": 0, "action": "retry", "delayMs": 7500 },
+    { "attempt": 6, "random": 1, "action": "retry", "delayMs": 15000 },
+    { "attempt": 7, "random": 0, "action": "give-up", "reason": "retry-exhausted" }
+  ]
+}

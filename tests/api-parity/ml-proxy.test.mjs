@@ -1,14 +1,42 @@
 import assert from "node:assert/strict";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import test, { after, before } from "node:test";
 
+import { createInferenceRuntime } from "../../server/src/inference/local.mjs";
+import { createJobRuntime } from "../../server/src/jobs/runtime.mjs";
+import { createJobStore } from "../../server/src/jobs/store.mjs";
+import { createWorkflowHandlers } from "../../server/src/jobs/workflows.mjs";
+import { createDb } from "../../server/src/lib/db.mjs";
+
 import {
+  DATABASE_URL,
+  DECLARED_TEST_ACOUSTIC_EVIDENCE,
   TENANT,
+  insertDeclaredTestAcousticFinding,
+  purgeSessionsByChecksum,
   queryJson,
   request,
   startApi,
   startMockUpstream,
   uniqueSuffix,
 } from "./lib/harness.mjs";
+
+// Run-scoped session checksums, so the teardown at the end of this file deletes exactly this run's
+// rows and nothing else. These suites created sessions and never removed them: measured, the shared
+// staging database had accumulated 64,869 recitation sessions across ~8 fixed checksums, growing by
+// thousands a day. Leaked rows already broke a review-parity assertion and a Rust integration test
+// once in this program (`seedQueued`), and an unbounded corpus is what makes ORDER BY without a
+// unique tiebreaker, row-count deltas, and other suites' bulk teardown intermittently fail.
+// Per-run rather than a shared literal: two agents run this gate against the same Postgres.
+const RUN_CK_PRIVACY = `fnv1a32:privacy-scope-${uniqueSuffix()}`;
+const RUN_CK_CONSENT_TEST = `fnv1a32:consent-test-${uniqueSuffix()}`;
+
+import {
+  createFilesystemAudioObjectStore,
+  deriveAudioObjectKey,
+} from "../../server/src/storage/audio-object-store.mjs";
 
 /**
  * PAR3 — config group: ML_INFERENCE_URL pointed at a mock upstream.
@@ -24,55 +52,164 @@ const ERASED_KEYS = {
   deletedMetadataObjectKeys: ["hikmah-pilot-erbil/learner/chunk-1.meta.json"],
 };
 
+const declaredPredictionProvenance = () => ({
+  modelVersion: DECLARED_TEST_ACOUSTIC_EVIDENCE.modelVersion,
+  modelArtifactSha256: DECLARED_TEST_ACOUSTIC_EVIDENCE.modelArtifactSha256,
+  acousticDatasetVersion: DECLARED_TEST_ACOUSTIC_EVIDENCE.datasetVersion,
+  acousticDatasetManifestSha256: DECLARED_TEST_ACOUSTIC_EVIDENCE.datasetManifestSha256,
+  calibratorId: DECLARED_TEST_ACOUSTIC_EVIDENCE.calibratorId,
+  calibratorArtifactSha256: DECLARED_TEST_ACOUSTIC_EVIDENCE.calibratorArtifactSha256,
+  evaluationEvidenceId: DECLARED_TEST_ACOUSTIC_EVIDENCE.evidenceId,
+  evaluationEvidenceSha256: DECLARED_TEST_ACOUSTIC_EVIDENCE.evidenceSha256,
+});
+
+function respondMl({ path, body }) {
+  if (path === "/v1/privacy/delete") return { status: 200, body: ERASED_KEYS };
+  if (path === "/v1/tajweed-findings:predict") {
+    return {
+      status: 200,
+      body: {
+        ...body,
+        modelVersion: DECLARED_TEST_ACOUSTIC_EVIDENCE.modelVersion,
+        annotations: [],
+        findings: [
+          {
+            ...declaredPredictionProvenance(),
+            wordId: "1:1:1",
+            rule: "ghunnah",
+            analysisBasis: "acoustic",
+            severity: "practice",
+            confidence: 0.9,
+            explanation: "Apply ghunnah on the noon sakina.",
+            sources: [{ id: "s1", title: "Board", citation: "policy" }],
+            reviewStatus: "ai-suggested",
+          },
+          {
+            ...declaredPredictionProvenance(),
+            wordId: "1:1:2",
+            rule: "madd-tabii",
+            analysisBasis: "acoustic",
+            severity: "practice",
+            confidence: 0.9,
+            explanation: "Hold the natural madd for two counts.",
+            sources: [{ id: "s2", title: "Board", citation: "policy" }],
+            reviewStatus: "ai-suggested",
+          },
+        ],
+      },
+    };
+  }
+  return {
+    status: 200,
+    body: {
+      ...body,
+      modelVersion: "declared-quran-aligner-fixture",
+      modelAttribution: {
+        schemaVersion: 1,
+        primaryComponent: "quran-aligner",
+        components: [
+          {
+            component: "quran-aligner",
+            status: "active",
+            implementationId: "declared-quran-aligner-fixture",
+            artifactDigest: `sha256:${"a".repeat(64)}`,
+            datasetVersion: "declared-fixture",
+            analysisBasis: "quran-constrained",
+            calibratorId: null,
+          },
+        ],
+      },
+    },
+  };
+}
+
 let api;
 let mock;
+let audioStorageDir;
+let audioObjectStore;
+let workerDb;
+let workerLoop;
+let workerRunning = false;
+const ownedJobSubjects = new Set();
 
 before(async () => {
-  mock = await startMockUpstream(({ path, body }) => {
-    // integration.rs:1393 — the privacy-delete mock reports erased object keys.
-    if (path === "/v1/privacy/delete") return { status: 200, body: ERASED_KEYS };
-    // The tajweed path echoes AND carries findings, so the same mock serves both the consent
-    // assertions below and the redaction one. One unreviewed finding and one that clears the gate:
-    // a redaction test where nothing survives cannot tell "withheld correctly" from "broke the
-    // route", and one where everything survives cannot tell anything at all.
-    if (path === "/v1/tajweed-findings:predict") {
-      return {
-        status: 200,
-        body: {
-          ...body,
-          findings: [
-            {
-              wordId: "1:1:1",
-              rule: "ghunnah",
-              severity: "practice",
-              confidence: 0.9,
-              explanation: "Apply ghunnah on the noon sakina.",
-              sources: [{ id: "s1", title: "Board", citation: "policy" }],
-              reviewStatus: "ai-suggested",
-            },
-            {
-              wordId: "1:1:2",
-              rule: "madd-tabii",
-              severity: "practice",
-              confidence: 0.9,
-              explanation: "Hold the natural madd for two counts.",
-              sources: [{ id: "s2", title: "Board", citation: "policy" }],
-              reviewStatus: "teacher-reviewed",
-            },
-          ],
-        },
-      };
-    }
-    // integration.rs:2275 — the echo mock returns exactly what the proxy FORWARDED, which is the
-    // only way to see whether stored consent overrode the client's claim.
-    return { status: 200, body };
+  audioStorageDir = mkdtempSync(join(tmpdir(), "qrai-ml-proxy-storage-"));
+  audioObjectStore = createFilesystemAudioObjectStore({ rootDir: audioStorageDir });
+  mock = await startMockUpstream(respondMl);
+  const inference = createInferenceRuntime({
+    async predictAlignment(body) {
+      return respondMl({ path: "/v1/alignments:predict", body }).body;
+    },
+    async predictTajweed(body) {
+      return respondMl({ path: "/v1/tajweed-findings:predict", body }).body;
+    },
+    async transcribeSession() {
+      return { reason: "no-finalization-in-this-suite", transcribed: false };
+    },
   });
-  api = await startApi({ env: { ML_INFERENCE_URL: mock.url } });
+  workerDb = createDb(DATABASE_URL);
+  const workerRuntime = createJobRuntime({
+    store: createJobStore({ db: workerDb }),
+    handlers: createWorkflowHandlers({
+      db: workerDb,
+      inference,
+      audioObjectStore,
+      mlInferenceUrl: mock.url,
+      mlApiKey: "smoke-ml-api-key",
+      upstreamTimeoutMs: 1_000,
+    }),
+    workerId: "ml-proxy-parity-worker",
+    leaseMs: 2_000,
+    operationTimeoutMs: 1_500,
+    retryBaseMs: 10,
+    retryMaxMs: 100,
+  });
+  workerRunning = true;
+  workerLoop = (async () => {
+    while (workerRunning) {
+      const subjects = [...ownedJobSubjects];
+      if (subjects.length === 0) {
+        await new Promise((resolve) => setTimeout(resolve, 5));
+        continue;
+      }
+      const jobId = await workerDb.withTenant(TENANT, async (tx) => {
+        const [row] = await tx`
+          SELECT id
+          FROM background_jobs
+          WHERE tenant_id = ${TENANT}
+            AND kind IN ('privacy.export', 'privacy.delete', 'session.evaluate')
+            AND subject_id = ANY(${subjects})
+            AND status IN ('queued', 'retry')
+            AND available_at <= now()
+          ORDER BY priority DESC, created_at, id
+          LIMIT 1`;
+        return row?.id ?? null;
+      });
+      if (jobId === null) {
+        await new Promise((resolve) => setTimeout(resolve, 5));
+      } else {
+        await workerRuntime.runOne(TENANT, { jobId });
+      }
+    }
+  })();
+  api = await startApi({
+    env: { ML_INFERENCE_URL: mock.url, AUDIO_STORAGE_DIR: audioStorageDir },
+  });
 });
 
 after(async () => {
+  let workerFailure = null;
+  workerRunning = false;
+  try {
+    await workerLoop;
+  } catch (error) {
+    workerFailure = error;
+  }
+  await workerDb?.end();
   await api?.stop();
   await mock?.stop();
+  if (audioStorageDir) rmSync(audioStorageDir, { recursive: true, force: true });
+  if (workerFailure) throw workerFailure;
 });
 
 const seedLearners = async (...ids) => {
@@ -82,6 +219,7 @@ const seedLearners = async (...ids) => {
        VALUES ($1, $2, 'Parity Privacy', 'learner', 'ckb')`,
       [id, TENANT],
     );
+    ownedJobSubjects.add(id);
   }
 };
 
@@ -92,8 +230,7 @@ const createSession = async (learnerId) => {
     body: {
       learnerId,
       quranRef: { surahNumber: 1, ayahStart: 1, ayahEnd: 7, display: "Al-Fatihah 1:1-7" },
-      sourceChecksum: "fnv1a32:privacy-scope",
-      modelVersion: "model-v0.3",
+      sourceChecksum: RUN_CK_PRIVACY,
       language: "ckb",
       mode: "guided-recite",
       practicePlanId: "fatihah-mastery-v1",
@@ -107,6 +244,7 @@ const createSession = async (learnerId) => {
     },
   });
   assert.equal(created.status, 200, `session setup failed: ${JSON.stringify(created.body)}`);
+  ownedJobSubjects.add(created.body.id);
   return created.body.id;
 };
 
@@ -135,14 +273,13 @@ const seedReviewedFinding = async (sessionId, label) => {
      VALUES ($1, $4, $2, '1:1:1', 'بسم', 0, 100, 0.9, 'matched', 'model-v0.3', $3)`,
     [ids.alignment, sessionId, ids.alignmentAudit, TENANT],
   );
-  await queryJson(
-    `INSERT INTO tajweed_findings
-       (id, tenant_id, alignment_id, rule, severity, confidence, explanation, review_status,
-        source_refs, model_version_id, audit_event_id)
-     VALUES ($1, $4, $2, 'Ghunnah', 'warning', 0.8, 'x', 'teacher-review-required', '[]'::jsonb,
-             'model-v0.3', $3)`,
-    [ids.finding, ids.alignment, ids.findingAudit, TENANT],
-  );
+  await insertDeclaredTestAcousticFinding({
+    id: ids.finding,
+    alignmentId: ids.alignment,
+    confidence: 0.8,
+    reviewStatus: "teacher-review-required",
+    auditEventId: ids.findingAudit,
+  });
   await queryJson(
     `INSERT INTO teacher_reviews (id, tenant_id, finding_id, teacher_id, decision, note, audit_event_id)
      VALUES ($1, $4, $2, 'teacher-1', 'accepted', 'parity suite seed', $3)`,
@@ -193,8 +330,8 @@ test("STORED session consent overrides whatever the client claims on the analysi
     body: {
       learnerId: "learner-1",
       quranRef: { surahNumber: 1, ayahStart: 1, ayahEnd: 7, display: "Al-Fatihah 1:1-7" },
-      sourceChecksum: "fnv1a32:consent-test",
-      modelVersion: "model-v0.3",
+      sourceChecksum: RUN_CK_CONSENT_TEST,
+
       language: "ckb",
       mode: "guided-recite",
       practicePlanId: "fatihah-mastery-v1",
@@ -247,6 +384,27 @@ test("privacy delete erases the target learner and leaves every other learner in
   const targetIds = await seedReviewedFinding(targetSession, "target");
   const otherIds = await seedReviewedFinding(otherSession, "other");
 
+  const nodeChunkId = `privacy-${s}`;
+  const nodeObjectKey = deriveAudioObjectKey({
+    tenantId: TENANT,
+    learnerId: target,
+    sessionId: targetSession,
+    chunkId: nodeChunkId,
+  });
+  if (api.upstreamUrl) {
+    await audioObjectStore.put({
+      tenantId: TENANT,
+      learnerId: target,
+      sessionId: targetSession,
+      chunkId: nodeChunkId,
+      startMs: 0,
+      endMs: 100,
+      sampleRate: 16000,
+      audioRetention: "discard",
+      audioBytes: Buffer.from("private-delete-fixture"),
+    });
+  }
+
   const deleted = await request(api.baseUrl, "/v1/privacy/delete", {
     method: "POST",
     role: "admin",
@@ -254,12 +412,15 @@ test("privacy delete erases the target learner and leaves every other learner in
   });
   assert.equal(deleted.status, 200);
 
-  // The EXACT keys the mock reported, not "some non-empty list": a bug that fabricated a
-  // placeholder list would still pass a non-empty check.
+  // Exact output on both consolidation boundaries: Rust reports its authenticated ML-compatibility
+  // deletion, while the Node target reports the one server-derived key it deleted directly.
+  const expectedAudioKeys = api.upstreamUrl
+    ? [nodeObjectKey]
+    : [...ERASED_KEYS.deletedAudioObjectKeys, ...ERASED_KEYS.deletedMetadataObjectKeys];
   assert.deepEqual(
     deleted.body.audioObjectKeysDeleted,
-    [...ERASED_KEYS.deletedAudioObjectKeys, ...ERASED_KEYS.deletedMetadataObjectKeys],
-    "delete must report the exact erased object keys from the ML service",
+    expectedAudioKeys,
+    "delete must report the exact erased object keys from its active storage boundary",
   );
   assert.deepEqual(
     deleted.body.deletedRecords,
@@ -344,7 +505,7 @@ test("privacy delete erases the learner's agent runs and preserves another learn
  * is a display choice, not an authorization boundary.
  *
  * Run through the Node shell as well (PARITY_THROUGH_SHELL=1 with this route in NODE_API_PORTED) to
- * pin `redactWithheldFindings` in services/node-api/routes/ml-proxy.mjs against the Rust original.
+ * pin `redactWithheldFindings` in server/src/routes/ml-proxy.mjs against the Rust original.
  */
 test("ML tajweed predict: a learner receives no unreviewed judgement", async () => {
   const sessionId = await createSession("learner-1");
@@ -359,22 +520,15 @@ test("ML tajweed predict: a learner receives no unreviewed judgement", async () 
   const findings = res.body.findings;
   assert.equal(findings.length, 2, "the count must survive redaction — the panel renders from it");
 
-  const unreviewed = findings.find((f) => f.reviewStatus === "ai-suggested");
-  assert.ok(unreviewed, "the unreviewed finding must still be present, just empty");
-  assert.equal(unreviewed.withheld, true);
-  for (const field of ["rule", "severity", "explanation", "wordId"]) {
-    assert.equal(unreviewed[field], "", `predict leaked \`${field}\` to the learner`);
+  for (const finding of findings) {
+    assert.equal(finding.reviewStatus, "ai-suggested");
+    assert.equal(finding.withheld, true);
+    for (const field of ["rule", "severity", "explanation", "wordId"]) {
+      assert.equal(finding[field], "", `predict leaked \`${field}\` to the learner`);
+    }
+    assert.equal(finding.confidence, 0);
+    assert.deepEqual(finding.sources, []);
   }
-  assert.equal(unreviewed.confidence, 0);
-  assert.deepEqual(unreviewed.sources, []);
-
-  // The reviewed, sourced, confident one is untouched: a redaction that ate everything would be
-  // safe and useless, and this is the assertion that says so.
-  const approved = findings.find((f) => f.reviewStatus === "teacher-reviewed");
-  assert.ok(approved, "the approved finding is gone; redaction is over-broad");
-  assert.equal(approved.rule, "madd-tabii");
-  assert.equal(approved.explanation, "Hold the natural madd for two counts.");
-  assert.equal(approved.confidence, 0.9);
 });
 
 test("ML tajweed predict: ops analysing a session get the findings whole", async () => {
@@ -392,4 +546,13 @@ test("ML tajweed predict: ops analysing a session get the findings whole", async
   const unreviewed = res.body.findings.find((f) => f.reviewStatus === "ai-suggested");
   assert.equal(unreviewed.rule, "ghunnah", "staff cannot act on what was redacted from them");
   assert.equal(unreviewed.explanation, "Apply ghunnah on the noon sakina.");
+});
+
+// Registered last: node:test runs `after` hooks in registration order, so this drains the
+// rows once the hooks above have stopped the services still able to write them.
+after(async () => {
+  let left = 0;
+  left += await purgeSessionsByChecksum(RUN_CK_PRIVACY);
+  left += await purgeSessionsByChecksum(RUN_CK_CONSENT_TEST);
+  assert.equal(left, 0, `teardown left ${left} session(s) behind`);
 });

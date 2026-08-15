@@ -220,6 +220,9 @@ pub struct GatewayMetrics {
     /// `not-captured` for a finding whose audio is sitting on disk. Different repair, different
     /// urgency, so a single counter would have hidden one behind the other.
     pub chunks_index_failed: u64,
+    /// Chunks stored while `PLATFORM_API_URL` was absent. These are just as undiscoverable as a
+    /// failed index request, but the repair is configuration first and reconciliation second.
+    pub chunks_index_disabled: u64,
 }
 
 #[derive(Debug, Default)]
@@ -231,6 +234,7 @@ struct GatewayCounters {
     chunks_rejected_missing_session: AtomicU64,
     chunks_forward_failed: AtomicU64,
     chunks_index_failed: AtomicU64,
+    chunks_index_disabled: AtomicU64,
 }
 
 impl RealtimeGateway {
@@ -517,6 +521,7 @@ impl RealtimeGateway {
                 .load(Ordering::Relaxed),
             chunks_forward_failed: self.counters.chunks_forward_failed.load(Ordering::Relaxed),
             chunks_index_failed: self.counters.chunks_index_failed.load(Ordering::Relaxed),
+            chunks_index_disabled: self.counters.chunks_index_disabled.load(Ordering::Relaxed),
         }
     }
 
@@ -536,6 +541,13 @@ impl RealtimeGateway {
     pub fn record_index_failure(&self) {
         self.counters
             .chunks_index_failed
+            .fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Record a stored chunk that could not even attempt indexing because the API URL is disabled.
+    pub fn record_index_disabled(&self) {
+        self.counters
+            .chunks_index_disabled
             .fetch_add(1, Ordering::Relaxed);
     }
 }
@@ -769,7 +781,7 @@ async fn metrics(
     }
     let m = state.gateway.metrics().await;
     let ticket_count = state.consumed_tickets.read().await.len();
-    let body = render_prometheus(&m, ticket_count);
+    let body = render_prometheus(&m, ticket_count, state.config.platform_api_url.is_some());
     (
         [(
             axum::http::header::CONTENT_TYPE,
@@ -794,7 +806,11 @@ fn metrics_access_allowed(config: &GatewayServerConfig, headers: &axum::http::He
 
 /// Render the gateway counters as Prometheus text exposition. Cardinality is fixed (no labels), so
 /// this cannot blow up a scraper.
-fn render_prometheus(m: &GatewayMetrics, consumed_tickets: usize) -> String {
+fn render_prometheus(
+    m: &GatewayMetrics,
+    consumed_tickets: usize,
+    audio_index_enabled: bool,
+) -> String {
     let mut out = String::new();
     let gauge = |out: &mut String, name: &str, help: &str, value: u64| {
         out.push_str(&format!(
@@ -851,8 +867,27 @@ fn render_prometheus(m: &GatewayMetrics, consumed_tickets: usize) -> String {
     counter(
         &mut out,
         "realtime_gateway_chunks_index_failed_total",
-        "Audio chunks stored but not indexed: the recording exists and cannot be found.",
+        "Audio chunks stored but not indexed after API attempts; run pnpm db:repair-audio-index.",
         m.chunks_index_failed,
+    );
+    counter(
+        &mut out,
+        "realtime_gateway_chunks_index_disabled_total",
+        "Audio chunks stored while PLATFORM_API_URL was absent; fix configuration, then run pnpm db:repair-audio-index.",
+        m.chunks_index_disabled,
+    );
+    counter(
+        &mut out,
+        "realtime_gateway_chunks_stored_unindexed_total",
+        "All known stored-but-unindexed chunks; run pnpm db:repair-audio-index and investigate if this increases.",
+        m.chunks_index_failed
+            .saturating_add(m.chunks_index_disabled),
+    );
+    gauge(
+        &mut out,
+        "realtime_gateway_audio_index_enabled",
+        "Whether PLATFORM_API_URL is configured for durable audio indexing.",
+        u64::from(audio_index_enabled),
     );
     gauge(
         &mut out,
@@ -1287,7 +1322,15 @@ async fn handle_audio_socket(
             // find it, and that is counted rather than hidden. Deleting stored audio because a
             // database write failed would destroy a recording the learner consented to keep, in
             // order to tidy up a bookkeeping gap.
-            if delivered && let Some(platform_url) = platform_api_url.as_deref() {
+            if delivered {
+                let Some(platform_url) = platform_api_url.as_deref() else {
+                    forward_gateway.record_index_disabled();
+                    tracing::error!(
+                        "stored chunk {chunk_id} is unindexed because PLATFORM_API_URL is absent; \
+                         configure it and run `pnpm db:repair-audio-index -- --apply`"
+                    );
+                    continue;
+                };
                 let index_url = format!("{platform_url}/v1/audio-chunks");
                 let index_body = serde_json::json!({
                     "sessionId": chunk_session_id,
@@ -1295,7 +1338,6 @@ async fn handle_audio_socket(
                     "startMs": chunk_start_ms,
                     "endMs": chunk_end_ms,
                     "sampleRate": chunk_sample_rate,
-                    "objectKey": format!("{tenant_id}/{learner_id}/{chunk_id}.bin"),
                 });
                 let mut indexed = false;
                 for attempt in 1..=MAX_ATTEMPTS {
@@ -1484,12 +1526,50 @@ mod tests {
     use std::collections::HashMap;
 
     use super::{
-        AudioChunk, GatewayError, GatewayMetrics, GatewayServerConfig, GatewayServerState,
-        MAX_CHUNK_BYTES, MAX_TICKET_LIFETIME_SECONDS, RealtimeGateway, TicketCheckOutcome,
-        TicketDedup, TicketError, check_ticket, chunk_forward_body, evict_expired, gateway_router,
-        gateway_router_with_rate_limit, issue_realtime_ticket, metrics_access_allowed,
-        render_prometheus, ticket_hash, unix_now_seconds, validate_realtime_ticket,
+        AudioChunk, AudioIngressAck, GatewayError, GatewayMetrics, GatewayServerConfig,
+        GatewayServerState, MAX_CHUNK_BYTES, MAX_TICKET_LIFETIME_SECONDS, RealtimeGateway,
+        TicketCheckOutcome, TicketDedup, TicketError, check_ticket, chunk_forward_body,
+        evict_expired, gateway_router, gateway_router_with_rate_limit, issue_realtime_ticket,
+        metrics_access_allowed, render_prometheus, serialize_ack, ticket_hash, unix_now_seconds,
+        validate_realtime_ticket,
     };
+
+    #[test]
+    fn rust_audio_ack_serialization_matches_every_committed_vector() {
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../packages/contracts/fixtures/realtime/audio-ack-vectors.json"
+        );
+        let raw = std::fs::read_to_string(path)
+            .unwrap_or_else(|error| panic!("cannot read audio ack vectors at {path}: {error}"));
+        let fixture: serde_json::Value =
+            serde_json::from_str(&raw).expect("audio ack vectors must be valid JSON");
+        let vectors = fixture["vectors"]
+            .as_array()
+            .expect("audio ack vectors must be an array");
+        assert_eq!(fixture["vectorCount"].as_u64(), Some(vectors.len() as u64));
+        assert_eq!(vectors.len(), 3, "the Rust oracle commits three ack paths");
+
+        for vector in vectors {
+            let expected = &vector["ack"];
+            assert_eq!(expected["kind"].as_str(), Some("audio.ack"));
+            let ack = AudioIngressAck {
+                kind: "audio.ack",
+                session_id: expected["session_id"]
+                    .as_str()
+                    .expect("session_id")
+                    .to_owned(),
+                chunk_id: expected["chunk_id"].as_str().expect("chunk_id").to_owned(),
+                sequence: expected["sequence"].as_u64().expect("sequence"),
+                accepted: expected["accepted"].as_bool().expect("accepted"),
+                trace_id: expected["trace_id"].as_str().map(ToOwned::to_owned),
+                message: expected["message"].as_str().expect("message").to_owned(),
+            };
+            let actual: serde_json::Value = serde_json::from_str(&serialize_ack(ack))
+                .expect("serialized audio ack must be valid JSON");
+            assert_eq!(actual, *expected, "ack vector '{}' drifted", vector["name"]);
+        }
+    }
 
     fn metrics_headers(token: Option<&str>) -> axum::http::HeaderMap {
         let mut h = axum::http::HeaderMap::new();
@@ -1603,11 +1683,16 @@ mod tests {
         // audio is that an operator can go and re-index it, which requires knowing it happened.
         let gateway = RealtimeGateway::new(4);
         gateway.record_index_failure();
-        let out = render_prometheus(&gateway.metrics().await, 0);
+        let out = render_prometheus(&gateway.metrics().await, 0, true);
         assert!(
             out.contains("realtime_gateway_chunks_index_failed_total 1"),
             "the index-failure counter is not exposed: {out}"
         );
+        assert!(
+            out.contains("realtime_gateway_chunks_stored_unindexed_total 1"),
+            "the actionable aggregate is not exposed: {out}"
+        );
+        assert!(out.contains("realtime_gateway_audio_index_enabled 1"));
     }
 
     #[test]
@@ -1618,15 +1703,18 @@ mod tests {
             sessions_ended: 3,
             chunks_accepted: 40,
             chunks_index_failed: 1,
+            chunks_index_disabled: 2,
             chunks_rejected_backpressure: 1,
             chunks_rejected_missing_session: 2,
             chunks_forward_failed: 4,
         };
-        let out = render_prometheus(&m, 7);
+        let out = render_prometheus(&m, 7, false);
         assert!(out.contains("# TYPE realtime_gateway_active_sessions gauge"));
         assert!(out.contains("realtime_gateway_active_sessions 2"));
         assert!(out.contains("# TYPE realtime_gateway_chunks_forward_failed_total counter"));
         assert!(out.contains("realtime_gateway_chunks_forward_failed_total 4"));
+        assert!(out.contains("realtime_gateway_chunks_stored_unindexed_total 3"));
+        assert!(out.contains("realtime_gateway_audio_index_enabled 0"));
         assert!(out.contains("realtime_gateway_consumed_tickets 7"));
         assert!(!out.contains('{'), "must be Prometheus text, not JSON");
     }
@@ -1981,14 +2069,14 @@ mod tests {
     /// (ALLOW_INSECURE_DEFAULTS / GATEWAY_ALLOW_MISSING_ORIGIN / CORS_ALLOWED_ORIGINS). Any future
     /// test touching those MUST take this lock, or it can race this one (cargo runs unit tests
     /// multi-threaded in one process).
-    static ORIGIN_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    static ORIGIN_ENV_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
     #[tokio::test]
     async fn test_audio_ws_origin_validation() {
         use axum::http::{Request, StatusCode};
         use tower::ServiceExt;
 
-        let _env = ORIGIN_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _env = ORIGIN_ENV_LOCK.lock().await;
 
         // Set up env variables
         unsafe {
@@ -2079,7 +2167,7 @@ mod tests {
         use axum::http::{Request, StatusCode};
         use tower::ServiceExt;
 
-        let _env = ORIGIN_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _env = ORIGIN_ENV_LOCK.lock().await;
 
         unsafe {
             // Explicitly remove rather than assume: another test in this process may have left it.
@@ -2702,11 +2790,10 @@ mod tests {
              — and because `training-opt-in` audio is never evicted, permanently. The same volume \
              holds the audit log, whose write failure is swallowed by design"
         );
-        assert!(
+        const _: () = assert!(
             crate::MAX_SESSION_CHUNKS >= 10_000,
-            "the cap is now {} chunks, under two hours of audio at 480ms each. \
-             That risks cutting off a legitimate long recitation; raise it or restate the derivation",
-            crate::MAX_SESSION_CHUNKS
+            "the cap is under two hours of audio at 480ms each. \
+             That risks cutting off a legitimate long recitation; raise it or restate the derivation"
         );
         assert!(
             !source.contains("let mut session_bytes = 0"),

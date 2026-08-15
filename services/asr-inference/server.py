@@ -10,9 +10,11 @@ Arabic is one of Whisper's supported languages, and it produces word-level
 timestamps via cross-attention alignment.
 
 Endpoints:
-  GET  /health                — service health + model info
+  GET  /health                — process-only liveness
+  GET  /ready                 — loaded model + digest + known-audio readiness
   POST /v1/transcribe         — transcribe audio bytes → text + word timestamps
   POST /v1/force-align        — force align audio + canonical text → word timestamps
+  POST /v1/acoustic-tajweed:observe — private shadow-only reference-aware observations
 """
 
 import asyncio
@@ -26,11 +28,13 @@ import tempfile
 import threading
 import time
 import logging
-from typing import Optional
+from contextlib import asynccontextmanager
+from importlib.metadata import version as package_version
+from pathlib import Path
+from typing import Literal, Optional, Union
 
 import torch
 import torchaudio
-import torchaudio.functional as F
 import soundfile as sf
 import numpy as np
 import whisper
@@ -39,17 +43,47 @@ from fastapi import Depends, FastAPI, Header, HTTPException, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
+from auth_guards import resolve_asr_api_key, verify_asr_key
 from audio_guards import MAX_AUDIO_SECONDS, enforce_max_duration, probe_duration_seconds
+from acoustic_tajweed import (
+    AcousticRefusal,
+    AcousticWorkerClient,
+    load_shadow_candidate,
+)
+from candidate_evidence import (
+    load_candidate_registry,
+    resolve_runtime_candidate,
+    verify_artifact_file,
+)
+from model_attribution import (
+    build_acoustic_attribution,
+    build_asr_attribution,
+    build_forced_aligner_attribution,
+    require_immutable_hf_revision,
+)
+from readiness import AsrReadinessController, known_audio_wav_bytes
 
 # API-key gate. The browser must NOT reach this service directly — it is fronted by the platform-api
 # /v1/asr/* proxy, which holds ASR_API_KEY server-side (like ML_API_KEY for ml-inference). ml-inference
 # also sends the key on its server-to-server transcribe call. Health stays open. In dev/CI the default
 # key is used on both sides; in production ASR_API_KEY is set (platform-api boot-refuses a weak value).
-ASR_API_KEY = os.environ.get("ASR_API_KEY", "smoke-asr-api-key")
+ASR_API_KEY = resolve_asr_api_key()
+
+ACOUSTIC_SHADOW_ENABLED = os.environ.get("ACOUSTIC_SHADOW_ENABLED", "").strip().lower() in (
+    "1",
+    "true",
+)
+ACOUSTIC_CANDIDATE = load_shadow_candidate()
+ACOUSTIC_WORKER_TIMEOUT_SECONDS = float(
+    os.environ.get("ACOUSTIC_WORKER_TIMEOUT_SECONDS", "45")
+)
+if ACOUSTIC_WORKER_TIMEOUT_SECONDS <= 0:
+    raise RuntimeError("ACOUSTIC_WORKER_TIMEOUT_SECONDS must be positive")
+acoustic_worker = AcousticWorkerClient(timeout_seconds=ACOUSTIC_WORKER_TIMEOUT_SECONDS)
 
 
 def require_asr_key(x_asr_api_key: Optional[str] = Header(default=None)) -> None:
-    if x_asr_api_key != ASR_API_KEY:
+    if not verify_asr_key(x_asr_api_key, ASR_API_KEY):
         raise HTTPException(status_code=401, detail="unauthorized")
 
 
@@ -129,16 +163,6 @@ def safe_audio_suffix(audio_format: str) -> str:
 # traffic, so this is defence-in-depth for any direct (server-side) caller.
 MAX_AUDIO_B64_CHARS = 20_000_000
 
-# Cap the number of word-timestamp entries a single /v1/analyze-tajweed request can carry. Each
-# entry drives real signal processing (pitch detection, an STFT, energy computations) on this,
-# "the compute-heaviest service in the fleet" per the rate-limiter comment below — the per-IP
-# rate limit counts requests, not work-per-request, so an unbounded `words` array lets one request
-# pin the process for as long as the caller likes. 2000 is generous headroom over any real
-# recitation session (the longest surah, Al-Baqarah, is ~6000 words split across many sessions;
-# a single practice request realistically carries well under a few hundred).
-MAX_TAJWEED_WORDS = 2000
-
-
 def decode_audio_b64(b64: str) -> bytes:
     """Validate and decode a base64 audio payload. Every failure is a client error (4xx) — an empty,
     oversized, malformed, or empty-when-decoded payload must never fall through to a 500."""
@@ -179,6 +203,8 @@ logger.propagate = False
 # Default to the real Quran-fine-tuned ASR (diacritized Arabic) via HF transformers.
 # If ASR_MODEL is a bare Whisper size (tiny/base/small/...), fall back to openai-whisper.
 ASR_MODEL = os.environ.get("ASR_MODEL", "tarteel-ai/whisper-base-ar-quran")
+ASR_MODEL_REVISION = os.environ.get("ASR_MODEL_REVISION")
+ASR_CANDIDATE_ID = os.environ.get("ASR_CANDIDATE_ID")
 MODEL_NAME = ASR_MODEL
 _USE_HF = "/" in ASR_MODEL
 
@@ -194,14 +220,51 @@ DEVICE_STR = "cpu"
 _load_error: Optional[str] = None
 
 
+def _resolve_current_asr() -> tuple[dict, dict]:
+    attribution = build_asr_attribution(
+        model_id=ASR_MODEL,
+        model_urls=getattr(whisper, "_MODELS", {}),
+        package_version=package_version("openai-whisper"),
+        declared_digest=os.environ.get("ASR_MODEL_DIGEST"),
+        model_revision=ASR_MODEL_REVISION,
+        dataset_version=os.environ.get(
+            "ASR_DATASET_VERSION", "upstream-training-data-undisclosed"
+        ),
+    )
+    component = attribution["components"][0]
+    candidate = resolve_runtime_candidate(
+        load_candidate_registry(Path(__file__).with_name("model-candidates.json")),
+        candidate_id=ASR_CANDIDATE_ID,
+        runtime="huggingface-transformers" if _USE_HF else "openai-whisper",
+        model_id=ASR_MODEL,
+        revision=ASR_MODEL_REVISION,
+        artifact_digest=component["artifactDigest"],
+    )
+    return attribution, candidate
+
+
 def _load_model() -> None:
-    """Load the ASR model into the module globals. Never raises — a failure is recorded in
-    _load_error so the service degrades (503) instead of failing to start."""
+    """Load the selected model. The readiness worker catches failures and retries them."""
     global asr_pipe, model, DEVICE_STR, _load_error
+    asr_pipe = None
+    model = None
+    DEVICE_STR = "cpu"
+    _load_error = None
     try:
+        # Refuse a missing, mutable, mismatched, or packaging-only registry candidate before model
+        # download/allocation. The same binding is checked again when attribution is returned.
+        _, candidate = _resolve_current_asr()
         if _USE_HF:
+            from huggingface_hub import hf_hub_download
             from transformers import pipeline as hf_pipeline
 
+            require_immutable_hf_revision(ASR_MODEL_REVISION)
+            artifact_path = hf_hub_download(
+                repo_id=ASR_MODEL,
+                filename=candidate["artifactFile"],
+                revision=ASR_MODEL_REVISION,
+            )
+            verify_artifact_file(artifact_path, candidate["artifactDigest"])
             DEVICE_STR = (
                 "mps"
                 if torch.backends.mps.is_available()
@@ -209,7 +272,10 @@ def _load_model() -> None:
             )
             logger.info("Loading HF Quran ASR model: %s on %s", ASR_MODEL, DEVICE_STR)
             asr_pipe = hf_pipeline(
-                "automatic-speech-recognition", model=ASR_MODEL, device=DEVICE_STR
+                "automatic-speech-recognition",
+                model=ASR_MODEL,
+                revision=ASR_MODEL_REVISION,
+                device=DEVICE_STR,
             )
             logger.info("HF Quran ASR %s loaded on %s", ASR_MODEL, DEVICE_STR)
         else:
@@ -225,11 +291,20 @@ def _load_model() -> None:
             ASR_MODEL,
             _load_error,
         )
+        raise
 
 
-_load_model()
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    readiness_controller.start()
+    try:
+        yield
+    finally:
+        await acoustic_worker.close()
+        readiness_controller.stop()
 
-app = FastAPI(title="Quran AI ASR Inference", version="0.1.0")
+
+app = FastAPI(title="Quran AI ASR Inference", version="0.1.0", lifespan=lifespan)
 
 # MAX_AUDIO_B64_CHARS only rejects an oversized audioBase64 field AFTER FastAPI/Starlette has
 # already read the full request body off the socket and parsed it into a JSON object in memory --
@@ -254,11 +329,12 @@ async def limit_request_body_size(request: Request, call_next):
 
 
 def require_loaded_model() -> None:
-    """503 until the ASR model is loaded, so a degraded start returns a clean error, not a 500."""
-    if asr_pipe is None and model is None:
+    """Use the same fail-closed state as `/ready`; loaded-but-unproved is not serviceable."""
+    snapshot = readiness_controller.snapshot()
+    if not snapshot.ready:
         raise HTTPException(
             status_code=503,
-            detail=f"ASR model not loaded: {_load_error or 'still loading'}",
+            detail=f"ASR model not ready: {snapshot.reason or 'unavailable'}",
         )
 
 # === Models ===
@@ -277,12 +353,35 @@ class WordSegment(BaseModel):
     probability: float
 
 
+class ActiveModelComponentAttribution(BaseModel):
+    component: Literal["asr", "forced-aligner", "quran-aligner", "acoustic-scorer", "calibrator"]
+    status: Literal["active"]
+    implementationId: str
+    artifactDigest: str
+    datasetVersion: str
+    analysisBasis: Literal["acoustic", "quran-constrained", "text-rule"]
+    calibratorId: Optional[str]
+
+
+class UnavailableModelComponentAttribution(BaseModel):
+    component: Literal["asr", "forced-aligner", "quran-aligner", "acoustic-scorer", "calibrator"]
+    status: Literal["unavailable"]
+    reason: str
+
+
+class ModelAttribution(BaseModel):
+    schemaVersion: Literal[1]
+    primaryComponent: Literal["asr", "forced-aligner", "quran-aligner", "acoustic-scorer", "calibrator"]
+    components: list[Union[ActiveModelComponentAttribution, UnavailableModelComponentAttribution]]
+
+
 class TranscribeResponse(BaseModel):
     text: str
     language: str
     duration: float  # seconds
     words: list[WordSegment]
     modelVersion: str
+    modelAttribution: ModelAttribution
     latencyMs: int
 
 
@@ -304,46 +403,142 @@ class ForceAlignResponse(BaseModel):
     words: list[AlignedWord]
     duration: float
     modelVersion: str
+    modelAttribution: ModelAttribution
     latencyMs: int
 
 
-class TajweedAnalysisRequest(BaseModel):
-    audioBase64: str
-    audioFormat: str = "webm"
-    words: list[dict]  # [{word, start, end}] from force alignment
+class AcousticWordSegment(BaseModel):
+    wordId: str = Field(min_length=1)
+    canonicalText: str = Field(min_length=1)
+    startMs: int = Field(ge=0)
+    endMs: int = Field(gt=0)
 
 
-class TajweedWordFinding(BaseModel):
-    word: str
-    start: float
-    end: float
-    rule: str
-    severity: str  # "practice" | "warning" | "critical"
-    explanation: str
-    confidence: float
+class AcousticObservationRequest(BaseModel):
+    audioBase64: str = Field(min_length=1, max_length=MAX_AUDIO_B64_CHARS)
+    audioFormat: Literal["wav"] = "wav"
+    sampleRate: Literal[16000]
+    durationMs: int = Field(gt=0, le=15_000)
+    referenceText: str = Field(min_length=1)
+    segments: list[AcousticWordSegment] = Field(min_length=1, max_length=256)
+    coreWordIds: list[str] = Field(min_length=1, max_length=256)
 
 
-class TajweedAnalysisResponse(BaseModel):
-    findings: list[TajweedWordFinding]
-    modelVersion: str
+class AcousticObservationResponse(BaseModel):
+    status: Literal["observed", "refused", "unavailable"]
+    observations: list[dict]
+    refusalReason: Optional[str] = None
+    candidateId: str
+    qpsProfileId: str
+    qpsProfileChecksum: str
+    modelVersion: Optional[str] = None
+    modelAttribution: Optional[ModelAttribution] = None
     latencyMs: int
+
+
+def current_asr_attribution() -> dict:
+    try:
+        attribution, _ = _resolve_current_asr()
+        return attribution
+    except ValueError:
+        logger.exception("ASR model attribution is unresolved")
+        raise HTTPException(status_code=503, detail="ASR model attribution is unresolved")
+
+
+def current_forced_aligner_attribution(model_id: str) -> dict:
+    try:
+        return build_forced_aligner_attribution(
+            model_id,
+            declared_digest=os.environ.get("FORCE_ALIGN_MODEL_DIGEST"),
+            dataset_version=os.environ.get(
+                "FORCE_ALIGN_DATASET_VERSION", "upstream-training-data-undisclosed"
+            ),
+        )
+    except ValueError:
+        logger.exception("forced-aligner model attribution is unresolved")
+        raise HTTPException(status_code=503, detail="forced-aligner model attribution is unresolved")
+
+
+def _load_and_resolve_asr_digest() -> str:
+    _load_model()
+    attribution = current_asr_attribution()
+    return attribution["components"][0]["artifactDigest"]
+
+
+def _probe_loaded_asr_model() -> None:
+    """Exercise the selected inference path with the declared synthetic zero-signal fixture."""
+    audio = known_audio_wav_bytes()
+    with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
+        tmp.write(audio)
+        probe_path = tmp.name
+    try:
+        if _USE_HF:
+            if asr_pipe is None:
+                raise RuntimeError("HF ASR pipeline is unavailable")
+            result = asr_pipe(probe_path)
+        else:
+            if model is None:
+                raise RuntimeError("Whisper ASR model is unavailable")
+            result = model.transcribe(
+                probe_path,
+                language="ar",
+                word_timestamps=False,
+                fp16=False,
+            )
+        if not isinstance(result, dict) or not isinstance(result.get("text"), str):
+            raise RuntimeError("known-audio probe returned an invalid result shape")
+    except Exception:
+        logger.exception("ASR known-audio readiness probe failed")
+        raise
+    finally:
+        os.unlink(probe_path)
+
+
+def _positive_env_seconds(name: str, default: str) -> float:
+    try:
+        value = float(os.environ.get(name, default))
+    except ValueError as exc:
+        raise RuntimeError(f"{name} must be a positive number") from exc
+    if value <= 0:
+        raise RuntimeError(f"{name} must be a positive number")
+    return value
+
+
+readiness_controller = AsrReadinessController(
+    model_id=ASR_MODEL,
+    expected_digest=os.environ.get("ASR_MODEL_DIGEST"),
+    load_and_resolve=_load_and_resolve_asr_digest,
+    probe=_probe_loaded_asr_model,
+    probe_timeout_seconds=_positive_env_seconds("ASR_READINESS_PROBE_TIMEOUT_SECONDS", "60"),
+    retry_seconds=_positive_env_seconds("ASR_READINESS_RETRY_SECONDS", "10"),
+)
 
 
 # === Endpoints ===
 
 @app.get("/health")
 async def health():
-    loaded = asr_pipe is not None or model is not None
     return {
-        # Liveness stays true (the process is up and serving); `loaded` is the readiness signal.
         "ok": True,
         "service": "quran-ai-asr-inference",
-        "model": MODEL_NAME,
-        "device": DEVICE_STR,
-        "loaded": loaded,
-        "loadError": _load_error,
-        "supportedLanguages": ["ar", "en", "tr", "ur", "id", "ms", "fr", "de"],
     }
+
+
+@app.get("/ready")
+async def ready():
+    snapshot = readiness_controller.snapshot()
+    content = {
+        "ready": snapshot.ready,
+        "service": "quran-ai-asr-inference",
+        "model": snapshot.model_id,
+        "reason": snapshot.reason,
+        "attempt": snapshot.attempt,
+    }
+    if snapshot.artifact_digest is not None:
+        content["artifactDigest"] = snapshot.artifact_digest
+    if snapshot.probe_duration_ms is not None:
+        content["probeDurationMs"] = snapshot.probe_duration_ms
+    return JSONResponse(status_code=200 if snapshot.ready else 503, content=content)
 
 
 @app.post(
@@ -387,6 +582,7 @@ async def transcribe(req: TranscribeRequest):
             # inference, and running it inline would block every other concurrent request to
             # this process, including /health, for the full duration.
             hf = await asyncio.to_thread(asr_pipe, tmp_path)
+            attribution = current_asr_attribution()
             return TranscribeResponse(
                 text=(hf.get("text") or "").strip(),
                 language=req.language,
@@ -396,7 +592,8 @@ async def transcribe(req: TranscribeRequest):
                 # read this as "nothing was recognised" — the recitation is in `text`, and
                 # ml-inference's recognizedWordsFrom() is what knows to look there.
                 words=[],
-                modelVersion=MODEL_NAME,
+                modelVersion=attribution["components"][0]["implementationId"],
+                modelAttribution=attribution,
                 latencyMs=max(1, int((time.time() - start) * 1000)),
             )
 
@@ -424,12 +621,14 @@ async def transcribe(req: TranscribeRequest):
 
         latency_ms = max(1, int((time.time() - start) * 1000))
 
+        attribution = current_asr_attribution()
         return TranscribeResponse(
             text=result.get("text", "").strip(),
             language=result.get("language", req.language),
             duration=round(result.get("segments", [{}])[-1].get("end", 0.0), 3) if result.get("segments") else 0.0,
             words=words,
-            modelVersion=f"whisper-{MODEL_NAME}",
+            modelVersion=attribution["components"][0]["implementationId"],
+            modelAttribution=attribution,
             latencyMs=latency_ms,
         )
 
@@ -499,21 +698,23 @@ async def force_align(req: ForceAlignRequest):
             if len(data) / sr > MAX_AUDIO_SECONDS:
                 raise HTTPException(status_code=413, detail=f"audio too long; max {int(MAX_AUDIO_SECONDS)}s")
             waveform = torch.from_numpy(data).unsqueeze(0)
-            from forced_align import align_words
+            from forced_align import MODEL_ID, align_words
 
             spans = align_words(waveform, words)
-            return spans, len(data) / sr
+            return spans, len(data) / sr, MODEL_ID
 
-        spans, duration = await asyncio.to_thread(_run)
+        spans, duration, model_id = await asyncio.to_thread(_run)
 
         aligned_words = [
             AlignedWord(word=words[i], start=round(s / 1000, 3), end=round(e / 1000, 3), score=sc)
             for i, (s, e, sc) in enumerate(spans)
         ]
+        attribution = current_forced_aligner_attribution(model_id)
         return ForceAlignResponse(
             words=aligned_words,
             duration=round(duration, 3),
-            modelVersion=f"ctc-forced-align:{os.environ.get('FORCE_ALIGN_MODEL', 'wav2vec2-xlsr-53-arabic')}",
+            modelVersion=attribution["components"][0]["implementationId"],
+            modelAttribution=attribution,
             latencyMs=max(1, int((time.time() - start) * 1000)),
         )
     except HTTPException:
@@ -547,239 +748,120 @@ async def force_align(req: ForceAlignRequest):
                 pass
 
 
-def _analyze_tajweed_words_sync(tmp_path: str, words: list[dict]) -> list["TajweedWordFinding"]:
-    """The actual CPU-bound signal processing for /v1/analyze-tajweed (audio load, then per-word
-    pitch detection / STFT / RMS energy). Run via asyncio.to_thread from the async handler below --
-    this is real, potentially multi-second CPU work (autocorrelation + FFT per word), and running it
-    directly on the asyncio event loop would block every other concurrent request to this process,
-    including /health, for the full duration."""
-    # Decode-time backstop. enforce_max_duration() deliberately lets an UNKNOWN duration through
-    # (ffprobe returns 0.0 for a streamed/unknown container), so a bound at the decode is required
-    # too — exactly as the force-align path does. `frames=` caps what soundfile will materialise, so
-    # an over-long file costs a bounded read instead of the whole waveform.
-    info = sf.info(tmp_path)
-    max_frames = int(MAX_AUDIO_SECONDS * info.samplerate) + 1
-    audio_data, sample_rate = sf.read(tmp_path, dtype="float32", frames=max_frames)
-    if len(audio_data) > MAX_AUDIO_SECONDS * sample_rate:
-        raise HTTPException(
-            status_code=413, detail=f"audio too long; max {int(MAX_AUDIO_SECONDS)}s"
-        )
-    # Convert to mono if stereo
-    if len(audio_data.shape) > 1:
-        audio_data = audio_data.mean(axis=1)
-    waveform = torch.from_numpy(audio_data).unsqueeze(0)  # [1, samples]
+def _contains_confidence_claim(value) -> bool:
+    if isinstance(value, list):
+        return any(_contains_confidence_claim(item) for item in value)
+    if not isinstance(value, dict):
+        return False
+    return "confidence" in value or any(
+        _contains_confidence_claim(item) for item in value.values()
+    )
 
-    findings = []
 
-    for word_info in words:
-        word_text = word_info.get("word", "")
-        word_start = float(word_info.get("start", 0.0))
-        word_end = float(word_info.get("end", 0.0))
-
-        if word_end <= word_start:
-            continue
-
-        # Extract word segment from audio
-        start_sample = int(word_start * sample_rate)
-        end_sample = int(word_end * sample_rate)
-        word_segment = waveform[0, start_sample:end_sample]
-
-        if word_segment.shape[0] < 100:
-            continue  # too short to analyze
-
-        # === Real audio feature extraction ===
-
-        # 1. Duration check (madd should be ~2 vowel lengths)
-        word_duration = word_end - word_start
-
-        # 2. Pitch (F0) using autocorrelation
-        if word_segment.shape[0] > 512:
-            # Compute F0 using torchaudio's functional
-            try:
-                f0 = F.detect_pitch_frequency(
-                    word_segment.unsqueeze(0),
-                    sample_rate=sample_rate,
-                    frame_time=0.01,
-                    freq_low=80,
-                    freq_high=400,
-                )
-                f0_mean = float(f0[f0 > 0].mean()) if (f0 > 0).any() else 0.0
-                f0_std = float(f0[f0 > 0].std()) if (f0 > 0).any() else 0.0
-            except Exception:
-                f0_mean = 0.0
-                f0_std = 0.0
-        else:
-            f0_mean = 0.0
-            f0_std = 0.0
-
-        # 3. Energy (RMS)
-        try:
-            energy = float(torch.sqrt(torch.mean(word_segment ** 2)))
-        except Exception:
-            energy = 0.0
-
-        # 4. Spectral centroid (brightness indicator)
-        if word_segment.shape[0] > 256:
-            try:
-                window = torch.hann_window(512)
-                spec = torch.stft(word_segment, n_fft=512, hop_length=256, window=window, return_complex=True)
-                magnitudes = spec.abs()
-                freqs = torch.fft.fftfreq(512, 1.0 / sample_rate)[:256]
-                if magnitudes.shape[1] > 0:
-                    centroid = float((freqs.unsqueeze(1) * magnitudes[:256]).sum() / max(magnitudes[:256].sum(), 1e-8))
-                else:
-                    centroid = 0.0
-            except Exception:
-                centroid = 0.0
-        else:
-            centroid = 0.0
-
-        # === Tajweed rule detection from audio features ===
-
-        # Check for madd letters (ا و ي) — duration should be elongated
-        madd_letters = ["ا", "و", "ي", "ى"]
-        has_madd = any(letter in word_text for letter in madd_letters)
-
-        if has_madd and word_duration > 0.4:
-            # Madd detected: word is elongated
-            severity = "practice"
-            confidence = min(0.95, 0.6 + word_duration * 0.5)
-            findings.append(TajweedWordFinding(
-                word=word_text,
-                start=word_start,
-                end=word_end,
-                rule="madd-tabii",
-                severity=severity,
-                explanation=f"Natural elongation detected. Duration: {word_duration:.2f}s, F0: {f0_mean:.0f}Hz. Hold for two counts.",
-                confidence=round(confidence, 3),
-            ))
-
-        # Check for ghunnah (nasalization) — high F0 variance + energy on a SILENT noon/meem.
-        # Ghunnah applies to noon/meem-sakin, tanween, or a mushaddad (doubled) noon/meem — NOT a
-        # voweled (moving) noon/meem. Gating on a bare "ن"/"م" in any context flagged words like
-        # نُور (noon + damma), telling the learner to nasalize a moving noon that carries no
-        # ghunnah — a false tajweed instruction. Mirror the reference text rules in
-        # ml-inference/tajweed.js (noon-sakin / word-final noon / tanween) and extend to
-        # meem-sakin and shadda'd noon/meem. The patterns assume the canonical
-        # consonant+shadda+vowel diacritic ordering used by packages/quran-data.
-        # Escapes, never literal characters. AGENTS.md's hard boundary: a combining mark inside a
-        # `[...]` class is invisible in most editors and can be reordered or swallowed by any tool
-        # that touches the file. Not hypothetical here — a literal class in `forced_align.py` merged
-        # two ranges, deleted every Arabic letter, and passed review (PR #258).
-        # `packages/contracts/src/index.ts` writes its mushaf-annotation class this way for the same
-        # reason. Spelled out, the classes are diffable and reviewable:
-        #   U+0646 noon     U+0645 meem     U+0651 shadda   U+0652 sukoon
-        #   U+064B fathatan U+064C dammatan U+064D kasratan (tanween)
-        has_ghunnah = (
-            re.search("[\u0646\u0645][\u0651\u0652]", word_text) is not None  # noon/meem + shadda or sukoon
-            or re.search("[\u064B\u064C\u064D]", word_text) is not None        # tanween
-            or re.search("\u0646$", word_text) is not None                       # word-final noon (sakin at waqf)
-        )
-
-        if has_ghunnah and f0_std > 10:
-            severity = "practice"
-            confidence = min(0.92, 0.55 + f0_std * 0.01)
-            findings.append(TajweedWordFinding(
-                word=word_text,
-                start=word_start,
-                end=word_end,
-                rule="ghunnah",
-                severity=severity,
-                explanation=f"Nasalization detected. F0 variance: {f0_std:.1f}Hz, Energy: {energy:.4f}. Hold nasal sound for two counts.",
-                confidence=round(confidence, 3),
-            ))
-
-        # Check for qalqalah (echo) — sharp energy burst on ق ط ب ج د
-        qalqalah_letters = ["ق", "ط", "ب", "ج", "د"]
-        has_qalqalah = any(letter in word_text for letter in qalqalah_letters)
-
-        if has_qalqalah and energy > 0.05:
-            # Check for sharp energy change (bounce)
-            if word_segment.shape[0] > 100:
-                mid = word_segment.shape[0] // 2
-                first_half_energy = float(torch.sqrt(torch.mean(word_segment[:mid] ** 2)))
-                second_half_energy = float(torch.sqrt(torch.mean(word_segment[mid:] ** 2)))
-                if abs(second_half_energy - first_half_energy) > 0.02:
-                    severity = "practice"
-                    confidence = min(0.90, 0.5 + energy * 2)
-                    findings.append(TajweedWordFinding(
-                        word=word_text,
-                        start=word_start,
-                        end=word_end,
-                        rule="qalqalah",
-                        severity=severity,
-                        explanation=f"Echo bounce detected. Energy: {energy:.4f}, Centroid: {centroid:.0f}Hz. Pronounce with slight bounce.",
-                        confidence=round(confidence, 3),
-                    ))
-
-        # Check for tafkhim (heavy) — low spectral centroid on خ ص ض ط ظ ق
-        tafkhim_letters = ["خ", "ص", "ض", "ط", "ظ", "ق"]
-        has_tafkhim = any(letter in word_text for letter in tafkhim_letters)
-
-        if has_tafkhim and centroid > 0 and centroid < 2000:
-            severity = "practice"
-            confidence = min(0.88, 0.5 + (2000 - centroid) * 0.0002)
-            findings.append(TajweedWordFinding(
-                word=word_text,
-                start=word_start,
-                end=word_end,
-                rule="tafkhim",
-                severity=severity,
-                explanation=f"Heavy pronunciation. Spectral centroid: {centroid:.0f}Hz (low = heavy). Raise back of tongue.",
-                confidence=round(confidence, 3),
-            ))
-
-    return findings
+def _acoustic_response(
+    *,
+    status: Literal["observed", "refused", "unavailable"],
+    started_at: float,
+    observations: list[dict] | None = None,
+    refusal_reason: str | None = None,
+) -> AcousticObservationResponse:
+    model_attribution = None
+    model_version = None
+    if status == "observed":
+        model_attribution = build_acoustic_attribution(ACOUSTIC_CANDIDATE)
+        model_version = model_attribution["components"][0]["implementationId"]
+    return AcousticObservationResponse(
+        status=status,
+        observations=observations or [],
+        refusalReason=refusal_reason,
+        candidateId=ACOUSTIC_CANDIDATE["id"],
+        qpsProfileId=ACOUSTIC_CANDIDATE["qps"]["profileId"],
+        qpsProfileChecksum=ACOUSTIC_CANDIDATE["qps"]["profileChecksum"],
+        modelVersion=model_version,
+        modelAttribution=model_attribution,
+        latencyMs=max(1, int((time.time() - started_at) * 1000)),
+    )
 
 
 @app.post(
-    "/v1/analyze-tajweed",
-    response_model=TajweedAnalysisResponse,
-    dependencies=[Depends(require_rate_limit), Depends(require_asr_key), Depends(require_loaded_model)],
+    "/v1/acoustic-tajweed:observe",
+    response_model=AcousticObservationResponse,
+    dependencies=[Depends(require_rate_limit), Depends(require_asr_key)],
 )
-async def analyze_tajweed(req: TajweedAnalysisRequest):
-    """
-    Analyze audio for tajweed features using real signal processing.
-    Extracts per-word audio segments using force alignment timestamps,
-    then measures duration, pitch (F0), and energy to detect tajweed issues.
-    """
-    start = time.time()
-
-    if not req.audioBase64:
-        raise HTTPException(status_code=400, detail="audioBase64 is required")
-    if not req.words:
-        raise HTTPException(status_code=400, detail="words (with timestamps) are required")
-    if len(req.words) > MAX_TAJWEED_WORDS:
-        raise HTTPException(status_code=413, detail=f"words exceeds the {MAX_TAJWEED_WORDS}-entry limit")
+async def observe_acoustic_tajweed(req: AcousticObservationRequest):
+    """Run the exact pinned model in a restartable child and return shadow-only observations."""
+    started_at = time.time()
+    if not ACOUSTIC_SHADOW_ENABLED:
+        return _acoustic_response(
+            status="unavailable",
+            started_at=started_at,
+            refusal_reason="acoustic-shadow-disabled",
+        )
 
     audio_bytes = decode_audio_b64(req.audioBase64)
-    suffix = safe_audio_suffix(req.audioFormat)
-
-    with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
+    with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
         tmp.write(audio_bytes)
         tmp_path = tmp.name
 
     try:
-        # Same bound the other two audio routes already apply, and it was missing HERE. The base64
-        # cap only bounds the COMPRESSED payload: a ~12 kbps Opus clip inside the size limit decodes
-        # to hours of PCM, and `_analyze_tajweed_words_sync` calls sf.read() on the WHOLE file before
-        # looking at a single word — so an unbounded duration is a memory/CPU exhaustion with a valid
-        # ASR key, which the request-counting rate limiter does not stop.
-        enforce_max_duration(tmp_path)
-        findings = await asyncio.to_thread(_analyze_tajweed_words_sync, tmp_path, req.words)
-        latency_ms = max(1, int((time.time() - start) * 1000))
-        return TajweedAnalysisResponse(
-            findings=findings,
-            modelVersion=f"audio-tajweed-v0.1",
-            latencyMs=latency_ms,
+        measured_duration = probe_duration_seconds(tmp_path)
+        if measured_duration <= 0 or measured_duration > 15.0:
+            return _acoustic_response(
+                status="refused",
+                started_at=started_at,
+                refusal_reason="window-duration-limit",
+            )
+        request = req.model_dump()
+        request.pop("audioBase64", None)
+        request.pop("audioFormat", None)
+        request["audioPath"] = tmp_path
+        worker_response = await acoustic_worker.observe(request)
+        status = worker_response.get("status")
+        observations = worker_response.get("observations")
+        refusal_reason = worker_response.get("refusalReason")
+        if status == "observed":
+            if (
+                not isinstance(observations, list)
+                or not observations
+                or _contains_confidence_claim(observations)
+            ):
+                raise AcousticRefusal("invalid-acoustic-worker-response")
+            return _acoustic_response(
+                status="observed",
+                started_at=started_at,
+                observations=observations,
+            )
+        if (
+            status not in ("refused", "unavailable")
+            or observations != []
+            or not isinstance(refusal_reason, str)
+            or not refusal_reason
+        ):
+            raise AcousticRefusal("invalid-acoustic-worker-response")
+        return _acoustic_response(
+            status=status,
+            started_at=started_at,
+            refusal_reason=refusal_reason,
         )
-    except HTTPException:
-        raise
+    except AcousticRefusal as error:
+        return _acoustic_response(
+            status="refused",
+            started_at=started_at,
+            refusal_reason=error.reason,
+        )
     except Exception:
-        logger.exception("tajweed analysis failed")
-        raise HTTPException(status_code=500, detail="tajweed analysis failed")
+        # Model exceptions may include local artifact/audio paths. Keep the external response stable.
+        logger.error("acoustic shadow worker failed")
+        return _acoustic_response(
+            status="unavailable",
+            started_at=started_at,
+            refusal_reason="acoustic-worker-unavailable",
+        )
     finally:
-        os.unlink(tmp_path)
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
 
 
 if __name__ == "__main__":

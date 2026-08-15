@@ -5,20 +5,24 @@
 Quran-constrained alignment, confidence-scored tajweed feedback, teacher review,
 scholar/source approval, and model-evaluation proof gates. Polyglot pnpm monorepo:
 
-- **TS** (pnpm@11, Node 22): `apps/web` (React 19 + Vite), `packages/contracts`,
-  `packages/quran-data`. `apps/mobile` is Expo (not in the workspace, not gated).
+- **TS** (pnpm@11, Node 22): `server`, `apps/web` (React 19 + Vite), `packages/contracts`,
+  `packages/quran-data`. `apps/mobile` is Expo (not in the workspace; explicit helper tests gated).
+- **Flutter**: `apps/flutter` is the target learner client; the canonical gate analyzes/tests it
+  when the SDK is installed and always runs its Node contract boundary.
 - **Rust** (1.96, cargo): `services/realtime-gateway`, `services/platform-api`
   (Axum; integration tests need live Postgres).
-- **Services**: `services/ml-inference` (Node), `services/asr-inference` (Python),
-  `services/agents` (stub). Driven via `docker compose` + `scripts/smoke-*.mjs`.
+- **Services**: the `server` image runs `node-api` + `job-worker` (including inference) + the
+  internal no-traffic `node-realtime` process shell, while
+  `services/asr-inference` (Python) remains isolated and `services/agents` remains transitional.
+  Driven via `docker compose` + `scripts/smoke-*.mjs`.
 
 ## Commands (exact)
 - Install:    `pnpm install --frozen-lockfile`
 - Dev:        `pnpm dev`              # serves apps/web
-- Typecheck:  `pnpm typecheck`        # tsc for contracts + quran-data + web
+- Typecheck:  `pnpm typecheck`        # tsc for contracts + quran-data + server + web
 - Test:       `pnpm test`             # vitest + cargo test; runs platform-api with
               #                          --include-ignored, so it FAILS (not skips) without a live Postgres
-- Build:      `pnpm build`            # contracts + quran-data + web
+- Build:      `pnpm build`            # contracts + quran-data + server + web
 - Proof:      `pnpm proof`            # legacy strict gate (scripts/proof.sh); also requires live Postgres
 - Smoke:      `pnpm smoke:all`        # full smoke incl. SQL/browser/API/ML/privacy
 - **Verify ALL: `bash scripts/verify.sh`**   # the CODYSTEM gate — run before claiming done
@@ -51,7 +55,7 @@ SKIPS those DB tests when no DB is reachable — it never fakes them. CI runs th
 - **No fabricated model or eval output.** Inference/eval results come from a real service or a
   declared fixture — never hand-authored numbers presented as model output.
 - **Tenant isolation is enforced (Postgres RLS).** Don't add a tenant-owned table or query
-  path that bypasses the RLS policies in `infra/sql/0003_tenant_rls.sql`.
+  path that bypasses the RLS policies in `infra/migrations/0003_tenant_rls.sql`.
 - **Audio/privacy.** Honor audio-retention + privacy export/delete logic in `contracts`;
   never log raw audio or secrets.
 - **LOGIN IS OFF for general users until production (owner-gated).** The web app renders

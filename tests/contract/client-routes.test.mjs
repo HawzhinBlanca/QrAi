@@ -29,7 +29,7 @@ import { loadOpenapi, routePairsFromRust } from "./lib/openapi.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const repoRoot = join(here, "..", "..");
-const spec = loadOpenapi(join(repoRoot, "specs/flutter-client/openapi.yaml"));
+const spec = loadOpenapi(join(repoRoot, "packages/contracts/openapi.yaml"));
 
 /** The TS clients. Dart is covered by flutter-contract.test.mjs, which compares keys, not paths. */
 const ROOTS = ["apps/web/src", "apps/mobile"];
@@ -37,7 +37,7 @@ const ROOTS = ["apps/web/src", "apps/mobile"];
 /**
  * The browser talks to TWO services, and only one of them has a contract.
  *
- * `specs/flutter-client/openapi.yaml` describes platform-api. The realtime gateway is a separate
+ * `packages/contracts/openapi.yaml` describes platform-api. The realtime gateway is a separate
  * process on a separate port, reached over WebSocket, and its routes are registered in its own
  * lib.rs — so its paths are read from there rather than exempted. An exemption list would let a
  * client call a gateway path the gateway does not serve; this way that still fails.
@@ -152,7 +152,7 @@ test("every path the TypeScript clients request exists in the contract", () => {
     [],
     `these paths are requested by a client and described by no contracted route, so no server ` +
       `answers them:\n  ${ghosts.join("\n  ")}\n` +
-      `Either the route is missing from specs/flutter-client/openapi.yaml, or the client is ` +
+      `Either the route is missing from packages/contracts/openapi.yaml, or the client is ` +
       `calling a URL that does not exist — as TeacherSurface did with ` +
       `/v1/recitation-sessions/{id}/audio.`,
   );
