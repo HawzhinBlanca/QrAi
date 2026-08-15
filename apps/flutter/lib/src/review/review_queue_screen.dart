@@ -28,12 +28,22 @@
 /// reads a note back into the finding. An Edit button would silently discard the teacher's work,
 /// which is worse than not offering it.
 ///
-/// ── Why there is no audio ───────────────────────────────────────────────────────────────────────
-/// The web surface fetches `/v1/recitation-sessions/{id}/audio`. That route does not exist in
-/// platform-api (`grep` over `lib.rs` finds no audio route), so the web player is broken. Beyond
-/// that, whether audio exists at all is the learner's consent decision — `discard` retention means
-/// there is nothing to play. Adding a player here would need a route, a retention rule, and a
-/// dependency; what it must not do is imply the teacher heard something they did not.
+/// ── Why there is no audio (and what changed on 2026-08-11) ─────────────────────────────────────
+/// This said: "The web surface fetches `/v1/recitation-sessions/{id}/audio`. That route does not
+/// exist in platform-api (`grep` over `lib.rs` finds no audio route), so the web player is broken."
+/// The diagnosis of the web surface was RIGHT and its player has since been fixed. The conclusion
+/// drawn from it was wrong, and it is worth saying why, because the same grep will mislead the next
+/// reader: platform-api DOES serve audio, at `GET /v1/tajweed-findings/{id}/audio`, and has since
+/// ADR-0037. The web surface was calling the realtime GATEWAY's WebSocket path against the
+/// platform-api base — the right path, the wrong service. It is now contracted
+/// (`specs/flutter-client/openapi.yaml`) and reachable from here.
+///
+/// So a player here needs a client method and a widget, not a new route. What has NOT changed is the
+/// part that matters most: whether audio exists at all is the learner's consent decision, `discard`
+/// retention means there is nothing to play, and every read is audited. The four `audioStatus`
+/// values must stay distinct in the UI — the web surface collapsed them into one "no audio" message
+/// and made a learner's erasure look like a bug. What this must never do is imply the teacher heard
+/// something they did not.
 library;
 
 import 'package:flutter/material.dart';
@@ -53,6 +63,42 @@ List<TajweedFinding> pendingForReview(List<TajweedFinding> all) => all
     .where((TajweedFinding f) =>
         !learnerApprovedReviewStatuses.contains(f.reviewStatus) && f.reviewStatus != 'blocked')
     .toList(growable: false);
+
+/// What a reviewer is told about the recording, before anyone asks for it.
+///
+/// Returns null when there is nothing to say — the learner's predict path computes findings before
+/// anything is stored, so it sends no `audioStatus` and a notice there would be inventing one.
+///
+/// Every branch is a DIFFERENT sentence, and that is the requirement rather than a nicety. The web
+/// surface rendered all of these as "No audio available for this session", so a learner exercising
+/// their right to have a recording destroyed was indistinguishable from a bug — and the teacher
+/// reviewed either way. `available` says plainly that this client cannot play it yet, rather than
+/// implying there is nothing to hear: a reviewer who needs to listen should know to open the web
+/// queue, not conclude the recording is gone.
+String? audioNotice(String? audioStatus) {
+  switch (audioStatus) {
+    case null:
+      return null;
+    case 'available':
+      return 'A recording exists for this word. This client cannot play it yet — open the web '
+          'review queue to listen. Every playback is recorded in the audit log.';
+    case 'discarded':
+      return "The recording was erased at the learner's request. There is nothing to play, and "
+          "that is the learner's decision working, not a fault.";
+    case 'not-captured':
+      return 'No recording was captured for this recitation.';
+    case 'unknown':
+      // A CONTRACTED value with a specific meaning: the consent record and the stored object
+      // disagree about retention, which is a fault rather than an absence. Named explicitly rather
+      // than left to `default` — tests/contract/flutter-contract.test.mjs asserts this switch
+      // covers the enum exactly, and it caught this one falling through.
+      return 'Whether a recording exists could not be established.';
+    default:
+      // A value added upstream that nobody taught this client about. Same sentence, different
+      // situation: both mean "do not assume either way", and neither may read as "no recording".
+      return 'Whether a recording exists could not be established.';
+  }
+}
 
 class ReviewQueueScreen extends StatefulWidget {
   const ReviewQueueScreen({super.key, required this.client, required this.actor});
@@ -247,6 +293,7 @@ class _FindingCardState extends State<_FindingCard> {
     final ThemeData theme = Theme.of(context);
     final String key = f.id ?? '${f.wordId}-${f.rule}';
     final TeacherReview? recorded = widget.recorded;
+    final String? audio = audioNotice(f.audioStatus);
 
     return Card(
       key: ValueKey<String>('review-finding-$key'),
@@ -288,6 +335,14 @@ class _FindingCardState extends State<_FindingCard> {
                 key: ValueKey<String>('review-nosource-$key'),
                 style: theme.textTheme.labelSmall?.copyWith(color: theme.colorScheme.error),
               ),
+            if (audio != null) ...<Widget>[
+              const SizedBox(height: 8),
+              Text(
+                audio,
+                key: ValueKey<String>('review-audio-$key'),
+                style: theme.textTheme.labelSmall,
+              ),
+            ],
             const SizedBox(height: 12),
             if (recorded != null)
               Text(

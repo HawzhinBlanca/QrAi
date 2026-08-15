@@ -2916,3 +2916,594 @@ the event loop, and an erased learner's identifier persists in it. That is the c
 — written down so it is a known open item with a named owner rather than something rediscovered
 later. `learnerId` being a first-class field on each row means whichever of (a)/(b)/(c) is chosen can
 be implemented without re-parsing history.
+
+## ADR-0041 — The Flutter review queue cannot play recitation audio without a new runtime dependency
+
+**Date:** 2026-08-11 · **Status:** Proposed — needs an owner decision, not an engineering one
+**Related:** ADR-0037 (teacher audio through platform-api, every fetch audited), ADR-0022 (artifacts)
+
+### Context
+
+The Flutter review queue has never had an audio player. Its own comment explained why: "The web
+surface fetches `/v1/recitation-sessions/{id}/audio`. That route does not exist in platform-api, so
+the web player is broken. Adding a player here would need a route, a retention rule, and a
+dependency."
+
+Two of those three are now settled. `GET /v1/tajweed-findings/{id}/audio` has existed since ADR-0037
+and is contracted as of 2026-08-11; the retention rule is ADR-0037's, already enforced server-side
+and now surfaced in this client as a per-finding notice. What remains is the dependency.
+
+### The blocker, stated precisely
+
+`apps/flutter/pubspec.yaml` declares five runtime dependencies — http, flutter_secure_storage, intl,
+record, web_socket_channel — and **none can play audio**. `record` captures; it does not play. No
+playback package appears in `pubspec.lock`, not even transitively. Flutter has no built-in audio
+playback on iOS/Android, so a package (`just_audio`, `audioplayers`, or similar) is required.
+
+This was NOT deferred by preference. `scripts/verify.sh` runs `flutter pub get --enforce-lockfile`,
+which fails when `pubspec.yaml` and `pubspec.lock` disagree, and a correct lockfile cannot be
+hand-written: it carries a resolved transitive graph with per-package SHA256 hashes from pub.dev.
+The environment this change was authored in has no Flutter or Dart SDK, so the lock cannot be
+regenerated. Editing the manifest alone would fail the gate deterministically.
+
+### What was delivered instead
+
+The half that does not need the dependency, because a teacher currently gets NO indication at all:
+
+- `TajweedFinding.audioStatus`, from the contract's `StaffTajweedFinding`.
+- `audioNotice` — four distinct sentences for ADR-0037's four states, asserted distinct by test.
+- No play control. A button that cannot play is the defect this same work removed from the web
+  surface on the same day, where every outcome rendered as "No audio available for this session"
+  and a learner's erasure was indistinguishable from a broken URL.
+
+`available` therefore says a recording exists and that this client cannot play it yet, pointing the
+reviewer at the web queue. That is a worse experience than a player and a much better one than a
+control that silently does nothing.
+
+### The decision, and why it is the owner's
+
+Adding a runtime dependency to a mobile client is not a mechanical step here:
+
+1. **Licence review.** `scripts/check-licenses.mjs` covers JS and Rust packages. It does not read
+   `pubspec.lock` at all, so a Dart dependency enters with no licence gate — a gap this ADR names
+   whichever way the decision goes.
+2. **Platform surface.** Playback packages carry native iOS/Android code and background-audio
+   entitlements. P6.3/P6.4 (signed builds, physical devices) are already `_PENDING_`, and this
+   enlarges what those signatures cover.
+3. **What is actually played.** ml-inference stores whatever the gateway captured. The web client
+   guesses `audio/webm` at the Blob; a native player needs a real container, and nothing yet
+   asserts what those bytes are. That question should be answered before a player ships, not after.
+
+### Options
+
+| | |
+|---|---|
+| **A** | Add `just_audio`, regenerate the lock on a machine with the SDK, extend the licence gate to Dart, and answer (3). Full parity with the web queue. |
+| **B** | Leave the notice as shipped. A reviewer who must listen uses the web queue. Costs nothing and hides nothing. |
+| **C** | Ship a player only after P6.3/P6.4, so the native surface is signed off once rather than twice. |
+
+Recommended: **B until a mobile owner exists, then A or C.** No reviewer is blocked today — the web
+queue plays audio and the notice says where to go. The dependency should land with the person who
+will sign the build that carries it.
+
+## ADR-0042 — Does blocking a model retract a human's approval of one finding?
+
+**Date:** 2026-08-12 · **Status:** Proposed — needs a scholar/product ruling, not an engineering one
+**Related:** ADR-0028 (the learner gate), P3.2 (withheld-feedback tests), P3.6 (scholar approval)
+
+### Context
+
+P3.2 asks for withheld-feedback and provenance tests covering findings that are **missing**,
+**rejected**, **expired**, or **fixture** data. Three of the four are covered with failing-first
+tests and now have a guard that keeps them covered
+(`tests/contract/withheld-reasons.test.mjs`, plus `fixture`).
+
+**`expired` has no meaning in this system, and cannot be given one by an engineer.**
+
+Measured, 2026-08-12:
+
+- No table has an expiry column for an approval. Every `expires_at` in the schema —
+  `pilot_invitations.expires_at`, `pilot_sessions.idle_expires_at`,
+  `pilot_sessions.absolute_expires_at`, `realtime_session_tickets.expires_at` — is an
+  authentication lifetime. None of them concerns a human's judgement.
+- `tajweed_findings` records `review_status` and nothing about *when* the review happened or how
+  long it holds.
+- The column an engineer would reach for, `model_versions.status`, is **read by no service at all**
+  (grep across `services/`, and 0027 says so in a comment). Its live values today are `draft` and
+  `eval-passed`; `blocked` is a value nothing acts on.
+
+So the honest state is stronger than "expiry is untested": there is no mechanism by which any
+approval is ever reconsidered, and the field that looks like one is inert.
+
+### The question
+
+A teacher approved finding *F*, produced by model version *M*. Later *M* is found to be wrong —
+blocked, or superseded by a retrained model. **Is the teacher's approval of *F* still valid?**
+
+Both answers are defensible, and the difference is visible to a learner mid-session:
+
+| | if approval survives | if approval is retracted |
+|---|---|---|
+| what the teacher approved | *this finding, about this recitation* — a judgement they made by listening, which a later model has no bearing on | *the model's output*, which they endorsed on the assumption the model was sound |
+| what a learner sees | the note stays; their memorization is not disturbed | the note disappears, possibly between one screen and the next, with no explanation they can act on |
+| the failure it allows | a learner keeps studying from feedback derived from a model the project has disowned | a learner's reviewed, correct feedback is withdrawn because an unrelated model version was retired |
+
+There is a **precedent inside this repo** for the second answer. The locale work already decided a
+human review has a shelf life: `LocaleCapability.interface.reviewExpiresAt` is enforced in
+`apps/web/src/data/platform.ts:147`, and a Sorani pack whose review has lapsed stops being offered.
+Nobody argued a reviewer's judgement was eternal there. Whether recitation feedback is the same kind
+of claim is exactly what needs deciding.
+
+### Why this is not an engineering default
+
+Picking either answer silently would be the worse outcome. "Approval survives" is the current
+behaviour by omission, not by decision — nobody chose it, and it is indistinguishable from having
+forgotten the question. "Approval is retracted" changes what a learner sees without telling them
+why, which is the failure ADR-0041 names: a status that collapses distinct outcomes into one
+message is worse than its absence.
+
+It also cannot be tested before it is decided. A test asserting either behaviour would be an
+engineer's ruling on a scholarly question, wearing a test's authority.
+
+### Decision
+
+**Deferred.** P3.2 stays open with this as its single named blocker, rather than being ticked on
+three-quarters coverage or left vaguely incomplete.
+
+What is in place meanwhile:
+
+- `tests/contract/withheld-reasons.test.mjs` derives the withheld reasons from the contract and
+  requires a test for each, so the three covered reasons cannot silently regress and `expired`
+  cannot silently be forgotten — it is listed as deliberately absent, with this ADR as its reason.
+- Nothing has been built that pretends to expire. There is no dormant column, no unused flag, and
+  no UI string about staleness. When the ruling comes, it lands on a clean surface.
+
+### What a decision needs to specify
+
+1. Does a blocked or superseded model retract prior approvals of its findings — always, never, or
+   only when the model was blocked for a correctness reason rather than retired for a routine one?
+2. If approvals are retracted, what does the learner see in place of a note that was there
+   yesterday? "This note was withdrawn pending re-review" is honest; silence is not.
+3. Do approvals expire on a clock as well, as locale reviews do — and if so, does an expired
+   approval withhold the finding or merely flag it for re-review?
+
+## ADR-0043 — Signed release evidence: the architecture that shipped, and the retention nobody chose
+
+**Date:** 2026-08-12 · **Status:** Proposed — the architecture is describing what exists; the
+retention policy needs an owner's approval
+**Related:** P0.2 (this ADR), P0.4 (manifest + verifier), P7.4 (fresh bundle), P7.5 (challenger),
+ADR-0022 (artifacts), `docs/RELEASE_SIGNING.md` (store signing, a different problem)
+
+### Context
+
+P0.2 asks for an approved ADR covering signed release-evidence architecture and retention. It has sat
+open while **the architecture was built anyway**: `scripts/release-manifest.mjs` (schemaVersion
+2.1.0) and its 22 adversarial tests bind every item P0.4 names, and P0.4's own ledger note records
+the engineering as complete.
+
+That ordering is the problem this ADR fixes. A design that exists only as code is a design nobody
+approved, cannot review as a whole, and cannot disagree with — the next person meets it as a fact
+rather than a choice. So the first half below is **descriptive**: it records decisions already made,
+so they can be challenged. Only the retention half is genuinely open.
+
+`docs/RELEASE_SIGNING.md` is a different subject: it covers signing an APK so a store will accept it.
+This is about signing the *evidence* that a candidate is what it claims to be.
+
+### The architecture, as built
+
+- **Ed25519, and only Ed25519.** Enforced on the private key, the signature algorithm, and every
+  public key in the trusted-signer policy. Not negotiable at runtime: an RSA key is refused at
+  generation, not at verification.
+- **A trusted-signer policy, separate from the signature.** A valid signature by an unauthorized key
+  is refused, and the policy itself is hashed into the signed content — so swapping the policy after
+  the fact invalidates the manifest rather than authorizing a new signer retroactively.
+- **The candidate is a clean Git checkout, asserted.** Untracked files, modified tracked files, and a
+  manifest generated from an earlier commit are each refused. Evidence about a working tree nobody
+  can reconstruct is not evidence.
+- **Nine bound facts** — source, build, image, SBOM, smoke, test, environment, signature, expiry —
+  each with an adversarial test for the case where it drifts. The list is P0.4's; this ADR records
+  that binding them *together in one signed object* was the decision, because any one of them alone
+  can be true of a different build.
+- **Expiry is mandatory and must be in the future.** There is no unbounded evidence. This is the
+  decision most worth stating out loud, because its consequence is that a release candidate goes
+  stale on a clock whether or not anyone is watching — which is the intent.
+
+### The open half: retention
+
+**Nothing in this repository says how long a signed bundle is kept, or what happens to it after
+expiry.** Grepped across `scripts/release-manifest.mjs` and `docs/RELEASE_SIGNING.md`: the word does
+not appear. Expiry is enforced; retention is undefined. Those are different questions, and having
+one without the other is what makes this ADR Proposed rather than Accepted:
+
+- An expired manifest is refused by the verifier. It is not deleted, and nothing says it should be.
+- So today's de-facto policy is "keep everything forever, and refuse to act on the old ones" — which
+  may well be right, but was chosen by nobody.
+
+Retention is not an engineering preference. It interacts with:
+
+1. **Incident forensics.** After a bad release, the question is what the candidate contained. That
+   needs the bundle for the *previous* releases too, not only the current one.
+2. **Privacy.** A bundle binds an environment summary and a smoke trace. If any future evidence
+   captures learner-derived data — it does not today, and it must not start without revisiting this
+   — an indefinite retention becomes a data-protection question rather than a storage one.
+3. **The challenger's job (P7.5).** An independent verifier needs enough history to compare a
+   candidate against its predecessor. Too short a window makes that impossible.
+
+### Decision
+
+**The architecture above is recorded as-is and is not changed by this ADR.** It is already enforced
+by 22 tests; re-deciding it now would be theatre.
+
+**Retention is deferred to an owner**, with a recommendation to make explicit rather than inherit:
+
+| | proposal |
+|---|---|
+| **Keep** | every signed bundle for a released candidate, indefinitely — they are small, and they are the only record of what shipped |
+| **Prune** | unreleased candidate bundles after 90 days, since a candidate that never shipped has no forensic claim on the future |
+| **Never delete on expiry** | an expired bundle is refused for *acting on*, and kept for *explaining* — those are different uses and only one of them has a clock |
+| **Revisit if** | evidence ever begins capturing learner-derived content, which would move this from a storage decision to a privacy one |
+
+### Consequences
+
+- P0.2 stays open until an owner approves. The row's blocker is now one specific question —
+  retention — rather than "an ADR is missing", and the architecture half is no longer unwritten.
+- P0.4 is unaffected: its engineering was already complete, and its blocker is a retained
+  candidate-bound artifact, which is P7.4's job.
+- Nothing was built to satisfy this ADR. No retention field, no pruning script, no dormant config.
+  When the ruling comes it lands on a clean surface — the same discipline as ADR-0042.
+
+## ADR-0044 — `server/` is the Node backend; `services/node-api` is frozen
+
+**Date:** 2026-08-12 · **Status:** Accepted (engineering scope only — see Non-scope)
+**Related:** ADR-0034 (a port is only ported where something compares it), PR #388,
+`specs/lean-flutter-node-consolidation/tasks.md`
+
+### Context
+
+Two Node backends exist in this repository at once:
+
+| | `services/node-api` (main) | `server/` (PR #388, unmerged) |
+|---|---|---|
+| route modules | 14 | 16 — the same 14, plus `canary`, `device-identity` |
+| `routes/review.mjs` | 536 lines | 773 lines, the same file grown |
+| cutover control | `NODE_API_PORTED`, default none | `NODE_API_PORTED` + `NODE_API_ROUTE_MODE=retained-canary` |
+| driven by the A/B parity harness | yes | yes — `startShell` spawns `server/src/main.mjs` |
+| Rust oracle retained | yes | yes |
+| also contains | — | `jobs/`, `storage/`, `realtime/`, `inference/`, `identity/`, `worker.mjs` |
+
+Measured 2026-08-12. These are **not rival designs**. `server/` is `services/node-api` at a later
+age: same lineage file by file, same strangler control, same parity harness, same Rust oracle. It
+additionally absorbs `services/ml-inference` (as `inference/` + `storage/`) and
+`services/realtime-gateway` (as `realtime/`), which is why PR #388 deletes both.
+
+Leaving the question open is the expensive option. Two ledgers are counting progress against two
+codebases: `specs/readiness-recovery-10-10` (on main, 36 open rows) and
+`specs/lean-flutter-node-consolidation` (on the draft, 40 open rows, not on main). Work landing on
+one is invisible to the other, and every W2/W3/W6/W7 task inherits an answer nobody has given.
+
+### Decision
+
+**`server/` is the Node backend this project is building.** `services/node-api` is its earlier form
+and is **frozen**: it may be fixed, but it may not grow.
+
+Concretely, frozen means:
+
+- **No new route modules, no new route keys in `PORTABLE`, no new `lib/` modules.** A new capability
+  belongs in `server/`. Adding it here would mean implementing it twice and proving it once.
+- **Fixes are allowed and expected.** A freeze that forbids repair would push people to work around
+  it. Bug fixes, test additions, and security corrections to existing modules stay in scope.
+- **Shrinking is allowed.** Removing a module is retirement, which is the direction of travel.
+
+Enforced by `tests/contract/node-api-frozen.test.mjs`, pinned to 14 route modules, 9 lib modules and
+37 `PORTABLE` keys. The pin IS the decision here rather than a measurement of it — the guard's whole
+content is "this set does not grow", and it names `server/` in its failure message so the next
+person is told where the code goes instead.
+
+### Why `server/` rather than `services/node-api`
+
+Keeping `services/node-api` would mean re-doing the consolidation it already contains — durable
+jobs, the audio object store, the realtime boundary, local inference, the canary route. That is the
+bulk of PR #388's 96 commits, and redoing it would buy nothing: the draft did not abandon the
+discipline that makes a port trustworthy, it inherited it. `PARITY_THROUGH_SHELL` still puts it
+behind the same A/B differ, and `scripts/verify.sh` on that branch still runs the Rust suite as the
+oracle.
+
+### Two risks this decision creates, and how each is closed
+
+**1. The controls now exist twice, independently.** Rate limiting, `MAINTENANCE_MODE`, the
+superuser/BYPASSRLS refusal, the `x-forwarded-for` overwrite, `UPSTREAM_TIMEOUT_SECS` and trace
+propagation are present in BOTH trees — but main's are proven by parity tests written against
+`services/node-api`, and `server/`'s are separate code those tests have never run against. Two
+implementations of a security control agreeing by assumption is the exact shape this repo keeps
+finding defects in.
+
+*Closed by:* `tests/api-parity/lib/harness.mjs:451` spawns the shell, and it is one line. Pointing it
+at `server/src/main.mjs` runs the whole A/B suite, the five journeys and the fault tests against the
+survivor. Every divergence surfaces there. **This must pass before `services/node-api` is deleted.**
+
+**2. `services/ml-inference` cannot be deleted in the same change.** Four of the five journeys in
+`docs/readiness/JOURNEYS.md` spawn `services/ml-inference/server.mjs` directly, and it owns
+`audio-storage/` and the on-disk erasure that ADR-0037 and the privacy journey prove. That
+`server/inference/` and `server/storage/` replace it faithfully is currently asserted, not shown.
+
+*Closed by:* keeping `ml-inference` and `realtime-gateway` until the journeys pass against
+`server/`'s absorbed versions, as a separate step with its own evidence.
+
+### Sequence
+
+1. This ADR; the freeze guard. (Here.)
+2. Rebase PR #388 onto main — 21 commits behind, 23 conflicting files, mostly `verify.sh` test-list
+   unions and `DECISIONS.md` appends.
+3. Flip `harness.mjs:451` to `server/src/main.mjs`; run the full gate. Reconcile every divergence.
+4. Delete `services/node-api`.
+5. Separately, and only once the journeys pass against it: retire `ml-inference` and
+   `realtime-gateway`.
+
+A 631-file draft cannot be reviewed. Steps 2–4 should land along the seams `server/` already has —
+`lib/` + routes first (the direct successor), then `jobs/` + `storage/`, then `inference/`, then
+`realtime/` — so there is no window in which main has no working backend.
+
+### Non-scope
+
+This decides which codebase the Node backend lives in. It does **not** authorize a production
+cutover: `NODE_API_PORTED` still defaults to none in both trees, and ADR-0034's rule stands —
+a route is servable only where something compares it. Turning routes on in production remains an
+owner decision with canary and rollback evidence, which is W2/W3/W6, not this.
+
+It also says nothing about whether the product is ready. P3.4/P3.5 — no held-out evaluation — is
+untouched by which process serves the routes.
+
+## ADR-0045 — A right-to-erasure request does not delete the account
+
+**Date:** 2026-08-12 · **Status:** Proposed — needs a DPO/product ruling, not an engineering default
+**Related:** ADR-0040 (the ml-inference audit log survives erasure), `docs/DATA_INVENTORY.md` §2/§4,
+`specs/privacy-delete-learner-scope`, the `privacy-erasure` journey
+
+### Context
+
+`docs/DATA_INVENTORY.md` maintains two lists in one file: §2 enumerates the personal-data
+categories, and §4 describes what `POST /v1/privacy/delete` removes. **Account** is the first row of
+§2 — `id`, `tenant_id`, `display_name`, optional `email`, `password_hash`, `role`, `language` — and
+appears nowhere in §4.
+
+Reproduced against a live erasure on 2026-08-12, with ml-inference running so the request actually
+succeeded (`200`, not the fail-closed `502` you get when the audio service is down):
+
+```
+BEFORE: {"display_name":"Erasure Probe Learner","email":"…@example.test","has_pw":true}
+delete status: 200
+AFTER : {"display_name":"Erasure Probe Learner","email":"…@example.test","has_pw":true}
+```
+
+Byte-identical. A learner who exercises their right to erasure has their recitations, alignments,
+findings, progress, consent records, tickets, pilot sessions, agent runs and raw audio removed — and
+their **name, email address and password hash remain**.
+
+The code and the documentation agree with each other. Neither addresses the account.
+
+### The question
+
+**Does "delete my data" mean "delete my account"?** Three defensible answers, and the difference is
+what a data-protection authority would be told:
+
+| | what happens | what it costs |
+|---|---|---|
+| **Delete the row** | the learner ceases to exist in the database | breaks `privacy_jobs.learner_id REFERENCES users(id)` — the erasure receipt loses its subject, so the proof the request was honoured is damaged by honouring it |
+| **Scrub, keep the id** | `display_name` and `email` replaced, `password_hash` cleared, row survives as a tombstone | the receipt keeps its FK; needs a decision on what a scrubbed name reads as, and whether the tenant/role/language fields are also personal |
+| **Keep it, as today** | erasure covers the learner's *content*, not their *account* | defensible only if erasure and account-closure are genuinely separate rights, and it must then be **said** — currently the product implies one and delivers the other |
+
+The middle option is the obvious engineering answer, which is exactly why an engineer should not
+pick it unilaterally: "what does a scrubbed learner look like to a teacher who reviewed them last
+week" is a product question, and "is a pseudonymised tombstone erasure" is a legal one.
+
+### Why this was not visible
+
+Nothing compared the two lists. §2 and §4 are prose, maintained by hand, in the same document —
+which is exactly the arrangement that makes a gap invisible: a reader checking §4 finds an
+impressively thorough cascade and never re-reads §2 to notice which category is missing from it.
+
+The `privacy-erasure` journey test walks the request end to end and asserts both halves that were
+known to matter — derived rows in Postgres, raw audio on ml-inference's disk. It does not assert
+anything about `users`, because nobody had asked.
+
+### Decision
+
+**Deferred.** No scrubbing, no deletion, no dormant column, no "anonymised" placeholder — the same
+discipline as ADR-0042 and ADR-0043. Building the mechanism first would make the ruling look
+already-made.
+
+What lands instead is the check that makes this the last silent instance:
+`tests/security/erasure-coverage.test.mjs` derives every foreign key into `users(id)` **from the
+live schema** and requires each to be either deleted by the cascade — read from the handler's own
+source — or declared with a reason. A new table that can identify a person cannot be added without
+a recorded position on erasing it.
+
+Three references are declared **retained** or **staff-only** and are correct as they stand:
+`audit_events.actor_id` and `privacy_jobs.learner_id` are the record that the erasure happened, and
+`scholar_approvals.reviewer_id` / `teacher_reviews.teacher_id` hold a staff actor rather than the
+subject. `users.id` is declared retained pointing at this ADR, and that declaration fails the moment
+this ADR stops being Proposed.
+
+### What a ruling needs to specify
+
+1. Delete, scrub, or keep — and if scrub, which columns, and what the replacement value reads as to
+   a teacher looking at their own past reviews.
+2. Whether account closure is a separate request with its own endpoint, or the same one.
+3. Whether the erasure receipt may name a person who no longer exists — i.e. whether
+   `privacy_jobs.learner_id` should become a free-standing identifier rather than an FK.
+
+## ADR-0046 — `recordingConsent` is a checkbox no server reads
+
+**Date:** 2026-08-12 · **Status:** Proposed — the remediation needs a data decision, not just a gate
+**Related:** ADR-0028 (the learner gate is enforced on the wire, not in the client),
+`docs/DATA_INVENTORY.md` §5, `packages/contracts` `ConsentSnapshot`
+
+### Context
+
+The consent panel offers five choices. Three are enforced server-side and one is not enforced
+anywhere:
+
+| flag | what the learner is told | server-side gate |
+|---|---|---|
+| `audioRetention` | "otherwise it is discarded after analysis" | `mustDiscardAudio`, ml-inference:1089 |
+| `externalAsrProcessing` | "Allow browser or cloud speech processing…" | `canUseExternalAsr`, recitation.rs:160 |
+| `guardianApproved` | "required for learners under 13" | same gate |
+| **`recordingConsent`** | **"(Required to record.)"** | **none** |
+| **`anonymizedLearning`** | **"Help improve the model with anonymized data."** | **none — nothing reads it at all** |
+
+Reproduced 2026-08-12 against a running service:
+
+```
+session create with recordingConsent=false -> 200
+realtime ticket for that session          -> 200  TICKET ISSUED (audio streaming authorised)
+stored consent snapshot recordingConsent  =  false
+```
+
+The session's own stored answer says the learner does not consent to being recorded, and the ticket
+that authorises audio streaming is issued anyway. `docs/DATA_INVENTORY.md` §5 states the enforcement
+honestly — "enforced on web + mobile" — which is precisely the arrangement ADR-0028 was written
+after: *a display choice, not an authorization boundary*.
+
+### Why it is unenforced: the field has no column
+
+`consent_records` stores `audio_retention`, `anonymized_learning`, `external_asr_processing`,
+`guardian_approved`, `consent_version`. There is **no `recording_consent` column**. The flag exists
+in the contract, in the UI and in `recitation_sessions.consent_snapshot` (JSONB) — and not in the
+table every server-side gate joins. The ticket mint reads `c.audio_retention` and
+`s.external_processing_allowed` from exactly that join, so it could not consult recording consent
+even if someone had thought to.
+
+### Why this is not a one-line fix
+
+Refusing a ticket when the snapshot says `false` would be the obvious change, and it would be wrong
+today:
+
+```
+recordingConsent = false    4615 sessions
+recordingConsent = true     3403 sessions
+absent                      1157 sessions
+```
+
+`false` is also the **default** — `sessions.mjs:50`, `recitation.rs:370` — so for most of those
+4,615 rows it means "never populated", not "the learner declined". The two are indistinguishable in
+the data. A strict gate would deny the majority of existing sessions and read, to an operator, as an
+outage.
+
+### Severity, stated honestly
+
+Lower than it first appears, and still real. The audio a learner can cause to be captured this way
+is **their own**: nothing here lets one person record another, and the real web client blocks the
+flow before it starts. What the system does have is a stored recording of a person alongside that
+person's own recorded refusal — a records and lawful-basis problem, not an attacker capturing a
+minor's voice. It would matter to a DPA and it does not warrant an incident.
+
+`anonymizedLearning` is currently harmless for a different reason: **no training pipeline exists**
+(P3.4/P3.5), so no data is used for learning whether the box is ticked or not. That is exactly why
+it could stay broken indefinitely — and why nothing would stop a future pipeline from ignoring it.
+
+### Decision
+
+**Deferred**, and nothing is enforced in this change. Turning the gate on requires deciding:
+
+1. **What the 4,615 `false` rows mean.** Backfill from another signal, treat historical rows as
+   grandfathered, or migrate and re-ask? Choosing wrong either denies consenting learners or
+   ratifies consent nobody gave.
+2. **Where the boundary is.** The ticket is the honest place — recitation.rs:464 already says "the
+   ticket is the only channel it has" — but session creation and chunk storage are also candidates,
+   and picking one means the others must be provably unreachable without it.
+3. **Whether `recording_consent` becomes a column.** Reading JSONB works; a column is what every
+   other enforced flag has, and the absence of one is why this was invisible.
+4. **What `anonymizedLearning` is for.** If it will gate a future training pipeline, say so and
+   write the gate when the pipeline exists. If it will not, the checkbox should go — a control that
+   cannot act is worse than its absence (ADR-0041).
+
+Meanwhile `tests/security/consent-gate-coverage.test.mjs` requires every flag in the contract to
+have a named server-side gate or a declared reason, so a sixth flag cannot be added and quietly do
+nothing, and neither of these two can be forgotten.
+
+## ADR-0047 — the realtime ticket cannot be revoked, and the erasure deletes its record anyway
+
+**Date:** 2026-08-12 · **Status:** Proposed — the fix is an architectural choice, not a one-liner
+**Related:** ADR-0041 (a control that cannot act is worse than its absence), ADR-0045 (erasure does
+not delete the account), `infra/sql/0021_pilot_identity.sql`
+
+### Context
+
+Every other token this system mints is looked up before it is trusted:
+
+| token | stored as | looked up by | revocable |
+|---|---|---|---|
+| pilot session cookie | `pilot_sessions.token_hash` | `app.get_pilot_session_by_hash` (`auth.rs:171`) | yes — `revoked_at` |
+| pilot invitation | `pilot_invitations.token_hash` | `app.consume_pilot_invitation_by_hash` (`pilot.rs:46`) | yes — single-use |
+| **realtime ticket** | **`realtime_session_tickets.token_hash`** | **nothing** | **no** |
+
+The realtime ticket is a stateless HMAC with a 300s TTL. `platform-api` computes its SHA-256 and
+writes the row (`recitation.rs:514`); `realtime-gateway` validates the signature and never opens a
+database connection at all — it has no `sqlx` dependency. The stored `token_hash` is read by no
+code path in either service. It is written, counted by the privacy export, deleted by the erasure,
+and never consulted.
+
+### What that costs: the erasure can be raced
+
+`privacy.rs:452` runs `DELETE FROM realtime_session_tickets WHERE tenant_id = $1 AND learner_id = $2`.
+It reads as revocation. It revokes nothing, because nothing was ever going to read those rows.
+
+Reproduced 2026-08-12 against a real gateway and a real ml-inference, two tickets minted before any
+erasure request:
+
+```
+1. chunk streamed BEFORE erasure   -> accepted: true
+   files on disk: 2
+2. erasure (POST /v1/privacy/delete, the call platform-api makes) -> 200
+   files on disk after erasure: 0
+3. chunk streamed AFTER erasure    -> accepted: true
+   files on disk after: 2   session-erasure-race-ws-0001.bin
+                             session-erasure-race-ws-0001.meta.json
+```
+
+The erasure completed, reported success, and the learner's audio was written again afterwards by a
+ticket the erasure believed it had destroyed.
+
+### Severity, stated honestly
+
+Bounded, and still worth fixing.
+
+- The window is at most the ticket's remaining TTL — 300 seconds — and only for a ticket already
+  minted. It is not a way to obtain new access.
+- It is the learner's **own** audio and their own ticket. Nothing here lets one person record
+  another, and a real client stops streaming when the learner leaves the page.
+- A second erasure request would collect the orphan: ml-inference deletes by tenant/learner
+  directory, not by database lookup. But the learner has no reason to ask twice — they hold a
+  receipt saying it is done.
+- The orphan is invisible to the database: `index_audio_chunk` would 404 on the deleted session, so
+  no `audio_chunks` row exists for it. Its lifetime is then decided only by the on-disk
+  `.meta.json`, and for `audioRetention: "training-opt-in"` the eviction sweep `continue`s — it is
+  **never** deleted (`server.mjs:1738`).
+
+So: a bounded race that leaves audio the learner asked to be destroyed, potentially permanently, and
+a receipt that already said otherwise.
+
+### Why there is no obvious fix to just apply
+
+1. **Make the gateway check the database.** It deliberately holds no connection; giving it one puts
+   Postgres on the realtime audio path and changes its failure model.
+2. **Publish revocations to Redis**, which the gateway already reaches for dedup and active-session
+   counting. Architecturally the closest fit — and Redis there is explicitly *best-effort*
+   (a stalled Redis must not block chunk acceptance; that was a deliberate fix). A revocation check
+   on a best-effort dependency is a control that silently does not act, which is the thing ADR-0041
+   is about.
+3. **Shorten the TTL.** Reduces the window without closing it, and costs re-mints on every
+   reconnect.
+4. **Re-run the ML audio erase after the ticket TTL expires.** Closes it exactly, and needs a
+   deferred-job mechanism this system does not have.
+
+Each trades a different thing. Picking one is a decision about the realtime path's dependencies, not
+a bug fix.
+
+### Decision
+
+**Deferred.** Nothing is changed here. `tests/security/token-revocability.test.mjs` requires every
+token-bearing column in the schema to be either looked up before it is trusted — naming the file and
+the lookup — or declared stateless with a reason, so the next unrevocable token cannot be minted
+silently, and so `realtime_session_tickets.token_hash` cannot keep reading as a revocation record
+without this ADR attached to it.

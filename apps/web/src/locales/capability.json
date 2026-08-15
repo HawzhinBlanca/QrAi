@@ -33,7 +33,7 @@
   "locales": {
     "en": {
       "status": "complete",
-      "keys": 384,
+      "keys": 389,
       "reviewer": "source language — authored here, not translated",
       "reviewExpires": null
     },
@@ -44,12 +44,47 @@
       "reviewExpires": null,
       "note": "Central Kurdish (Sorani). The app's DEFAULT language and an option in the language picker, with zero strings. Every label a Kurdish learner sees is English via fallback. P2.4 covers getting these written and independently reviewed, including Quranic terminology; until then this row is the honest description of the product."
     },
-    "ar": { "status": "placeholder", "keys": 0, "reviewer": null, "reviewExpires": null },
-    "tr": { "status": "placeholder", "keys": 0, "reviewer": null, "reviewExpires": null },
-    "ur": { "status": "placeholder", "keys": 0, "reviewer": null, "reviewExpires": null },
-    "id": { "status": "placeholder", "keys": 0, "reviewer": null, "reviewExpires": null },
-    "ms": { "status": "placeholder", "keys": 0, "reviewer": null, "reviewExpires": null },
-    "fr": { "status": "placeholder", "keys": 0, "reviewer": null, "reviewExpires": null },
-    "de": { "status": "placeholder", "keys": 0, "reviewer": null, "reviewExpires": null }
+    "ar": {
+      "status": "placeholder",
+      "keys": 0,
+      "reviewer": null,
+      "reviewExpires": null
+    },
+    "tr": {
+      "status": "placeholder",
+      "keys": 0,
+      "reviewer": null,
+      "reviewExpires": null
+    },
+    "ur": {
+      "status": "placeholder",
+      "keys": 0,
+      "reviewer": null,
+      "reviewExpires": null
+    },
+    "id": {
+      "status": "placeholder",
+      "keys": 0,
+      "reviewer": null,
+      "reviewExpires": null
+    },
+    "ms": {
+      "status": "placeholder",
+      "keys": 0,
+      "reviewer": null,
+      "reviewExpires": null
+    },
+    "fr": {
+      "status": "placeholder",
+      "keys": 0,
+      "reviewer": null,
+      "reviewExpires": null
+    },
+    "de": {
+      "status": "placeholder",
+      "keys": 0,
+      "reviewer": null,
+      "reviewExpires": null
+    }
   }
 }

@@ -179,7 +179,15 @@ export async function startApi({ env = {}, timeoutMs = 30_000, bin = API_BIN } =
   child.stderr.on("data", (d) => {
     stderr += d.toString();
   });
-  child.stdout.on("data", () => {});
+  // Captured, not discarded. `tracing_subscriber::fmt()` writes to STDOUT (12-factor), so every
+  // structured log line the service emits — including the failure logs an operator would grep by
+  // trace id — arrived here and was thrown away. A test asserting on observability output had no
+  // way to see it. Kept separate from stderr so a test can still tell a panic or a boot refusal
+  // (stderr) from an ordinary log line (stdout).
+  let stdout = "";
+  child.stdout.on("data", (d) => {
+    stdout += d.toString();
+  });
   child.once("exit", (code, signal) => {
     exited = { code, signal };
   });
@@ -234,6 +242,9 @@ export async function startApi({ env = {}, timeoutMs = 30_000, bin = API_BIN } =
       get stderr() {
         return stderr + shell.stderr;
       },
+      get stdout() {
+        return stdout;
+      },
       async stop() {
         await shell.stop();
         await stopRust();
@@ -247,6 +258,9 @@ export async function startApi({ env = {}, timeoutMs = 30_000, bin = API_BIN } =
     pid: child.pid,
     get stderr() {
       return stderr;
+    },
+    get stdout() {
+      return stdout;
     },
     /** SIGTERM first — main.rs:241 installs a graceful-shutdown handler — then SIGKILL if it lingers. */
     stop: stopRust,

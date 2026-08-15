@@ -59,6 +59,11 @@ const freePort = () =>
 
 before(async () => {
   storageDir = mkdtempSync(join(tmpdir(), "privacy-erasure-"));
+  // server.mjs captures AUDIO_STORAGE_DIR at MODULE LOAD, and several tests below import it (for
+  // clampAuditLimit, runRetentionSweep). Set it HERE, before any of them: setting it inside a test
+  // is too late once another test has already imported and cached the module, and the sweep then
+  // runs against a different directory and asserts nothing.
+  process.env.AUDIO_STORAGE_DIR = storageDir;
   port = await freePort();
   ml = spawn(process.execPath, [ENTRY], {
     cwd: root,
@@ -384,4 +389,58 @@ test("GET /v1/audit-events is bounded, newest-first, and never truncates silentl
   // And over HTTP the oversized limit returns everything available here (205), not an error.
   const huge = await get("&limit=999999");
   assert.equal((await huge.json()).length, total, "an oversized limit still returns a valid page");
+});
+
+test("the hourly retention sweep does not delete the audit log, and audit writes survive it", async () => {
+  // Found by an adversarial sweep of the codebase, then reproduced end to end. The audit log lives
+  // under AUDIO_STORAGE_DIR but is not audio: it has no TTL and no .bin files. The sweep's
+  // empty-directory cleanup removed it, because `audit-log/` is EMPTY on a fresh deployment — so
+  // within the first hour of any deploy the directory vanished, nothing recreated it (mkdir runs
+  // once at module load), and every appendAudit() afterwards failed ENOENT.
+  //
+  // Nothing surfaced that. The audit write is deliberately best-effort so it cannot break the
+  // request being audited, so requests kept returning 200 while the compliance trail stayed
+  // permanently empty — including privacy.delete.requested, the row that evidences an erasure was
+  // honoured (ADR-0040). Measured before the fix: 0 audit events recorded after one sweep.
+  // server.mjs captures AUDIO_STORAGE_DIR at MODULE LOAD. The suite's service runs as a child
+  // process with that env set; this test process does not have it, so importing the module without
+  // setting it first sweeps a completely different directory and asserts nothing. Written that way
+  // first, this test also passed with the fix reverted — the second vacuous version of it. Set the
+  // env before the first import of the module in this process.
+  const { runRetentionSweep } = await import("./server.mjs");
+  const auditDir = join(storageDir, "audit-log");
+
+  // Case 1 — the empty directory a fresh deployment actually has. This staging is load-bearing:
+  // earlier tests in this file have already written .jsonl files, so audit-log/ is NOT empty by now
+  // and even the buggy sweep would leave it alone. Written without it, this test passed with the
+  // fix REVERTED — a test that cannot fail, which is the exact class of defect this session kept
+  // finding. Emptying the directory first recreates the fresh-deploy condition where it bites.
+  const { rmSync: rmOne, readdirSync: lsAudit } = await import("node:fs");
+  for (const f of lsAudit(auditDir)) rmOne(join(auditDir, f), { force: true });
+  assert.equal(lsAudit(auditDir).length, 0, "staging failed: audit-log must be empty for this case");
+
+  assert.ok(existsSync(auditDir), "audit-log should exist at boot");
+  await runRetentionSweep();
+  assert.ok(
+    existsSync(auditDir),
+    "the retention sweep deleted the audit log directory; every later audit write fails ENOENT in silence",
+  );
+
+  // Case 2 — the property that matters is not the directory, it is that events still land.
+  const TENANT_SWEEP = "tenant-survives-the-sweep";
+  const before = await post("/v1/privacy/export", { tenantId: TENANT_SWEEP, learnerId: "learner-1" });
+  assert.equal(before.status, 200);
+  await runRetentionSweep();
+  const after = await post("/v1/privacy/delete", { tenantId: TENANT_SWEEP, learnerId: "learner-1" });
+  assert.equal(after.status, 200);
+
+  const res = await fetch(`http://127.0.0.1:${port}/v1/audit-events?tenantId=${TENANT_SWEEP}`, {
+    headers: { "x-ml-api-key": KEY },
+  });
+  const events = await res.json();
+  const actions = events.map((e) => e.action);
+  assert.ok(
+    actions.includes("privacy.export.requested") && actions.includes("privacy.delete.requested"),
+    `audit rows written either side of a sweep must both survive it, got: ${JSON.stringify(actions)}`,
+  );
 });

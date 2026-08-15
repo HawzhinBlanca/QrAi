@@ -1,0 +1,1849 @@
+/**
+ * Quran AI ML Inference Service
+ *
+ * Real Quran-constrained alignment + rule-based tajweed engine.
+ * Replaces the fixture-based stub with actual algorithms.
+ */
+
+import { createServer } from "node:http";
+import { createHash, randomUUID } from "node:crypto";
+import { readFileSync, readdirSync, existsSync, writeFileSync, appendFileSync, mkdirSync, realpathSync } from "node:fs";
+import { readFile as readFileAsync, readdir as readdirAsync } from "node:fs/promises";
+import { dirname, join } from "node:path";
+import { fileURLToPath, pathToFileURL } from "node:url";
+
+import { normalizeArabic, similarity, alignWords, calculateConfidence } from "./alignment.js";
+import { analyzeAyah, analyzeWord } from "./tajweed.js";
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
+
+// True only when this file is the process entrypoint (node server.mjs), false when imported
+// (e.g. by server.test.mjs). Every side effect — listen(), the cleanup timers, the signal
+// handlers — is gated on this so importing the module for tests does not bind a port or start
+// timers. (verify.sh notes the same footgun: a dir glob would import server.mjs, which listens.)
+const isMain = process.argv[1]
+  ? import.meta.url === pathToFileURL(realpathSync(process.argv[1])).href
+  : false;
+
+// Load golden eval fixtures for health endpoint + smoke tests
+const FIXTURES_PATH = join(__dirname, "fixtures", "golden-evals.json");
+const fixtures = JSON.parse(readFileSync(FIXTURES_PATH, "utf8"));
+
+// Load full Quran data
+const QURAN_DATA_DIR = join(__dirname, "..", "..", "packages", "quran-data", "src", "data", "full-quran");
+const manifest = JSON.parse(readFileSync(join(QURAN_DATA_DIR, "manifest.json"), "utf8"));
+
+const ML_API_KEY = process.env.ML_API_KEY ?? "smoke-ml-api-key";
+
+const MODEL_VERSION = process.env.ML_MODEL_VERSION ?? "ml-aligner-v0.2";
+// Upper bound on words per alignment request (both canonical range and recognized text), bounding the
+// O(m·n) alignment DP. Far above any real practice session (the web caps a session at 7 ayahs).
+const MAX_ALIGN_WORDS = 1000;
+const DATASET_VERSION = fixtures.datasetVersion;
+const GOLDEN_CASE_IDS = fixtures.cases.map((c) => c.id);
+// Golden fixtures are ONLY for smoke/eval. By default (flag unset) every request
+// computes real alignment/tajweed — even for the golden refs like Al-Fatihah 1:1-7.
+const USE_GOLDEN_FIXTURES = process.env.ML_USE_GOLDEN_FIXTURES === "1";
+
+// ── Fixture output is a deliberate act, not a flag somebody set once (P3.2) ──────────────────────
+//
+// In fixture mode `predictAlignment` answers with `heardText: w.canonicalText, status: "matched"` —
+// a FLAWLESS recitation that nobody performed — and `predictTajweed` answers with the fixture's
+// findings. Neither payload says it came from a fixture.
+//
+// Those findings PERSIST. `persist_tajweed_findings` (handlers/ml_proxy.rs) writes them to
+// tajweed_findings with `analysis_basis = 'canonical-text'`, indistinguishable from analysis of a
+// child's actual recitation. So the flag being set once — a demo, a staging box, a copied env file —
+// contaminates the corpus permanently, and unsetting it later does not un-write the rows.
+//
+// The flag is genuinely needed, so it is not removed. It now requires a second variable whose NAME
+// is the acknowledgement, so enabling it cannot be done absent-mindedly and shows up in review as
+// what it is. Same shape as AUDIO_STORAGE_DRIVER above: refuse to start rather than do something an
+// operator would not recognise from their config.
+if (USE_GOLDEN_FIXTURES && process.env.ML_ACKNOWLEDGE_FIXTURE_OUTPUT !== "1") {
+  throw new Error(
+    "ML_USE_GOLDEN_FIXTURES=1 makes this service answer from fixtures instead of analysing " +
+      "anything: alignments report a flawless recitation nobody performed, and the tajweed findings " +
+      "it returns are PERSISTED as though they were real analysis of a learner's session. " +
+      "Set ML_ACKNOWLEDGE_FIXTURE_OUTPUT=1 alongside it to confirm that is intended. " +
+      "Refusing to start rather than quietly producing evidence about recitations that never happened.",
+  );
+}
+// === Audio storage abstraction ===
+// Filesystem-only today. AUDIO_STORAGE_DRIVER exists so a future S3/MinIO backend has a place to
+// hang off of, but until one is actually implemented, requesting it must fail loudly at startup —
+// silently falling back to the filesystem while an operator believes audio is going to S3 would be
+// a silent privacy/compliance gap (see docs/DATA_INVENTORY.md), not a graceful degradation.
+const AUDIO_STORAGE_DRIVER = process.env.AUDIO_STORAGE_DRIVER ?? "filesystem";
+if (AUDIO_STORAGE_DRIVER !== "filesystem") {
+  throw new Error(
+    `AUDIO_STORAGE_DRIVER=${AUDIO_STORAGE_DRIVER} is not implemented (only "filesystem" is supported). ` +
+      `Refusing to start rather than silently store audio on the local filesystem while a different backend was requested.`,
+  );
+}
+const AUDIO_STORAGE_DIR = process.env.AUDIO_STORAGE_DIR ?? join(__dirname, "audio-storage");
+
+mkdirSync(AUDIO_STORAGE_DIR, { recursive: true });
+
+// Durable audit log: one append-only JSONL file per tenant on the audio_storage volume (which the
+// backup runbook already covers). Previously the audit trail lived only in an in-memory array —
+// unbounded (a slow memory leak over a long-running process) AND lost entirely on restart, so a
+// learner's privacy export could report zero external-ASR calls even if their audio was sent to ASR
+// the day before (a compliance-grade data-loss window). Writing to disk fixes both (P3.3).
+const AUDIT_LOG_DIR = join(AUDIO_STORAGE_DIR, "audit-log");
+mkdirSync(AUDIT_LOG_DIR, { recursive: true });
+
+const ASR_SERVICE_URL = process.env.ASR_SERVICE_URL ?? "http://127.0.0.1:8091";
+
+// === Structured JSON Logger ===
+// Outputs JSON lines to stdout (info) or stderr (warn/error) for production log aggregation.
+const LOG_LEVEL = process.env.LOG_LEVEL ?? "info";
+const LOG_LEVELS = { debug: 0, info: 1, warn: 2, error: 3 };
+const currentLogLevel = LOG_LEVELS[LOG_LEVEL] ?? 1;
+
+function log(level, msg, data = {}) {
+  if ((LOG_LEVELS[level] ?? 1) < currentLogLevel) return;
+  const entry = JSON.stringify({
+    ts: new Date().toISOString(),
+    level,
+    service: "ml-inference",
+    msg,
+    ...data,
+  });
+  if (level === "error" || level === "warn") {
+    process.stderr.write(entry + "\n");
+  } else {
+    process.stdout.write(entry + "\n");
+  }
+}
+
+async function storeAudioObject(tenantId, learnerId, chunkId, audioBytes) {
+  tenantId = safeStorageSegment(tenantId, "tenantId");
+  learnerId = safeStorageSegment(learnerId, "learnerId");
+  chunkId = safeStorageSegment(chunkId, "chunkId");
+  const objectKey = `${tenantId}/${learnerId}/${chunkId}.bin`;
+  const tenantDir = join(AUDIO_STORAGE_DIR, tenantId, learnerId);
+  mkdirSync(tenantDir, { recursive: true });
+  writeFileSync(join(tenantDir, `${chunkId}.bin`), audioBytes);
+  return objectKey;
+}
+
+/**
+ * Erase everything this service holds for one learner.
+ *
+ * Deletes EVERY file in the learner's directory, not just the two extensions it happens to write
+ * today. The old loop unlinked `.bin` and `.meta.json` and silently stepped over anything else, so
+ * a single file of any other name — a temp file, a partial write, a format added later by someone
+ * who did not know to update this list — survived "delete my child's recordings" without a word.
+ * An allowlist is the wrong default for erasure: forgetting to extend it fails towards RETAINING
+ * a learner's data, which is the direction that must never be the quiet one.
+ *
+ * Classified, not lumped: an unrecognised file is still deleted, but reported under
+ * `deletedOtherObjectKeys` rather than being miscounted as audio or as metadata, so the two
+ * existing counts keep meaning exactly what they meant.
+ *
+ * NOT recursive, deliberately. Nothing writes a subdirectory here, and giving erasure the power to
+ * walk a tree rooted at a request-derived path is a much larger blast radius than the gap it would
+ * close. A subdirectory is therefore left in place — and because `rmdirSync` then fails, the caller's
+ * `tombstonedDerivedRecords` post-condition reports false and the residue is loud instead of silent.
+ */
+async function deleteAudioObjects(tenantId, learnerId) {
+  tenantId = safeStorageSegment(tenantId, "tenantId");
+  learnerId = safeStorageSegment(learnerId, "learnerId");
+  const tenantDir = join(AUDIO_STORAGE_DIR, tenantId, learnerId);
+  const deletedAudioObjectKeys = [];
+  const deletedMetadataObjectKeys = [];
+  const deletedOtherObjectKeys = [];
+  if (existsSync(tenantDir)) {
+    const { readdirSync, unlinkSync, rmdirSync } = await import("node:fs");
+    for (const entry of readdirSync(tenantDir, { withFileTypes: true })) {
+      // Only files are unlinkable; see the note above on why a directory is left for the
+      // post-condition to surface rather than recursed into.
+      if (!entry.isFile()) continue;
+      const key = `${tenantId}/${learnerId}/${entry.name}`;
+      unlinkSync(join(tenantDir, entry.name));
+      if (entry.name.endsWith(".bin")) {
+        deletedAudioObjectKeys.push(key);
+      } else if (entry.name.endsWith(".meta.json")) {
+        deletedMetadataObjectKeys.push(key);
+      } else {
+        deletedOtherObjectKeys.push(key);
+      }
+    }
+    try { rmdirSync(tenantDir); } catch {}
+  }
+  return { deletedAudioObjectKeys, deletedMetadataObjectKeys, deletedOtherObjectKeys };
+}
+
+async function listAudioObjects(tenantId, learnerId) {
+  tenantId = safeStorageSegment(tenantId, "tenantId");
+  learnerId = safeStorageSegment(learnerId, "learnerId");
+  const tenantDir = join(AUDIO_STORAGE_DIR, tenantId, learnerId);
+  let audioObjectKeys = [];
+  let metadataObjectKeys = [];
+  if (existsSync(tenantDir)) {
+    const { readdirSync } = await import("node:fs");
+    const files = readdirSync(tenantDir);
+    audioObjectKeys = files
+      .filter((file) => file.endsWith(".bin"))
+      .map((file) => `${tenantId}/${learnerId}/${file}`);
+    metadataObjectKeys = files
+      .filter((file) => file.endsWith(".meta.json"))
+      .map((file) => `${tenantId}/${learnerId}/${file}`);
+  }
+  return { audioObjectKeys, metadataObjectKeys };
+}
+
+const evalRuns = new Map();
+const deletionJobs = new Map();
+
+// Path to a tenant's append-only audit JSONL, or null if the tenantId isn't a safe path segment
+// (audit writes must never traverse the filesystem, and must never crash the request they audit).
+function auditFileFor(tenantId) {
+  if (typeof tenantId !== "string") return null;
+  const t = tenantId.trim();
+  if (
+    !t ||
+    t.length > 128 ||
+    t === "." ||
+    t === ".." ||
+    t.includes("..") ||
+    t.includes("/") ||
+    t.includes("\\") ||
+    t.includes("\0")
+  ) {
+    return null;
+  }
+  return join(AUDIT_LOG_DIR, `${t}.jsonl`);
+}
+
+// All audit events for a tenant, read from the durable JSONL. Empty for an unknown/invalid tenant.
+// Malformed lines are skipped rather than throwing — one bad line must not hide the rest of the
+// audit trail.
+function readTenantAuditEvents(tenantId) {
+  const file = auditFileFor(tenantId);
+  if (!file || !existsSync(file)) return [];
+  const events = [];
+  for (const line of readFileSync(file, "utf8").split("\n")) {
+    if (!line.trim()) continue;
+    try {
+      events.push(JSON.parse(line));
+    } catch {
+      // skip a corrupt line
+    }
+  }
+  return events;
+}
+
+/**
+ * Bounds for `GET /v1/audit-events`. Defaults mirror platform-api's `LIMIT 200`; the ceiling exists
+ * so `?limit=999999` cannot reinstate the unbounded read this replaced. A malformed or negative
+ * value falls back to the default rather than 400 — the caller gets a sane page, not an error, and
+ * never accidentally gets everything.
+ */
+const AUDIT_PAGE_DEFAULT = 200;
+const AUDIT_PAGE_MAX = 1000;
+
+export function clampAuditLimit(raw) {
+  const n = Number.parseInt(raw ?? "", 10);
+  if (!Number.isFinite(n) || n <= 0) return AUDIT_PAGE_DEFAULT;
+  return Math.min(n, AUDIT_PAGE_MAX);
+}
+
+export function clampAuditOffset(raw) {
+  const n = Number.parseInt(raw ?? "", 10);
+  if (!Number.isFinite(n) || n <= 0) return 0;
+  return n;
+}
+
+// Load surah data cache
+const surahCache = new Map();
+function getSurah(surahNumber) {
+  // Validate BEFORE touching the filesystem so an out-of-range reference is a 400, not a
+  // 500 from readFileSync(ENOENT).
+  if (!Number.isInteger(surahNumber) || surahNumber < 1 || surahNumber > 114) {
+    throw httpError(400, `surahNumber must be an integer 1-114 (got ${surahNumber})`);
+  }
+  if (surahCache.has(surahNumber)) return surahCache.get(surahNumber);
+  const fileName = `surah-${String(surahNumber).padStart(3, "0")}.json`;
+  const data = JSON.parse(readFileSync(join(QURAN_DATA_DIR, fileName), "utf8"));
+  surahCache.set(surahNumber, data);
+  return data;
+}
+
+function getCanonicalWords(surahNumber, ayahStart, ayahEnd) {
+  const surah = getSurah(surahNumber);
+  if (
+    !Number.isInteger(ayahStart) ||
+    !Number.isInteger(ayahEnd) ||
+    ayahStart < 1 ||
+    ayahEnd < ayahStart ||
+    ayahStart > surah.ayahs.length ||
+    ayahEnd > surah.ayahs.length
+  ) {
+    throw httpError(
+      400,
+      `invalid ayah range ${ayahStart}-${ayahEnd} for surah ${surahNumber} (${surah.ayahs.length} ayahs)`,
+    );
+  }
+  const words = [];
+  for (const ayah of surah.ayahs) {
+    if (ayah.ayahNumber >= ayahStart && ayah.ayahNumber <= ayahEnd) {
+      for (let i = 0; i < ayah.words.length; i++) {
+        const wordIndex = i + 1;
+        words.push({
+          id: `${ayah.surahNumber}:${ayah.ayahNumber}:${wordIndex}`,
+          text: ayah.words[i],
+        });
+      }
+    }
+  }
+  // Bound the O(m·n) alignment DP: a single practice request is far smaller (the web caps a session at
+  // 7 ayahs). Without this a caller could ask for a whole surah/juz and block the handler for tens of
+  // seconds. 1000 words is well above any real 7-ayah span but bounds the worst case to ~1s.
+  if (words.length > MAX_ALIGN_WORDS) {
+    throw httpError(
+      400,
+      `ayah range ${ayahStart}-${ayahEnd} spans ${words.length} words (max ${MAX_ALIGN_WORDS} per request); align a smaller range`,
+    );
+  }
+  return words;
+}
+
+// NO CORS. This service is not a browser origin.
+//
+// It used to send `access-control-allow-origin: *` so the web app could call it directly — but that
+// path was removed when the platform-api proxy (`/v1/ml/*`) was introduced precisely so `ML_API_KEY`
+// stays server-side and never ships to a page. A wildcard CORS header on a service the browser must
+// never call directly only invites the pattern back: it tells any origin that a cross-origin request
+// here is welcome, and the only thing then missing is the key.
+//
+// Server-to-server callers (platform-api, the agents service) do not perform preflight and are
+// unaffected. Kept as an empty object so the response-header spread sites need no branching.
+const CORS_HEADERS = {};
+
+function jsonResponse(response, status, body) {
+  response.writeHead(status, {
+    "content-type": "application/json; charset=utf-8",
+    "cache-control": "no-store",
+    ...CORS_HEADERS,
+  });
+  response.end(JSON.stringify(body));
+}
+
+function textResponse(response, status, body) {
+  response.writeHead(status, {
+    "content-type": "text/plain; charset=utf-8",
+    ...CORS_HEADERS,
+  });
+  response.end(body);
+}
+
+function readJson(request) {
+  return new Promise((resolve, reject) => {
+    let data = "";
+    let settled = false;
+    const settle = (fn, value) => {
+      if (settled) return;
+      settled = true;
+      fn(value);
+    };
+    request.setEncoding("utf8");
+    request.on("data", (chunk) => {
+      if (settled) return;
+      data += chunk;
+      if (data.length > 5_000_000) {
+        // Stop consuming, but do NOT destroy the socket: destroying it tears the connection down
+        // before the request handler's .catch can write the 413, so the client sees a raw connection
+        // reset (ECONNRESET) instead of a clean 413. Pause and reject; the 413 is then written on the
+        // still-open socket.
+        request.pause();
+        settle(reject, httpError(413, "request body too large"));
+      }
+    });
+    request.on("end", () => {
+      if (!data.trim()) {
+        settle(resolve, {});
+        return;
+      }
+      try {
+        const parsed = JSON.parse(data);
+        settle(resolve, parsed);
+      } catch {
+        // Malformed JSON is a client error (400), not an internal failure (500).
+        settle(reject, httpError(400, "request body is not valid JSON"));
+      }
+    });
+    request.on("error", (err) => settle(reject, err));
+  });
+}
+
+function appendAudit(tenantId, action, subjectId, details = {}) {
+  const event = {
+    id: `audit-${randomUUID()}`,
+    tenantId,
+    traceId: details.traceId ?? null,
+    action,
+    subjectType: action.startsWith("privacy.") ? "privacy" : "ml_prediction",
+    subjectId,
+    // WHOSE event this is, as a structured field rather than something a reader has to infer from
+    // subjectId. subjectId is the learner for `privacy.*` but the SESSION for `external-asr.*`, so
+    // "is this row about learner X" was previously unanswerable for session-keyed rows — which is
+    // how a learner-scoped privacy export ended up returning the whole tenant's audit trail. Null
+    // when the caller does not know it; an unattributable row is excluded from every learner's
+    // export rather than shown to all of them.
+    learnerId: typeof details.learnerId === "string" && details.learnerId ? details.learnerId : null,
+    details,
+    createdAt: new Date().toISOString(),
+  };
+  // Append durably (JSONL). Best-effort: an audit-write failure is logged but never throws — it
+  // must not break the request being audited. The line is newline-terminated so appends compose.
+  const file = auditFileFor(tenantId);
+  if (file) {
+    try {
+      // Recreate the directory if it has gone. Defence in depth rather than the fix: the sweep no
+      // longer removes it, but this write is best-effort by design, so ANY future cause of a missing
+      // directory would again lose the trail with nothing but a log line to show for it. mkdir is a
+      // no-op once it exists.
+      mkdirSync(AUDIT_LOG_DIR, { recursive: true });
+      appendFileSync(file, `${JSON.stringify(event)}\n`);
+    } catch (err) {
+      console.error(`[audit] failed to persist event for tenant ${tenantId}: ${err.message}`);
+    }
+  } else {
+    console.error(`[audit] refusing to persist event for unsafe tenantId: ${tenantId}`);
+  }
+  return event.id;
+}
+
+function extractTraceId(requestBody) {
+  const traceId = requestBody.traceId ?? requestBody.trace_id ?? requestBody.smokeTraceId;
+  return typeof traceId === "string" && traceId.trim() ? traceId.trim() : null;
+}
+
+function requiredString(value, fieldName) {
+  if (typeof value !== "string" || value.trim() === "") {
+    throw httpError(400, `${fieldName} is required`);
+  }
+  return value;
+}
+
+function safeStorageSegment(value, fieldName) {
+  const segment = requiredString(value, fieldName);
+  if (
+    // Cap the length well under the filesystem's ~255-byte path-component limit. Without this, an
+    // over-long (but otherwise valid-charset) id passed validation and only blew up at write time as
+    // an uncaught ENAMETOOLONG — surfaced as a 500 that leaked the raw filesystem path. 128 leaves
+    // room for the ".bin" / ".meta.json" suffixes this segment is joined with.
+    segment.length > 128 ||
+    segment === "." ||
+    segment === ".." ||
+    segment.includes("..") ||
+    segment.includes("/") ||
+    segment.includes("\\") ||
+    segment.includes("\0") ||
+    !/^[A-Za-z0-9][A-Za-z0-9._:-]*$/.test(segment)
+  ) {
+    throw httpError(400, `${fieldName} must be a safe storage path segment`);
+  }
+  return segment;
+}
+
+function httpError(status, message) {
+  const error = new Error(message);
+  error.status = status;
+  return error;
+}
+
+// === ASR integration ===
+async function transcribeAudio(audioBase64, audioFormat = "webm", language = "ar") {
+  let response;
+  try {
+    response = await fetch(`${ASR_SERVICE_URL}/v1/transcribe`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        // ASR now requires an API key (like this service does). Server-to-server call, so the key
+        // stays server-side; matches ASR_API_KEY on the ASR service (default dev key in dev/CI).
+        "x-asr-api-key": process.env.ASR_API_KEY ?? "smoke-asr-api-key",
+      },
+      body: JSON.stringify({ audioBase64, audioFormat, language, wordTimestamps: true }),
+    });
+  } catch (err) {
+    // An ASR that ANSWERS badly was already a 502; an ASR that cannot be reached was not handled at
+    // all, so the raw fetch rejection escaped as a 500 with the body `{"error":"fetch failed"}`.
+    // Measured with no ASR running: `POST /v1/session-transcript -> 500 {"error":"fetch failed"}`.
+    //
+    // Two things were wrong with that, and they are separate. The STATUS said "this service is
+    // broken" when the truth was "a dependency is down" — platform-api's `finalize` maps any non-2xx
+    // from here to `ML service error`, so an ASR outage was indistinguishable from a defect in this
+    // service, and a caller deciding whether to retry got the wrong signal. And the BODY was an
+    // undifferentiated Node error string, which is neither actionable for the caller nor the same
+    // boundary the non-ok branch below already keeps.
+    //
+    // The detail is logged, never returned — the rule `proxy_asr` states and this branch now follows.
+    console.error(`[asr] transcribe send error to ${ASR_SERVICE_URL}: ${err?.message ?? err}`);
+    throw httpError(502, "ASR service unavailable");
+  }
+  if (!response.ok) {
+    const text = await response.text();
+    throw httpError(502, `ASR service failed: ${response.status} ${text}`);
+  }
+  return response.json();
+}
+
+/**
+ * The recited words from an ASR reply, whichever shape the loaded model speaks.
+ *
+ * Two shapes are both real and the service picks between them by `ASR_MODEL`:
+ *
+ *   openai-whisper       `words: [{word, start, end}, …]` plus `text`
+ *   HF Quran fine-tune   `words: []`, the whole recitation in `text`
+ *
+ * The second is the PRODUCTION default (`tarteel-ai/whisper-base-ar-quran`; its 2022 checkpoint has
+ * no timestamp config, which is why word timing comes from the separate /v1/force-align pass). Every
+ * reader here used to take `.words` and nothing else, so on the default model a session transcribed
+ * to zero words, `finalize_session` aligned that emptiness against the full passage, and a learner
+ * who recited perfectly was recorded as having missed every word. Nothing failed and nothing logged.
+ *
+ * Segments win when present: deriving from `text` unconditionally would discard the boundaries the
+ * whisper path does produce.
+ *
+ * ── Split, never normalise ──────────────────────────────────────────────────────────────────────
+ * `text` is Quranic recitation. The split is on WHITESPACE RUNS and nothing else: no diacritic
+ * stripping, no NFC/NFD, no tatweel removal, no case folding — every code point inside a word
+ * crosses this function unchanged. Trimming first stops a leading space producing an empty first
+ * "word", which the aligner would score as a real utterance the learner never made.
+ */
+function recognizedWordsFrom(asrResult) {
+  const segments = asrResult?.words;
+  if (Array.isArray(segments) && segments.length > 0) {
+    return segments.map((w) => w.word);
+  }
+  const text = typeof asrResult?.text === "string" ? asrResult.text.trim() : "";
+  return text === "" ? [] : text.split(/\s+/);
+}
+
+/**
+ * Where each recognized word was heard, index-parallel to `recognizedWordsFrom`.
+ *
+ * `recognizedWordsFrom` reduces the ASR's segments to bare strings, and until this existed those
+ * timings were dropped on the floor — so `/v1/alignments:predict` emitted alignments with no span,
+ * and platform-api's `usable_span` refused every one of them. Measured: a finalized mobile session
+ * offered 29 alignments and persisted 0, and the same session persisted an alignment that carried
+ * a span. Nothing reached a teacher's queue.
+ *
+ * Returns null when the ASR reported no per-word segments, so a caller can tell "no timings" from
+ * "timings that are all unusable".
+ */
+export function recognizedTimingsFrom(asrResult) {
+  const segments = asrResult?.words;
+  if (!Array.isArray(segments) || segments.length === 0) return null;
+  return segments.map((w) => ({
+    startMs: Number.isInteger(w?.startMs) ? w.startMs : null,
+    endMs: Number.isInteger(w?.endMs) ? w.endMs : null,
+  }));
+}
+
+// === Real alignment prediction ===
+async function predictAlignment(requestBody) {
+  const startedAt = performance.now();
+  const traceId = extractTraceId(requestBody);
+  const tenantId = requiredString(requestBody.tenantId, "tenantId");
+  const sessionId = requiredString(requestBody.sessionId, "sessionId");
+
+  const quranRef = requestBody.quranRef ?? {
+    surahNumber: 1,
+    ayahStart: 1,
+    ayahEnd: 7,
+    display: "Al-Fatihah 1:1-7",
+  };
+
+  const sourceChecksum = requestBody.sourceChecksum ?? "fnv1a32:real";
+
+  // Consent-gated external ASR
+  const consent = requestBody.consent ?? {};
+  const externalAsrRequested = requestBody.externalAsrRequested ?? false;
+  const guardianApproved = consent.guardianApproved ?? false;
+  const consentExternalAsr = consent.externalAsrProcessing ?? false;
+  const asrAllowed = externalAsrRequested && consentExternalAsr && guardianApproved;
+  const childProfile = requestBody.profileKind === "child";
+  // The SINGLE authority for whether this request may send audio to the ASR service. Used both to
+  // decide the audit event below AND to gate the actual transcribe call, so the two can never
+  // diverge (they used to: the transcribe fired on `audioBase64` presence alone, so a child-profile
+  // request with guardianApproved=false was audited "external-asr.denied" yet still shipped the
+  // child's audio to Whisper). `asrAllowed` already requires guardianApproved, so the child clause
+  // is belt-and-suspenders.
+  const asrActuallyAllowed = asrAllowed && (!childProfile || guardianApproved);
+
+  let externalAsr;
+  if (asrAllowed && !childProfile) {
+    externalAsr = { called: true, reason: "consent-granted" };
+    appendAudit(tenantId, "privacy.external-asr.called", sessionId, { traceId, reason: "consent-granted", learnerId: requestBody.learnerId });
+  } else if (asrAllowed && childProfile && guardianApproved) {
+    externalAsr = { called: true, reason: "child-profile-guardian-approved" };
+    appendAudit(tenantId, "privacy.external-asr.called", sessionId, { traceId, reason: "child-profile-guardian-approved", learnerId: requestBody.learnerId });
+  } else if (externalAsrRequested && childProfile && !guardianApproved) {
+    externalAsr = { called: false, reason: "child-profile-no-guardian-consent" };
+    appendAudit(tenantId, "privacy.external-asr.denied", sessionId, { traceId, reason: "child-profile-no-guardian-consent", learnerId: requestBody.learnerId });
+  } else if (externalAsrRequested && !asrAllowed) {
+    externalAsr = { called: false, reason: "consent-revoked-or-insufficient" };
+    appendAudit(tenantId, "privacy.external-asr.denied", sessionId, { traceId, reason: "consent-revoked-or-insufficient", learnerId: requestBody.learnerId });
+  } else {
+    externalAsr = { called: false, reason: "not-requested" };
+  }
+
+  // Check for golden fixture match
+  const fixtureCase = fixtures.cases.find(
+    (c) => c.quranRef.surahNumber === quranRef.surahNumber &&
+           c.quranRef.ayahStart === quranRef.ayahStart &&
+           c.quranRef.ayahEnd === quranRef.ayahEnd,
+  );
+
+  const evidenceId = `evidence-${randomUUID()}`;
+
+  // The audit event is appended AFTER the branch below so the recorded confidence/word counts
+  // reflect what this request ACTUALLY computed (real alignment vs golden fixture), not the fixture
+  // values regardless of path. With ML_USE_GOLDEN_FIXTURES unset (the default) the golden ref still
+  // matches `fixtureCase` here, but the REAL path runs — previously the audit logged the fixture's
+  // 0.94 confidence / 8-word counts while the response returned the real confidence over the real
+  // (29-word) canonical set, so the audit trail contradicted the prediction it claimed to describe.
+  let alignments;
+  let confidence;
+  let reviewStatus;
+  let wordCount;
+  let recognizedCount;
+
+  if (fixtureCase && USE_GOLDEN_FIXTURES) {
+    // Return golden fixture alignment data
+    confidence = asrActuallyAllowed ? fixtureCase.alignment.confidence : fixtureCase.alignment.fallbackConfidence;
+    reviewStatus = !asrActuallyAllowed
+      ? "teacher-review-required"
+      : confidence >= 0.85 ? "ai-suggested" : "teacher-review-required";
+    wordCount = fixtureCase.alignment.words.length;
+    recognizedCount = fixtureCase.alignment.words.length;
+
+    alignments = fixtureCase.alignment.words.map((w) => ({
+      wordId: w.wordId,
+      canonicalText: w.canonicalText,
+      heardText: w.canonicalText,
+      status: "matched",
+      confidence: confidence,
+      reviewStatus,
+      tenantId,
+      quranRef,
+      sourceChecksum,
+      evidenceId,
+      modelVersion: MODEL_VERSION,
+      traceId,
+    }));
+  } else {
+    // Get canonical words for the requested ayah range
+    const canonicalWords = getCanonicalWords(quranRef.surahNumber, quranRef.ayahStart, quranRef.ayahEnd);
+
+    // Get recognized text: from ASR (audio), from the caller, or NOTHING.
+    //
+    // ── The fallback used to invent a perfect recitation ─────────────────────────────────────────
+    // This branch previously ended `recognizedWords = canonicalWords.map(w => w.text)` — aligning
+    // the canonical text against ITSELF. Measured against the running service, a learner who
+    // declined external-ASR consent got back `status: "matched"`, `confidence: 1`, and
+    // `heardText` equal to the canonical text for EVERY word: a claim that they recited the Qur'an
+    // perfectly, about audio nobody listened to.
+    //
+    // `apps/web` persists alignments unconditionally, and `word_alignments` has no `reviewStatus`
+    // column, so the `teacher-review-required` flag set below was dropped on the way to the
+    // database. What remained was a stored record of a flawless recitation that never happened —
+    // and, since findings anchor to alignments, a teacher's review queue built on top of it.
+    //
+    // There is no honest alignment without recognition. `needs-review` (an existing
+    // `word_alignments.status` value) is what "we did not hear this word" looks like.
+    let recognizedWords;
+    let recognizedTimings = null;
+    let asrResult = null;
+    let recognized = true;
+    if (requestBody.audioBase64 && asrActuallyAllowed) {
+      // Real acoustic ASR: send audio to Whisper service — ONLY when consent (and, for a child
+      // profile, guardian approval) actually permits it. Without this gate the audio was sent
+      // regardless of the consent decision recorded above. When not allowed, we fall through to the
+      // recognizedText / canonical path below and the audio is never processed.
+      asrResult = await transcribeAudio(requestBody.audioBase64, requestBody.audioFormat ?? "webm", "ar");
+      recognizedWords = recognizedWordsFrom(asrResult);
+      recognizedTimings = recognizedTimingsFrom(asrResult);
+    } else if (requestBody.recognizedText && Array.isArray(requestBody.recognizedText)) {
+      // Every element must be a string; a non-string would throw inside alignWords and
+      // surface as a 500. Bad input is a 400.
+      if (!requestBody.recognizedText.every((w) => typeof w === "string")) {
+        throw httpError(400, "recognizedText must be an array of strings");
+      }
+      recognizedWords = requestBody.recognizedText;
+      // Index-parallel timings, when the caller has them. `finalize_session` transcribes in one
+      // service and aligns in another, so without this the timings cannot survive the hop.
+      if (Array.isArray(requestBody.recognizedTimings)) {
+        recognizedTimings = requestBody.recognizedTimings;
+      }
+    } else if (requestBody.recognizedTextString) {
+      // Guard the type: a truthy non-string (number, object, array) would throw a
+      // TypeError on .trim() and surface as a 500. Bad input is a 400.
+      if (typeof requestBody.recognizedTextString !== "string") {
+        throw httpError(400, "recognizedTextString must be a string");
+      }
+      recognizedWords = requestBody.recognizedTextString.trim().split(/\s+/);
+    } else {
+      recognizedWords = [];
+      recognized = false;
+    }
+
+    // Bound the recognized side of the O(m·n) alignment DP too (the canonical side is capped in
+    // getCanonicalWords). Prevents a huge recognizedText from blocking the handler.
+    if (recognizedWords.length > MAX_ALIGN_WORDS) {
+      throw httpError(
+        400,
+        `recognizedText has ${recognizedWords.length} words (max ${MAX_ALIGN_WORDS} per request)`,
+      );
+    }
+
+    // Not `alignWords(canonical, [])`: that reports every word as `missed`, which is also a claim
+    // about the recitation — "they left these out" — and equally unfounded when nothing was heard.
+    const alignmentResults = recognized
+      ? alignWords(canonicalWords, recognizedWords, recognizedTimings)
+      : canonicalWords.map((w) => ({
+          wordId: w.id,
+          canonicalText: w.text,
+          heardText: "",
+          status: "needs-review",
+          confidence: 0,
+        }));
+    // Not `calculateConfidence` when nothing was recognised: its weights describe how well
+    // RECOGNISED words matched, and `needs-review` carries 0.8 there — "the recogniser was unsure
+    // about this word", not "nobody listened to this recitation". Run through it, a session with no
+    // recognition at all scores 0.8, a whisker under the 0.85 auto-accept line.
+    confidence = recognized ? calculateConfidence(alignmentResults) : 0;
+    reviewStatus = !asrAllowed
+      ? "teacher-review-required"
+      : confidence >= 0.85 ? "ai-suggested" : "teacher-review-required";
+    wordCount = canonicalWords.length;
+    recognizedCount = recognizedWords.length;
+
+    alignments = alignmentResults.map((r) => ({
+      wordId: r.wordId,
+      canonicalText: r.canonicalText,
+      heardText: r.heardText,
+      status: r.status,
+      confidence: r.confidence,
+      // Present only when this word was PAIRED with a recognized one that carried a timing. A
+      // `missed` word has no span and must not acquire one: platform-api anchors tajweed findings
+      // to it, and a fabricated span points a finding at audio the learner never recited there.
+      // Spread rather than set to null so the field is absent, which is what `usable_span` reads.
+      ...(Number.isInteger(r.startMs) && Number.isInteger(r.endMs)
+        ? { startMs: r.startMs, endMs: r.endMs }
+        : {}),
+      reviewStatus,
+      tenantId,
+      quranRef,
+      sourceChecksum,
+      evidenceId,
+      modelVersion: MODEL_VERSION,
+      traceId,
+    }));
+  }
+
+  // Record the ACTUAL computed metrics (see the note above the branch), then stamp every alignment
+  // with the resulting event id.
+  const auditEventId = appendAudit(tenantId, "ml.alignment.predicted", sessionId, {
+    modelVersion: MODEL_VERSION,
+    traceId,
+    learnerId: requestBody.learnerId,
+    confidence,
+    wordCount,
+    recognizedCount,
+  });
+  alignments = alignments.map((a) => ({ ...a, auditEventId }));
+
+  return {
+    traceId,
+    fixtureCaseId: fixtureCase?.id ?? null,
+    tenantId,
+    sessionId,
+    quranRef,
+    sourceChecksum,
+    evidenceId,
+    modelVersion: MODEL_VERSION,
+    auditEventId,
+    alignments,
+    confidence,
+    reviewStatus,
+    externalAsr,
+    latencyMs: Math.max(1, Math.round(performance.now() - startedAt)),
+    datasetVersion: DATASET_VERSION,
+    algorithm: "quran-constrained-levenshtein",
+  };
+}
+
+// === Real tajweed prediction ===
+/**
+ * The response-level confidence when the analysis produced no findings.
+ *
+ * This was `0.95`, which read as "we checked and are 95% sure there is nothing wrong" — an
+ * assertion nothing here can make. Zero findings from a text scan means the passage contains no
+ * detectable rule occurrence, which says nothing about the recitation and carries no certainty of
+ * its own. `0` matches what the per-finding confidences now report and why
+ * (see NO_MEASURED_CONFIDENCE in tajweed.js).
+ */
+const NO_TAJWEED_CONFIDENCE = 0;
+
+async function predictTajweed(requestBody) {
+  const startedAt = performance.now();
+  const traceId = extractTraceId(requestBody);
+  const tenantId = requiredString(requestBody.tenantId, "tenantId");
+  const sessionId = requiredString(requestBody.sessionId, "sessionId");
+
+  const quranRef = requestBody.quranRef ?? {
+    surahNumber: 1,
+    ayahStart: 1,
+    ayahEnd: 7,
+    display: "Al-Fatihah 1:1-7",
+  };
+
+  // Check for golden fixture match
+  const fixtureCase = fixtures.cases.find(
+    (c) => c.quranRef.surahNumber === quranRef.surahNumber &&
+           c.quranRef.ayahStart === quranRef.ayahStart &&
+           c.quranRef.ayahEnd === quranRef.ayahEnd,
+  );
+
+  const evidenceId = `evidence-${randomUUID()}`;
+
+  // Audit is appended AFTER the branch so findingCount reflects the findings ACTUALLY returned.
+  // With ML_USE_GOLDEN_FIXTURES unset (the default) the golden ref matches `fixtureCase` but the
+  // REAL rule-based analysis runs — previously the audit logged the fixture's finding count (1)
+  // while the response returned the real finding set (dozens), so the audit trail undercounted.
+  let findings;
+  let confidence;
+
+  if (fixtureCase && USE_GOLDEN_FIXTURES) {
+    // Return golden fixture tajweed findings
+    findings = fixtureCase.tajweedFindings.map((f) => ({
+      ...f,
+      reviewStatus: "ai-suggested",
+      tenantId,
+      sourceChecksum: requestBody.sourceChecksum ?? "fnv1a32:real",
+      evidenceId,
+      traceId,
+    }));
+    confidence = findings.length > 0
+      ? findings.reduce((sum, f) => sum + f.confidence, 0) / findings.length
+      : NO_TAJWEED_CONFIDENCE;
+  } else {
+    // Run real tajweed analysis
+    const canonicalWords = getCanonicalWords(quranRef.surahNumber, quranRef.ayahStart, quranRef.ayahEnd);
+    findings = analyzeAyah(
+      `${quranRef.surahNumber}:${quranRef.ayahStart}`,
+      canonicalWords,
+    ).map((f) => ({
+      ...f,
+      reviewStatus: "ai-suggested",
+      tenantId,
+      sourceChecksum: requestBody.sourceChecksum ?? "fnv1a32:real",
+      evidenceId,
+      traceId,
+    }));
+    confidence = findings.length > 0
+      ? findings.reduce((sum, f) => sum + f.confidence, 0) / findings.length
+      : NO_TAJWEED_CONFIDENCE;
+  }
+
+  const auditEventId = appendAudit(tenantId, "ml.tajweed.predicted", sessionId, {
+    modelVersion: MODEL_VERSION,
+    traceId,
+    learnerId: requestBody.learnerId,
+    findingCount: findings.length,
+  });
+  findings = findings.map((f) => ({ ...f, auditEventId }));
+
+  return {
+    traceId,
+    fixtureCaseId: fixtureCase?.id ?? null,
+    tenantId,
+    sessionId,
+    quranRef,
+    evidenceId,
+    modelVersion: MODEL_VERSION,
+    auditEventId,
+    findings,
+    confidence,
+    reviewStatus: "ai-suggested",
+    latencyMs: Math.max(1, Math.round(performance.now() - startedAt)),
+    datasetVersion: DATASET_VERSION,
+    algorithm: "rule-based-tajweed",
+  };
+}
+
+// === Eval runs ===
+async function createEvalRun(requestBody) {
+  const modelVersion = requestBody.modelVersion ?? MODEL_VERSION;
+  const fixtureMetrics = fixtures.metrics ?? {};
+
+  const thresholds = fixtures.thresholds ?? {
+    wordAlignmentF1: 0.9,
+    tajweedF1: 0.82,
+    falsePositiveRate: 0.08,
+    teacherAgreementRate: 0.9,
+    unsourcedLearnerOutputs: 0,
+  };
+
+  // Source-integrity is RECOMPUTED here, not trusted from the request or an asserted number: count how
+  // many committed golden tajweed findings actually carry a source. This is the honesty invariant the
+  // service can prove on the spot — every learner-facing tajweed output must be sourced — so if a
+  // golden finding is ever added without sources the eval fails here instead of rubber-stamping a
+  // hand-written count.
+  const goldenFindings = fixtures.cases.flatMap((c) => c.tajweedFindings ?? []);
+  const sourceBackedFindings = goldenFindings.filter(
+    (f) => Array.isArray(f.sources) && f.sources.length > 0,
+  ).length;
+  const unsourcedLearnerOutputs = goldenFindings.length - sourceBackedFindings;
+
+  // The F1 / agreement metrics require a labeled eval set the service does not hold, so they come from
+  // the committed, checksummed golden-evals.json — an OFFLINE eval artifact — NOT from caller-supplied
+  // input. Previously `requestBody.metrics ?? fixtureMetrics` let any caller POST perfect numbers and
+  // force passed:true; the caller no longer influences the recorded metrics or the pass/fail decision.
+  const wordAlignmentF1 = Number(fixtureMetrics.wordAlignmentF1);
+  const tajweedF1 = Number(fixtureMetrics.tajweedF1);
+  const falsePositiveRate = Number(fixtureMetrics.falsePositiveRate);
+  const teacherAgreementRate = Number(fixtureMetrics.teacherAgreementRate);
+
+  const evalRun = {
+    modelVersion,
+    datasetVersion: requestBody.datasetVersion ?? DATASET_VERSION,
+    wordAlignmentF1,
+    tajweedF1,
+    falsePositiveRate,
+    teacherAgreementRate,
+    unsourcedLearnerOutputs,
+    caseCount: fixtures.cases.length,
+    sourceBackedFindings,
+    // Honest provenance so the "proof" surface never overstates what was measured live.
+    metricsProvenance: {
+      sourceIntegrity: "recomputed-live",
+      accuracy: "committed-offline-eval",
+    },
+    thresholds,
+    passed:
+      wordAlignmentF1 >= thresholds.wordAlignmentF1 &&
+      tajweedF1 >= thresholds.tajweedF1 &&
+      falsePositiveRate <= thresholds.falsePositiveRate &&
+      teacherAgreementRate >= thresholds.teacherAgreementRate &&
+      unsourcedLearnerOutputs <= thresholds.unsourcedLearnerOutputs,
+  };
+
+  evalRuns.set(modelVersion, evalRun);
+  appendAudit(requestBody.tenantId ?? "tenant-smoke", "model.eval.completed", modelVersion, {
+    ...evalRun,
+    traceId: extractTraceId(requestBody),
+  });
+  return evalRun;
+}
+
+// === Privacy ===
+async function exportPrivacy(requestBody) {
+  const tenantId = safeStorageSegment(requestBody.tenantId, "tenantId");
+  const learnerId = safeStorageSegment(requestBody.learnerId, "learnerId");
+  const traceId = extractTraceId(requestBody);
+  appendAudit(tenantId, "privacy.export.requested", learnerId, { traceId, learnerId });
+
+  // List audio files for this tenant/learner
+  const { audioObjectKeys, metadataObjectKeys } = await listAudioObjects(tenantId, learnerId);
+
+  // Read ONCE. This was three separate readTenantAuditEvents(tenantId) calls building one response
+  // — three synchronous full-file reads and JSON parses of an append-only log that never rotates,
+  // on the single-threaded event loop.
+  //
+  // Scoped to THIS learner, which is the actual fix. The three lists were filtered only by tenant
+  // inside a per-learner export, so learner A's right-of-access packet contained learner B's id and
+  // B's privacy history — including that B had requested erasure. Two ways a row is attributable:
+  // `learnerId` (the structured field appendAudit now records) or `subjectId`, which IS the learner
+  // for `privacy.*` rows and covers rows written before that field existed. A row matching neither
+  // is not attributable to anyone and is omitted — under-reporting one learner's own history is
+  // recoverable, disclosing another learner's is not.
+  const learnerAuditEvents = readTenantAuditEvents(tenantId).filter(
+    (event) => event.learnerId === learnerId || event.subjectId === learnerId,
+  );
+
+  return {
+    traceId,
+    tenantId,
+    learnerId,
+    audioObjectKeys,
+    metadataObjectKeys,
+    externalAsrCalls: learnerAuditEvents.filter(
+      (event) => event.action === "privacy.external-asr.called",
+    ),
+    deniedExternalAsr: learnerAuditEvents.filter(
+      (event) => event.action === "privacy.external-asr.denied",
+    ),
+    auditEvents: learnerAuditEvents,
+  };
+}
+
+async function deletePrivacy(requestBody) {
+  const tenantId = safeStorageSegment(requestBody.tenantId, "tenantId");
+  const learnerId = safeStorageSegment(requestBody.learnerId, "learnerId");
+  const traceId = extractTraceId(requestBody);
+
+  // Delete audio files
+  const { deletedAudioObjectKeys, deletedMetadataObjectKeys, deletedOtherObjectKeys } =
+    await deleteAudioObjects(tenantId, learnerId);
+
+  const job = {
+    id: `privacy-delete-${randomUUID()}`,
+    traceId,
+    tenantId,
+    learnerId,
+    status: "completed",
+    deletedAudioObjectKeys,
+    deletedMetadataObjectKeys,
+    deletedOtherObjectKeys,
+    // A real post-condition, not a constant. This was hardcoded `true`, and the only thing
+    // checking it (scripts/smoke-privacy.mjs) asserted that constant equalled true — an assertion
+    // that could not fail, in the smoke whose own deletion reports ZERO removed keys. Now it says
+    // something this service can actually answer: nothing of this learner's is left on its disk.
+    //
+    // It is a genuine check, not a restatement. deleteAudioObjects now removes every FILE, so the
+    // residue it can still leave is a subdirectory — which it deliberately does not recurse into,
+    // and whose presence makes the swallowed rmdir fail. That case reports false here instead of
+    // cheerfully claiming true, which is the whole point of computing it rather than asserting it.
+    //
+    // Scope: alignments and tajweed findings are platform-api's rows in Postgres, erased by its own
+    // privacy cascade. ml-inference never held them, so it never spoke for them.
+    tombstonedDerivedRecords: !existsSync(join(AUDIO_STORAGE_DIR, tenantId, learnerId)),
+    completedAt: new Date().toISOString(),
+  };
+  deletionJobs.set(job.id, job);
+  appendAudit(tenantId, "privacy.delete.requested", learnerId, {
+    jobId: job.id,
+    traceId,
+    learnerId,
+    deletedAudioObjectKeys,
+    deletedMetadataObjectKeys,
+    deletedOtherObjectKeys,
+  });
+  return job;
+}
+
+/**
+ * Describe how an incoming chunk differs from one already stored under the same id, or null when
+ * there is nothing stored or it is the same audio arriving again.
+ *
+ * Compares the content HASH, not just the size: two different 3200-byte chunks of PCM are the
+ * normal case, not an exotic one, so a size check would miss almost every real conflict. Metadata
+ * written before `audioSha256` existed has no hash to compare, so those fall back to size and
+ * timing — weaker, and deliberately not treated as "no conflict" just because the hash is absent.
+ */
+function describeChunkConflict(tenantDir, chunkId, incoming) {
+  const metaPath = join(tenantDir, `${chunkId}.meta.json`);
+  if (!existsSync(metaPath)) return null;
+
+  let stored;
+  try {
+    stored = JSON.parse(readFileSync(metaPath, "utf8"));
+  } catch {
+    // Unreadable metadata beside a stored chunk is itself worth surfacing rather than swallowing.
+    return { reason: "existing metadata could not be read" };
+  }
+
+  if (stored.audioSha256 && incoming.audioSha256) {
+    if (stored.audioSha256 === incoming.audioSha256) return null; // idempotent retry
+    return {
+      reason: "different audio",
+      storedSha256: stored.audioSha256.slice(0, 12),
+      incomingSha256: incoming.audioSha256.slice(0, 12),
+      storedStartMs: stored.startMs,
+      incomingStartMs: incoming.startMs,
+    };
+  }
+
+  // Pre-hash metadata, or a chunk stored with no audio at all.
+  const differs =
+    stored.audioSize !== incoming.audioSize ||
+    stored.startMs !== incoming.startMs ||
+    stored.endMs !== incoming.endMs;
+  return differs
+    ? {
+        reason: "different size or timing (stored before content hashing)",
+        storedAudioSize: stored.audioSize,
+        incomingAudioSize: incoming.audioSize,
+        storedStartMs: stored.startMs,
+        incomingStartMs: incoming.startMs,
+      }
+    : null;
+}
+
+// === Audio chunk storage ===
+/**
+ * Where a chunk sits in the recording, or `{startMs: null, endMs: null}` when that is not known.
+ *
+ * Mirrors `usable_span` (handlers/recitation.rs) and `usableSpan` (routes/session-writes.mjs) in what
+ * it accepts — integers with `0 <= start < end` — and differs in what it does with the rest. Those
+ * two REFUSE the row, because an alignment with no span is a finding pointing at nothing. This one
+ * keeps the row and drops only the claim, because the row here is a learner's actual recording.
+ */
+function chunkSpan(startMs, endMs) {
+  const usable =
+    Number.isInteger(startMs) && Number.isInteger(endMs) && startMs >= 0 && endMs > startMs;
+  return usable ? { startMs, endMs } : { startMs: null, endMs: null };
+}
+
+/**
+ * Read one stored chunk back, for a teacher adjudicating a finding about it.
+ *
+ * Audio had only ever been written here. Nothing could read it back, which is why a teacher asked to
+ * accept or reject a claim about how a child recited has never been able to hear the recitation.
+ *
+ * ── The key's PARTS, never the key ───────────────────────────────────────────────────────────────
+ * `objectKey` is `<tenant>/<learner>/<chunk>.bin`, and accepting one would mean filtering a
+ * path-shaped string for traversal on the exact route that reads files off the host. Taking the
+ * three segments and validating each with `safeStorageSegment` makes traversal structurally
+ * impossible instead of filtered: a segment containing `/`, `..` or a NUL never becomes a path
+ * component because it never gets past validation.
+ *
+ * ── Retention is checked HERE too, and that is not redundant ─────────────────────────────────────
+ * platform-api checks the learner's consent record in the database before it ever calls this. This
+ * checks the retention that was written ALONGSIDE THE BYTES at the moment they were stored. Two
+ * independent records have to agree before a child's recitation is played back, and neither is the
+ * other's cache — if they disagree, something is wrong and the safe answer is to refuse.
+ *
+ * The default is `discard` (see `storeAudioChunk`), so a chunk stored without a stated retention is
+ * refused rather than served.
+ */
+async function readAudioObject(requestBody) {
+  const tenantId = safeStorageSegment(requestBody.tenantId, "tenantId");
+  const learnerId = safeStorageSegment(requestBody.learnerId, "learnerId");
+  const chunkId = safeStorageSegment(requestBody.chunkId, "chunkId");
+
+  const dir = join(AUDIO_STORAGE_DIR, tenantId, learnerId);
+  const metaPath = join(dir, `${chunkId}.meta.json`);
+  const binPath = join(dir, `${chunkId}.bin`);
+
+  // One message for "no metadata", "no bytes" and "no such learner". A caller that can tell them
+  // apart can map which learners and chunk ids exist, and this route is reachable by anything
+  // holding ML_API_KEY.
+  if (!existsSync(metaPath) || !existsSync(binPath)) {
+    throw httpError(404, "no such audio object");
+  }
+
+  let metadata;
+  try {
+    metadata = JSON.parse(readFileSync(metaPath, "utf8"));
+  } catch {
+    // Unreadable metadata means the retention policy for these bytes is unknown, and unknown is not
+    // permission. Refuse rather than serve on the assumption it was fine.
+    throw httpError(410, "audio retention for this object cannot be established");
+  }
+
+  if (metadata.audioRetention !== "teacher-review" && metadata.audioRetention !== "training-opt-in") {
+    throw httpError(410, "this recording was not retained for review");
+  }
+
+  const audio = readFileSync(binPath);
+  return {
+    objectKey: metadata.objectKey ?? `${tenantId}/${learnerId}/${chunkId}.bin`,
+    audioBase64: audio.toString("base64"),
+    audioSize: audio.length,
+    sampleRate: metadata.sampleRate ?? null,
+    // Nullable by construction — see `chunkSpan`. A player that cannot seek is better than one that
+    // seeks to an invented position.
+    startMs: metadata.startMs ?? null,
+    endMs: metadata.endMs ?? null,
+  };
+}
+
+async function storeAudioChunk(requestBody) {
+  const tenantId = safeStorageSegment(requestBody.tenantId, "tenantId");
+  const learnerId = safeStorageSegment(requestBody.learnerId, "learnerId");
+  const sessionId = requiredString(requestBody.sessionId, "sessionId");
+  const chunkId = safeStorageSegment(requestBody.chunkId, "chunkId");
+
+  const tenantDir = join(AUDIO_STORAGE_DIR, tenantId, learnerId);
+  mkdirSync(tenantDir, { recursive: true });
+
+  const metadata = {
+    tenantId,
+    learnerId,
+    sessionId,
+    chunkId,
+    sampleRate: requestBody.sampleRate ?? 16000,
+    // `?? 0` here was the same fail-open the alignment writers had (see `usable_span` in
+    // handlers/recitation.rs), and worse for one reason: **0 is a legitimate value**. The first
+    // chunk of every session genuinely starts at 0ms, so "we do not know where this chunk sits" and
+    // "this chunk sits at the beginning" were written identically and no reader could tell them
+    // apart. That span is what a tajweed finding needs to locate its audio; a chunk claiming
+    // 0ms-to-0ms is unlocatable, and claiming it silently is how the gap stays invisible.
+    //
+    // `null` is the honest third value. The AUDIO is stored either way — refusing the chunk would
+    // discard a learner's recording that consent covers, which is the opposite of the point. Only
+    // the claim about where it sits is withheld.
+    ...chunkSpan(requestBody.startMs, requestBody.endMs),
+    audioSize: requestBody.audioSize ?? 0,
+    audioRetention: requestBody.audioRetention ?? "discard",
+    storedAt: new Date().toISOString(),
+    objectKey: `${tenantId}/${learnerId}/${chunkId}.bin`,
+  };
+
+  // Decode and FINGERPRINT first, write second. The order is the whole point: a check that runs
+  // after `storeAudioObject` can only report the overwrite it failed to prevent.
+  let audioBytes = null;
+  if (requestBody.audioBase64) {
+    audioBytes = Buffer.from(requestBody.audioBase64, "base64");
+    metadata.audioSize = audioBytes.length;
+    // Cheap, because the bytes are already in hand. It is what tells a harmless retry apart from a
+    // chunk being replaced with DIFFERENT audio.
+    metadata.audioSha256 = createHash("sha256").update(audioBytes).digest("hex");
+  }
+
+  // ── Is this replacing a learner's recording with a different one? ────────────────────────────
+  // Writing a chunk id that already exists is NORMAL and safe when it is the same audio: the ML
+  // forwarder retries up to three times, so a POST whose response was lost arrives again. That path
+  // is idempotent and must stay silent.
+  //
+  // A conflicting write is a different thing entirely, and until now it was indistinguishable — the
+  // file was replaced, 200 was returned, and nothing anywhere said a child's recitation had just
+  // been overwritten by other audio. That silence is what let the reconnect chunk-id collision
+  // (ADR: fix/reconnect-chunk-id-collision) destroy half of a learner's session undetected for as
+  // long as it existed. The gateway no longer mints duplicate ids, so this should now never fire —
+  // which is exactly why it is worth hearing if it does.
+  //
+  // REFUSED, as of the flow enumeration below. This landed as detect-and-log first, deliberately,
+  // because a 409 that broke a legitimate rewrite would have traded a silent failure for a loud
+  // wrong one. Every caller of this route has since been enumerated:
+  //
+  //   services/realtime-gateway/src/lib.rs  — the ONLY production writer
+  //   scripts/privacy-audit-run.mjs         — audit tooling
+  //   scripts/smoke-privacy.mjs             — smoke test
+  //
+  // apps/mobile does not post chunks (it goes through /v1/asr/transcribe) and apps/web streams via
+  // the gateway. Since the reconnect fix, the gateway mints ids from a per-session cursor that never
+  // repeats, so the only legitimate rewrite left is the bounded retry — same id, same bytes — which
+  // `describeChunkConflict` returns null for and which stays a silent 200.
+  //
+  // That leaves no production flow that legitimately replaces stored audio with different audio.
+  // A request that tries to is a bug somewhere upstream, and the last moment anyone can stop it
+  // from destroying a child's recitation is here, before the write.
+  const conflict = describeChunkConflict(tenantDir, chunkId, metadata);
+  if (conflict) {
+    log("error", "REFUSED: audio chunk would be overwritten with different content", {
+      tenantId,
+      sessionId,
+      chunkId,
+      traceId: extractTraceId(requestBody),
+      conflict,
+    });
+    appendAudit(tenantId, "audio.chunk.overwrite-refused", chunkId, {
+      sessionId,
+      learnerId,
+      traceId: extractTraceId(requestBody),
+      conflict,
+    });
+    // 409, not 400: the request is well-formed, it conflicts with what is already stored. Nothing
+    // has been written — the stored recitation is exactly as it was before this call.
+    throw httpError(
+      409,
+      `chunk ${chunkId} already holds different audio; refusing to replace a stored recitation`,
+    );
+  }
+
+  if (audioBytes) {
+    await storeAudioObject(tenantId, learnerId, chunkId, audioBytes);
+  }
+
+  writeFileSync(join(tenantDir, `${chunkId}.meta.json`), JSON.stringify(metadata, null, 2));
+
+  appendAudit(tenantId, "audio.chunk.stored", chunkId, {
+    sessionId,
+    learnerId,
+    traceId: extractTraceId(requestBody),
+    audioSize: metadata.audioSize,
+  });
+
+  return { stored: true, objectKey: metadata.objectKey, audioSize: metadata.audioSize };
+}
+
+// Test-only accessors. Importing this module does not start the server (see `isMain`), so the
+// hermetic node:test suite drives the handlers directly and asserts on the audit trail.
+export function getAuditEvents(tenantId) {
+  return tenantId ? readTenantAuditEvents(tenantId) : [];
+}
+export { predictAlignment, predictTajweed, transcribeSession, createEvalRun, safeStorageSegment, route };
+
+
+/**
+ * Wrap raw PCM16 in a WAV container.
+ *
+ * The realtime gateway forwards what the client streams, and `apps/flutter`'s recorder streams raw
+ * PCM16 — but the ASR service accepts only container formats (`ALLOWED_AUDIO_FORMATS` in
+ * `services/asr-inference/server.py`: webm, wav, mp3, m4a, ogg, flac). A 44-byte RIFF header is the
+ * whole difference: it DESCRIBES the samples (rate, channels, bit depth) and changes none of them,
+ * so this is packaging, not processing.
+ */
+export function wavFromPcm16(pcm, sampleRate = 16000, channels = 1) {
+  const header = Buffer.alloc(44);
+  const byteRate = sampleRate * channels * 2;
+  header.write("RIFF", 0);
+  header.writeUInt32LE(36 + pcm.length, 4); // file size minus the first 8 bytes
+  header.write("WAVE", 8);
+  header.write("fmt ", 12);
+  header.writeUInt32LE(16, 16); // PCM fmt chunk size
+  header.writeUInt16LE(1, 20); // audio format 1 = PCM
+  header.writeUInt16LE(channels, 22);
+  header.writeUInt32LE(sampleRate, 24);
+  header.writeUInt32LE(byteRate, 28);
+  header.writeUInt16LE(channels * 2, 32); // block align
+  header.writeUInt16LE(16, 34); // bits per sample
+  header.write("data", 36);
+  header.writeUInt32LE(pcm.length, 40);
+  return Buffer.concat([header, pcm]);
+}
+
+/**
+ * Transcribe a whole session from the chunks the realtime gateway already forwarded here.
+ *
+ * ── Why this lives in ml-inference ──────────────────────────────────────────────────────────────
+ * The gateway streams audio to `/v1/audio-chunks`, which stored it and did nothing else — so a
+ * gateway-based recitation produced no transcript, therefore no alignment, therefore no finding a
+ * teacher could ever review. The audio is already here; this is what turns it into words.
+ *
+ * ── Consent is the CALLER's to supply, and it is not optional ───────────────────────────────────
+ * The stored chunk metadata carries no consent — the gateway does not send any (see its
+ * `/v1/audio-chunks` body). The authoritative record lives in platform-api's database, which is why
+ * this refuses unless the caller passes it, exactly as `predictAlignment` does. platform-api reads
+ * it from the session row and never from the client.
+ *
+ * Whole session, not per chunk: chunk boundaries fall mid-word, and transcribing each one
+ * separately would invent word breaks the learner did not make.
+ */
+async function transcribeSession(requestBody) {
+  const tenantId = safeStorageSegment(requestBody.tenantId, "tenantId");
+  const learnerId = safeStorageSegment(requestBody.learnerId, "learnerId");
+  const sessionId = requiredString(requestBody.sessionId, "sessionId");
+  const traceId = extractTraceId(requestBody);
+
+  const consent = requestBody.consent ?? {};
+  const asrAllowed = (consent.externalAsrProcessing ?? false) && (consent.guardianApproved ?? false);
+  if (!asrAllowed) {
+    appendAudit(tenantId, "privacy.external-asr.denied", sessionId, {
+      traceId,
+      learnerId,
+      reason: "consent-revoked-or-insufficient",
+    });
+    return {
+      transcribed: false,
+      reason: "consent-revoked-or-insufficient",
+      recognizedText: [],
+      chunkCount: 0,
+    };
+  }
+
+  const dir = join(AUDIO_STORAGE_DIR, tenantId, learnerId);
+  if (!existsSync(dir)) {
+    return { transcribed: false, reason: "no-audio", recognizedText: [], chunkCount: 0 };
+  }
+
+  // ── Read ASYNCHRONOUSLY, in bounded batches ─────────────────────────────────────────────────
+  //
+  // This used to be `readFileSync` per file: one for every chunk's metadata and one for its bytes.
+  // A fifteen-minute recitation is 9000 chunks, so ~18000 synchronous reads on the event loop —
+  // measured at a 356ms stall (specs/dr-rehearsal/evidence/P5.4-long-audio.log), scaling at roughly
+  // 24ms per audio-minute.
+  //
+  // The problem was never speed. 0.39s to assemble fifteen minutes of audio is fine. It was that
+  // the cost did not land on the session that caused it: for those 356ms every OTHER learner's
+  // analysis request waited. One person finishing a long memorisation session degraded everybody.
+  //
+  // Batched rather than one big `Promise.all`: 9000 concurrent opens is a good way to meet the
+  // process file-descriptor limit, and a session that fails at 9000 chunks and works at 500 is a
+  // worse bug than the stall. 64 keeps the libuv threadpool busy while the loop stays free.
+  const BATCH = 64;
+  async function readAllOf(files, read) {
+    const out = [];
+    for (let i = 0; i < files.length; i += BATCH) {
+      out.push(...(await Promise.all(files.slice(i, i + BATCH).map(read))));
+    }
+    return out;
+  }
+
+  // startMs, not filename: chunk ids are UUIDs, so lexical order is arbitrary and would splice the
+  // recitation out of sequence — which the ASR would faithfully transcribe as a different one.
+  const metaFiles = (await readdirAsync(dir)).filter((f) => f.endsWith(".meta.json"));
+  const chunks = (
+    await readAllOf(metaFiles, async (f) => {
+      try {
+        return JSON.parse(await readFileAsync(join(dir, f), "utf8"));
+      } catch {
+        return null;
+      }
+    })
+  )
+    .filter((m) => m && m.sessionId === sessionId)
+    .sort((a, b) => (a.startMs ?? 0) - (b.startMs ?? 0));
+
+  // A chunk whose bytes are gone (erased, or never stored) is SKIPPED rather than treated as
+  // silence: inserting nothing is more honest than inserting a gap the learner did not leave.
+  // `existsSync` is gone with the rest — a failed read answers the same question without a second
+  // syscall, and without the TOCTOU window between the check and the open.
+  const read = await readAllOf(chunks, async (meta) => {
+    try {
+      return { chunkId: meta.chunkId, bytes: await readFileAsync(join(dir, `${meta.chunkId}.bin`)) };
+    } catch {
+      return null;
+    }
+  });
+  const parts = read.filter(Boolean).map((r) => r.bytes);
+  const present = read.filter(Boolean).map((r) => r.chunkId);
+
+  // What ISN'T here. Skipping a missing chunk silently is honest about the audio and dishonest
+  // about the session: the transcript comes out short, the aligner scores it against the FULL
+  // canonical passage, and words the learner DID recite get recorded as words they missed. That is
+  // the same wrong answer the reconnect collision produced, arriving from an upstream outage
+  // instead of from a bug — and measured in specs/dr-rehearsal/evidence/P5.4-partial-loss-recovery.log.
+  //
+  // The gateway mints `{session}-ws-{NNNN}` from a per-session monotonic cursor, so a hole in that
+  // run is a chunk that was accepted and never stored. No new endpoint and no cross-service call —
+  // it is derivable from what is already on disk, which also means it catches loss from ANY cause
+  // (forward failure, a crashed writer, a bad disk), not only the ones the gateway knew about.
+  const missingChunkIds = interiorSequenceGaps(present);
+  if (missingChunkIds.length > 0) {
+    log("warn", "session is missing chunks that were accepted upstream", {
+      tenantId,
+      sessionId,
+      traceId,
+      storedChunks: present.length,
+      missingChunkIds,
+    });
+  }
+  if (parts.length === 0) {
+    return {
+      transcribed: false,
+      reason: "no-audio",
+      recognizedText: [],
+      chunkCount: chunks.length,
+      missingChunkIds,
+    };
+  }
+
+  const sampleRate = chunks[0]?.sampleRate ?? 16000;
+  const wav = wavFromPcm16(Buffer.concat(parts), sampleRate);
+  const asr = await transcribeAudio(wav.toString("base64"), "wav", "ar");
+
+  appendAudit(tenantId, "privacy.external-asr.called", sessionId, {
+    traceId,
+    learnerId,
+    reason: "consent-granted",
+    chunkCount: parts.length,
+  });
+
+  return {
+    transcribed: true,
+    reason: "consent-granted",
+    // Canonical text is never normalised here; these are the ASR's words, passed through.
+    recognizedText: recognizedWordsFrom(asr),
+    // Index-parallel to `recognizedText`. The caller (`finalize_session`) aligns in a SECOND
+    // request to this service, so without carrying the timings across that hop the aligner has
+    // nothing to place a word in time with, and every alignment it returns is refused on arrival.
+    recognizedTimings: recognizedTimingsFrom(asr),
+    chunkCount: parts.length,
+    sampleRate,
+    // Reported even when empty, so a caller can tell "no gaps" from "this build does not check".
+    missingChunkIds,
+  };
+}
+
+/**
+ * Sequence numbers missing from the INTERIOR of a session's chunk ids.
+ *
+ * Ids are `{session}-ws-{NNNN}` with a per-session monotonic cursor, so 0,1,2,6,7 means 3,4,5 were
+ * accepted and never stored.
+ *
+ * INTERIOR only, and that limit is not a detail: the run has no known upper bound, so chunks lost
+ * off the END of a session are invisible here. A recitation truncated by an outage in its last
+ * seconds still looks complete. Closing that needs the client or the gateway to declare how many
+ * chunks a session should have — which is a protocol change, not a computation.
+ *
+ * Ids that do not match the pattern are ignored rather than guessed at; a session whose chunks came
+ * from somewhere else simply reports no gaps.
+ */
+function interiorSequenceGaps(chunkIds) {
+  const seqs = [];
+  let prefix = null;
+  let width = 0;
+  for (const id of chunkIds) {
+    const m = /^(.*-ws-)(\d+)$/.exec(id ?? "");
+    if (!m) continue;
+    prefix ??= m[1];
+    if (m[1] !== prefix) continue;
+    seqs.push(Number(m[2]));
+    // From the id TEXT, not from the number: deriving it from the value pads `11` to "11" and would
+    // report `-ws-11` for an id that is actually `-ws-0011`.
+    width = Math.max(width, m[2].length);
+  }
+  if (seqs.length < 2) return [];
+
+  seqs.sort((a, b) => a - b);
+  const missing = [];
+  for (let n = seqs[0] + 1; n < seqs.at(-1); n++) {
+    if (!seqs.includes(n)) missing.push(`${prefix}${String(n).padStart(width, "0")}`);
+  }
+  return missing;
+}
+
+// === Router ===
+async function route(request, response) {
+  const url = new URL(request.url ?? "/", "http://127.0.0.1");
+
+  if (request.method === "GET" && url.pathname === "/health") {
+    jsonResponse(response, 200, {
+      ok: true,
+      service: "quran-ai-ml-inference",
+      modelVersion: MODEL_VERSION,
+      datasetVersion: DATASET_VERSION,
+      goldenCases: GOLDEN_CASE_IDS,
+      algorithm: "quran-constrained-levenshtein + rule-based-tajweed",
+      quranCoverage: `${manifest.surahCount} surahs, ${manifest.totalAyahs} ayahs, ${manifest.totalWords} words`,
+      audioStorage: AUDIO_STORAGE_DIR,
+    });
+    return;
+  }
+
+  if (request.method === "GET" && url.pathname === "/v1/audit-events") {
+    // tenantId is REQUIRED on this HTTP surface, unlike the getAuditEvents() test-only accessor
+    // above (which intentionally supports an unscoped "every tenant" mode for the hermetic
+    // node:test suite, never network-reachable). This route used to fall back to "every tenant"
+    // the same way when the query param was omitted -- gated only by the single shared
+    // ML_API_KEY, which is not tenant-specific, so any caller holding that one key could read
+    // every other tenant's alignment/tajweed predictions, session/trace ids, confidence scores,
+    // and privacy consent events by simply omitting ?tenantId=. README.md has always documented
+    // this route as `GET /v1/audit-events?tenantId=...` -- tenantId was never meant to be
+    // optional here.
+    const tenantId = url.searchParams.get("tenantId");
+    if (!tenantId) {
+      throw httpError(400, "tenantId query parameter is required");
+    }
+    // BOUNDED. This returned the entire per-tenant JSONL, which nothing rotates (ADR-0040), so both
+    // the response and the synchronous read behind it grew without limit for the life of a
+    // deployment — on a single-threaded service, where that read blocks every other request.
+    //
+    // 200 is not invented: platform-api's own audit endpoint (handlers/audit.rs) has always been
+    // `ORDER BY created_at DESC LIMIT 200`. Same default, same newest-first order, so the two audit
+    // surfaces answer the same shape of question the same way.
+    //
+    // The body stays a bare ARRAY. Wrapping it in {items, total} would be a nicer API and would
+    // silently break every existing caller (scripts/smoke-ml.mjs filters the array directly), so
+    // the pagination facts travel in headers instead — and X-Truncated exists so a cap can never be
+    // a SILENT one. A caller that reads only the body still gets the newest 200 rather than a
+    // truncated page it cannot detect.
+    const all = readTenantAuditEvents(tenantId).reverse(); // newest first, matching platform-api
+    const limit = clampAuditLimit(url.searchParams.get("limit"));
+    const offset = clampAuditOffset(url.searchParams.get("offset"));
+    const page = all.slice(offset, offset + limit);
+    response.writeHead(200, {
+      "content-type": "application/json; charset=utf-8",
+      "cache-control": "no-store",
+      "x-total-count": String(all.length),
+      "x-truncated": String(offset + page.length < all.length),
+      ...CORS_HEADERS,
+    });
+    response.end(JSON.stringify(page));
+    return;
+  }
+
+  if (request.method === "POST" && url.pathname === "/v1/audio-objects:read") {
+    const body = await readJson(request);
+    // The response carries a child's recorded voice. It is returned and never logged: no
+    // `console`/`appendAudit` call on this path touches the payload.
+    jsonResponse(response, 200, await readAudioObject(body));
+    return;
+  }
+
+  if (request.method === "POST" && url.pathname === "/v1/audio-chunks") {
+    const body = await readJson(request);
+    const result = await storeAudioChunk(body);
+    jsonResponse(response, 200, result);
+    return;
+  }
+
+  if (request.method !== "POST") {
+    textResponse(response, 404, "not found");
+    return;
+  }
+
+  const body = await readJson(request);
+  if (url.pathname === "/v1/alignments:predict") {
+    jsonResponse(response, 200, await predictAlignment(body));
+    return;
+  }
+
+  if (url.pathname === "/v1/session-transcript") {
+    jsonResponse(response, 200, await transcribeSession(body));
+    return;
+  }
+
+  if (url.pathname === "/v1/tajweed-findings:predict") {
+    jsonResponse(response, 200, await predictTajweed(body));
+    return;
+  }
+
+  if (url.pathname === "/v1/eval-runs") {
+    jsonResponse(response, 200, await createEvalRun(body));
+    return;
+  }
+
+  if (url.pathname === "/v1/privacy/export") {
+    jsonResponse(response, 200, await exportPrivacy(body));
+    return;
+  }
+
+  if (url.pathname === "/v1/privacy/delete") {
+    jsonResponse(response, 200, await deletePrivacy(body));
+    return;
+  }
+
+  textResponse(response, 404, "not found");
+}
+
+// === Rate Limiter (sliding window, per-IP) ===
+const RATE_LIMIT_WINDOW_MS = 60_000; // 1 minute
+const RATE_LIMIT_MAX = 100;          // max requests per window
+/** @type {Map<string, number[]>} */
+const rateLimitMap = new Map();
+// Trusting X-Forwarded-For unconditionally lets a DIRECT client bypass the limiter entirely by
+// varying the header per request (verified empirically: 130/130 requests succeeded this way,
+// vs. 100/130 without a spoofed header). Only trust it when explicitly opted in for a deployment
+// that sits behind a real reverse proxy which OVERWRITES the header — mirrors platform-api's
+// identical TRUST_PROXY_HEADERS gate for the same problem on its own rate limiter.
+const TRUST_PROXY_HEADERS = process.env.TRUST_PROXY_HEADERS === "1" || process.env.TRUST_PROXY_HEADERS === "true";
+
+// Clean up stale entries every 5 minutes to prevent memory growth. .unref() so importing this
+// module for tests does not keep the event loop alive (the timer never fires in a short test run).
+setInterval(() => {
+  const cutoff = Date.now() - RATE_LIMIT_WINDOW_MS;
+  for (const [ip, timestamps] of rateLimitMap) {
+    const valid = timestamps.filter((t) => t > cutoff);
+    if (valid.length === 0) {
+      rateLimitMap.delete(ip);
+    } else {
+      rateLimitMap.set(ip, valid);
+    }
+  }
+}, 5 * 60_000).unref();
+
+/**
+ * Budget for callers holding the server-side `ML_API_KEY` — platform-api and the agents service.
+ *
+ * ── Why they cannot share the per-IP budget ─────────────────────────────────────────────────────
+ * Every learner's analysis reaches this service through platform-api's proxy, and platform-api does
+ * not forward `x-forwarded-for`. So from here, ALL traffic from ALL learners in ALL tenants arrives
+ * from one address and lands in one bucket: the whole platform was capped at 100 ML requests per
+ * minute, shared. A class of twenty children practising would 429 each other.
+ *
+ * Measured, not theorised — P5.4's k6 run reported a 73.8% error rate at 10 VUs and 78.1% at 50,
+ * which is the limiter answering, not the service failing. See specs/dr-rehearsal/evidence/.
+ *
+ * A ceiling remains rather than an exemption: if the key ever leaks, "authenticated" stops meaning
+ * "trustworthy", and an unbounded budget would make this service the easiest way to take the
+ * platform down. Tune with ML_TRUSTED_RATE_LIMIT_MAX.
+ */
+const TRUSTED_RATE_LIMIT_MAX = Number(process.env.ML_TRUSTED_RATE_LIMIT_MAX ?? 6000);
+
+/**
+ * @param {string} bucket  the identity being limited
+ * @param {number} max     that identity's budget per window
+ */
+function checkRateLimit(bucket, max = RATE_LIMIT_MAX) {
+  const now = Date.now();
+  const cutoff = now - RATE_LIMIT_WINDOW_MS;
+  const timestamps = (rateLimitMap.get(bucket) ?? []).filter((t) => t > cutoff);
+  if (timestamps.length >= max) {
+    return false;
+  }
+  timestamps.push(now);
+  rateLimitMap.set(bucket, timestamps);
+  return true;
+}
+
+const server = createServer((request, response) => {
+  if (request.method === "OPTIONS") {
+    response.writeHead(204, CORS_HEADERS);
+    response.end();
+    return;
+  }
+
+  const url = new URL(request.url ?? "/", "http://127.0.0.1");
+
+  // --- Sliding-window rate limiter (non-health endpoints) ---
+  //
+  // TWO budgets, because the per-IP one answers two different questions badly at once. An anonymous
+  // flood and platform-api relaying a whole tenant's practice look identical by address, and sizing
+  // one bucket for both means either the flood is cheap or the tenant is throttled. The API key is
+  // the only thing that distinguishes them, so it is checked FIRST and the budget follows from it.
+  const authenticated = request.headers["x-ml-api-key"] === ML_API_KEY;
+  if (url.pathname !== "/health") {
+    const forwardedFor = TRUST_PROXY_HEADERS
+      ? request.headers["x-forwarded-for"]?.toString().split(",")[0]?.trim()
+      : undefined;
+    const clientIp = forwardedFor || request.socket.remoteAddress || "unknown";
+    // Separate namespaces, so an unauthenticated flood from the proxy's own address — a container
+    // on the same network, say — cannot spend the trusted budget it is not entitled to.
+    const bucket = authenticated ? `trusted:${clientIp}` : `ip:${clientIp}`;
+    const max = authenticated ? TRUSTED_RATE_LIMIT_MAX : RATE_LIMIT_MAX;
+    if (!checkRateLimit(bucket, max)) {
+      jsonResponse(response, 429, { error: "Too many requests. Please try again later." });
+      return;
+    }
+  }
+
+  if (url.pathname !== "/health") {
+    // HEADER ONLY. `?apiKey=` used to be accepted, which puts a live credential in a place that is
+    // logged by default almost everywhere a request travels: access logs, proxy logs, browser
+    // history, and any `Referer` sent onward. A header is not automatically logged by any of them.
+    //
+    // Nothing legitimate relied on the query form — the browser reaches this service through the
+    // platform-api proxy (`/v1/ml/*`), which sends `x-ml-api-key` server-side and never exposes the
+    // key to a page at all.
+    const apiKey = request.headers["x-ml-api-key"];
+    if (!apiKey || apiKey !== ML_API_KEY) {
+      jsonResponse(response, 401, { error: "unauthorized" });
+      return;
+    }
+  }
+
+  route(request, response).catch((error) => {
+    jsonResponse(response, error.status ?? 500, {
+      error: error.message,
+    });
+  });
+});
+
+// Consent-aware retention TTLs (configurable via env).
+const AUDIO_TTL_DISCARD_HOURS = Number(process.env.AUDIO_RETENTION_DISCARD_TTL_HOURS ?? 1);
+const AUDIO_TTL_REVIEW_HOURS = Number(process.env.AUDIO_RETENTION_REVIEW_TTL_HOURS ?? 168); // 7 days
+
+// Periodic cleanup for audio-storage: respects consent-based retention.
+// - 'discard': delete after AUDIO_TTL_DISCARD_HOURS (default: 1 hour)
+// - 'teacher-review': delete after AUDIO_TTL_REVIEW_HOURS (default: 7 days)
+// - 'training-opt-in': keep indefinitely (skip)
+// Files without metadata default to 'discard' behavior.
+/**
+ * How long audio under this retention mode may be kept, in hours.
+ *
+ * Extracted from the retention sweep so a test can execute it. It is the ml-inference half of
+ * `mustDiscardAudio` (packages/contracts): anything this returns the DISCARD ttl for is a recording
+ * that function must agree is obliged to be destroyed. They used to disagree on an unrecognised
+ * mode — this one applied the discard TTL, that one answered "you may keep it" — and nothing
+ * noticed, because the contract function had no caller and no corpus case had shown either an
+ * out-of-vocabulary value.
+ *
+ * `training-opt-in` is handled by the caller (kept indefinitely, no TTL at all), so it never
+ * reaches here.
+ */
+export function retentionTtlHours(retention) {
+  return retention === "teacher-review" ? AUDIO_TTL_REVIEW_HOURS : AUDIO_TTL_DISCARD_HOURS;
+}
+
+/**
+ * The hourly audio-retention sweep, EXPORTED so a test can execute it — the same reason
+ * `retentionTtlHours` above is extracted. It used to live only inside `setInterval`, which meant the
+ * one behaviour that mattered (what it deletes) could not be asserted, and it silently deleted the
+ * audit-log directory for as long as that was true.
+ */
+export async function runRetentionSweep() {
+  try {
+    const now = Date.now();
+    const fs = await import("node:fs");
+    const { join } = await import("node:path");
+
+    const cleanDir = (dir) => {
+      if (!fs.existsSync(dir)) return;
+      const entries = fs.readdirSync(dir, { withFileTypes: true });
+      for (const entry of entries) {
+        const fullPath = join(dir, entry.name);
+        // The audit log lives under AUDIO_STORAGE_DIR but is NOT audio and has no retention TTL —
+        // this sweep must neither walk it nor tidy it away. It did: `audit-log/` is empty on a fresh
+        // deployment, the empty-directory cleanup below removed it within the first hour, nothing
+        // recreated it (mkdir runs once at module load), and from then on every appendAudit()
+        // failed ENOENT. Because that write is deliberately best-effort so it cannot break the
+        // request being audited, the failure was invisible: requests kept returning 200 while the
+        // compliance trail stayed permanently empty — including privacy.delete.requested, the row
+        // that evidences an erasure was honoured (ADR-0040).
+        if (fullPath === AUDIT_LOG_DIR) continue;
+        if (entry.isDirectory()) {
+          cleanDir(fullPath);
+          // Clean up empty directories
+          try {
+            if (fs.readdirSync(fullPath).length === 0) {
+              fs.rmdirSync(fullPath);
+            }
+          } catch {}
+        } else if (entry.name.endsWith(".bin")) {
+          // Determine retention from companion .meta.json
+          const metaPath = fullPath.replace(/\.bin$/, ".meta.json");
+          let retention = "discard";
+          try {
+            if (fs.existsSync(metaPath)) {
+              const meta = JSON.parse(fs.readFileSync(metaPath, "utf8"));
+              retention = meta.audioRetention ?? "discard";
+            }
+          } catch {}
+
+          // training-opt-in: keep indefinitely
+          if (retention === "training-opt-in") continue;
+
+          const ttlMs = retentionTtlHours(retention) * 60 * 60 * 1000;
+
+          try {
+            const stat = fs.statSync(fullPath);
+            if (stat.mtimeMs < now - ttlMs) {
+              fs.unlinkSync(fullPath);
+              // Also remove the companion metadata file
+              try { fs.unlinkSync(metaPath); } catch {}
+              log("info", "Evicted audio file per retention policy", {
+                path: fullPath,
+                retention,
+                ttlHours: ttlMs / (60 * 60 * 1000),
+              });
+            }
+          } catch (err) {
+            log("error", "Failed to stat/unlink file", { path: fullPath, error: String(err) });
+          }
+        }
+      }
+    };
+    cleanDir(AUDIO_STORAGE_DIR);
+  } catch (err) {
+    log("error", "Failed running periodic audio storage cleanup", { error: String(err) });
+  }
+}
+
+setInterval(runRetentionSweep, 60 * 60 * 1000).unref(); // run every hour; .unref() so a test import doesn't block loop exit
+
+const bindHost = process.env.ML_INFERENCE_HOST ?? "127.0.0.1";
+const bindPort = Number(process.env.ML_INFERENCE_PORT ?? 8090);
+
+// Bind and install signal handlers only as the process entrypoint. Importing this module (e.g.
+// server.test.mjs) must not open a socket — see `isMain`.
+if (isMain) {
+  server.listen(bindPort, bindHost, () => {
+    const address = server.address();
+    const port = typeof address === "object" && address ? address.port : bindPort;
+    log("info", "ml inference server started", {
+      bind: `http://${bindHost}:${port}`,
+      model: MODEL_VERSION,
+      dataset: DATASET_VERSION,
+      surahCount: manifest.surahCount,
+      totalAyahs: manifest.totalAyahs,
+      audioStorage: AUDIO_STORAGE_DIR,
+    });
+  });
+
+  for (const signal of ["SIGINT", "SIGTERM"]) {
+    process.on(signal, () => {
+      server.close(() => process.exit(0));
+    });
+  }
+}

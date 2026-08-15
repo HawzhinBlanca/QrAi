@@ -539,6 +539,24 @@ pub async fn create_scholar_approval(
     actor.require_any(&[ActorRole::Scholar, ActorRole::Admin, ActorRole::Ops])?;
     let Json(req) = body?;
 
+    // ── Only a scholar may say "scholar-approved" ───────────────────────────────────────────────
+    // The gate above still admits Admin and Ops, and that stays: recording a `draft`, or `blocked`ing
+    // something, is operational work. Approving is not. `scholar_approvals` rows carry religious
+    // authority — the status names it — and this table is the artifact a "qualified scholar approval"
+    // is evidenced with, so a row an operator minted is indistinguishable from a scholar's.
+    //
+    // Measured before this check existed, one request per role, all else equal:
+    //     scholar -> 200  scholar-approved by a scholar
+    //     ops     -> 200  scholar-approved by a ops
+    //     admin   -> 200  scholar-approved by a admin
+    //
+    // BEFORE the transaction and before the sources/risk refusals, deliberately: authorization
+    // precedes validation elsewhere here for a stated reason, and a caller who may not approve at
+    // all should not learn whether their sources would have been accepted.
+    if req.status == ScholarDecision::ScholarApproved && actor.role != ActorRole::Scholar {
+        return Err(ApiError::NotAScholar);
+    }
+
     let mut tx = crate::begin_tenant_tx(&state.pool, &actor.tenant_id).await?;
 
     if req.status == ScholarDecision::ScholarApproved && req.sources.is_empty() {
@@ -698,7 +716,13 @@ pub async fn list_tajweed_findings(
         // Promoting the first to `teacher-reviewed` makes it learner-visible feedback (ADR-0028)
         // about a recitation nobody can show happened, and until now the queue gave a teacher no way
         // to tell the two apart.
-        "SELECT tf.id, tf.alignment_id, tf.tenant_id, wa.word_id, wa.transcript_source,
+        // wa.session_id is SELECTed and returned as `sessionId`. It was already in this join and
+        // simply never surfaced, and its absence was a real defect in the teacher queue: the web
+        // client fetches this list TENANT-WIDE and then decided which findings belonged to the open
+        // session by matching `wordId`. word_id is the CANONICAL id (e.g. "1:1:2"), identical for
+        // every learner reciting that passage, so another learner's findings were attributed to the
+        // session on screen — and a teacher's accept/reject was submitted against that finding id.
+        "SELECT tf.id, tf.alignment_id, tf.tenant_id, wa.session_id, wa.word_id, wa.transcript_source,
                 wa.start_ms, wa.end_ms, tf.analysis_basis, tf.rule, tf.severity,
                 tf.confidence::float8 AS confidence, tf.explanation, tf.review_status, tf.source_refs,
                 tf.model_version_id, tf.audit_event_id, tf.evaluation_evidence_id,
@@ -850,6 +874,7 @@ pub async fn list_tajweed_findings(
                 "acousticDatasetManifestSha256": gate_input["acousticDatasetManifestSha256"],
                 "acousticDatasetVersion": gate_input["acousticDatasetVersion"],
                 "id": r.try_get::<String, _>("id").unwrap_or_default(),
+                "sessionId": r.try_get::<String, _>("session_id").unwrap_or_default(),
                 "wordId": r.try_get::<String, _>("word_id").unwrap_or_default(),
                 // `server-derived` | `client-reported` — what this finding's evidence rests on.
                 "transcriptSource": r

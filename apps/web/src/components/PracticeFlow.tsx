@@ -201,7 +201,22 @@ export function PracticeFlow({
           ) : needsTeacherReview ? (
             <IssuePanel events={recitationEvents} onSelectWord={onSelectWord} selectedWordId={selectedWordId} />
           ) : (
-            <Suspense fallback={<div className="panel progress-panel" aria-label={t("practiceFlow.progressAriaLabel")} aria-busy="true" />}>
+            <Suspense
+              fallback={
+                // role="status" is load-bearing, not decoration. `aria-label` is PROHIBITED on a
+                // bare <div> (it has no implicit role), so the label was silently dropped and a
+                // screen-reader user was told nothing at all while the progress chart loaded — the
+                // placeholder announced as empty. role="status" both permits the label and makes
+                // this a polite live region, so the wait is announced instead of being a silent
+                // gap. Caught by axe automation (P6.2); nothing had ever scanned this surface.
+                <div
+                  className="panel progress-panel"
+                  role="status"
+                  aria-label={t("practiceFlow.progressAriaLabel")}
+                  aria-busy="true"
+                />
+              }
+            >
               <ProgressPanel
                 accuracy={accuracy}
                 correctWords={correctWords}

@@ -29,6 +29,23 @@ export const ALLOW_INSECURE_SECRETS = "ALLOW_INSECURE_SECRETS";
 export const ALLOW_SUPERUSER_DB_ROLE = "ALLOW_SUPERUSER_DB_ROLE";
 
 /**
+ * Relaxes the refusal to boot while connected as a superuser / `BYPASSRLS` database role.
+ *
+ * Same name and same semantics as `insecure.rs` `ALLOW_SUPERUSER_DB_ROLE`, because it governs the
+ * same database. platform-api has refused that role since the RLS work; this port did not, and
+ * connected to the SAME `DATABASE_URL`. Measured: with a superuser connection and no relaxation set,
+ * platform-api panics ("RLS tenant isolation is INERT") while node-api booted and served real rows
+ * from `/v1/quran/surahs`.
+ *
+ * At cutover node-api serves 37 of 42 routes. A privileged role there makes all 17 tenant-isolation
+ * policies a no-op — `app.is_rls_bypass_enabled()` is gated on `rolsuper`, and every policy reads
+ * `is_rls_bypass_enabled() OR tenant_id = current_tenant_id()` — leaving isolation resting entirely
+ * on each handler remembering `withTenant`. That is exactly the single point of failure the boot
+ * check exists to keep from being single.
+ */
+export const ALLOW_SUPERUSER_DB_ROLE = "ALLOW_SUPERUSER_DB_ROLE";
+
+/**
  * The known-weak values `main.rs` `ensure_secure_config` refuses, transcribed exactly.
  *
  * `minLength` mirrors Rust's `.len() < 32`. Rust compares BYTES (`str::len`); JS `.length` counts

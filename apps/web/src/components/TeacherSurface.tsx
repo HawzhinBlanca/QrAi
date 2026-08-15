@@ -13,15 +13,15 @@ import {
   AlertCircle 
 } from "lucide-react";
 import { 
-  fetchRecitationSessions, 
-  fetchSessionAlignments, 
+  readRecitationSessions,
+  readSessionAlignments,
   fetchTajweedFindings, 
+  fetchFindingAudio,
   submitTeacherReview, 
   type RecitationSessionSummary, 
   type SessionAlignment, 
   type TajweedFindingSummary 
 } from "../data/platform";
-const API_BASE = import.meta.env.VITE_PLATFORM_API_URL || (import.meta.env.DEV ? "http://127.0.0.1:8080" : "");
 
 interface TeacherSurfaceProps {
   tenantId: string;
@@ -36,9 +36,17 @@ export function TeacherSurface({ tenantId, authToken }: TeacherSurfaceProps) {
   const [alignments, setAlignments] = useState<SessionAlignment[]>([]);
   const [loading, setLoading] = useState(false);
   const [loadingAlignments, setLoadingAlignments] = useState(false);
-  const [audioUrl, setAudioUrl] = useState<string | null>(null);
-  const [loadingAudio, setLoadingAudio] = useState(false);
-  const [isPlaying, setIsPlaying] = useState(false);
+  // P2.6 — "the queue is empty" and "the queue could not be loaded" are DIFFERENT things and used
+  // to render identically. A failed load logged to the console and left `sessions` at [], so the
+  // surface told a teacher "No pending recitations." while the service was unreachable. That is a
+  // state reporting success on a failure: the teacher closes the tab believing there is no work.
+  const [queueError, setQueueError] = useState(false);
+  const [alignmentsError, setAlignmentsError] = useState(false);
+  // Audio is per FINDING, not per session — see fetchFindingAudio for why. `playing` holds the id
+  // of the finding currently sounding, so one player cannot be left running behind another.
+  const [audioBusy, setAudioBusy] = useState<string | null>(null);
+  const [audioProblem, setAudioProblem] = useState<{ findingId: string; kind: string } | null>(null);
+  const [playing, setPlaying] = useState<string | null>(null);
   const [audioElement, setAudioElement] = useState<HTMLAudioElement | null>(null);
   const [reviewNote, setReviewNote] = useState("");
   const [submitting, setSubmitting] = useState(false);
@@ -47,19 +55,29 @@ export function TeacherSurface({ tenantId, authToken }: TeacherSurfaceProps) {
   // Load the pending queue and general findings
   const loadQueue = async () => {
     setLoading(true);
+    setQueueError(false);
     try {
-      const [allSessions, allFindings] = await Promise.all([
-        fetchRecitationSessions(tenantId, authToken),
+      // `readRecitationSessions`, not `fetchRecitationSessions`: the fetch variant returns its `[]`
+      // fallback on any failure, so nothing was ever thrown and this function's `catch` could not
+      // fire. The queue rendered "No pending recitations." while the service was unreachable.
+      const [sessionRead, allFindings] = await Promise.all([
+        readRecitationSessions(tenantId, authToken),
         fetchTajweedFindings(tenantId, authToken)
       ]);
+      if (sessionRead.failed) {
+        setQueueError(true);
+        setSessions([]);
+        return;
+      }
       // Filter for sessions that require teacher review
-      const pending = allSessions.filter(
+      const pending = sessionRead.data.filter(
         (s) => s.reviewStatus === "teacher-review-required"
       );
       setSessions(pending);
       setFindings(allFindings);
     } catch (err) {
       console.error("Failed to load queue:", err);
+      setQueueError(true);
     } finally {
       setLoading(false);
     }
@@ -77,91 +95,123 @@ export function TeacherSurface({ tenantId, authToken }: TeacherSurfaceProps) {
     }
 
     setLoadingAlignments(true);
-    fetchSessionAlignments(tenantId, selectedSession.id, authToken)
-      .then(setAlignments)
-      .catch((err) => console.error("Failed to fetch alignments:", err))
+    setAlignmentsError(false);
+    readSessionAlignments(tenantId, selectedSession.id, authToken)
+      .then((read) => {
+        setAlignments(read.data);
+        setAlignmentsError(read.failed);
+      })
+      .catch((err) => {
+        console.error("Failed to fetch alignments:", err);
+        setAlignments([]);
+        setAlignmentsError(true);
+      })
       .finally(() => setLoadingAlignments(false));
   }, [selectedSession, tenantId, authToken]);
 
-  // Fetch audio blob with credentials and create object URL
+  // ── Listening to a recitation ────────────────────────────────────────────────────────────────
+  //
+  // This used to fetch `/v1/recitation-sessions/{id}/audio` on every session selection. That is the
+  // realtime GATEWAY's WebSocket path (its lib.rs:682), not a platform-api route — so against the
+  // platform-api base, over plain HTTP, it 404'd every time and the catch rendered "No audio
+  // available for this session". A teacher could not tell that from a learner having asked for
+  // their recording to be destroyed, and the reviewing was done either way.
+  //
+  // Audio is now fetched PER FINDING, on demand, from the route that exists. That is not a
+  // workaround for a missing session route: ADR-0037 writes an audit row for every attempt before
+  // any bytes move, and re-checks retention against both the consent record and the stored object.
+  // A session-level route would answer "who listened to this child's recitation" with one row
+  // covering the whole recitation, which is weaker than what is already built.
+  //
+  // On demand, not on selection, for the same reason: opening a session to read the text should not
+  // record that someone listened to the child.
   useEffect(() => {
-    if (!selectedSession) {
-      setAudioUrl(null);
+    // Changing session stops whatever was sounding. Without this the previous learner's audio keeps
+    // playing over the next learner's queue.
+    audioElement?.pause();
+    setAudioElement(null);
+    setPlaying(null);
+    setAudioProblem(null);
+    // audioElement is deliberately not a dependency: including it re-runs this on every change it
+    // makes, which tears down the element it just created.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedSession]);
+
+  useEffect(() => () => audioElement?.pause(), [audioElement]);
+
+  const listen = async (finding: TajweedFindingSummary) => {
+    if (playing === finding.id) {
+      audioElement?.pause();
+      setPlaying(null);
+      return;
+    }
+    audioElement?.pause();
+    setAudioBusy(finding.id);
+    setAudioProblem(null);
+
+    const result = await fetchFindingAudio(finding.id, tenantId, authToken);
+    setAudioBusy(null);
+    if (result.kind !== "audio") {
+      setAudioProblem({ findingId: finding.id, kind: result.kind });
       return;
     }
 
-    setLoadingAudio(true);
-    setAudioUrl(null);
-    setIsPlaying(false);
-
-    const headers: Record<string, string> = {
-      "X-Tenant-Id": tenantId,
-      "X-User-Id": "teacher-1",
-      "X-User-Role": "teacher",
+    // The route returns base64 rather than bytes, so the browser gets an object URL built here. The
+    // MIME type is deliberately generic: ml-inference stores whatever the gateway captured and this
+    // client is not the place to assert a container it has not inspected.
+    const bytes = Uint8Array.from(atob(result.audioBase64), (c) => c.charCodeAt(0));
+    const url = URL.createObjectURL(new Blob([bytes], { type: "audio/webm" }));
+    const audio = new Audio(url);
+    const done = () => {
+      setPlaying(null);
+      URL.revokeObjectURL(url);
     };
-    if (authToken) {
-      headers["Authorization"] = `Bearer ${authToken}`;
-    }
-
-    let active = true;
-    let localUrl: string | null = null;
-
-    fetch(`${API_BASE}/v1/recitation-sessions/${selectedSession.id}/audio`, { headers })
-      .then((res) => {
-        if (!res.ok) throw new Error("Audio download failed");
-        return res.blob();
-      })
-      .then((blob) => {
-        if (!active) return;
-        localUrl = URL.createObjectURL(blob);
-        setAudioUrl(localUrl);
-      })
-      .catch((err) => {
-        console.error("Failed to fetch recitation audio:", err);
-      })
-      .finally(() => {
-        if (active) setLoadingAudio(false);
-      });
-
-    return () => {
-      active = false;
-      if (localUrl) {
-        URL.revokeObjectURL(localUrl);
-      }
-    };
-  }, [selectedSession, tenantId, authToken]);
-
-  // Audio Playback helpers
-  useEffect(() => {
-    if (!audioUrl) {
-      setAudioElement(null);
-      return;
-    }
-    const audio = new Audio(audioUrl);
-    audio.addEventListener("ended", () => setIsPlaying(false));
+    audio.addEventListener("ended", done);
+    audio.addEventListener("error", () => {
+      done();
+      setAudioProblem({ findingId: finding.id, kind: "unavailable" });
+    });
     setAudioElement(audio);
+    setPlaying(finding.id);
+    audio.play().catch(() => {
+      done();
+      setAudioProblem({ findingId: finding.id, kind: "unavailable" });
+    });
+  };
 
-    return () => {
-      audio.pause();
-      audio.removeEventListener("ended", () => setIsPlaying(false));
-    };
-  }, [audioUrl]);
-
-  const togglePlayback = () => {
-    if (!audioElement) return;
-    if (isPlaying) {
-      audioElement.pause();
-      setIsPlaying(false);
-    } else {
-      audioElement.play().catch(console.error);
-      setIsPlaying(true);
+  /**
+   * What to say about a finding's audio BEFORE anyone asks for it.
+   *
+   * `audioStatus` comes from the server on every finding, so the honest label is available without
+   * a request — and asking is itself an audited event, so offering a button that can only fail
+   * would write "a teacher tried to listen" rows for recordings that were never captured.
+   */
+  const audioLabel = (finding: TajweedFindingSummary): { playable: boolean; text: string } => {
+    const problem = audioProblem?.findingId === finding.id ? audioProblem.kind : null;
+    const status = problem ?? finding.audioStatus ?? "unknown";
+    switch (status) {
+      case "available":
+        return { playable: true, text: t("teacherSurface.listenToFinding") };
+      case "discarded":
+        return { playable: false, text: t("teacherSurface.audioDiscarded") };
+      case "not-captured":
+        return { playable: false, text: t("teacherSurface.audioNotCaptured") };
+      default:
+        return { playable: false, text: t("teacherSurface.audioUnavailable") };
     }
   };
 
-  // Find findings matching word alignments of this session
-  const sessionFindings = findings.filter((finding) =>
-    alignments.some((align) => align.wordId === finding.wordId)
-  );
+  // Findings BELONGING to this session, by session id.
+  //
+  // This matched on `wordId` against the session's alignments. wordId is the canonical id
+  // ("1:1:2"), identical for every learner reciting that passage, and `findings` is fetched
+  // tenant-wide — so a teacher reviewing one learner saw other learners' findings listed under this
+  // session, and `handleReview` submitted their accept/reject against that finding's id. The
+  // decision landed on the wrong recitation, which is the one thing the review gate exists to get
+  // right.
+  const sessionFindings = selectedSession
+    ? findings.filter((finding) => finding.sessionId === selectedSession.id)
+    : [];
 
   const handleReview = async (findingId: string, decision: "accepted" | "rejected" | "edited") => {
     setMessage(null);
@@ -206,6 +256,16 @@ export function TeacherSurface({ tenantId, authToken }: TeacherSurfaceProps) {
         
         {loading ? (
           <p style={{ color: "var(--text-quiet)", textAlign: "center", padding: "20px 0" }}>{t("teacherSurface.loadingQueue")}</p>
+        ) : queueError ? (
+          // role="alert" and a real control. A message with no way forward is the same dead end as
+          // no message, and this one has to out-rank the empty state: an unreachable service must
+          // never be reported as "nothing to review".
+          <div role="alert" style={{ textAlign: "center", padding: "20px 0" }}>
+            <p style={{ color: "var(--text-quiet)" }}>{t("teacherSurface.queueUnavailable")}</p>
+            <button type="button" onClick={loadQueue} style={{ marginTop: "8px" }}>
+              {t("teacherSurface.queueRetry")}
+            </button>
+          </div>
         ) : sessions.length === 0 ? (
           <p style={{ color: "var(--text-quiet)", textAlign: "center", padding: "20px 0" }}>{t("teacherSurface.noPending")}</p>
         ) : (
@@ -258,40 +318,11 @@ export function TeacherSurface({ tenantId, authToken }: TeacherSurfaceProps) {
               </div>
             </header>
 
-            {/* Audio Section */}
-            <section style={{ background: "var(--bg-card-secondary, rgba(255, 255, 255, 0.02))", border: "1px solid var(--line)", borderRadius: "8px", padding: "16px", display: "flex", alignItems: "center", gap: "16px" }}>
-              {loadingAudio ? (
-                <span style={{ color: "var(--text-quiet)" }}>{t("teacherSurface.downloadingAudio")}</span>
-              ) : audioUrl ? (
-                <>
-                  <button
-                    onClick={togglePlayback}
-                    style={{
-                      width: "48px",
-                      height: "48px",
-                      borderRadius: "50%",
-                      background: "var(--text)",
-                      color: "var(--bg)",
-                      border: "none",
-                      display: "flex",
-                      alignItems: "center",
-                      justifyContent: "center",
-                      cursor: "pointer"
-                    }}
-                  >
-                    {isPlaying ? <Pause size={20} /> : <Play size={20} style={{ marginInlineStart: "2px" }} />}
-                  </button>
-                  <div>
-                    <strong style={{ display: "block" }}>{t("teacherSurface.listenTitle")}</strong>
-                    <span style={{ fontSize: "0.85rem", color: "var(--text-quiet)" }}>{t("teacherSurface.listenHint")}</span>
-                  </div>
-                </>
-              ) : (
-                <span style={{ color: "var(--text-quiet)", display: "flex", alignItems: "center", gap: "6px" }}>
-                  <AlertCircle size={16} />
-                  {t("teacherSurface.noAudio")}
-                </span>
-              )}
+            {/* Audio: per finding, below. This panel says WHY, because a reviewer who expects a
+                session player and finds none should not have to guess. */}
+            <section style={{ background: "var(--bg-card-secondary, rgba(255, 255, 255, 0.02))", border: "1px solid var(--line)", borderRadius: "8px", padding: "16px", display: "flex", alignItems: "center", gap: "10px" }}>
+              <AlertCircle size={16} style={{ flexShrink: 0, color: "var(--text-quiet)" }} />
+              <span style={{ color: "var(--text-quiet)", fontSize: "0.9rem" }}>{t("teacherSurface.audioPerFindingHint")}</span>
             </section>
 
             {/* Alignments / Transcription words */}
@@ -299,6 +330,12 @@ export function TeacherSurface({ tenantId, authToken }: TeacherSurfaceProps) {
               <h3 style={{ margin: "0 0 12px 0", fontSize: "1.1rem" }}>{t("teacherSurface.alignmentsTitle")}</h3>
               {loadingAlignments ? (
                 <p style={{ color: "var(--text-quiet)" }}>{t("teacherSurface.loadingWords")}</p>
+              ) : alignmentsError ? (
+                // Same rule as the queue: an unreadable alignment must not render as a recitation
+                // with no words in it, which reads as "the learner said nothing".
+                <p role="alert" style={{ color: "var(--text-quiet)" }}>
+                  {t("teacherSurface.alignmentsUnavailable")}
+                </p>
               ) : (
                 <div style={{ display: "flex", flexWrap: "wrap", gap: "10px", padding: "16px", border: "1px solid var(--line)", borderRadius: "8px", background: "var(--bg)" }}>
                   {alignments.map((align, index) => {
@@ -353,6 +390,39 @@ export function TeacherSurface({ tenantId, authToken }: TeacherSurfaceProps) {
                       </div>
                       
                       <p style={{ margin: "0 0 16px 0", color: "var(--text)" }}>{finding.explanation}</p>
+
+                      {/* Listen — the audited per-finding route. Disabled, with the REASON, when
+                          the server has already told us there is nothing to hear. */}
+                      {(() => {
+                        const { playable, text } = audioLabel(finding);
+                        const busy = audioBusy === finding.id;
+                        const sounding = playing === finding.id;
+                        return (
+                          <div style={{ display: "flex", alignItems: "center", gap: "10px", marginBottom: "16px" }}>
+                            <button
+                              type="button"
+                              disabled={!playable || busy}
+                              aria-label={text}
+                              onClick={() => listen(finding)}
+                              style={{
+                                display: "flex",
+                                alignItems: "center",
+                                gap: "6px",
+                                padding: "8px 14px",
+                                background: playable ? "var(--text)" : "transparent",
+                                color: playable ? "var(--bg)" : "var(--text-quiet)",
+                                border: playable ? "none" : "1px solid var(--line)",
+                                borderRadius: "6px",
+                                cursor: playable && !busy ? "pointer" : "default",
+                                fontSize: "0.9rem"
+                              }}
+                            >
+                              {sounding ? <Pause size={16} /> : <Play size={16} />}
+                              {busy ? t("teacherSurface.downloadingAudio") : text}
+                            </button>
+                          </div>
+                        );
+                      })()}
 
                       {/* Review input */}
                       <div style={{ display: "flex", flexDirection: "column", gap: "12px" }}>

@@ -60,6 +60,28 @@ const MAX_CHUNK_BYTES: usize = 2 * 1024 * 1024;
 /// 8 MiB frames. This is hardening, not a fix for an observed leak.
 const MAX_WS_FRAME_BYTES: usize = MAX_CHUNK_BYTES + 64 * 1024;
 
+/// Largest number of chunks ONE recitation session may ever store.
+///
+/// `MAX_CHUNK_BYTES` bounds a single frame and nothing bounded the total. Measured against a real
+/// gateway and ml-inference: 40 x 512 KiB down one socket on one ticket was 20 MiB accepted, zero
+/// refusals, 16 MiB on disk. Nothing refuses because nothing counts.
+///
+/// That matters more than a transient disk spike. `audioRetention: "training-opt-in"` is never
+/// evicted — ml-inference's retention sweep `continue`s past it — so the growth is permanent, on the
+/// same volume that holds the audit log, whose write failure is swallowed by design while `/health`
+/// still reports ok. A full disk therefore takes the compliance trail with it, silently.
+///
+/// Counted on `sequence`, NOT on a socket-local byte total, and that choice is the whole point:
+/// `resume_sequence` persists a session's position across reconnects (a session outlives the socket
+/// that carries it). A per-socket counter would reset every time the client reconnected, which is
+/// exactly the bypass a learner hits by accident on a flaky connection.
+///
+/// Derivation, so this is a number with a reason: a chunk is `chunk_duration_ms` (480ms), so 15_000
+/// chunks is two hours of continuous audio in ONE session. The longest surah recited slowly is well
+/// under that, and a real chunk is ~90 KiB (480ms of 48kHz stereo 16-bit PCM), so the honest ceiling
+/// this sets is ~1.3 GiB per session rather than the unbounded figure it replaces.
+const MAX_SESSION_CHUNKS: u64 = 15_000;
+
 /// Largest ticket lifetime this gateway will honour, as `expires_at - now`.
 ///
 /// `platform-api` mints with `REALTIME_TICKET_TTL_SECONDS = 300`, so an hour is ~12x any legitimate
@@ -135,6 +157,8 @@ pub enum GatewayError {
     EmptyAudioChunk,
     #[error("audio chunk too large: {size} bytes exceeds the {max} byte limit")]
     ChunkTooLarge { size: usize, max: usize },
+    #[error("recitation session {session_id} reached its {max} chunk limit")]
+    SessionChunkLimitReached { session_id: String, max: u64 },
 }
 
 #[derive(Clone)]
@@ -1371,6 +1395,30 @@ async fn handle_audio_socket(
     while let Some(message) = socket.recv().await {
         match message {
             Ok(Message::Binary(bytes)) => {
+                // Checked against `sequence`, which `resume_sequence` carried over from any earlier
+                // socket on this session — so reconnecting does not hand the client a fresh budget.
+                if sequence >= MAX_SESSION_CHUNKS {
+                    let err = GatewayError::SessionChunkLimitReached {
+                        session_id: session_id.clone(),
+                        max: MAX_SESSION_CHUNKS,
+                    };
+                    tracing::warn!("{err}");
+                    let ack = AudioIngressAck {
+                        kind: "audio.ack",
+                        session_id: session_id.clone(),
+                        chunk_id: format!("{session_id}-ws-{sequence:04}"),
+                        sequence,
+                        accepted: false,
+                        trace_id: None,
+                        message: err.to_string(),
+                    };
+                    if let Ok(text) = serde_json::to_string(&ack)
+                        && socket.send(Message::Text(text.into())).await.is_err()
+                    {
+                        break;
+                    }
+                    continue;
+                }
                 let chunk_id = format!("{session_id}-ws-{sequence:04}");
                 let chunk = AudioChunk::new(
                     session_id.clone(),
@@ -2710,6 +2758,48 @@ mod tests {
             source.contains(".record_sequence(&session_id, sequence)"),
             "the handler no longer records how far it counted, so the NEXT connection resumes from \
              a stale cursor and repeats ids"
+        );
+    }
+
+    /// One session cannot store without bound, and reconnecting does not reset the budget.
+    ///
+    /// `MAX_CHUNK_BYTES` bounds a single frame; nothing bounded the total. Measured against a real
+    /// gateway and ml-inference before the cap existed: 40 x 512 KiB down one socket on one ticket
+    /// was 20 MiB accepted, ZERO refusals, 16 MiB on disk. With the cap temporarily set to 5 and
+    /// twelve chunks sent, it was 5 accepted / 7 refused and the disk stopped growing.
+    ///
+    /// The reconnect property is the subtle half and the reason this asserts on `sequence`: a
+    /// socket-local byte counter would reset on every reconnect, handing a fresh budget to anyone
+    /// with a flaky connection. `sequence` is seeded from `resume_sequence`, so the budget is the
+    /// session's, not the socket's.
+    ///
+    /// Source-level for the same reason as the test above: driving 15_000 chunks through a real
+    /// socket is not something this module has a harness for, and the empirical proof is recorded
+    /// above rather than re-run on every build.
+    #[test]
+    fn one_session_cannot_grow_without_bound() {
+        let whole = include_str!("lib.rs");
+        let source = whole
+            .split_once("#[cfg(test)]")
+            .map(|(production, _)| production)
+            .unwrap_or(whole);
+
+        assert!(
+            source.contains("if sequence >= MAX_SESSION_CHUNKS {"),
+            "the per-session chunk cap is gone. A learner can then stream until the volume is full \
+             — and because `training-opt-in` audio is never evicted, permanently. The same volume \
+             holds the audit log, whose write failure is swallowed by design"
+        );
+        assert!(
+            crate::MAX_SESSION_CHUNKS >= 10_000,
+            "the cap is now {} chunks, under two hours of audio at 480ms each. \
+             That risks cutting off a legitimate long recitation; raise it or restate the derivation",
+            crate::MAX_SESSION_CHUNKS
+        );
+        assert!(
+            !source.contains("let mut session_bytes = 0"),
+            "a socket-local byte counter is back. It resets on reconnect, so it does not bound a \
+             SESSION — which is the thing that outlives the socket"
         );
     }
 }

@@ -52,6 +52,49 @@ export async function bootstrapPilotSession(token: string): Promise<PilotIdentit
   return data;
 }
 
+/**
+ * End the pilot session: revoke it server-side, then forget it here.
+ *
+ * ── Why this exists ─────────────────────────────────────────────────────────────────────────────
+ * It did not, and nothing else ended a pilot session either. `setPilotIdentity(null)` had no caller
+ * anywhere in the app, `logout()` in auth.tsx cleared only the LOGIN key (`quran-ai-auth`), and the
+ * profile chip that would carry a logout renders `disabled` whenever `bypassLogin` is set — which is
+ * the ONLY mode a pilot session can be bootstrapped in, and the default one (`VITE_REQUIRE_LOGIN`
+ * unset). Reproduced: after everything the UI could do, `isPilotMode()` was still true and
+ * `qrai-pilot-session` still held the learner.
+ *
+ * TopBar's comment explained the disabled chip with "in the default bypass-login mode there is no
+ * real session to log out of". That was true when written and stopped being true when pilot sessions
+ * were added: they are a `pilot_sessions` row, an HttpOnly cookie, 8h idle / 24h absolute.
+ *
+ * On the classroom laptops this pilot deploys to (apps/web/nginx-tls.conf explains why TLS is not
+ * optional here), that meant the next person to open the browser was the previous learner — their
+ * recordings, their mistakes, their privacy controls.
+ *
+ * The server half already existed and was already right: POST /v1/pilot/session/logout revokes the
+ * row inside a tenant transaction and writes a `pilot.session.logout` audit event. Nothing called it.
+ *
+ * ── Order, and why the local clear is unconditional ─────────────────────────────────────────────
+ * Revoke first, so the authoritative end of the session is the server's. But clear locally EVEN IF
+ * that fails: a learner who signs out on a shared device and walks away must not stay signed in
+ * because the network was down. The cookie is HttpOnly so this cannot clear it, but without the
+ * identity the app stops presenting their session, and the row still expires on its own schedule.
+ */
+export async function logoutPilotSession(): Promise<void> {
+  const csrf = getPilotCsrf();
+  try {
+    await fetchWithTimeout(`${API_BASE}/v1/pilot/session/logout`, {
+      method: "POST",
+      credentials: "include",
+      headers: csrf ? { "x-csrf-token": csrf } : {},
+    });
+  } catch {
+    // Deliberately swallowed — see the note above on clearing locally regardless.
+  } finally {
+    setPilotIdentity(null);
+  }
+}
+
 /** Result of a privacy export/delete job (subset of the backend PrivacyJob). */
 export interface PrivacyJobResult {
   kind: "export" | "delete";

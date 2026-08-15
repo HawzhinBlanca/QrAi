@@ -48,7 +48,26 @@ async fn erase_ml_audio(
     })?;
 
     let mut keys = Vec::new();
-    for field in ["deletedAudioObjectKeys", "deletedMetadataObjectKeys"] {
+    // All THREE lists ml-inference reports, not the two that are named after audio.
+    //
+    // `deleteAudioObjects` unlinks every FILE in the learner's directory and classifies what it
+    // removed by extension: `.bin` as audio, `.meta.json` as metadata, and anything else under
+    // `deletedOtherObjectKeys` — deliberately, so "the two existing counts keep meaning exactly
+    // what they meant". That third list was computed, returned and audited, and dropped here.
+    //
+    // Where this list ends up is what makes the omission matter. It is written to
+    // `privacy_jobs.audio_object_keys_deleted`, and `scripts/restore-audio.sh` reads that column to
+    // decide which objects a volume restore must NOT put back. A key erased from live storage but
+    // missing from this record is one a restore silently resurrects — against a receipt that has
+    // already told the learner it was gone.
+    //
+    // Reproduced with a `.wav` beside a chunk's `.bin`/`.meta.json`: ml-inference deleted all three
+    // and reported all three, and this loop recorded two.
+    for field in [
+        "deletedAudioObjectKeys",
+        "deletedMetadataObjectKeys",
+        "deletedOtherObjectKeys",
+    ] {
         if let Some(arr) = result.get(field).and_then(|v| v.as_array()) {
             keys.extend(arr.iter().filter_map(|v| v.as_str().map(String::from)));
         }
@@ -225,11 +244,108 @@ async fn create_privacy_job(
             })
             .collect();
 
+    // ── The session-owned categories, which the receipt used to omit ─────────────────────────────
+    //
+    // `included_ids` is BOTH the export summary ("we currently hold N records for you") and, on a
+    // delete, the receipt of what was destroyed — `deleted_ids` is a clone of it. It was built from
+    // five tables while the cascade below deletes from twelve.
+    //
+    // Measured on a learner seeded with one consent record, one session, one alignment and one
+    // finding: all four rows were gone afterwards and the receipt named ONE, the session. A learner
+    // or a regulator asking "what did you delete?" was told about the recitation and not about the
+    // assessments made of it, the word-level record, or the consent they had given.
+    //
+    // These are IDENTIFIERS, never content, so nothing here crosses the ADR-0028 learner gate: the
+    // count of pending notes is already something both clients render, and an id discloses no
+    // judgement. Scoped through `recitation_sessions` by learner, exactly as the deletes are, so the
+    // receipt and the cascade cannot describe different sets.
+    let session_scoped = |table: &str, prefix: &str| {
+        format!(
+            "SELECT {t}.id FROM {t} JOIN recitation_sessions rs ON rs.id = {t}.session_id \
+             WHERE {t}.tenant_id = $1 AND rs.tenant_id = $1 AND rs.learner_id = $2",
+            t = table
+        )
+        .replace("PREFIX", prefix)
+    };
+
+    let mut session_owned_ids: Vec<String> = Vec::new();
+    for (table, prefix) in [
+        ("word_alignments", "word_alignment"),
+        ("audio_chunks", "audio_chunk"),
+        ("alignment_runs", "alignment_run"),
+    ] {
+        let rows = sqlx::query(&session_scoped(table, prefix))
+            .bind(&actor.tenant_id)
+            .bind(&req.learner_id)
+            .fetch_all(&mut *tx)
+            .await?;
+        session_owned_ids.extend(rows.into_iter().map(|r| {
+            format!(
+                "{prefix}:{}",
+                r.try_get::<String, _>("id").unwrap_or_default()
+            )
+        }));
+    }
+
+    // Findings hang off an alignment rather than a session, so they need the extra hop.
+    let finding_rows = sqlx::query(
+        "SELECT tf.id FROM tajweed_findings tf \
+         JOIN word_alignments wa ON wa.id = tf.alignment_id \
+         JOIN recitation_sessions rs ON rs.id = wa.session_id \
+         WHERE tf.tenant_id = $1 AND rs.tenant_id = $1 AND rs.learner_id = $2",
+    )
+    .bind(&actor.tenant_id)
+    .bind(&req.learner_id)
+    .fetch_all(&mut *tx)
+    .await?;
+    session_owned_ids.extend(finding_rows.into_iter().map(|r| {
+        format!(
+            "tajweed_finding:{}",
+            r.try_get::<String, _>("id").unwrap_or_default()
+        )
+    }));
+
+    let consent_rows =
+        sqlx::query("SELECT id FROM consent_records WHERE tenant_id = $1 AND user_id = $2")
+            .bind(&actor.tenant_id)
+            .bind(&req.learner_id)
+            .fetch_all(&mut *tx)
+            .await?;
+    let consent_ids: Vec<String> = consent_rows
+        .into_iter()
+        .map(|r| {
+            format!(
+                "consent_record:{}",
+                r.try_get::<String, _>("id").unwrap_or_default()
+            )
+        })
+        .collect();
+
+    let ticket_rows = sqlx::query(
+        "SELECT id FROM realtime_session_tickets WHERE tenant_id = $1 AND learner_id = $2",
+    )
+    .bind(&actor.tenant_id)
+    .bind(&req.learner_id)
+    .fetch_all(&mut *tx)
+    .await?;
+    let ticket_ids: Vec<String> = ticket_rows
+        .into_iter()
+        .map(|r| {
+            format!(
+                "realtime_session_ticket:{}",
+                r.try_get::<String, _>("id").unwrap_or_default()
+            )
+        })
+        .collect();
+
     let mut included_ids = session_ids.clone();
     included_ids.extend(progress_ids);
     included_ids.extend(agent_run_ids);
     included_ids.extend(pilot_session_ids);
     included_ids.extend(pilot_invitation_ids);
+    included_ids.extend(session_owned_ids);
+    included_ids.extend(consent_ids);
+    included_ids.extend(ticket_ids);
 
     let deleted_ids = if kind == PrivacyJobKind::Delete {
         included_ids.clone()

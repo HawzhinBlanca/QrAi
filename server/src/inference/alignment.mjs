@@ -111,7 +111,29 @@ export function similarity(a, b) {
 // inserted, repeated, or restarted more than 2 words — false starts, tasbih repetition, self-correction,
 // hesitation fillers — and then scored correctly-recited words as "missed" or matched them to the wrong
 // neighbour. A global alignment follows the actual recited stream and survives insertions/deletions/repeats.
-export function alignWords(canonicalWords, recognizedWords) {
+/**
+ * `recognizedTimings[j]` is where recognized word `j` was heard, when the ASR reported it.
+ *
+ * Optional and index-parallel to `recognizedWords`, so every existing caller (which passes two
+ * arguments) keeps its exact behaviour: no timings in, no span out.
+ *
+ * A span only ever comes from the recognized word this canonical word was actually PAIRED with.
+ * A `missed` word gets none — nothing was heard for it, and inventing a span would put a tajweed
+ * finding at a moment of audio the learner never recited there. `usable_span` refuses those
+ * downstream, which is the behaviour that surfaced this whole defect and is correct.
+ */
+export function alignWords(canonicalWords, recognizedWords, recognizedTimings = null) {
+  /** The heard span for recognized index `j`, or nothing if it was not reported or is unusable. */
+  const spanFor = (j) => {
+    const t = Array.isArray(recognizedTimings) ? recognizedTimings[j] : null;
+    if (!t) return null;
+    const { startMs, endMs } = t;
+    // The same rule platform-api's `usable_span` applies, enforced at the source rather than
+    // emitting a span that is guaranteed to be rejected later.
+    if (!Number.isInteger(startMs) || !Number.isInteger(endMs)) return null;
+    if (startMs < 0 || endMs <= startMs) return null;
+    return { startMs, endMs };
+  };
   // Non-recited mushaf marks (waqf/sajdah/hizb) are excluded from the alignment ENTIRELY rather than
   // aligned and then filtered. 4,578 of the corpus's 82,456 word tokens are such marks. Feeding one
   // into the DP asks the aligner to find audio for a silent symbol, which distorts that token's span
@@ -214,6 +236,7 @@ export function alignWords(canonicalWords, recognizedWords) {
         status: s >= matchThreshold ? (s >= 0.95 ? "matched" : "needs-review") : "misread",
         confidence: s,
         similarity: s,
+        ...(spanFor(rj) ?? {}),
       });
     } else {
       // Not aligned, or aligned only below the review threshold → missed; free any weakly-paired
@@ -243,6 +266,7 @@ export function alignWords(canonicalWords, recognizedWords) {
         status: "extra",
         confidence: 0.5,
         similarity: 0,
+        ...(spanFor(rj) ?? {}),
       });
     }
   }

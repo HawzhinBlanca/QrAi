@@ -113,6 +113,42 @@ export function routePairsFromRust(src) {
 }
 
 /**
+ * Follow a RESPONSE-LEVEL `$ref` to the Response Object it names.
+ *
+ * OpenAPI allows a whole Response Object to be a reference — `'403': { $ref:
+ * '#/components/responses/Forbidden' }` — and every error response in this contract is written that
+ * way (50 of them: 400/401/403/404). `compileResponseValidators` used to read
+ * `res.content["application/json"].schema` straight off that object, find `undefined`, and `continue`.
+ * So no validator was ever compiled for a single error response, and the two consumers reported it
+ * as an absence rather than a miss: the fixture validator counted them under "skipped (no schema)"
+ * while printing a clean pass, and `assertMatchesContract` — which is careful enough to fail loudly
+ * on a missing entry — would have refused any parity test that tried to assert a 403 body.
+ * Confirmed by replacing `components.schemas.Error` with an incompatible type: the run was
+ * byte-identical.
+ *
+ * THROWS on a ref that does not resolve, and on any ref shape other than a local pointer into
+ * `#/components/responses/`. A resolver that returns undefined for a ref it cannot follow would
+ * restore exactly the silent skip this fixes — the caller cannot tell "no schema contracted" from
+ * "schema contracted, resolver gave up".
+ */
+export function derefResponse(spec, res, where) {
+  const ref = res?.$ref;
+  if (typeof ref !== "string") return res;
+
+  const prefix = "#/components/responses/";
+  if (!ref.startsWith(prefix)) {
+    throw new Error(`${where}: unsupported response $ref ${ref} — expected ${prefix}<Name>`);
+  }
+  const name = ref.slice(prefix.length);
+  const target = spec.components?.responses?.[name];
+  if (!target) throw new Error(`${where}: response $ref ${ref} resolves to nothing`);
+  // One hop only: a components/responses entry that itself is a $ref is not something this contract
+  // uses, and quietly chasing a chain would hide a circular one as a hang.
+  if (target.$ref) throw new Error(`${where}: response $ref ${ref} points at another $ref`);
+  return target;
+}
+
+/**
  * Compile every response schema in the document into an ajv validator.
  *
  * `strict: false` because an OpenAPI document legitimately carries keywords ajv does not know
@@ -137,7 +173,8 @@ export function compileResponseValidators(spec) {
   for (const [path, item] of Object.entries(spec.paths)) {
     for (const [method, op] of Object.entries(item)) {
       if (!["get", "post", "put", "patch", "delete"].includes(method)) continue;
-      for (const [status, res] of Object.entries(op.responses ?? {})) {
+      for (const [status, ref] of Object.entries(op.responses ?? {})) {
+        const res = derefResponse(spec, ref, `${method.toUpperCase()} ${path} ${status}`);
         const schema = res?.content?.["application/json"]?.schema;
         if (!schema) continue;
         const key = `${method.toUpperCase()} ${path} ${status}`;

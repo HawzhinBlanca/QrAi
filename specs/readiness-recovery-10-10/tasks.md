@@ -21,6 +21,66 @@ P6 supports R10; and P7 supports R11/R12.
 
 ### Local implementation evidence — not a release-status change
 
+- 12 August 2026 (**P5.3, P6.1, P2.6 closed; P6.2, P3.2, P0.2 given one named blocker each**):
+  six rows worked in one pass — `specs/agent-closable-closure/plan.md` states up front which three
+  could honestly close and which three could not.
+
+  **P5.3 — the published dependency map is now executable.** P5.2's table asserts 15 behaviours
+  across 5 dependencies and nothing connected any of them to a test. Four of the five already had
+  genuine fault coverage; what was missing was any way to KNOW that.
+  `tests/observability/dependency-fault-coverage.test.mjs` diffs the table against tests annotating
+  themselves `@fault-coverage:`, both directions, with a non-vacuity floor of 5.
+  `trace-survives-fault.test.mjs` closes a real gap: the audit write carrying `trace_id` runs only on
+  SUCCESS, and the three ML failure paths logged only the label — so a learner's `x-trace-id` was
+  recoverable for every request that worked and none that failed. One of those paths logged at
+  `warn!`, invisible at the `RUST_LOG=error` the service runs at, leaving no record at all. Fixed in
+  both the ML and ASR proxies; negative control strips the interpolation and 5/5 fail.
+  `postgres-outage.test.mjs` drops a throwaway database out from under a live pool.
+
+  **CORRECTION to PR #414.** That PR claimed the Rust side had only a happy-path readiness test and
+  that the degraded behaviour was "proven in the port and unproven in the original". Wrong.
+  `readiness_reports_503_when_postgres_is_unreachable_while_liveness_holds` (integration.rs:4123) has
+  existed since 4 August, is mutation-tested both ways, and is recorded in the 4 August entry above.
+  The claim came from a grep truncated by `head -8` that stopped at line 257. The new test still adds
+  something — a pool with LIVE connections losing its backend, through the real binary, versus
+  `connect_lazy` to a port nothing listens on — but it is a complement, and smaller than claimed.
+  Corrected in the file header, in a comment on #414, and here.
+
+  **P6.1 — five journeys, defined then walked.** `docs/readiness/JOURNEYS.md` defines what makes a
+  journey critical and a severity policy keyed on what the PERSON loses. Four new end-to-end tests
+  join the existing privacy one. `teacher-review` stores real bytes through a real ml-inference and
+  asserts the teacher receives THOSE bytes — `audio-playback-parity.test.mjs` uses a mock returning
+  a fixed string and says so itself. `finding-approval` walks the ADR-0028 transition from the
+  learner's side in both directions; without the rejection case, an implementation that promoted on
+  every review would pass. Negative control on the redaction fails 3 of 5, including the sev-1.
+
+  **P2.6 — "no work waiting" and "we could not ask" were the same screen.** `TeacherSurface` caught a
+  failed queue load, logged it, and rendered "No pending recitations." while the service was
+  unreachable — a confident wrong answer the teacher acts on by closing the tab. The root cause was a
+  layer down: `fetchConsole` returns its fallback on ANY failure, so the component's `catch` could
+  never fire. `fetchConsoleRead` now reports `{data, failed}`; `fetchConsole` delegates to it and is
+  otherwise unchanged for its twenty-odd callers. `docs/readiness/DEGRADED_STATES.md` plus
+  `degradation-matrix.test.mjs`, which requires every cited test to be one `verify.sh` ACTUALLY RUNS.
+
+  **Rows that did NOT close, each with one named blocker:**
+  - **P6.2** — 23 web components, 3 audited; all 23 now are, and the axe automation found a real
+    defect (`aria-label` is prohibited on a bare `<div>`, so the progress placeholder announced as
+    empty to a screen reader). The row needs VoiceOver, an alternative screen reader, and real-pixel
+    zoom/reflow. **Blocker: physical devices.**
+  - **P3.2** — `expired` has no meaning here: no approval-expiry column exists anywhere, and
+    `model_versions.status` is read by no service. **Blocker: the ADR-0042 ruling.**
+  - **P0.2** — ADR-0043 records the architecture that already shipped so it can be challenged, and
+    isolates the half nobody chose: retention appears nowhere. **Blocker: owner approval.**
+
+  Guards written this pass that caught their own author: the a11y coverage guard would have
+  mis-paired `PrivacyConsent.a11y.test.tsx` (no such component) had it matched on filename; the
+  degradation matrix rejected a 30-character `n/a` reason of mine; the withheld-reasons guard was
+  VACUOUS on its first run because it scans for marker strings it contains as data — four green
+  tests, zero real annotations.
+
+  **Unchanged by all of it: P3.4/P3.5.** Nothing here is evidence the engine is accurate enough to
+  teach from, and a green gate must not be read as though it were.
+
 - 4 August 2026 (**P0.4**, engineering COMPLETE — the row stays open): the manifest schema and
   verifier bind every item this row names. Enumerated against `scripts/release-manifest.mjs`
   (schemaVersion 2.1.0) and its 22 adversarial tests, one per line:
@@ -350,7 +410,7 @@ P6 supports R10; and P7 supports R11/R12.
 - [ ] P2.3 — Choose per locale: complete reviewed pack or remove/hide its pilot/live claim until complete.
 - [ ] P2.4 — Deliver and independently review approved Sorani and Arabic resources, including Quranic terminology/source boundaries.
 - [x] P2.5 — Prove RTL focus order, semantics, responsive layouts, errors, forms, charts, screen reader labels, and accessible language selector.
-- [ ] P2.6 — Specify/test actionable unavailable/loading/offline/permission/timeout states for every critical flow.
+- [x] P2.6 — Specify/test actionable unavailable/loading/offline/permission/timeout states for every critical flow.
 
 
 ### Local implementation evidence — not a release-status change
@@ -528,7 +588,7 @@ independent verification, or release evidence. P3 remains open.
 
 - [ ] P5.1 — Approve SLOs, capacity model, RTO/RPO, error budgets, and pilot traffic assumptions.
 - [x] P5.2 — Map timeouts, retries, cancellation, idempotency, backpressure, queues, replay, circuit breaking, and user-facing degradation for every dependency.
-- [ ] P5.3 — Add deterministic unit/integration fault tests and observability/tracing assertions.
+- [x] P5.3 — Add deterministic unit/integration fault tests and observability/tracing assertions.
 - [ ] P5.4 — Execute documented load, burst, long-audio, reconnect, timeout, duplicate-delivery, partial-loss, and recovery tests against the candidate.
 - [ ] P5.5 — Prove alerts, dashboards, owner routes, runbooks, feature/kill switch, deploy and rollback.
 - [ ] P5.6 — Perform encrypted backup verification and timed point-in-time restore/disaster-recovery drill.
@@ -536,7 +596,7 @@ independent verification, or release evidence. P3 remains open.
 
 ## Phase 6 — product accessibility, mobile, and user safety
 
-- [ ] P6.1 — Define critical journeys and severity/blocker policy; create end-to-end tests for learner, teacher, reviewer, approval, and privacy paths.
+- [x] P6.1 — Define critical journeys and severity/blocker policy; create end-to-end tests for learner, teacher, reviewer, approval, and privacy paths.
 - [ ] P6.2 — Run accessibility automation plus keyboard, VoiceOver/Safari, alternative screen-reader, zoom/reflow/contrast, and RTL assistive-tech audits; remediate and retest findings.
 - [ ] P6.3 — Produce reproducible signed iOS/Android candidates and approved physical-device/OS/network test matrix.
 - [ ] P6.4 — Prove microphone/permission/interruption/background/offline/reconnect/privacy/deep-link/crash flows on physical devices.

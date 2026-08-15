@@ -379,6 +379,10 @@ pub enum ApiError {
     MissingSources,
     #[error("high-risk content cannot be auto-approved")]
     HighRiskApproval,
+    /// A non-scholar tried to record a `scholar-approved` decision. 403, not 400: this is about who
+    /// the caller is, not what they sent. Names the rule rather than the caller's role.
+    #[error("only a scholar may record a scholar-approved decision")]
+    NotAScholar,
     #[error("database error: {0}")]
     Database(String),
     #[error("{0}")]
@@ -501,7 +505,7 @@ impl IntoResponse for ApiError {
         }
         let status = match self {
             Self::Unauthorized => StatusCode::UNAUTHORIZED,
-            Self::Forbidden => StatusCode::FORBIDDEN,
+            Self::Forbidden | Self::NotAScholar => StatusCode::FORBIDDEN,
             Self::NotFound => StatusCode::NOT_FOUND,
             Self::MissingSources | Self::HighRiskApproval | Self::BadRequest(_) => {
                 StatusCode::BAD_REQUEST

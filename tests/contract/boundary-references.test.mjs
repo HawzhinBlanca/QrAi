@@ -4,6 +4,9 @@ import { dirname, join } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 
+import { MET, checkAdr0022, checkSchemaValidation } from "../../scripts/cutover-readiness.mjs";
+import { loadOpenapi, routePairsFromRust } from "./lib/openapi.mjs";
+
 /**
  * CU3 — every path `specs/cutover/boundary.md` cites must exist.
  * specs/cutover/plan.md

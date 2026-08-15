@@ -360,3 +360,27 @@ test("every model in models.dart is either contracted or listed as uncontracted"
       `UNCONTRACTED. Add the mapping, or say why there is no contract — do not leave it ambiguous.`,
   );
 });
+
+test("the Dart client handles exactly the audioStatus values the contract can send", () => {
+  // A Node test for the reason this whole file is one: verify.sh SKIPS every Flutter step when the
+  // SDK is absent, so a Dart-side assertion would not run on the gate that matters.
+  //
+  // `audioNotice` in review_queue_screen.dart branches on ADR-0037's four values, and each branch
+  // is a different sentence a teacher reads. A value the contract can send and the switch does not
+  // name falls to `default` — which is honest ("could not be established") but silently wrong for a
+  // value that had a real meaning. A branch for a value the contract CANNOT send is dead code that
+  // reads as coverage.
+  const contracted = spec.components.schemas.StaffTajweedFinding.properties.audioStatus.enum;
+  assert.ok(Array.isArray(contracted) && contracted.length > 0, "audioStatus is no longer an enum");
+
+  const screen = readFileSync(join(flutterRoot, "lib/src/review/review_queue_screen.dart"), "utf8");
+  const fn = /String\? audioNotice\(String\? audioStatus\) \{([\s\S]*?)\n\}/.exec(screen);
+  assert.ok(fn, "audioNotice is gone or was renamed; this check is now measuring nothing");
+  const handled = matchAll(fn[1], /case '([^']+)':/g);
+
+  assert.deepEqual(
+    [...handled].sort(),
+    [...contracted].sort(),
+    "the Dart switch and the contract's audioStatus enum disagree",
+  );
+});

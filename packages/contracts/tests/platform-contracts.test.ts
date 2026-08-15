@@ -126,6 +126,12 @@ describe("Quran AI platform contracts", () => {
     expect(verifyCanonicalWord(tamperedLegacy)).toBe(false);
   });
 
+  // Three independent conditions, three separate claims. Annotated because any ONE of them failing
+  // produces the same `false`, so a suite can look thorough while exercising only one — see
+  // tests/contract/withheld-reasons.test.mjs, which enforces that each has an owner.
+  //
+  // @withheld: unreviewed-status
+  // @withheld: no-sources
   it("blocks learner-facing AI output without sources, confidence, or human review", () => {
     const approvedRun: Pick<AgentRun, "confidence" | "reviewStatus" | "sources"> = {
       confidence: 0.91,
@@ -156,6 +162,7 @@ describe("Quran AI platform contracts", () => {
     expect(canShowLearnerFacingAiOutput(weakRun)).toBe(false);
   });
 
+  // @withheld: below-confidence-floor
   it("pins the exact confidence boundary at 0.82 (>= passes, < fails)", () => {
     // The prior test only exercises 0.78 (well below) and 0.91 (well above) — neither pins the
     // exact threshold, so an off-by-one (e.g. `> 0.82` instead of `>= 0.82`) could slip through

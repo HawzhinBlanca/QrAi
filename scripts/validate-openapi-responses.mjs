@@ -27,9 +27,13 @@ const validators = compileResponseValidators(spec);
 const fixtures = JSON.parse(readFileSync("specs/api-golden-fixtures/fixtures/platform-api.json", "utf8"));
 
 let checked = 0;
-let skipped = 0;
 const failures = [];
 const uncontracted = [];
+// NAMED, not counted. This read `skipped: 12` for a long time and the number was believable — until
+// it turned out all twelve were error responses the contract DOES give a schema, via a response-level
+// `$ref` the compiler silently walked past (tests/contract/response-refs.test.mjs). A bare count is
+// unfalsifiable; a list is something a reader can disagree with.
+const skipped = [];
 
 for (const step of fixtures.steps) {
   const { method, path } = step.request;
@@ -45,12 +49,12 @@ for (const step of fixtures.steps) {
   const entry = validators.get(key);
   if (!entry) {
     // The status is contracted without a JSON schema (a bare `description:`), or not contracted at
-    // all. Either way there is nothing to check — counted, not silently passed.
-    skipped += 1;
+    // all. Either way there is nothing to check — named, not silently passed.
+    skipped.push(`${key}  — no JSON schema contracted`);
     continue;
   }
   if (entry.unvalidated) {
-    skipped += 1;
+    skipped.push(`${key}  — x-unvalidated`);
     continue;
   }
 
@@ -67,7 +71,8 @@ for (const step of fixtures.steps) {
   }
 }
 
-console.log(`fixtures: ${fixtures.steps.length}  validated: ${checked}  skipped (no schema or x-unvalidated): ${skipped}`);
+console.log(`fixtures: ${fixtures.steps.length}  validated: ${checked}  skipped: ${skipped.length}`);
+for (const s of skipped) console.log(`   skip ${s}`);
 if (uncontracted.length > 0) {
   console.log(`\nNOT MATCHED to any contracted path (${uncontracted.length}):`);
   for (const u of uncontracted) console.log(`   ${u}`);

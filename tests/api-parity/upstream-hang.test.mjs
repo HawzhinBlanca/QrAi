@@ -4,7 +4,14 @@ import test, { after, before } from "node:test";
 import { request, startApi, startMockUpstream } from "./lib/harness.mjs";
 
 /**
+ * @fault-coverage: ml-asr
+ *
  * P5.3 fault injection — a WEDGED ML/ASR upstream.
+ *
+ * Registered against the "ML / ASR (from platform-api)" row of the P5.2 dependency map in
+ * `docs/readiness/INVENTORIES.md` — shared 60 s timeout, generic 502 on upstream failure, internal
+ * URL never leaked. `tests/observability/dependency-fault-coverage.test.mjs` reads that annotation;
+ * removing it makes the map's ML row uncovered and fails the gate.
  *
  * `lib.rs` has carried this comment since the client was written:
  *

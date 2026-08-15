@@ -80,7 +80,7 @@ export const localeCapabilities: LocaleCapability[] = [
     label: "English",
     nativeName: "English",
     direction: "ltr",
-    interface: { availability: "available", source: "source-language", bundlePath: "apps/web/src/locales/en.json", keyCount: 384 },
+    interface: { availability: "available", source: "source-language", bundlePath: "apps/web/src/locales/en.json", keyCount: 389 },
     quranTranslation: { availability: "none", evidence: "No English verse-translation bundle is shipped." },
   },
   {
@@ -417,14 +417,44 @@ export async function fetchBenchmarkMetrics(tenantId: string, authToken?: string
 const ADMIN_HEADERS = (tenantId: string, authToken?: string): Record<string, string> =>
   actorHeaders(tenantId, "admin-1", "admin", authToken);
 
-async function fetchConsole<T>(path: string, tenantId: string, fallback: T, authToken?: string): Promise<T> {
+/**
+ * A console read that says whether it worked. (P2.6)
+ *
+ * `fetchConsole` returns its fallback on any failure — a timeout, a refused connection, a 500 — so
+ * every consumer received `[]` and rendered "nothing here". A teacher whose backend was unreachable
+ * was shown "No pending recitations.": not a degraded state but a confident, wrong answer, and one
+ * they act on by closing the tab.
+ *
+ * The failure could not be caught upstream either: the component's own `catch` never fired, because
+ * nothing was ever thrown. That is why the signal has to start here.
+ *
+ * `fetchConsole` keeps its signature and its behaviour — twenty-odd callers depend on it and most
+ * of them genuinely have nothing better to do than show an empty panel. It now delegates, so there
+ * is one implementation rather than two that can drift.
+ */
+export interface ConsoleRead<T> {
+  data: T;
+  /** True when the read failed and `data` is the fallback rather than an answer from the service. */
+  failed: boolean;
+}
+
+async function fetchConsoleRead<T>(
+  path: string,
+  tenantId: string,
+  fallback: T,
+  authToken?: string,
+): Promise<ConsoleRead<T>> {
   try {
     const response = await fetchWithTimeout(`${API_BASE}${path}`, { headers: ADMIN_HEADERS(tenantId, authToken) });
-    if (!response.ok) return fallback;
-    return (await response.json()) as T;
+    if (!response.ok) return { data: fallback, failed: true };
+    return { data: (await response.json()) as T, failed: false };
   } catch {
-    return fallback;
+    return { data: fallback, failed: true };
   }
+}
+
+async function fetchConsole<T>(path: string, tenantId: string, fallback: T, authToken?: string): Promise<T> {
+  return (await fetchConsoleRead(path, tenantId, fallback, authToken)).data;
 }
 
 export interface AgentRunSummary {
@@ -471,6 +501,14 @@ export function fetchTeacherReviewQueue(tenantId: string, authToken?: string): P
 
 export interface TajweedFindingSummary {
   id: string;
+  /**
+   * The session this finding is about. Required, not optional: the teacher queue fetches findings
+   * TENANT-WIDE and has to decide which belong to the session on screen. It used to do that by
+   * matching `wordId`, which is the CANONICAL word id and therefore identical for every learner
+   * reciting the same passage — so other learners' findings were attributed to the open session and
+   * a teacher's accept/reject went to the wrong recitation.
+   */
+  sessionId: string;
   wordId: string;
   rule: string;
   analysisBasis: "acoustic";
@@ -479,6 +517,78 @@ export interface TajweedFindingSummary {
   explanation: string;
   reviewStatus: ReviewStatus;
   sources: SourceReference[];
+  /**
+   * ADR-0037 — whether a reviewer can HEAR this recitation, and if not, why not. The server has
+   * always sent it (StaffTajweedFinding requires it); this client did not read it, so the teacher
+   * surface could only ever say "no audio" without saying which of four very different things had
+   * happened. `discarded` is a learner exercising a right; `not-captured` is a session that never
+   * had audio; `unknown` is two records disagreeing, which is a fault. Optional because a server
+   * predating the field would otherwise fail to parse here.
+   */
+  audioStatus?: "available" | "discarded" | "not-captured" | "unknown";
+}
+
+/**
+ * The audio for ONE finding, from the audited route.
+ *
+ * NOT `/v1/recitation-sessions/{id}/audio`. The teacher surface requested that, got a 404 every
+ * time, and rendered the failure as "No audio available for this session" — indistinguishable from
+ * a learner having asked for their recording to be destroyed. A privacy outcome and a broken URL
+ * looked identical to the person reviewing.
+ *
+ * That path is NOT a typo, and calling it one (as an earlier version of this comment did) makes the
+ * mistake look sillier and rarer than it is. It is a REAL route — the realtime GATEWAY's WebSocket
+ * upgrade, `services/realtime-gateway/src/lib.rs:682`, which the learner's live-recitation client
+ * uses correctly. What went wrong was reaching it with the PLATFORM-API base URL over plain HTTP:
+ * the right path, the wrong service, the wrong protocol. Two services sharing a path shape is the
+ * trap, and `tests/contract/client-routes.test.mjs` now checks client paths against BOTH.
+ *
+ * The route that DOES exist is per FINDING, and deliberately so (ADR-0037): every attempt writes an
+ * audit row before the bytes move, and retention is re-checked against both the consent record and
+ * the stored object. Serving a whole session would answer "who listened to this child's recitation"
+ * with one row covering everything, which is a weaker posture than the one already built.
+ */
+export type FindingAudio =
+  | { kind: "audio"; audioBase64: string; startMs: number; endMs: number; chunksOverlappingFinding: number }
+  // The server distinguishes these; so must the UI. Collapsing them is the bug above.
+  | { kind: "discarded" | "not-captured" | "unavailable" };
+
+export async function fetchFindingAudio(
+  findingId: string,
+  tenantId: string,
+  authToken?: string,
+): Promise<FindingAudio> {
+  let response: Response;
+  try {
+    response = await fetchWithTimeout(`${API_BASE}/v1/tajweed-findings/${encodeURIComponent(findingId)}/audio`, {
+      headers: actorHeaders(tenantId, "teacher-1", "teacher", authToken),
+    });
+  } catch {
+    return { kind: "unavailable" };
+  }
+
+  // 410 is the learner's erasure honoured, or a retention disagreement — either way the recording is
+  // gone and saying "unavailable" would invite the teacher to keep retrying. 404 is a session that
+  // never captured audio.
+  if (response.status === 410) return { kind: "discarded" };
+  if (response.status === 404) return { kind: "not-captured" };
+  if (!response.ok) return { kind: "unavailable" };
+
+  try {
+    const body = await response.json();
+    if (typeof body?.audioBase64 !== "string" || body.audioBase64.length === 0) {
+      return { kind: "unavailable" };
+    }
+    return {
+      kind: "audio",
+      audioBase64: body.audioBase64,
+      startMs: Number(body.startMs ?? 0),
+      endMs: Number(body.endMs ?? 0),
+      chunksOverlappingFinding: Number(body.chunksOverlappingFinding ?? 0),
+    };
+  } catch {
+    return { kind: "unavailable" };
+  }
 }
 
 export function fetchTajweedFindings(tenantId: string, authToken?: string): Promise<TajweedFindingSummary[]> {
@@ -525,6 +635,11 @@ export function fetchRecitationSessions(tenantId: string, authToken?: string): P
   return fetchConsole<RecitationSessionSummary[]>("/v1/recitation-sessions", tenantId, [], authToken);
 }
 
+/** As `fetchRecitationSessions`, but distinguishes "no sessions" from "could not ask". */
+export function readRecitationSessions(tenantId: string, authToken?: string): Promise<ConsoleRead<RecitationSessionSummary[]>> {
+  return fetchConsoleRead<RecitationSessionSummary[]>("/v1/recitation-sessions", tenantId, [], authToken);
+}
+
 export function fetchSessionAlignments(
   tenantId: string,
   sessionId: string,
@@ -537,6 +652,20 @@ export function fetchSessionAlignments(
     ]);
   }
   return fetchConsole<SessionAlignment[]>(
+    `/v1/recitation-sessions/${sessionId}/alignments`,
+    tenantId,
+    [],
+    authToken,
+  );
+}
+
+/** As `fetchSessionAlignments`, but distinguishes "no words" from "could not ask". */
+export function readSessionAlignments(
+  tenantId: string,
+  sessionId: string,
+  authToken?: string,
+): Promise<ConsoleRead<SessionAlignment[]>> {
+  return fetchConsoleRead<SessionAlignment[]>(
     `/v1/recitation-sessions/${sessionId}/alignments`,
     tenantId,
     [],
