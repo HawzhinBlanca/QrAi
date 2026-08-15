@@ -1171,41 +1171,6 @@ pub async fn request_teacher_review(
     })))
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn parse_review_status_round_trips_every_known_value() {
-        assert_eq!(parse_review_status("draft").unwrap(), ReviewStatus::Draft);
-        assert_eq!(
-            parse_review_status("ai-suggested").unwrap(),
-            ReviewStatus::AiSuggested
-        );
-        assert_eq!(
-            parse_review_status("teacher-review-required").unwrap(),
-            ReviewStatus::TeacherReviewRequired
-        );
-        assert_eq!(
-            parse_review_status("teacher-reviewed").unwrap(),
-            ReviewStatus::TeacherReviewed
-        );
-        assert_eq!(
-            parse_review_status("scholar-approved").unwrap(),
-            ReviewStatus::ScholarApproved
-        );
-        assert_eq!(
-            parse_review_status("blocked").unwrap(),
-            ReviewStatus::Blocked
-        );
-    }
-
-    #[test]
-    fn parse_review_status_rejects_an_unknown_value() {
-        assert!(parse_review_status("not-a-real-status").is_err());
-    }
-}
-
 /// `POST /v1/recitation-sessions/{id}/finalize` — turn a streamed recitation into a reviewable one.
 ///
 /// ── The link this closes ────────────────────────────────────────────────────────────────────────
@@ -1664,4 +1629,39 @@ async fn ml_post(
         tracing::error!("finalize: {path} parse error: {e}");
         ApiError::Upstream("ML service returned an invalid response".to_owned())
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_review_status_round_trips_every_known_value() {
+        assert_eq!(parse_review_status("draft").unwrap(), ReviewStatus::Draft);
+        assert_eq!(
+            parse_review_status("ai-suggested").unwrap(),
+            ReviewStatus::AiSuggested
+        );
+        assert_eq!(
+            parse_review_status("teacher-review-required").unwrap(),
+            ReviewStatus::TeacherReviewRequired
+        );
+        assert_eq!(
+            parse_review_status("teacher-reviewed").unwrap(),
+            ReviewStatus::TeacherReviewed
+        );
+        assert_eq!(
+            parse_review_status("scholar-approved").unwrap(),
+            ReviewStatus::ScholarApproved
+        );
+        assert_eq!(
+            parse_review_status("blocked").unwrap(),
+            ReviewStatus::Blocked
+        );
+    }
+
+    #[test]
+    fn parse_review_status_rejects_an_unknown_value() {
+        assert!(parse_review_status("not-a-real-status").is_err());
+    }
 }

@@ -2069,14 +2069,14 @@ mod tests {
     /// (ALLOW_INSECURE_DEFAULTS / GATEWAY_ALLOW_MISSING_ORIGIN / CORS_ALLOWED_ORIGINS). Any future
     /// test touching those MUST take this lock, or it can race this one (cargo runs unit tests
     /// multi-threaded in one process).
-    static ORIGIN_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    static ORIGIN_ENV_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
     #[tokio::test]
     async fn test_audio_ws_origin_validation() {
         use axum::http::{Request, StatusCode};
         use tower::ServiceExt;
 
-        let _env = ORIGIN_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _env = ORIGIN_ENV_LOCK.lock().await;
 
         // Set up env variables
         unsafe {
@@ -2167,7 +2167,7 @@ mod tests {
         use axum::http::{Request, StatusCode};
         use tower::ServiceExt;
 
-        let _env = ORIGIN_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _env = ORIGIN_ENV_LOCK.lock().await;
 
         unsafe {
             // Explicitly remove rather than assume: another test in this process may have left it.
@@ -2790,11 +2790,10 @@ mod tests {
              — and because `training-opt-in` audio is never evicted, permanently. The same volume \
              holds the audit log, whose write failure is swallowed by design"
         );
-        assert!(
+        const _: () = assert!(
             crate::MAX_SESSION_CHUNKS >= 10_000,
-            "the cap is now {} chunks, under two hours of audio at 480ms each. \
-             That risks cutting off a legitimate long recitation; raise it or restate the derivation",
-            crate::MAX_SESSION_CHUNKS
+            "the cap is under two hours of audio at 480ms each. \
+             That risks cutting off a legitimate long recitation; raise it or restate the derivation"
         );
         assert!(
             !source.contains("let mut session_bytes = 0"),

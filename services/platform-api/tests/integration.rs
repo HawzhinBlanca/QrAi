@@ -3706,9 +3706,9 @@ async fn adversarial_api_isolation_prevents_cross_tenant_delete() {
 
 #[tokio::test]
 async fn test_platform_api_cors_origin_validation() {
-    use std::sync::Mutex;
-    static CORS_LOCK: Mutex<()> = Mutex::new(());
-    let _guard = CORS_LOCK.lock().unwrap();
+    use tokio::sync::Mutex;
+    static CORS_LOCK: Mutex<()> = Mutex::const_new(());
+    let _guard = CORS_LOCK.lock().await;
 
     // 1. Setup environment allowed origin
     unsafe {
