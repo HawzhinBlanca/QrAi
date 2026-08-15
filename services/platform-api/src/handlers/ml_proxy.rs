@@ -407,6 +407,22 @@ async fn persist_tajweed_findings(
 
     // `severity` has a CHECK constraint; an unknown value would be a 500 on a learner's request.
     const SEVERITIES: [&str; 3] = ["practice", "warning", "critical"];
+
+    // What these findings were derived from (P3.2, migration 0028).
+    //
+    // The rule is DOWNGRADE-ONLY, and that is what makes reading it off the response safe. The
+    // literal below stays the default; the only thing the upstream can do is declare its own output
+    // fixture-derived, which is a weaker claim than the one it would otherwise get. A caller that
+    // lies can therefore only mark its data as LESS trustworthy — never promote it. That is the
+    // concern the hardcoded-literal comment below is about, and this direction does not have it.
+    //
+    // Without this, `ML_USE_GOLDEN_FIXTURES=1` wrote a flawless recitation nobody performed into
+    // tajweed_findings as `canonical-text`, indistinguishable from analysis of a child's session,
+    // permanently.
+    let analysis_basis = match result.get("provenance").and_then(|v| v.as_str()) {
+        Some("fixture") => "fixture",
+        _ => "canonical-text",
+    };
     let mut written = 0usize;
     let mut unanchored = 0usize;
     for finding in findings {
@@ -439,10 +455,15 @@ async fn persist_tajweed_findings(
             // read from a response is one refactor away from being caller-controlled, and this one
             // decides whether a teacher trusts what they are looking at. When an acoustic analyser
             // exists, writing `acoustic` will be a deliberate code change with its own review.
+            //
+            // `analysis_basis` is now bound rather than literal, and the reasoning above is exactly
+            // why the binding is DOWNGRADE-ONLY (see `analysis_basis` above): 'canonical-text' is
+            // still the value nothing external can ask for, and the single alternative an upstream
+            // may select is the weaker 'fixture'.
             "INSERT INTO tajweed_findings
                (id, tenant_id, alignment_id, rule, severity, confidence, explanation,
                 review_status, source_refs, model_version_id, audit_event_id, analysis_basis)
-             VALUES ($1, $2, $3, $4, $5, $6::float8::numeric, $7, 'ai-suggested', $8, $9, $10, 'canonical-text')",
+             VALUES ($1, $2, $3, $4, $5, $6::float8::numeric, $7, 'ai-suggested', $8, $9, $10, $11)",
         )
         .bind(next_id("tajweed-finding"))
         .bind(tenant_id)
@@ -475,6 +496,7 @@ async fn persist_tajweed_findings(
         )
         .bind(model_version)
         .bind(&audit_id)
+        .bind(analysis_basis)
         .execute(&mut *tx)
         .await?;
         written += 1;

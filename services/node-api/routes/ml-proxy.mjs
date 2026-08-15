@@ -285,6 +285,12 @@ async function persistTajweedFindings(ctx, actor, sessionId, result, trace) {
   const findings = Array.isArray(result?.findings) ? result.findings : [];
   if (findings.length === 0) return;
 
+  // What these findings were derived from (P3.2, migration 0028). Parity with
+  // `persist_tajweed_findings` in ml_proxy.rs, including the reasoning: the rule is DOWNGRADE-ONLY,
+  // so the only value an upstream can select is the WEAKER 'fixture' claim. 'canonical-text'
+  // remains a value nothing external can ask for.
+  const analysisBasis = result?.provenance === "fixture" ? "fixture" : "canonical-text";
+
   await ctx.db.withTenant(actor.tenantId, async (tx) => {
     const [existing] = await tx`
       SELECT 1 FROM tajweed_findings tf
@@ -332,8 +338,9 @@ async function persistTajweedFindings(ctx, actor, sessionId, result, trace) {
         ? Math.min(1, Math.max(0, rawConfidence))
         : 0;
 
-      // `review_status` and `analysis_basis` are LITERALS below, never fields read from the ML
-      // response.
+      // `review_status` is a LITERAL below, never a field read from the ML response, and
+      // `analysis_basis` is bound only under the downgrade-only rule described at the top of this
+      // function.
       //
       // 'ai-suggested': this is a model's opinion, and only `create_teacher_review` may move it
       // (ADR-0027).
@@ -357,7 +364,7 @@ async function persistTajweedFindings(ctx, actor, sessionId, result, trace) {
                 ${confidence}::float8::numeric,
                 ${typeof finding.explanation === "string" ? finding.explanation : ""},
                 'ai-suggested', ${tx.json(Array.isArray(finding.sources) ? finding.sources : [])},
-                ${modelVersionId}, ${auditId}, 'canonical-text')`;
+                ${modelVersionId}, ${auditId}, ${analysisBasis})`;
     }
   });
 }

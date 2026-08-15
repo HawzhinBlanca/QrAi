@@ -187,7 +187,8 @@ jobs:
             infra/sql/0024_teacher_review_survives_realignment.sql \
             infra/sql/0025_tajweed_analysis_basis.sql \
             infra/sql/0026_alignment_span_check.sql \
-            infra/sql/0027_unevidenced_model_claim.sql; do
+            infra/sql/0027_unevidenced_model_claim.sql \
+            infra/sql/0028_tajweed_fixture_basis.sql; do
             echo "Applying $sql..."
             psql -v ON_ERROR_STOP=1 "$DATABASE_URL" -f "$sql"
           done
