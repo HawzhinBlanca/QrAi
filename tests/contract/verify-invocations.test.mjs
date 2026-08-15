@@ -583,3 +583,13 @@ test("the minimum-Node projection still extracts the W1.10 guard from canonical 
     `${ACOUSTIC_CANDIDATE_PROOF_TEST} must survive the minimum-Node workflow projection exactly once`,
   );
 });
+
+test("canonical verification runs the master ledger reconciliation suite exactly once", () => {
+  const invocations = activeNodeTestLines(verifySource);
+  const target = "tests/contract/master-ledger-reconciliation.test.mjs";
+  assert.equal(
+    invocations.filter((line) => line.includes(target)).length,
+    1,
+    `${target} must run exactly once in canonical verification`,
+  );
+});
