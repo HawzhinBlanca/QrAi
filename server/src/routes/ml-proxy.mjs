@@ -82,10 +82,30 @@ export function clearsLearnerGate(finding) {
  * person recited. `confidence: 0` and `sources: []` are not filler — they make the redacted finding
  * fail the client gate on its own merits.
  */
-function redactWithheldFindings(result) {
-  if (!Array.isArray(result?.findings)) return;
-  for (const finding of result.findings) {
-    if (finding === null || typeof finding !== "object" || clearsLearnerGate(finding)) continue;
+export function redactWithheldFindings(result) {
+  if (result === null || typeof result !== "object") return;
+  if (!Array.isArray(result?.findings)) {
+    if ("findings" in result) result.findings = [];
+    return;
+  }
+  for (let i = 0; i < result.findings.length; i++) {
+    const finding = result.findings[i];
+    if (finding === null || typeof finding !== "object" || Array.isArray(finding)) {
+      result.findings[i] = {
+        wordId: "",
+        rule: "",
+        arabicName: "",
+        category: "",
+        severity: "practice",
+        explanation: "",
+        confidence: 0,
+        reviewStatus: "ai-suggested",
+        sources: [],
+        withheld: true,
+      };
+      continue;
+    }
+    if (clearsLearnerGate(finding)) continue;
     for (const field of ["rule", "arabicName", "category", "severity", "explanation", "wordId"]) {
       if (field in finding) finding[field] = "";
     }
