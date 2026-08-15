@@ -607,6 +607,7 @@ components:
           type: array
           items: { $ref: '#/components/schemas/LearnerRecitationHistoryItem' }
         nextCursor: { type: [string, "null"] }
+      additionalProperties: false
 
     RecitationSessionListEntry:
       # The LIST shape, which is NOT RecitationSession — the same split as SessionTajweedFinding vs

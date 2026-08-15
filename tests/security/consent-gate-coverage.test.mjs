@@ -51,7 +51,7 @@ const MIN_REASON = 40;
 const GATES = {
   audioRetention: [
     { file: "packages/contracts/src/index.ts", marker: "export function mustDiscardAudio" },
-    { file: "services/ml-inference/server.mjs", marker: 'audioRetention !== "teacher-review"' },
+    { file: "server/src/inference/runtime.mjs", marker: 'retention === "teacher-review"' },
   ],
   externalAsrProcessing: [
     { file: "packages/contracts/src/index.ts", marker: "export function canUseExternalAsr" },
