@@ -305,6 +305,19 @@ function readEvidenceInputs(values, repositoryRoot, expectedCandidate, expectedT
   if (!Array.isArray(sbom.value.creationInfo.creators) || sbom.value.creationInfo.creators.length === 0) {
     fail("SBOM creationInfo.creators is required.");
   }
+  // Everything above validates the SPDX document HEADER and never looks inside it (P4.4). An SBOM
+  // with `packages: []` satisfied all of it and was bound into the signed manifest as this
+  // candidate's component inventory — inventorying nothing. Not hypothetical: this script's own
+  // test fixture was built exactly that way, so the suite proving the evidence chain works had
+  // never been shown an SBOM that listed a single component.
+  if (!Array.isArray(sbom.value.packages) || sbom.value.packages.length === 0) {
+    fail("SBOM lists no packages; a component inventory that inventories nothing is not evidence.");
+  }
+  for (const pkg of sbom.value.packages) {
+    if (typeof pkg?.SPDXID !== "string" || typeof pkg?.name !== "string" || typeof pkg?.versionInfo !== "string") {
+      fail("SBOM package entries must each carry SPDXID, name, and versionInfo.");
+    }
+  }
 
   const trustedSigners = readExternalJsonInput(values, "--trusted-signers", repositoryRoot, "trusted signer policy");
   const signerPolicy = assertTrustedSignerPolicy(trustedSigners.value);
@@ -337,7 +350,10 @@ function readEvidenceInputs(values, repositoryRoot, expectedCandidate, expectedT
     sbom: {
       sha256: sbom.sha256,
       spdxVersion: sbom.value.spdxVersion,
-      documentNamespace: sbom.value.documentNamespace
+      documentNamespace: sbom.value.documentNamespace,
+      // Recorded, not merely asserted, so a challenger comparing two bundles sees an inventory that
+      // shrank without having to re-read both SBOMs.
+      packageCount: sbom.value.packages.length
     },
     signerPolicy: {
       sha256: trustedSigners.sha256,
@@ -435,6 +451,9 @@ function assertManifestShape(manifest, repositoryRoot) {
   assertSha256(manifest.sbom.sha256, "sbom.sha256");
   if (typeof manifest.sbom.spdxVersion !== "string" || typeof manifest.sbom.documentNamespace !== "string") {
     fail("SBOM evidence is incomplete.");
+  }
+  if (!Number.isInteger(manifest.sbom.packageCount) || manifest.sbom.packageCount < 1) {
+    fail("SBOM evidence must record how many packages the inventory holds, and it must hold some.");
   }
   assertJsonObject(manifest.signerPolicy, "signer policy evidence");
   assertSha256(manifest.signerPolicy.sha256, "signerPolicy.sha256");

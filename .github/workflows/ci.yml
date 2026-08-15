@@ -219,9 +219,30 @@ jobs:
           (cd services/platform-api && cargo audit)
           (cd services/realtime-gateway && cargo audit)
 
-      # --- Software Bill of Materials (CycloneDX, all languages) for supply-chain review (P0.4/P4.4).
-      #     Non-blocking (it is an artifact, not a gate — the advisory GATES are pnpm/cargo audit
-      #     above); uploaded so a security reviewer (P4.5) has the exact component inventory. ---
+      # --- Software Bill of Materials, SPDX.
+      #
+      #     SPDX is the format the release evidence chain actually consumes: `release-manifest.mjs`
+      #     hashes the SBOM into the signed manifest and requires `spdxVersion` / `SPDXID` /
+      #     `documentNamespace`, and `release-challenge.yml` passes `evidence/sbom.spdx.json`.
+      #     NOTHING in this repository produced one — the CycloneDX step below writes a different
+      #     format and is non-blocking, so a release would have reached manifest generation with no
+      #     usable SBOM at all, on release day (P4.4).
+      #
+      #     BLOCKING, unlike the CycloneDX step: the generator refuses to write an inventory that is
+      #     empty or missing an entire ecosystem, and that refusal is the gate. An SBOM nobody can
+      #     tell is broken is worse than an absent one, because the absence gets noticed. ---
+      - name: Generate SBOM (SPDX)
+        run: node scripts/generate-sbom.mjs --out sbom.spdx.json
+      - name: Upload SBOM (SPDX)
+        uses: actions/upload-artifact@v4
+        with:
+          name: sbom-spdx
+          path: sbom.spdx.json
+          if-no-files-found: error
+
+      # --- CycloneDX as well, for tools that read it. Advisory, and deliberately left that way: the
+      #     supply-chain GATES are pnpm/cargo audit above, the licence gate inside verify.sh, and the
+      #     SPDX step above. ---
       - name: Generate SBOM (CycloneDX)
         run: npx -y @cyclonedx/cdxgen@^11 -o sbom.cdx.json . || echo "::warning::SBOM generation had issues (non-blocking)"
       - name: Upload SBOM
