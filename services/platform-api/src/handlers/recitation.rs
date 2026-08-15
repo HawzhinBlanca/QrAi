@@ -1334,12 +1334,12 @@ pub async fn finalize_session(
             "tenantId": actor.tenant_id,
             "sessionId": id,
             "quranRef": quran_ref,
-            "recognizedText": recognized,
-            // Index-parallel to `recognizedText`. Transcription and alignment are two separate
-            // requests to the ML service, so a timing that is not carried across this hop is a
-            // timing the aligner never has — which is exactly how every alignment this endpoint
-            // produced came back spanless and was refused by `usable_span` below.
-            "recognizedTimings": transcript.get("recognizedTimings").cloned().unwrap_or(serde_json::Value::Null),
+            // The projection `recognizedText` is deliberately not forwarded. Only these measured
+            // tokens can earn finalization; the public proxy rejects this field from callers.
+            "recognizedTokens": recognized_tokens,
+            // Private server-to-server field. The public Rust and Node proxies both reject it, so
+            // only this finalizer can bind measured spans to the workers that produced them.
+            "transcriptModelAttribution": transcript_model_attribution,
             "consent": consent,
         }),
     )
