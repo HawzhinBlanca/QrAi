@@ -35,10 +35,9 @@ Every wave follows the same five steps (`plan.md §2`), and step 4 is not option
       server-side re-derivation of `canShowLearnerFacingAiOutput`) and is the ONLY place an agent
       run's status is set. Three reads and one security-critical write do not belong in one slice.
 - [x] N12a — `POST /v1/auth/token` — JWT minting; admin/ops, DB-derived role, cross-verified with Rust.
-- [ ] N12b — `register` + `login` — **BLOCKED on ADR-0025.** bcrypt has no stdlib equivalent and no
-      existing dependency provides it, so these two routes need a new runtime dependency handling
-      credentials. AGENTS.md requires an ADR; ADR-0025 is written and **Proposed**, awaiting the
-      owner. Implementing first would be deciding it by writing code.
+- [x] N12b — `register` + `login` — **RECONCILED with accepted ADR-0038.** Superseded ADR-0025;
+      routes are inventoried for retirement with zero final callers (CT-4 `retired-routes.test.mjs`);
+      bcrypt is not added.
 - [x] N13a — Pilot cookie AUTH path — the credential path every ported route shares; `__Host-` cookie
       parsing, Origin + CSRF gates, and the idle roll inside a tenant transaction.
 - [x] N13b — Pilot ROUTES — `bootstrap`, `logout`, `invitations`; cookie attributes on the wire.

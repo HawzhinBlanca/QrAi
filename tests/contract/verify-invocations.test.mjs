@@ -593,3 +593,13 @@ test("canonical verification runs the master ledger reconciliation suite exactly
     `${target} must run exactly once in canonical verification`,
   );
 });
+
+test("canonical verification runs the retired routes contract suite exactly once", () => {
+  const invocations = activeNodeTestLines(verifySource);
+  const target = "tests/contract/retired-routes.test.mjs";
+  assert.equal(
+    invocations.filter((line) => line.includes(target)).length,
+    1,
+    `${target} must run exactly once in canonical verification`,
+  );
+});
