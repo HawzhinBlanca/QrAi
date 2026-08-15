@@ -249,31 +249,10 @@ export function createApplication(config) {
   // parity differ compares bodies and an "improved" message here is a divergence.
   const MAINTENANCE_EXEMPT = new Set(["/health", "/ready", "/metrics"]);
   if (maintenanceMode) {
-    app.addHook("onRequest", (req, reply, done) => {
-      // `req.url` carries the query string; the path alone decides, as `req.uri().path()` does.
+    app.addHook("onRequest", async (req, reply) => {
       const path = req.url.split("?")[0];
-      if (MAINTENANCE_EXEMPT.has(path)) return done();
+      if (MAINTENANCE_EXEMPT.has(path)) return;
       reply.code(503).header("content-type", "application/json").send({ error: "service is in maintenance" });
-    });
-  }
-
-  // ── Rate limiting, just inside the kill switch ───────────────────────────────────────────────
-  //
-  // lib.rs:366's tower_governor layer, which this port did not have. ON by default there;
-  // DISABLE_RATE_LIMIT=1 turns it off. POST /v1/auth/token and POST /v1/pilot/session/bootstrap are
-  // both PORTABLE, so without this the invitation exchange is brute-forceable at cutover — the
-  // throttle silently gone rather than deliberately removed.
-  //
-  // Order matches lib.rs: CORS outermost (a preflight is never throttled, and a 429 still carries
-  // headers the browser can read), then the maintenance kill-switch, then this. Registering the
-  // hooks in that sequence IS the ordering — in any Node framework it is otherwise a line-number
-  // accident, which is why ordering.test.mjs exists.
-  if (rateLimit) {
-    const limiter = createRateLimiter();
-    app.addHook("onRequest", (req, reply, done) => {
-      const verdict = limiter.take(clientKey(req, trustProxyHeaders));
-      if (verdict.allowed) return done();
-      sendTooManyRequests(reply, verdict.waitSeconds);
     });
   }
 
