@@ -1,7 +1,7 @@
 import { ChevronDown, Globe2, ShieldCheck } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { getSelectableInterfaceLanguages, supportedLanguages } from "../data/platform";
-import type { SupportedLanguageCode } from "../types/platform";
+import type { SupportedLanguageCode } from "@quran-ai/contracts";
 
 interface TopBarProps {
   title: string;

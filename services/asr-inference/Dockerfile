@@ -28,7 +28,7 @@ CMD ["python", "server.py"]
 # imports forced_align lazily for /v1/force-align — omitting either breaks boot or the endpoint. The
 # test module is intentionally left out of the image.
 FROM runtime-base AS runtime
-COPY --chown=appuser:appuser services/asr-inference/server.py services/asr-inference/forced_align.py services/asr-inference/audio_guards.py services/asr-inference/model_attribution.py services/asr-inference/readiness.py services/asr-inference/candidate_evidence.py services/asr-inference/calibration_registry.py services/asr-inference/acoustic_tajweed.py services/asr-inference/model-candidates.json services/asr-inference/acoustic-candidates.json services/asr-inference/calibrator-registry.json ./
+COPY --chown=appuser:appuser services/asr-inference/server.py services/asr-inference/forced_align.py services/asr-inference/audio_guards.py services/asr-inference/auth_guards.py services/asr-inference/model_attribution.py services/asr-inference/readiness.py services/asr-inference/candidate_evidence.py services/asr-inference/calibration_registry.py services/asr-inference/acoustic_tajweed.py services/asr-inference/model-candidates.json services/asr-inference/acoustic-candidates.json services/asr-inference/calibrator-registry.json ./
 
 # Optional, deliberately large shadow-evaluation image. The normal Compose/runtime target does
 # not include Muaalem or its 2.4 GB model. Every source/model byte below is bound to the reviewed
@@ -41,7 +41,7 @@ RUN pip install --no-cache-dir --no-deps -r requirements.acoustic.lock.txt \
     && mkdir -p /opt/qrai/muaalem-v3_2 \
     && chown appuser:appuser /opt/qrai/muaalem-v3_2
 USER appuser
-COPY --chown=appuser:appuser services/asr-inference/server.py services/asr-inference/forced_align.py services/asr-inference/audio_guards.py services/asr-inference/model_attribution.py services/asr-inference/readiness.py services/asr-inference/candidate_evidence.py services/asr-inference/calibration_registry.py services/asr-inference/acoustic_tajweed.py services/asr-inference/model-candidates.json services/asr-inference/acoustic-candidates.json services/asr-inference/calibrator-registry.json ./
+COPY --chown=appuser:appuser services/asr-inference/server.py services/asr-inference/forced_align.py services/asr-inference/audio_guards.py services/asr-inference/auth_guards.py services/asr-inference/model_attribution.py services/asr-inference/readiness.py services/asr-inference/candidate_evidence.py services/asr-inference/calibration_registry.py services/asr-inference/acoustic_tajweed.py services/asr-inference/model-candidates.json services/asr-inference/acoustic-candidates.json services/asr-inference/calibrator-registry.json ./
 ADD --chown=appuser:appuser --checksum=sha256:8ac65705686105b31937d2fa8c15f3d7143ead07fb46380ec28042aa4f25e2ee https://huggingface.co/obadx/muaalem-model-v3_2/resolve/01a1ef9fbe40d144ef845101e89ff924aed3fef5/added_tokens.json /opt/qrai/muaalem-v3_2/added_tokens.json
 ADD --chown=appuser:appuser --checksum=sha256:2094c962ca4a167304d8a2c6d2ca429060cbb6c817de09904739ab088bbcf16f https://huggingface.co/obadx/muaalem-model-v3_2/resolve/01a1ef9fbe40d144ef845101e89ff924aed3fef5/config.json /opt/qrai/muaalem-v3_2/config.json
 ADD --chown=appuser:appuser --checksum=sha256:6b6a2e85303d17ff0f3af5e1fc79ac83daecee409c756ddf27f0ced59393bb41 https://huggingface.co/obadx/muaalem-model-v3_2/resolve/01a1ef9fbe40d144ef845101e89ff924aed3fef5/model.safetensors /opt/qrai/muaalem-v3_2/model.safetensors

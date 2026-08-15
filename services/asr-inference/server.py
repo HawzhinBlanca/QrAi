@@ -43,6 +43,7 @@ from fastapi import Depends, FastAPI, Header, HTTPException, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
+from auth_guards import resolve_asr_api_key, verify_asr_key
 from audio_guards import MAX_AUDIO_SECONDS, enforce_max_duration, probe_duration_seconds
 from acoustic_tajweed import (
     AcousticRefusal,
@@ -66,7 +67,7 @@ from readiness import AsrReadinessController, known_audio_wav_bytes
 # /v1/asr/* proxy, which holds ASR_API_KEY server-side (like ML_API_KEY for ml-inference). ml-inference
 # also sends the key on its server-to-server transcribe call. Health stays open. In dev/CI the default
 # key is used on both sides; in production ASR_API_KEY is set (platform-api boot-refuses a weak value).
-ASR_API_KEY = os.environ.get("ASR_API_KEY", "smoke-asr-api-key")
+ASR_API_KEY = resolve_asr_api_key()
 
 ACOUSTIC_SHADOW_ENABLED = os.environ.get("ACOUSTIC_SHADOW_ENABLED", "").strip().lower() in (
     "1",
@@ -82,7 +83,7 @@ acoustic_worker = AcousticWorkerClient(timeout_seconds=ACOUSTIC_WORKER_TIMEOUT_S
 
 
 def require_asr_key(x_asr_api_key: Optional[str] = Header(default=None)) -> None:
-    if x_asr_api_key != ASR_API_KEY:
+    if not verify_asr_key(x_asr_api_key, ASR_API_KEY):
         raise HTTPException(status_code=401, detail="unauthorized")
 
 

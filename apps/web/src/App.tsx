@@ -1,5 +1,4 @@
 import { Suspense, lazy, useEffect, useMemo, useRef, useState, useCallback } from "react";
-import { motion } from "motion/react";
 import { Send } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { isNonRecitedMark } from "@quran-ai/contracts";
@@ -62,7 +61,7 @@ import {
 import { getQuranVerses, getQuranLoadError, loadSurahVerses, loadWeeklyProgress, updateVersesWithAlignment, buildRecitationEvents, type QuranVerse, type RecitationEvent, type ProgressBar } from "./data/quran";
 import type { AppSection, PracticeMode, MicState } from "./types/practice";
 import { practiceSteps } from "./types/practice";
-import type { SupportedLanguageCode } from "./types/platform";
+import type { SupportedLanguageCode } from "@quran-ai/contracts";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // LOGIN IS INTENTIONALLY DISABLED until the product owner enables it for production.
@@ -1177,12 +1176,7 @@ function AuthenticatedApp({ bypassLogin = false }: { bypassLogin?: boolean }) {
           roleLabel={effectiveUser?.role}
           onLogout={pilotIdentity ? endPilotSession : bypassLogin ? undefined : logout}
         />
-        <motion.div
-          animate={{ opacity: 1, y: 0 }}
-          className={activeSection === "learner" ? "learner-stage" : "platform-stage"}
-          initial={{ opacity: 0, y: 10 }}
-          transition={{ duration: 0.35, ease: "easeOut" }}
-        >
+        <div className={activeSection === "learner" ? "learner-stage" : "platform-stage"}>
           {activeSection === "learner" ? (
             practiceMode === "home" ? (
               <LearnerHome onStartPractice={startPractice} onCheckMic={checkMicPermission} micState={micState} memorizationPlan={memorizationPlan} progress={progress} consent={consent} onConsentChange={setConsent} surahList={surahList} selectedSurah={selectedSurah} onSelectSurah={setSelectedSurah} apiError={apiError} platformOffline={platformOffline} onRetry={loadInitialData} />
@@ -1259,7 +1253,7 @@ function AuthenticatedApp({ bypassLogin = false }: { bypassLogin?: boolean }) {
               onSectionChange={(section) => setActiveSection(section as AppSection)}
             />
           )}
-        </motion.div>
+        </div>
         {smokeReport ? <LayoutSmokeProbe report={smokeReport} /> : null}
       </main>
     </div>

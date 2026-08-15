@@ -1,4 +1,4 @@
-import type { WordAlignment } from "../types/platform";
+import type { WordAlignment } from "@quran-ai/contracts";
 
 import {
   DEFAULT_RECONNECT_POLICY,

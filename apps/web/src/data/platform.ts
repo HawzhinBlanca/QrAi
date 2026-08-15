@@ -14,7 +14,7 @@ import type {
   ModelEvalRun,
   SourceReference,
   SupportedLanguageCode,
-} from "../types/platform";
+} from "@quran-ai/contracts";
 import { fetchWithTimeout } from "../lib/http";
 import { getPilotCsrf, isPilotMode } from "../lib/pilotSession";
 

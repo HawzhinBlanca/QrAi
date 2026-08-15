@@ -266,7 +266,7 @@ if [[ "$FAST" != "yes" ]]; then
   # fastapi and shells out to ffmpeg (verified: system python3 has numpy but not fastapi), so it
   # needs the service venv. It stays ungated until CI installs the asr-inference requirements —
   # a named gap, not a silent one.
-  run "test: python (asr-inference)" "cd services/asr-inference && { command -v python3 >/dev/null || { echo 'python3 not found — required, not optional'; exit 1; }; } && python3 test_eval_metrics.py && python3 test_eval_pipeline.py && python3 test_forced_align_normalization.py && python3 test_force_align_unavailable.py && python3 test_ghunnah_escapes.py && python3 -m pytest -q test_model_attribution.py test_acoustic_tajweed.py"
+  run "test: python (asr-inference)" "cd services/asr-inference && { command -v python3 >/dev/null || { echo 'python3 not found — required, not optional'; exit 1; }; } && python3 test_auth_guards.py && python3 test_eval_metrics.py && python3 test_eval_pipeline.py && python3 test_forced_align_normalization.py && python3 test_force_align_unavailable.py && python3 test_ghunnah_escapes.py && python3 -m pytest -q test_model_attribution.py test_acoustic_tajweed.py"
   # W1.6 — the forced-aligner span proof. Unlike every suite above it genuinely needs torch and
   # torchaudio: it drives torchaudio's real forced_align/merge_tokens over a hand-built emission,
   # which is the only way to test the blank index and the frame->millisecond arithmetic without a

@@ -1,5 +1,9 @@
-import { canShowLearnerFacingAiOutput } from "@quran-ai/contracts";
-import type { AgentRun, ScholarApproval, SourceReference } from "../types/platform";
+import {
+  canShowLearnerFacingAiOutput,
+  type AgentRun,
+  type ScholarApproval,
+  type SourceReference,
+} from "@quran-ai/contracts";
 
 export function formatPercent(value: number): string {
   return `${Math.round(value * 100)}%`;
