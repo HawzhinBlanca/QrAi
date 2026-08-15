@@ -17,7 +17,7 @@ incident landed squarely on the gap this phase exists to close.
 | **T1** restore | **PASS** — full corpus restored, all counts matched source, `<1s` | `evidence/T1-restore-drill.log` |
 | **T3** kill-switch | **PASS** — app routes 503, health/ready/metrics 200, control confirms | `evidence/T3-killswitch-drill.log` |
 | **T2** audio volume | **PASS** — pre-erasure backup restored; erased audio did NOT come back, control did | `evidence/T2-audio-drill.log` |
-| T4 rollback | **still impossible** — no artifact exists (ADR-0022 unresolved) | — |
+| T4 rollback | **reconciled** — ADR-0022 accepted (Option B GHCR); live rehearsal runs under Q10-017 | — |
 | T5 runbook | partially closed — T1/T3 numbers filled in, rollback still UNMEASURED | — |
 
 The principle still holds for what did NOT run: **delivering a script is not the same as proving
@@ -32,7 +32,7 @@ is absent" is also true of a restore that restored nothing.
 - [x] T1 restore script + timed drill — DONE, drill PASSED with controls
 - [ ] T2 audio-volume round trip + erasure re-application — drill PASSED, awaiting verify.sh + CI
 - [x] T3 kill-switch drill — DONE (native binary over real HTTP, not compose — stated in the log)
-- [ ] T4 rollback artifact — **ADR written (proposed), rehearsal BLOCKED**
+- [ ] T4 rollback artifact — **reconciled with accepted ADR-0022 (Option B GHCR)**; rehearsal runs under Q10-017
 - [ ] T5 runbook sections — T1/T3 numbers now measured and filled in; rollback still UNMEASURED, so not closed
 
 ---
@@ -43,7 +43,7 @@ is absent" is also true of a restore that restored nothing.
 |---|---|
 | `scripts/restore-db.sh` | **Drill-proven.** Refuses a non-empty target without `RESTORE_FORCE=1` (confirmed: exit 3 against a populated DB); **no default target**; row-count verification confirmed to FAIL on an under-restored database (`FAIL canonical_ayahs expected 6236, got 7`, exit 1). Timer resolution fixed after the drill showed `0s`, which is not a usable number. |
 | `scripts/restore-db.test.sh` | **5/5 green, wired into `verify.sh`.** Covers the pre-connection guards, including a source-level assertion that a `DATABASE_URL` fallback can never be reintroduced |
-| `docs/DECISIONS.md` ADR-0022 | The T4 blocker analysed, three options, recommendation. **Status: Proposed** — the owner picks (A) local tags or (B) registry |
+| `docs/DECISIONS.md` ADR-0022 | **Accepted (Option B, GHCR durable registry).** Consumed by `docker-compose.release.yml`, release workflow, and deployment selection CLI |
 | `docs/STAGING_RUNBOOK.md` | Take-down / rollback / restore / bring-up. Closes the dangling `alerts.yml` → runbook reference. T1/T3 timings now **measured**; rollback still reads UNMEASURED because it genuinely is |
 | `evidence/T1-drill-BLOCKED.md` | The first, blocked attempt — **kept, not deleted.** It is what happened, and the daemon crash it records is itself the incident this phase exists to prepare for |
 | `evidence/T1-restore-drill.log` | The real drill: backup → restore → verify, both guards exercised, plus a correction of my own piping error that had masked an exit code |
