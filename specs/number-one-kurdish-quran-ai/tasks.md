@@ -8,7 +8,7 @@ Only `scripts/update-ledger.sh` may flip a checkbox. Never self-sign a HUMAN/IND
 
 ## E0 — one candidate and truthful control plane
 
-- [ ] **Q10-001** Reconcile the clean target branch with remote consolidation `3e6bec4` and live main `942ea7e`, preserving user work and every main-only safety fix. Depends: approval. Owner: agent + owner conflict decisions. Proof: descendant-of-both assertion, clean tree, focused conflict regressions, canonical gate. Criteria: EX-1.
+- [x] **Q10-001** Reconcile the clean target branch with remote consolidation `3e6bec4` and live main `942ea7e`, preserving user work and every main-only safety fix. Depends: approval. Owner: agent + owner conflict decisions. Proof: descendant-of-both assertion, clean tree, focused conflict regressions, canonical gate. Criteria: EX-1.
 - [ ] **Q10-002** Implement active-ledger reconciliation so all 76 source IDs map exactly once and historical/duplicate checklists cannot authorize completion. Depends: Q10-001. Owner: agent. Proof: `master-ledger-reconciliation.test.mjs` including missing, duplicate, stale and closed-main fixtures. Criteria: EX-1.
 - [ ] **Q10-003** Assign release, security, SRE, privacy/legal, scholar, product, accessibility, mobile, support, research-data and pilot owners with signature/expiry matrix. Depends: Q10-001. Owner: HUMAN. Proof: schema validator may check completeness; people sign their own rows. Source: P0.1.
 - [ ] **Q10-004** Approve the signed release-evidence/retention ADR, including producer run identity, artifact retrieval, signatures, expiry and failed-evidence preservation. Depends: Q10-003. Owner: HUMAN release/security. Proof: ADR/living-doc guard. Source: P0.2.
