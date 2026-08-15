@@ -335,6 +335,14 @@ if [[ "$FAST" != "yes" ]]; then
   # transitive AGPL arrival changes the obligations of the whole distribution and turns up the same
   # silent way the undici advisory did — through someone else's lockfile bump.
   run "guard: dependency licences (P4.4)" "node scripts/check-licenses.mjs --self-test && node scripts/check-licenses.mjs"
+  # P4.4's SBOM leg. `release-manifest.mjs` requires an SPDX document as a signed material and
+  # NOTHING produced one — CI's only SBOM step writes CycloneDX, and non-blocking at that. This
+  # builds the SPDX inventory from the same two dependency trees the licence gate above reads, and
+  # refuses to write one that inventories nothing, or only one of the two ecosystems. The file goes
+  # to a temp path: the artifact belongs to a release, and the gate here is that it can be produced
+  # and passes policy on this tree.
+  run "guard: SPDX SBOM (P4.4)" \
+    "node --test scripts/generate-sbom.test.mjs >/dev/null && node scripts/generate-sbom.mjs --out \"\${TMPDIR:-/tmp}/qrai-sbom.spdx.json\" && node scripts/generate-sbom.mjs --check \"\${TMPDIR:-/tmp}/qrai-sbom.spdx.json\""
   # A model version may not CLAIM it passed evaluation without one that passes.
   # `modelEvalPassesReleaseGate` encoded the bar and had NO caller — one reference outside its own
   # unit test, its own definition — while `model_versions.status` said `eval-passed` with nothing

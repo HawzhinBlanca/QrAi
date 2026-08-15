@@ -120,7 +120,19 @@ function writeEvidenceInputs({ evidenceDirectory, candidateSha, traceId, publicK
       created: completedAt,
       creators: ["Tool: qrai-release-evidence-test"]
     },
-    packages: []
+    // This fixture said `packages: []` (P4.4). Every assertion in `--generate` looked at the SPDX
+    // document header, so an SBOM inventorying NOTHING was bound into the signed manifest as the
+    // candidate's component inventory and the suite proving the evidence chain works had never seen
+    // one that listed a component. "refuses to bind an SBOM that inventories nothing", at the end of
+    // this file, is the case that would have caught it.
+    packages: [
+      {
+        SPDXID: "SPDXRef-npm-release-evidence-test-1.0.0",
+        name: "release-evidence-test",
+        versionInfo: "1.0.0",
+        licenseDeclared: "MIT"
+      }
+    ]
   });
   writeJson(trustedSignersPath, {
     schemaVersion: "qrai-release-trusted-signers/v1",
@@ -596,4 +608,40 @@ test("a full challenge refuses to write its two fresh summaries to one path", (t
     env: { ...process.env, RELEASE_DATABASE_URL: "postgresql://unused@127.0.0.1:1/none" },
   });
   assertFailure({ status: result.status, output: `${result.stdout}${result.stderr}` }, /must be different files/i);
+});
+
+test("refuses to bind an SBOM that inventories nothing", (t) => {
+  // P4.4. Every SBOM assertion in `--generate` read the SPDX document HEADER — version, SPDXID,
+  // name, namespace, creationInfo — and none of them looked inside. `packages: []` satisfied all of
+  // them, and this file's own fixture was written that way, so the suite that proves the evidence
+  // chain works had never been shown an SBOM listing a single component. The signed manifest then
+  // carried it as the candidate's component inventory.
+  const candidate = prepareCandidate(t);
+  const sbom = readJson(candidate.sbomPath);
+  sbom.packages = [];
+  writeJson(candidate.sbomPath, sbom);
+
+  assertFailure(run(candidate.repo, generateArguments(candidate)), /inventories nothing/i);
+});
+
+test("refuses an SBOM whose packages carry no version", (t) => {
+  // A component that cannot be matched against an advisory is most of what an SBOM is for. Present
+  // in the list is not the same as identifiable.
+  const candidate = prepareCandidate(t);
+  const sbom = readJson(candidate.sbomPath);
+  delete sbom.packages[0].versionInfo;
+  writeJson(candidate.sbomPath, sbom);
+
+  assertFailure(run(candidate.repo, generateArguments(candidate)), /SPDXID, name, and versionInfo/i);
+});
+
+test("rejects a manifest claiming an empty SBOM inventory", (t) => {
+  // The verify side of the same rule. Without it, the count is generated honestly and can then be
+  // edited to zero in a manifest that still verifies.
+  const candidate = prepareCandidate(t);
+  updateManifest(candidate, (manifest) => {
+    manifest.sbom.packageCount = 0;
+  });
+
+  assertFailure(run(candidate.repo, verifyArguments(candidate)), /packages the inventory holds/i);
 });
