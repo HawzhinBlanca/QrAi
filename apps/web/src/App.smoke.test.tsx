@@ -1119,6 +1119,44 @@ describe("Quran AI app smoke", () => {
     }
   });
 
+  it("a production build cannot be talked into offering unreviewed locales with ?smoke", async () => {
+    // ── The defect this pins ──────────────────────────────────────────────────────────────────────
+    // The picker chose its list with
+    //     import.meta.env.MODE === "test" ||
+    //     new URLSearchParams(window.location.search).has("smoke")
+    // whose second half is a RUNTIME read, so it survived minification into the shipped bundle —
+    // `has("smoke")` was grepped straight out of the built PlatformCommand and LoginScreen chunks.
+    // Appending `?smoke` to a deployed URL turned this one-option picker into a nine-option one.
+    //
+    // data/platform.ts declares exactly ONE locale available (English). The other eight are
+    // `unavailable / not-shipped`, each with an evidence string saying so. Choosing one is not
+    // cosmetic: App.tsx writes `document.documentElement.lang` and flips `dir` to that locale's
+    // direction while every string still resolves to English through fallbackLng — so the page
+    // announces itself as Urdu to a screen reader reading English, and mirrors the whole chrome.
+    //
+    // The test above simulated production but never appended `?smoke`, which is why the hatch
+    // survived a suite that already had a production locale test.
+    vi.stubEnv("MODE", "production");
+    const originalUrl = window.location.href;
+    window.history.replaceState({}, "", "/?smoke");
+
+    try {
+      const root = createRoot(container);
+      await act(async () => {
+        root.render(<App />);
+      });
+
+      const values = Array.from(document.querySelectorAll(".language-button select option")).map(
+        (option) => option.getAttribute("value"),
+      );
+      expect(values).toEqual(["en"]);
+      expect(document.documentElement.lang).toBe("en");
+    } finally {
+      vi.unstubAllEnvs();
+      window.history.replaceState({}, "", originalUrl);
+    }
+  });
+
   it("proves real-device mobile responsive styling and touch targets", async () => {
     const originalWidth = window.innerWidth;
     Object.defineProperty(window, "innerWidth", { writable: true, configurable: true, value: 375 });
