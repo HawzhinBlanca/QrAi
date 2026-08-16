@@ -2,7 +2,7 @@ import { useState } from "react";
 import { GraduationCap, User, Lock, LogIn, UserPlus } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { useAuth } from "../lib/auth";
-import { offersUnreviewedLanguages } from "../lib/languageOffer";
+import { allowsFabricatedData } from "../lib/buildMode";
 
 export function LoginScreen() {
   const { t } = useTranslation();
@@ -143,7 +143,7 @@ export function LoginScreen() {
               <span className="sr-only">{t("login.languageLabel")}</span>
               <select value={language} onChange={(e) => setLanguage(e.target.value)} aria-label={t("login.languageLabel")}>
                 {(() => {
-                  if (offersUnreviewedLanguages(import.meta.env)) {
+                  if (allowsFabricatedData(import.meta.env)) {
                     return (
                       <>
                         <option value="ar">العربية</option>

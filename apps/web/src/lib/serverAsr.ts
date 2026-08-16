@@ -12,6 +12,7 @@
  */
 
 import type { AsrStatus } from "./asr";
+import { usesSmokeStubs } from "./buildMode";
 import { fetchWithTimeout } from "./http";
 
 // Dev needs an absolute URL (vite serves 5173, the API 8080); the Docker/prod build proxies /v1/
@@ -93,7 +94,7 @@ export async function startServerAsr(options: StartServerAsrOptions): Promise<Se
   }
 
   return startRecordedAudio(options, async (recorded) => {
-    if (typeof window !== "undefined" && new URLSearchParams(window.location.search).has("smoke")) {
+    if (usesSmokeStubs(import.meta.env, typeof window === "undefined" ? "" : window.location.search)) {
       return { transcript: "بِسْمِ اللَّهِ", confidence: 0.95 };
     }
     const wav = await decodeToWav16kMono(recorded);
