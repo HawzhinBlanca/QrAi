@@ -575,6 +575,83 @@ independent verification, or release evidence. P3 remains open.
   `unknown` — where previously all 2772 findings belonged to discard-consent sessions and the queue
   looked identical to one where the audio was simply unplayed.
 
+- 16 August 2026 (**P2.2, P2.3, P3.2, P4.4 — engineering slices; every row stays `[ ]`**): four
+  rows were examined for the part that is an engineering gap rather than a human one. Each turned
+  out to be substantially built already, with a specific hole.
+
+  **P2.2 — `reviewExpires` was declared and read by nothing.** Outside `capability.json` the only
+  hit in the repository was the ledger sentence promising the field. A locale reviewed once would
+  have claimed `complete` for the life of the product. Two neighbouring holes in the same file: the
+  parity rules ran against a hard-coded `ckb.json` path — measured, an `ar.json` carrying a key
+  absent from the English was dropped in and the suite stayed GREEN — and `complete` was checked by
+  key COUNT, which cannot see a locale holding the right number of the wrong keys while
+  `fallbackLng` renders English. (#438)
+
+  **P4.4 — the release SBOM had no producer.** `release-manifest.mjs` hashes an SPDX document into
+  the signed manifest; `release-challenge.yml` passes `evidence/sbom.spdx.json`. The only SBOM step
+  in the repository writes CycloneDX, a different format, non-blocking. A release would have reached
+  `--generate` and stopped. Worse, the manifest validated the SPDX HEADER and never looked inside:
+  `packages: []` passed, and this repository's own test fixture was written that way, so the suite
+  proving the evidence chain works had never seen an SBOM listing a component. `generate-sbom.mjs`
+  builds SPDX from the two trees the licence gate already reads — 528 packages, 211 npm and 317
+  cargo — with per-ecosystem floors, because `pnpm licenses` before `pnpm install` returns a handful
+  rather than none. (#439)
+
+  **P3.2 — fixture output was stored as real analysis.** Measured on one identical request:
+  fixture mode returns 8 alignments, every word `matched` with `heardText === canonicalText`, and 1
+  finding; the real path returns 29 alignments and 38 findings. Both responses carried an IDENTICAL
+  set of top-level keys, and both set `fixtureCaseId`, which means "this passage matches a golden
+  case" and is true on the real path too. `analysis_basis` was written `'canonical-text'` either
+  way. Migration 0028 adds `fixture`; the binding is DOWNGRADE-ONLY, so an upstream may only ever
+  mark its own output as the weaker claim. (#440)
+
+  **P2.3 — `?smoke` was a production escape hatch.** Three components chose their language list with
+  a RUNTIME read of the query string, which survived into the shipped bundle. Appending `?smoke` to
+  a deployed URL turned a one-option picker into a nine-option one, and eight of those are declared
+  `unavailable / not-shipped`. Selecting one set `document.documentElement.lang` and flipped `dir`
+  while every string still resolved to English — a page announcing itself as Urdu to a screen reader
+  reading English. An existing test already simulated production and never appended `?smoke`. (#441)
+
+  **The same hatch, one layer down, and much worse.** Pulling on `?smoke` found six more call sites
+  in `lib/api.ts` and `lib/serverAsr.ts` answering from hardcoded values instead of calling anything:
+  a transcript at confidence 0.95 with nothing recorded, two canned alignments, one canned finding,
+  a truncated Al-Fatihah, and a `requestTeacherReview` that wrote localStorage and reported success.
+  `persistSessionAlignments` has NO such branch — it always POSTs, and App.tsx hands it exactly what
+  `predictAlignment` returned under the comment "Persist the real alignment to this session". So
+  fabricated words about a child's recitation were written to the real database against a real
+  learner's real session, FROM A QUERY STRING. The client-side twin of the fixture defect above, and
+  worse: that one needs two environment variables and a boot acknowledgement, and its rows now carry
+  `analysis_basis = 'fixture'`. This needed a URL, and what it wrote was indistinguishable from real.
+  `requestTeacherReview` also reintroduced, behind the flag, the defect its own comment records as
+  fixed — "displayed 'Sent to teacher.' without any request at all (SHIP_PLAN P1.2)". (#442)
+
+  **Two corrections recorded against #442, because both are the kind of mistake this method exists
+  to catch.** The first fix replaced the flag with the build-mode predicate, which did not narrow
+  those call sites but WIDENED them — unlike the pickers, the API stubs read the flag alone and were
+  inert in an ordinary test or dev run, so every vitest run and dev page load began answering from
+  stubs. `verify.sh` caught it; the targeted test runs had not. And the first version of the tests
+  PASSED their negative control: the file ran in the node environment where `window` is undefined,
+  so the restored hatch was dead code and the tests proved only "production calls fetch". Under
+  jsdom with `?smoke` genuinely in the URL, restoring it fails 3 of 4.
+
+  **Why none of these rows closed.** P2.2 and P2.3 need reviewed locale packs (P2.4, a qualified
+  human reviewer). P3.2 names `expired`, which has no schema anywhere and needs the ADR-0042 ruling.
+  P4.4 names further legs beyond the SBOM.
+
+  **P0.7 was examined and is not blocked on tooling.** A Docker daemon became available and the
+  environment's network policy still denies `production.cloudfront.docker.com`, so no base image can
+  be pulled and no image digest produced here. That is beside the point: the challenge SCRIPT is
+  already adversarially tested, and what P0.7 needs is a real candidate signed by a release
+  authority plus an independent verifier — P0.1, still unassigned. Generating a signing key here and
+  calling the result a signed candidate would manufacture exactly the authority the row exists to
+  require.
+
+  **Axes examined and found clean, recorded so they are not re-hunted:** `?smokeMode=admin` grants
+  nothing — a pilot identity wins first and a production build hits the `needsInvite` wall before
+  any admin surface renders; realtime ticket replay is defended by single-use tickets over an
+  in-memory plus optional Redis store, with `REALTIME_TICKET_FAIL_CLOSED` a declared, documented
+  default rather than an oversight.
+
 ## Phase 4 — privacy, tenancy, and security
 
 - [ ] P4.1 — Approve full-system threat model and map each material threat to test/mitigation/accepted risk owner.
