@@ -4,6 +4,7 @@
 
 import type { ReviewStatus, SourceReference } from "@quran-ai/contracts";
 
+import { usesSmokeStubs } from "./buildMode";
 import { fetchWithTimeout } from "./http";
 import { getPilotCsrf, isPilotMode, setPilotIdentity, type PilotIdentity } from "./pilotSession";
 
@@ -276,7 +277,7 @@ export async function requestTeacherReview(params: {
   authToken?: string;
   sessionId: string;
 }): Promise<void> {
-  if (typeof window !== "undefined" && new URLSearchParams(window.location.search).has("smoke")) {
+  if (usesSmokeStubs(import.meta.env, typeof window === "undefined" ? "" : window.location.search)) {
     localStorage.setItem("smoke-session-id", params.sessionId);
     return Promise.resolve();
   }
@@ -468,7 +469,7 @@ async function postJson(path: string, body: unknown): Promise<unknown> {
 }
 
 export async function fetchSurahList(): Promise<SurahInfo[]> {
-  if (typeof window !== "undefined" && new URLSearchParams(window.location.search).has("smoke")) {
+  if (usesSmokeStubs(import.meta.env, typeof window === "undefined" ? "" : window.location.search)) {
     return Promise.resolve([
       { surahNumber: 1, name: "الفاتحة", englishName: "Al-Fatihah", ayahCount: 7, revelationType: "meccan" }
     ]);
@@ -477,7 +478,7 @@ export async function fetchSurahList(): Promise<SurahInfo[]> {
 }
 
 export async function fetchSurah(surahNumber: number): Promise<SurahDetail> {
-  if (typeof window !== "undefined" && new URLSearchParams(window.location.search).has("smoke")) {
+  if (usesSmokeStubs(import.meta.env, typeof window === "undefined" ? "" : window.location.search)) {
     return Promise.resolve({
       surahNumber: 1,
       name: "الفاتحة",
@@ -507,7 +508,7 @@ export async function predictAlignment(params: {
   ayahEnd: number;
   recognizedText?: string[];
 }): Promise<{ alignments: AlignmentResult[]; confidence: number }> {
-  if (typeof window !== "undefined" && new URLSearchParams(window.location.search).has("smoke")) {
+  if (usesSmokeStubs(import.meta.env, typeof window === "undefined" ? "" : window.location.search)) {
     return Promise.resolve({
       alignments: [
         { wordId: "1:1:1", canonicalText: "بِسْمِ", heardText: "بِسْمِ", startMs: 0, endMs: 500, confidence: 0.95, status: "matched" },
@@ -547,7 +548,7 @@ export async function predictTajweed(params: {
   ayahStart: number;
   ayahEnd: number;
 }): Promise<{ findings: TajweedFinding[]; confidence: number }> {
-  if (typeof window !== "undefined" && new URLSearchParams(window.location.search).has("smoke")) {
+  if (usesSmokeStubs(import.meta.env, typeof window === "undefined" ? "" : window.location.search)) {
     return Promise.resolve({
       findings: [
         {

@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import { localeCapabilities, getSelectableInterfaceLanguages } from "../data/platform";
-import { offersUnreviewedLanguages } from "./languageOffer";
+import { allowsFabricatedData } from "./buildMode";
 
 /**
  * P2.3 — a production build may not offer a language the project declares unshipped.
@@ -11,26 +11,26 @@ import { offersUnreviewedLanguages } from "./languageOffer";
  * directly could only ever be exercised in the mode that answers true — which is how the defect
  * survived: every existing test of the picker ran in the branch that offers everything.
  */
-describe("offersUnreviewedLanguages", () => {
+describe("allowsFabricatedData", () => {
   it("refuses in a production build", () => {
-    expect(offersUnreviewedLanguages({ MODE: "production" })).toBe(false);
+    expect(allowsFabricatedData({ MODE: "production" })).toBe(false);
   });
 
   it("allows the dev server, which is what every browser smoke runs", () => {
     // smoke-browser, smoke-a11y and smoke-e2e each spawn `vite`, so all three run with
     // MODE === "development" and keep the full list they select from.
-    expect(offersUnreviewedLanguages({ MODE: "development" })).toBe(true);
+    expect(allowsFabricatedData({ MODE: "development" })).toBe(true);
   });
 
   it("fails CLOSED on a mode it has never heard of", () => {
     // `vite build --mode staging` is not production and not development. An allowlist gives it the
     // reviewed list; a denylist would have handed a staging deployment all nine.
-    expect(offersUnreviewedLanguages({ MODE: "staging" })).toBe(false);
-    expect(offersUnreviewedLanguages({ MODE: "" })).toBe(false);
+    expect(allowsFabricatedData({ MODE: "staging" })).toBe(false);
+    expect(allowsFabricatedData({ MODE: "" })).toBe(false);
   });
 
   it("allows the test runner", () => {
-    expect(offersUnreviewedLanguages({ MODE: "test" })).toBe(true);
+    expect(allowsFabricatedData({ MODE: "test" })).toBe(true);
   });
 
   it("cannot be turned on from a URL", () => {
@@ -43,12 +43,12 @@ describe("offersUnreviewedLanguages", () => {
     // The predicate takes no request, no location and no search string, so there is nothing for a
     // URL to say. That is the fix, and this asserts the SHAPE of it rather than a behaviour, because
     // a signature that cannot see the query string cannot be talked into consulting it.
-    expect(offersUnreviewedLanguages.length).toBe(1);
+    expect(allowsFabricatedData.length).toBe(1);
 
     const production = { MODE: "production" };
     // Whatever a caller does to the page, the answer is the same object in, same answer out.
-    expect(offersUnreviewedLanguages(production)).toBe(false);
-    expect(offersUnreviewedLanguages({ ...production })).toBe(false);
+    expect(allowsFabricatedData(production)).toBe(false);
+    expect(allowsFabricatedData({ ...production })).toBe(false);
   });
 });
 
