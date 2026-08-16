@@ -1,6 +1,7 @@
 import { ChevronDown, Globe2, ShieldCheck } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { getSelectableInterfaceLanguages, supportedLanguages } from "../data/platform";
+import { offersUnreviewedLanguages } from "../lib/languageOffer";
 import type { SupportedLanguageCode } from "../types/platform";
 
 interface TopBarProps {
@@ -51,10 +52,7 @@ export function TopBar({
           <Globe2 size={16} />
           <select value={activeLanguage} onChange={(event) => onLanguageChange(event.target.value as SupportedLanguageCode)}>
             {(() => {
-              const isTestOrSmoke =
-                import.meta.env.MODE === "test" ||
-                (typeof window !== "undefined" && new URLSearchParams(window.location.search).has("smoke"));
-              const offeredLanguages = isTestOrSmoke
+              const offeredLanguages = offersUnreviewedLanguages(import.meta.env)
                 ? supportedLanguages
                 : getSelectableInterfaceLanguages();
               return offeredLanguages.map((language) => (
