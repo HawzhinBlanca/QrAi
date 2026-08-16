@@ -762,6 +762,20 @@ async function predictAlignment(requestBody) {
   return {
     traceId,
     fixtureCaseId: fixtureCase?.id ?? null,
+    // What this answer was DERIVED FROM (P3.2).
+    //
+    // `fixtureCaseId` looks like it already says this, and does not: it is set whenever the
+    // requested passage MATCHES a golden case, which for Al-Fatihah 1:1-7 is true on the real path
+    // too. Measured against the running service, both modes returned
+    // `fixtureCaseId: "fatihah-1-1-7-smoke"` and an IDENTICAL set of top-level keys — while one
+    // held 29 alignments derived from what the learner actually produced and the other held 8
+    // `matched` words with `heardText === canonicalText`, a flawless recitation nobody performed.
+    // Nothing in either payload distinguished them.
+    //
+    // It matters downstream, not here: `persist_session_alignments` and `persist_tajweed_findings`
+    // write these rows, and a finding stored from fixture output is otherwise indistinguishable
+    // from analysis of a child's recitation — permanently. Unsetting the flag does not un-write it.
+    provenance: fixtureCase && USE_GOLDEN_FIXTURES ? "fixture" : "computed",
     tenantId,
     sessionId,
     quranRef,
@@ -863,6 +877,9 @@ async function predictTajweed(requestBody) {
   return {
     traceId,
     fixtureCaseId: fixtureCase?.id ?? null,
+    // See the alignment response above. Fixture mode returned 1 finding here where the real
+    // analyser returned 38, with nothing in the payload saying which kind of thing it was.
+    provenance: fixtureCase && USE_GOLDEN_FIXTURES ? "fixture" : "computed",
     tenantId,
     sessionId,
     quranRef,
