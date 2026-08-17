@@ -248,6 +248,17 @@ test("REFUSES a gate that did not pass", (t) => {
   assert.match(result.output, /a bundle needs a passing gate/);
 });
 
+test("REFUSES an expiry that never expires", (t) => {
+  // The assembler hands --expires-at straight to release-manifest.mjs, so this is a seam test, not
+  // a second implementation of the bound. It is here because this is the flag an operator actually
+  // types: before release-manifest bounded the validity window, this exact invocation produced a
+  // complete, signed bundle whose evidence stayed valid for 974 years.
+  const c = prepareCandidate(t);
+  const result = assemble(c, { "--expires-at": "3000-01-01T00:00:00.000Z" });
+  assert.notEqual(result.status, 0, `the assembler accepted a 974-year expiry:\n${result.output}`);
+  assert.match(result.output, /longer than the 7 days maximum/);
+});
+
 test("REFUSES a smoke summary from a different candidate", (t) => {
   const c = prepareCandidate(t);
   const summary = JSON.parse(readFileSync(join(c.smokeDir, "summary.json"), "utf8"));

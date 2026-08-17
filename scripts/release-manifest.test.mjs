@@ -403,6 +403,64 @@ test("rejects expired release evidence", (t) => {
   assertFailure(run(candidate.repo, verifyArguments(candidate)), /expired/i);
 });
 
+// ── Freshness bounds ────────────────────────────────────────────────────────────────────────────
+// `expiresAt` used to be bounded on one side only — later than now. So `--expires-at 3000-01-01`
+// was accepted and produced a signed manifest with a 974-year window: an expiry that never expires.
+// The ledger's declared disposition for `expiry` (tasks.md:98) only ever claimed "a non-future
+// --expires-at", so this was an unclaimed gap rather than a broken claim — and a real one, because
+// the whole point of binding an expiry is that evidence stops counting.
+
+test("REFUSES generating evidence whose validity window exceeds the maximum", (t) => {
+  const candidate = prepareCandidate(t);
+  assertFailure(
+    run(candidate.repo, generateArguments({ ...candidate, expiresAt: "3000-01-01T00:00:00.000Z" })),
+    /validity window is .* longer than the 7 days maximum/i,
+  );
+});
+
+test("REFUSES generating evidence whose validity window is shorter than the minimum", (t) => {
+  const candidate = prepareCandidate(t);
+  assertFailure(
+    run(candidate.repo, generateArguments({ ...candidate, expiresAt: new Date(Date.now() + 30_000).toISOString() })),
+    /shorter than the 5 minutes minimum/i,
+  );
+});
+
+test("REFUSES verifying an over-long window, not merely generating one", (t) => {
+  // The generate-side check stops an honest mistake. This is the one that stops a manifest signed
+  // before the bound existed, or by a generator that skipped it. Shape checks run ahead of the
+  // signature check, so an edited manifest reaches this refusal — same idiom as "rejects expired".
+  const candidate = prepareCandidate(t);
+  updateManifest(candidate, (manifest) => {
+    manifest.expiresAt = "3000-01-01T00:00:00.000Z";
+  });
+  assertFailure(run(candidate.repo, verifyArguments(candidate)), /longer than the 7 days maximum/i);
+});
+
+test("REFUSES a manifest generated in the future, which would stretch the maximum window", (t) => {
+  // Without this, bounding the window is decorative: generatedAt = now + 60d paired with
+  // expiresAt = now + 61d is a ONE-DAY window by arithmetic and a two-month license by the calendar.
+  // Both bounds below would pass on their own — expiresAt is in the future, the window is 1 day.
+  const candidate = prepareCandidate(t);
+  const sixtyDays = 60 * 24 * 60 * 60 * 1000;
+  updateManifest(candidate, (manifest) => {
+    manifest.generatedAt = new Date(Date.now() + sixtyDays).toISOString();
+    manifest.expiresAt = new Date(Date.now() + sixtyDays + 24 * 60 * 60 * 1000).toISOString();
+  });
+  assertFailure(run(candidate.repo, verifyArguments(candidate)), /generatedAt .* is in the future/i);
+});
+
+test("REFUSES a manifest whose expiry precedes its generation", (t) => {
+  // Both instants sit inside the clock-skew tolerance, so this isolates the ordering rule rather
+  // than tripping the future-generatedAt refusal above it.
+  const candidate = prepareCandidate(t);
+  updateManifest(candidate, (manifest) => {
+    manifest.generatedAt = new Date(Date.now() + 4 * 60 * 1000).toISOString();
+    manifest.expiresAt = new Date(Date.now() + 2 * 60 * 1000).toISOString();
+  });
+  assertFailure(run(candidate.repo, verifyArguments(candidate)), /is not after generatedAt/i);
+});
+
 test("rejects unsigned release evidence", (t) => {
   const candidate = prepareCandidate(t);
   updateManifest(candidate, (manifest) => {
