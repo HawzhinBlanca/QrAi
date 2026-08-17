@@ -20,6 +20,77 @@ const keyId = /^[A-Za-z0-9._-]{1,128}$/;
 const policyId = /^[A-Za-z0-9._-]{1,128}$/;
 const inputFlags = ["--build-summary", "--build-provenance", "--sbom", "--smoke-summary", "--test-summary", "--environment-summary", "--trusted-signers"];
 
+// ── How long release evidence may claim to be good for ──────────────────────────────────────────
+// `expiresAt` was bounded on one side only: `assertIsoDate(..., { future: true })` asked that it be
+// later than now. `--expires-at 3000-01-01T00:00:00.000Z` was therefore accepted, producing a signed
+// manifest with a 974-year validity window — an expiry that never expires, which is the same thing
+// as having no expiry at all while looking like it has one.
+//
+// The bound is on the WINDOW (expiresAt - generatedAt), not on expiresAt alone, because the window
+// is the actual claim: "the gate that produced this evidence still describes the candidate". Both
+// endpoints live inside the signed payload, so the window is stable and re-checkable — where a
+// now-relative bound would vary with when a verifier happened to run.
+//
+// MAX is a policy default, not a law of nature. Evidence attests a gate that ran against one commit
+// at one moment; its dependency tree, base images and published-CVE state all drift underneath it.
+// Seven days says a candidate that has not shipped in a week must be re-verified rather than
+// re-presented. The release authority (P0.1, unassigned) owns this number and may change it — what
+// is NOT negotiable is that some finite bound exists.
+//
+// MIN exists because a window shorter than the pipeline consuming it expires mid-assembly, and the
+// failure then reads "--expires-at is expired", blaming the clock for what was an operator choice.
+// Five minutes sits comfortably under every fixture in this repository (all use an hour).
+const minValidityMs = 5 * 60 * 1000;
+const maxValidityMs = 7 * 24 * 60 * 60 * 1000;
+
+// A manifest claiming to have been generated in the future defeats the MAX bound entirely:
+// generatedAt = now + 60d with expiresAt = now + 61d is a one-day window by arithmetic and a
+// two-month license by the calendar. Bounding the window without bounding its start would have been
+// a check that reads as closed and is not.
+const maxClockSkewMs = 5 * 60 * 1000;
+
+function describeDuration(milliseconds) {
+  const days = milliseconds / (24 * 60 * 60 * 1000);
+  if (days >= 1) return `${Number(days.toFixed(1))} days`;
+  const minutes = milliseconds / (60 * 1000);
+  if (minutes >= 1) return `${Number(minutes.toFixed(1))} minutes`;
+  return `${Math.round(milliseconds / 1000)} seconds`;
+}
+
+/**
+ * The freshness rules, as one pure decision over three instants.
+ * Returns a refusal string, or null when the window is acceptable.
+ */
+function validityProblem(generatedAt, expiresAt, now) {
+  if (generatedAt.getTime() > now.getTime() + maxClockSkewMs) {
+    return (
+      `generatedAt ${generatedAt.toISOString()} is in the future (now ${now.toISOString()}). ` +
+      "Evidence cannot attest a gate that has not run, and a future generatedAt would stretch the " +
+      `${describeDuration(maxValidityMs)} validity bound by the same amount.`
+    );
+  }
+  const windowMs = expiresAt.getTime() - generatedAt.getTime();
+  if (windowMs <= 0) {
+    return `expiresAt ${expiresAt.toISOString()} is not after generatedAt ${generatedAt.toISOString()}.`;
+  }
+  if (windowMs > maxValidityMs) {
+    return (
+      `validity window is ${describeDuration(windowMs)} (generatedAt ${generatedAt.toISOString()} -> ` +
+      `expiresAt ${expiresAt.toISOString()}), longer than the ${describeDuration(maxValidityMs)} maximum. ` +
+      "Release evidence describes one gate against one commit; a window this long is an expiry that " +
+      "never expires. Re-run the gate and generate fresh evidence rather than extending this one."
+    );
+  }
+  if (windowMs < minValidityMs) {
+    return (
+      `validity window is ${describeDuration(windowMs)}, shorter than the ` +
+      `${describeDuration(minValidityMs)} minimum. It would expire while the release pipeline is ` +
+      'still consuming it, and fail as "expired" rather than as the choice it actually was.'
+    );
+  }
+  return null;
+}
+
 function fail(message) {
   throw new Error(message);
 }
@@ -400,8 +471,14 @@ function assertManifestShape(manifest, repositoryRoot) {
     fail(`Unsupported release evidence schema: ${manifest.schemaVersion ?? "missing"}.`);
   }
   assertCandidate(manifest.candidateSha, "candidateSha");
-  assertIsoDate(manifest.generatedAt, "generatedAt");
-  assertIsoDate(manifest.expiresAt, "expiresAt", { future: true });
+  const manifestGeneratedAt = assertIsoDate(manifest.generatedAt, "generatedAt");
+  const manifestExpiresAt = assertIsoDate(manifest.expiresAt, "expiresAt", { future: true });
+  // Checked on VERIFY, not only on generate. The generate-side check stops an honest mistake; this
+  // one is what stops a manifest signed before the bound existed, or by a generator that skipped it.
+  const validity = validityProblem(manifestGeneratedAt, manifestExpiresAt, new Date());
+  if (validity) {
+    fail(`Release evidence ${validity}`);
+  }
   assertTraceId(manifest.traceId);
 
   assertJsonObject(manifest.environment, "environment");
@@ -527,7 +604,15 @@ function generate(values) {
     fail("--key-id must contain only letters, numbers, dots, underscores, or hyphens.");
   }
   assertTraceId(values["--trace-id"], "--trace-id");
-  const expiresAt = assertIsoDate(values["--expires-at"], "--expires-at", { future: true }).toISOString();
+  const expiresAtDate = assertIsoDate(values["--expires-at"], "--expires-at", { future: true });
+  // Refuse before doing any work, so an out-of-bounds window costs a second rather than a full
+  // generate. `now` stands in for generatedAt here — it is stamped a few seconds later, far inside
+  // the tolerance of a five-minute floor and a seven-day ceiling.
+  const requestedValidity = validityProblem(new Date(), expiresAtDate, new Date());
+  if (requestedValidity) {
+    fail(`--expires-at rejected: ${requestedValidity}`);
+  }
+  const expiresAt = expiresAtDate.toISOString();
 
   assertCleanWorkingTree();
   const currentCandidate = getGitSha();
