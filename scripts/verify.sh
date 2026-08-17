@@ -183,6 +183,11 @@ if [[ "$FAST" != "yes" ]]; then
   say "cutover readiness (informational)"
   node scripts/cutover-readiness.mjs 2>&1 | sed 's/^/    /' || true
   run "test: restore guards"      "bash scripts/restore-db.test.sh"
+  # The ledger flipper had no test and no owning row, ran a plain verify.sh, and sed'd every
+  # specs/*/tasks.md — including the readiness ledger, whose own rule demands --release, CI, a
+  # retained candidate-bound artifact and an independent verifier. Fast: every case it asserts is a
+  # refusal that happens before the gate would run.
+  run "test: ledger flipper guards" "bash scripts/update-ledger.test.sh"
   # P4-T2. The pre-connection guards run here with no database; the ROUND TRIP — a file erased after
   # the backup was taken must still be absent after the restore — needs one and skips loudly without
   # it. `psql` is not on every host (this repo's Postgres runs in Docker), so PSQL_BIN lets the
