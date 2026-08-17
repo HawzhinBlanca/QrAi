@@ -241,6 +241,65 @@ Ordered by value. **REPORTED** items need confirmation before work starts.
     used in anger. A smoke invocation of each `main()` — even one that exits early on a missing
     prerequisite — would close it.
 
+11. **VERIFIED** **The cutover gate `response-schemas-validated` cannot be satisfied by engineering
+    work.** `scripts/cutover-readiness.mjs:117` flips it only at `unvalidated === 0`. The three
+    operations still marked `x-unvalidated` are the ML/ASR proxies, and
+    `specs/flutter-client/openapi.yaml:22-26` states — correctly — that they are *"NOT going to zero
+    without giving those routes a real contract, which is a product change."*
+
+    Verified rather than taken on the comment's word: `proxy_asr_transcribe` and
+    `proxy_asr_force_align` (`services/platform-api/src/handlers/ml_proxy.rs:561,580`) take
+    `JsonBody<serde_json::Value>` and return `Json<serde_json::Value>`. platform-api never reads a
+    field, so pinning a response shape would fabricate a contract it neither owns nor enforces.
+    Marking them is the right call.
+
+    So two carefully-reasoned documents here deadlock each other: one requires zero, the other
+    explains why zero is unreachable without a product decision nobody has scheduled. Anyone working
+    the cutover checklist top-to-bottom spends the effort before discovering it. The gate is not
+    wrong to want validated schemas — it is wrong to treat "correctly marked as unvalidatable" and
+    "not yet validated" as the same state.
+
+    Resolving it is a **product decision, not a fix**: either give the ML/ASR proxies a real
+    contract, or let the check distinguish the two states and record which routes are permanently
+    exempt and why. Neither belongs to a script, or to an agent.
+
+    One separable sub-finding: `POST /v1/ml/tajweed-findings:predict` is arguably **mis-marked**. It
+    stopped being a passthrough when `persist_tajweed_findings` began reading it by field name
+    (ADR-0027 item 4) — a `wordId` → `word_id` rename in `services/ml-inference/tajweed.js` persists
+    nothing, silently, forever, with every suite on both sides still green.
+    `tests/contract/ml-findings-shape.test.mjs` already pins the fields platform-api depends on, so
+    the contract could assert that subset honestly. It moves the count 3 → 2, flips no gate, and is
+    still a contract decision this repository deliberately deferred.
+
+12. **VERIFIED** **The cutover readiness tool measures the backend that is not being built.**
+    `scripts/cutover-readiness.mjs:215` computes `traffic-share` from
+    `read("services/node-api/server.mjs")`. ADR-0044 (Accepted, 2026-08-12) froze that service:
+    `server/` on PR #388 is the Node backend being built, and it already contains node-api's routes
+    plus `jobs/`, `storage/`, `realtime/`, `inference/`.
+
+    So the headline cutover number — *"Node serves 0 of 42 routes by default (37 portable)"* —
+    describes a service that has been retired in place. Worse, it is **pinned at zero by
+    construction**: `tests/contract/node-api-frozen.test.mjs` asserts `portableKeys: 37` and fails
+    any addition with *"growth is not"* — so the one gate standing between this repository and
+    deleting a backend can never move, no matter how much porting is done, because the porting is
+    supposed to happen in a tree this tool does not read.
+
+    Found the hard way, which is why it is VERIFIED: I ported
+    `GET /v1/recitation-sessions/{id}/tajweed-findings` into `services/node-api` — handler, route
+    registration, `PORTABLE` entry, 156/156 on `tests/node-api` — and `verify.sh` refused it on the
+    freeze guard. The guard worked exactly as designed. The reverted change is not the finding; the
+    finding is that `cutover-readiness.mjs` still points at the frozen tree and reports its
+    permanent zero as though it were progress waiting to be made.
+
+    Related to item 11 in kind: both are gates that read as actionable and are not. This one is the
+    more misleading of the two, because a deadlocked gate at least stops you, whereas this one
+    invites the work and then rejects it at the guard.
+
+    Fixing it is mechanical *if* ADR-0044's direction stands: point `checkTrafficShare` at
+    `server/src/main.mjs`. That cannot be done from `main` — `server/` exists only on PR #388 — so
+    the tool cannot become accurate until that branch lands. Recorded rather than patched, because
+    a check reading a path that does not exist on its own branch is not an improvement.
+
 ---
 
 ## How to use this document
