@@ -63,6 +63,31 @@ export function tagsToPrune(existing, keep) {
   return ours.slice(keep);
 }
 
+/**
+ * The digest map the release manifest consumes: keyed by SERVICE NAME, never by tag.
+ *
+ * Extracted and exported so the KEYING DECISION is something a test can hold, rather than a
+ * subscript expression buried in `main()` behind a Docker daemon. `release-manifest.mjs`
+ * assertImageDigests iterates `deployableServices` and requires `imageDigests["platform-api"]`;
+ * this used to write `digests[imageTag(service, sha)]` — `"qrai/platform-api:9f3c1ab"` — so the
+ * only digest producer in the repository emitted a shape the only consumer refuses, and
+ * `--generate` would have failed on the first real release.
+ *
+ * Nothing caught it because no producer output had ever been fed to the consumer. Exported rather
+ * than inlined for the same reason `insecure.rs` splits `is_relaxed` from the process environment:
+ * a decision that exists only inside a side-effecting function cannot be tested.
+ */
+export function digestMap(entries) {
+  const digests = {};
+  for (const { service, id } of entries) {
+    if (!service || !id) {
+      throw new TypeError(`digest entry needs a service and an id, got ${JSON.stringify({ service, id })}`);
+    }
+    digests[service] = id;
+  }
+  return digests;
+}
+
 /** Parse `docker images` digest output into `{ [tag]: "sha256:…" }`. */
 export function parseDigests(lines) {
   const out = {};
@@ -85,7 +110,7 @@ function main() {
     execFileSync("git", ["rev-parse", "HEAD"], { encoding: "utf8" }).trim();
   const keep = Number(process.env.RELEASE_IMAGE_KEEP ?? 3);
 
-  const digests = {};
+  const entries = [];
   for (const service of SERVICES) {
     const tag = imageTag(service, gitSha);
     console.log(`building ${tag}`);
@@ -96,8 +121,12 @@ function main() {
     docker("tag", composeImage, tag);
 
     const id = docker("image", "inspect", tag, "--format", "{{.Id}}").trim();
-    digests[tag] = id;
+    entries.push({ service, id });
   }
+  // `digestMap` keys by service, which is what release-manifest.mjs requires. The tag is not lost:
+  // it is derived from the service and the candidate SHA by `imageTag()`, which is how a reader
+  // gets back to the thing on disk.
+  const digests = digestMap(entries);
 
   // Retention, per service, so one noisy service cannot evict another's rollback target.
   for (const service of SERVICES) {
