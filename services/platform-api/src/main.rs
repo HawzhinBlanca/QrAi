@@ -29,6 +29,22 @@ fn ensure_secure_config() {
     ) {
         return;
     }
+    // ALLOW_HEADER_AUTH accepts client-supplied x-tenant-id/x-user-id/x-user-role as identity
+    // (auth.rs:114) — the one switch that collapses the whole authentication boundary, and until now
+    // the only prod-critical control in this service with no boot-time refusal. Its BEHAVIOUR is
+    // well covered by the parity suite (auth-disabled group, plus the header-auth-on mutation that
+    // proves those tests have teeth); a deploy that simply has it ON was covered by nothing.
+    //
+    // The decision lives in `insecure::header_auth_refusal` so it can be unit-tested without
+    // touching the process environment, which `cargo test`'s shared process makes unsafe — the same
+    // reason `is_relaxed` is split from `relaxed`. `false` for the relax argument because reaching
+    // this line already means the relax path above did not fire.
+    let allow_header_auth = std::env::var("ALLOW_HEADER_AUTH")
+        .map(|v| v == "1" || v == "true")
+        .unwrap_or(false);
+    if let Some(refusal) = insecure::header_auth_refusal(allow_header_auth, false) {
+        panic!("{refusal}");
+    }
     let jwt = std::env::var("JWT_SECRET").unwrap_or_default();
     if jwt.trim().is_empty()
         || jwt == "quran-ai-dev-secret"

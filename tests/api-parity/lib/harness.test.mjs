@@ -70,13 +70,20 @@ test("a missing binary RAISES — it must never fall back to an already-running 
 });
 
 test("a server that exits during startup RAISES with its stderr, not a timeout", async () => {
-  // ALLOW_INSECURE_DEFAULTS=0 makes main.rs:25 ensure_secure_config() panic on the weak dev
-  // JWT_SECRET. The harness must surface that panic, not stall for the full 30s health timeout.
+  // ALLOW_INSECURE_DEFAULTS=0 un-relaxes `ensure_secure_config()`, which then panics on one of the
+  // production controls. The claim under test is the HARNESS's: it must surface that panic rather
+  // than stall for the full 30s health timeout.
+  //
+  // WHICH control panics first is incidental to that claim, and this assertion used to pin it to
+  // the secrets. `ALLOW_HEADER_AUTH` now has a boot refusal too, and is checked first — BASE_ENV
+  // sets it to "1" for every group, so with the relax switched off it is the first to fail. The
+  // alternation keeps the assertion meaningful (real panic text reached us) without pinning an
+  // ordering this test does not care about.
   await assert.rejects(
     () => startApi({ env: { ALLOW_INSECURE_DEFAULTS: "0" }, timeoutMs: 20_000 }),
     (err) => {
       assert.match(err.message, /exited during startup/);
-      assert.match(err.message, /JWT_SECRET|REALTIME_GATEWAY_TICKET_SECRET/);
+      assert.match(err.message, /ALLOW_HEADER_AUTH|JWT_SECRET|REALTIME_GATEWAY_TICKET_SECRET/);
       return true;
     },
   );

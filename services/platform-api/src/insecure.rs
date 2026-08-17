@@ -145,6 +145,38 @@ pub fn enforce_legacy_alias() {
     }
 }
 
+/// The spoofable-header identity fallback, as a boot decision.
+///
+/// `ALLOW_HEADER_AUTH` makes `x-tenant-id` / `x-user-id` / `x-user-role` — headers any client can
+/// send — an accepted identity (`auth.rs:114`). It is the single switch that collapses the whole
+/// authentication boundary, and it was the ONLY prod-critical control in this service with no
+/// boot-time refusal: `JWT_SECRET`, `REALTIME_GATEWAY_TICKET_SECRET`, `ML_API_KEY`, `ASR_API_KEY`
+/// and `CORS_ALLOWED_ORIGINS` all fail closed in `ensure_secure_config`; this one did not.
+///
+/// Its BEHAVIOUR is well covered — `tests/api-parity/auth-disabled.test.mjs` runs the suite with it
+/// off, and the `header-auth-on` mutation proves those tests have teeth. What nothing covered is a
+/// deploy that simply has it on.
+///
+/// Returned as a message rather than panicking here, so the decision is a pure function with an
+/// explicit input and can be tested without touching the process environment — the same split as
+/// `is_relaxed` above. `None` means boot may proceed.
+///
+/// Deliberately NOT added to [`SPECIFIC_VARS`]: `tests/api-parity/lib/harness.mjs` BASE_ENV sets
+/// `ALLOW_INSECURE_DEFAULTS=1` and `ALLOW_HEADER_AUTH=1` together, so listing it there would make
+/// every parity group ambiguous under [`legacy_verdict`] and refuse to start. The relax path is the
+/// one `ensure_secure_config` already honours.
+pub fn header_auth_refusal(allow_header_auth: bool, insecure_relaxed: bool) -> Option<String> {
+    if !allow_header_auth || insecure_relaxed {
+        return None;
+    }
+    Some(format!(
+        "ALLOW_HEADER_AUTH is enabled, which accepts client-supplied x-tenant-id/x-user-id/\
+         x-user-role headers as identity — any caller could name any tenant, user and role. It is a \
+         dev/CI affordance and must never be on in production. Unset it, or set \
+         {ALLOW_INSECURE_SECRETS}=1 for local dev only."
+    ))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -233,5 +265,30 @@ mod tests {
         // variable alongside it is the intended migration path, not a conflict.
         assert_eq!(legacy_verdict(Some("0"), &["METRICS_DEV_OPEN"]), Ok(None));
         assert_eq!(legacy_verdict(Some(""), &["METRICS_DEV_OPEN"]), Ok(None));
+    }
+
+    #[test]
+    fn header_auth_on_in_production_refuses_to_boot() {
+        let refusal =
+            header_auth_refusal(true, false).expect("header auth must refuse in production");
+        // The message has to name the variable an operator must act on, and say what it DOES —
+        // "insecure" alone tells nobody why their deploy stopped.
+        assert!(refusal.contains("ALLOW_HEADER_AUTH"), "{refusal}");
+        assert!(refusal.contains("x-user-role"), "{refusal}");
+        assert!(refusal.contains(ALLOW_INSECURE_SECRETS), "{refusal}");
+    }
+
+    #[test]
+    fn header_auth_off_boots() {
+        assert_eq!(header_auth_refusal(false, false), None);
+    }
+
+    #[test]
+    fn dev_and_ci_are_unaffected() {
+        // The control. tests/api-parity/lib/harness.mjs BASE_ENV sets ALLOW_INSECURE_DEFAULTS=1
+        // alongside ALLOW_HEADER_AUTH=1 for every parity group; if this refused, the entire parity
+        // suite would stop booting.
+        assert_eq!(header_auth_refusal(true, true), None);
+        assert_eq!(header_auth_refusal(false, true), None);
     }
 }
