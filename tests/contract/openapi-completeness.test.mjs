@@ -213,6 +213,7 @@ test("strict proxy response fixtures validate and undeclared envelope fields fai
       {
         traceId: "fixture-trace",
         fixtureCaseId: null,
+        provenance: "computed",
         tenantId: "fixture-tenant",
         sessionId: "fixture-session",
         quranRef,
@@ -255,6 +256,7 @@ test("strict proxy response fixtures validate and undeclared envelope fields fai
       {
         traceId: "fixture-trace",
         fixtureCaseId: null,
+        provenance: "computed",
         tenantId: "fixture-tenant",
         sessionId: "fixture-session",
         quranRef,

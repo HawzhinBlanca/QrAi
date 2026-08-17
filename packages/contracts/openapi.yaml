@@ -321,10 +321,14 @@ components:
     TajweedPredictionResponse:
       description: Exact envelope returned by the worker-owned predictTajweed runtime.
       type: object
-      required: [traceId, fixtureCaseId, tenantId, sessionId, quranRef, evidenceId, modelVersion, auditEventId, annotations, findings, latencyMs, datasetVersion, algorithm]
+      required: [traceId, fixtureCaseId, provenance, tenantId, sessionId, quranRef, evidenceId, modelVersion, auditEventId, annotations, findings, latencyMs, datasetVersion, algorithm]
       properties:
         traceId: { type: [string, "null"] }
         fixtureCaseId: { type: [string, "null"] }
+        # P3.2 (#440). `fixtureCaseId` is NOT this: it is set whenever the requested passage matches
+        # a golden case, which is true on the real path too. Required, and a closed enum, because a
+        # caller that cannot tell fixture output from analysis has no way to ask.
+        provenance: { type: string, enum: [fixture, computed] }
         tenantId: { type: string, minLength: 1 }
         sessionId: { type: string, minLength: 1 }
         quranRef: { $ref: '#/components/schemas/QuranRef' }
@@ -425,10 +429,13 @@ components:
     AlignmentPredictionResponse:
       description: Exact envelope returned by the worker-owned predictAlignment runtime.
       type: object
-      required: [traceId, fixtureCaseId, tenantId, sessionId, quranRef, sourceChecksum, evidenceId, modelVersion, modelAttribution, auditEventId, alignments, confidence, reviewStatus, finalizable, nonFinalizedReason, externalAsr, latencyMs, datasetVersion, algorithm]
+      required: [traceId, fixtureCaseId, provenance, tenantId, sessionId, quranRef, sourceChecksum, evidenceId, modelVersion, modelAttribution, auditEventId, alignments, confidence, reviewStatus, finalizable, nonFinalizedReason, externalAsr, latencyMs, datasetVersion, algorithm]
       properties:
         traceId: { type: [string, "null"] }
         fixtureCaseId: { type: [string, "null"] }
+        # P3.2 (#440). See TajweedPredictionResponse.provenance — this is the alignment half, and the
+        # one that matters most: fixture mode returns a flawless recitation nobody performed.
+        provenance: { type: string, enum: [fixture, computed] }
         tenantId: { type: string, minLength: 1 }
         sessionId: { type: string, minLength: 1 }
         quranRef: { $ref: '#/components/schemas/QuranRef' }
