@@ -49,6 +49,30 @@ export function claimProblem(model, evalRun) {
   if (!evalRun) {
     return `${model.id} claims status "${model.status}" and has NO eval run — nothing measured it`;
   }
+  // An eval run that records no `metrics` is not a measurement.
+  //
+  // All six scalar columns carry DEFAULTS (`word_alignment_f1 numeric not null default 0`, and so
+  // on), so a row can be typed by hand, clear `modelEvalPassesReleaseGate`, and say nothing about
+  // what was run. `metrics` is where a real evaluation records what it measured;
+  // `0006_seed_internal.sql` seeds `model-v0.3`'s only run with `'{}'`, against
+  // `dataset_version = 'fatihah-juz-amma-smoke-v1'` — a smoke fixture, not a corpus.
+  //
+  // 0027 downgraded `tajweed-v0.1` for having no run at all, and deliberately left this one alone
+  // on the stated grounds that it "clears the gate". It clears the gate because somebody typed the
+  // numbers. This applies 0027's own rule one level down: a claim needs evidence, and six constants
+  // about an unnamed dataset are not evidence.
+  const metrics = evalRun.metrics;
+  const metricsEmpty =
+    metrics === null ||
+    metrics === undefined ||
+    (typeof metrics === "object" && Object.keys(metrics).length === 0);
+  if (metricsEmpty) {
+    return (
+      `${model.id} claims status "${model.status}" but its eval run records NO metrics — every ` +
+      `scalar column has a default, so a row can clear the gate while measuring nothing ` +
+      `(dataset_version=${JSON.stringify(evalRun.datasetVersion ?? null)})`
+    );
+  }
   if (!modelEvalPassesReleaseGate(evalRun)) {
     const detail = [
       `wordAlignmentF1=${evalRun.wordAlignmentF1}`,
@@ -78,6 +102,9 @@ function selfTest() {
     teacherAgreementRate: 0.92,
     unsourcedLearnerOutputs: 0,
     passed: true,
+    // A real run records what it measured. The seeded one records `{}` — see claimProblem.
+    metrics: { wordAlignmentF1: 0.93, sampleCount: 412 },
+    datasetVersion: "held-out-v1",
   };
   const cases = [
     ["a draft model needs no evidence", { id: "m", status: "draft" }, null, false],
@@ -109,6 +136,25 @@ function selfTest() {
       { id: "m", status: "eval-passed" },
       { ...passing, passed: false },
       true,
+    ],
+    // The seeded shape. Every scalar clears the bar and the run measured nothing.
+    [
+      "a run with EMPTY metrics is refused even though every scalar clears the bar",
+      { id: "m", status: "eval-passed" },
+      { ...passing, metrics: {} },
+      true,
+    ],
+    [
+      "a run with a null metrics column is refused",
+      { id: "m", status: "eval-passed" },
+      { ...passing, metrics: null },
+      true,
+    ],
+    [
+      "a DRAFT model with an empty-metrics run is still fine — it claims nothing",
+      { id: "m", status: "draft" },
+      { ...passing, metrics: {} },
+      false,
     ],
   ];
 
@@ -173,7 +219,9 @@ async function checkDatabase() {
                 false_positive_rate::float8    AS "falsePositiveRate",
                 teacher_agreement_rate::float8 AS "teacherAgreementRate",
                 unsourced_learner_outputs      AS "unsourcedLearnerOutputs",
-                passed
+                passed,
+                metrics,
+                dataset_version                AS "datasetVersion"
          FROM eval_runs
          ORDER BY model_version_id, created_at DESC`,
       );
