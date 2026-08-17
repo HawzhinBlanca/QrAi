@@ -1179,6 +1179,13 @@ async function predictAlignment(requestBody, deadline = createDeadline(UPSTREAM_
   return {
     traceId,
     fixtureCaseId: fixtureCase?.id ?? null,
+    // `fixtureCaseId` looks like it already says this and does not: it is set whenever the requested
+    // passage MATCHES a golden case, which is true on the real path too. Measured on `main` against
+    // the running service, both modes returned `fixtureCaseId: "fatihah-1-1-7-smoke"` and an
+    // identical set of top-level keys, while one held alignments derived from what the learner
+    // produced and the other held `matched` words with `heardText === canonicalText` — a flawless
+    // recitation nobody performed. `provenance` is the only field that separates them. (#440/P3.2)
+    provenance: fixtureCase && USE_GOLDEN_FIXTURES ? "fixture" : "computed",
     tenantId,
     sessionId,
     quranRef,
@@ -1280,6 +1287,12 @@ async function predictTajweed(
   return {
     traceId,
     fixtureCaseId: fixtureCase?.id ?? null,
+    // Same reason as the alignment payload above: `fixtureCaseId` is set on the real path too, so
+    // `provenance` is the only field a caller can read to tell fixture output from analysis. Note
+    // `findings` is unconditionally empty here — fixture rules surface as INSTRUCTIONAL annotations
+    // (`analysisBasis: "text-rule"`), never as learner-performance findings — so this label is about
+    // what the caller RECEIVES, not about anything that reaches `tajweed_findings`. (#440/P3.2)
+    provenance: fixtureCase && USE_GOLDEN_FIXTURES ? "fixture" : "computed",
     tenantId,
     sessionId,
     quranRef,

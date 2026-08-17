@@ -44,6 +44,7 @@ import {
 } from "../data/platform";
 import { getQuranVerses } from "../data/quran";
 import { fetchRealtimeTicket } from "../lib/api";
+import { allowsFabricatedData } from "../lib/buildMode";
 import {
   getConfiguredRealtimeAudioUrl,
   startGatewayAudioUpload,
@@ -199,10 +200,7 @@ export function PlatformCommand({
             <span className="sr-only">{t("platformCommand.language")}</span>
             <select value={activeLanguage} onChange={(event) => onLanguageChange(event.target.value as SupportedLanguageCode)}>
               {(() => {
-                const isTestOrSmoke =
-                  import.meta.env.MODE === "test" ||
-                  (typeof window !== "undefined" && new URLSearchParams(window.location.search).has("smoke"));
-                const offeredLanguages = isTestOrSmoke
+                const offeredLanguages = allowsFabricatedData(import.meta.env)
                   ? supportedLanguages
                   : getSelectableInterfaceLanguages();
                 return offeredLanguages.map((language) => (

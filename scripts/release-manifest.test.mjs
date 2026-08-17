@@ -122,7 +122,19 @@ function writeEvidenceInputs({ evidenceDirectory, candidateSha, traceId, publicK
       created: completedAt,
       creators: ["Tool: qrai-release-evidence-test"]
     },
-    packages: []
+    // This fixture said `packages: []` (P4.4). Every assertion in `--generate` looked at the SPDX
+    // document header, so an SBOM inventorying NOTHING was bound into the signed manifest as the
+    // candidate's component inventory and the suite proving the evidence chain works had never seen
+    // one that listed a component. "refuses to bind an SBOM that inventories nothing", at the end of
+    // this file, is the case that would have caught it.
+    packages: [
+      {
+        SPDXID: "SPDXRef-npm-release-evidence-test-1.0.0",
+        name: "release-evidence-test",
+        versionInfo: "1.0.0",
+        licenseDeclared: "MIT"
+      }
+    ]
   });
   writeJson(trustedSignersPath, {
     schemaVersion: "qrai-release-trusted-signers/v1",
@@ -395,6 +407,64 @@ test("rejects expired release evidence", (t) => {
   assertFailure(run(candidate.repo, verifyArguments(candidate)), /expired/i);
 });
 
+// ── Freshness bounds ────────────────────────────────────────────────────────────────────────────
+// `expiresAt` used to be bounded on one side only — later than now. So `--expires-at 3000-01-01`
+// was accepted and produced a signed manifest with a 974-year window: an expiry that never expires.
+// The ledger's declared disposition for `expiry` (tasks.md:98) only ever claimed "a non-future
+// --expires-at", so this was an unclaimed gap rather than a broken claim — and a real one, because
+// the whole point of binding an expiry is that evidence stops counting.
+
+test("REFUSES generating evidence whose validity window exceeds the maximum", (t) => {
+  const candidate = prepareCandidate(t);
+  assertFailure(
+    run(candidate.repo, generateArguments({ ...candidate, expiresAt: "3000-01-01T00:00:00.000Z" })),
+    /validity window is .* longer than the 7 days maximum/i,
+  );
+});
+
+test("REFUSES generating evidence whose validity window is shorter than the minimum", (t) => {
+  const candidate = prepareCandidate(t);
+  assertFailure(
+    run(candidate.repo, generateArguments({ ...candidate, expiresAt: new Date(Date.now() + 30_000).toISOString() })),
+    /shorter than the 5 minutes minimum/i,
+  );
+});
+
+test("REFUSES verifying an over-long window, not merely generating one", (t) => {
+  // The generate-side check stops an honest mistake. This is the one that stops a manifest signed
+  // before the bound existed, or by a generator that skipped it. Shape checks run ahead of the
+  // signature check, so an edited manifest reaches this refusal — same idiom as "rejects expired".
+  const candidate = prepareCandidate(t);
+  updateManifest(candidate, (manifest) => {
+    manifest.expiresAt = "3000-01-01T00:00:00.000Z";
+  });
+  assertFailure(run(candidate.repo, verifyArguments(candidate)), /longer than the 7 days maximum/i);
+});
+
+test("REFUSES a manifest generated in the future, which would stretch the maximum window", (t) => {
+  // Without this, bounding the window is decorative: generatedAt = now + 60d paired with
+  // expiresAt = now + 61d is a ONE-DAY window by arithmetic and a two-month license by the calendar.
+  // Both bounds below would pass on their own — expiresAt is in the future, the window is 1 day.
+  const candidate = prepareCandidate(t);
+  const sixtyDays = 60 * 24 * 60 * 60 * 1000;
+  updateManifest(candidate, (manifest) => {
+    manifest.generatedAt = new Date(Date.now() + sixtyDays).toISOString();
+    manifest.expiresAt = new Date(Date.now() + sixtyDays + 24 * 60 * 60 * 1000).toISOString();
+  });
+  assertFailure(run(candidate.repo, verifyArguments(candidate)), /generatedAt .* is in the future/i);
+});
+
+test("REFUSES a manifest whose expiry precedes its generation", (t) => {
+  // Both instants sit inside the clock-skew tolerance, so this isolates the ordering rule rather
+  // than tripping the future-generatedAt refusal above it.
+  const candidate = prepareCandidate(t);
+  updateManifest(candidate, (manifest) => {
+    manifest.generatedAt = new Date(Date.now() + 4 * 60 * 1000).toISOString();
+    manifest.expiresAt = new Date(Date.now() + 2 * 60 * 1000).toISOString();
+  });
+  assertFailure(run(candidate.repo, verifyArguments(candidate)), /is not after generatedAt/i);
+});
+
 test("rejects unsigned release evidence", (t) => {
   const candidate = prepareCandidate(t);
   updateManifest(candidate, (manifest) => {
@@ -600,4 +670,40 @@ test("a full challenge refuses to write its two fresh summaries to one path", (t
     env: { ...process.env, RELEASE_DATABASE_URL: "postgresql://unused@127.0.0.1:1/none" },
   });
   assertFailure({ status: result.status, output: `${result.stdout}${result.stderr}` }, /must be different files/i);
+});
+
+test("refuses to bind an SBOM that inventories nothing", (t) => {
+  // P4.4. Every SBOM assertion in `--generate` read the SPDX document HEADER — version, SPDXID,
+  // name, namespace, creationInfo — and none of them looked inside. `packages: []` satisfied all of
+  // them, and this file's own fixture was written that way, so the suite that proves the evidence
+  // chain works had never been shown an SBOM listing a single component. The signed manifest then
+  // carried it as the candidate's component inventory.
+  const candidate = prepareCandidate(t);
+  const sbom = readJson(candidate.sbomPath);
+  sbom.packages = [];
+  writeJson(candidate.sbomPath, sbom);
+
+  assertFailure(run(candidate.repo, generateArguments(candidate)), /inventories nothing/i);
+});
+
+test("refuses an SBOM whose packages carry no version", (t) => {
+  // A component that cannot be matched against an advisory is most of what an SBOM is for. Present
+  // in the list is not the same as identifiable.
+  const candidate = prepareCandidate(t);
+  const sbom = readJson(candidate.sbomPath);
+  delete sbom.packages[0].versionInfo;
+  writeJson(candidate.sbomPath, sbom);
+
+  assertFailure(run(candidate.repo, generateArguments(candidate)), /SPDXID, name, and versionInfo/i);
+});
+
+test("rejects a manifest claiming an empty SBOM inventory", (t) => {
+  // The verify side of the same rule. Without it, the count is generated honestly and can then be
+  // edited to zero in a manifest that still verifies.
+  const candidate = prepareCandidate(t);
+  updateManifest(candidate, (manifest) => {
+    manifest.sbom.packageCount = 0;
+  });
+
+  assertFailure(run(candidate.repo, verifyArguments(candidate)), /packages the inventory holds/i);
 });

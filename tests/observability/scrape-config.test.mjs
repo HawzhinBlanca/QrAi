@@ -79,14 +79,37 @@ test("every scraped service is passed METRICS_TOKEN by docker-compose", () => {
   );
 });
 
-test("the placeholder in prometheus.yml is still obviously a placeholder", () => {
-  // It is substituted at deploy (README step 1). If someone replaces it with a real-looking value
-  // and commits, the token is in git — and a reviewer skimming would not notice, because the file
-  // is SUPPOSED to contain a token-shaped string.
+test("prometheus.yml carries no token value at all, only a secret-file reference", () => {
+  // This used to assert the opposite shape: that a `REPLACE_WITH_METRICS_TOKEN` placeholder was
+  // still present and still obviously fake, because the file was SUPPOSED to contain a token-shaped
+  // string and a reviewer skimming a real one would not notice.
+  //
+  // ADR-0044 removed the hazard instead of policing it: the token is now read from a Compose secret
+  // file at scrape time and is never substituted into this tracked configuration, so there is no
+  // token-shaped string here for anyone to overwrite. That is strictly stronger than a placeholder
+  // a human has to keep looking obvious, so this asserts the new invariant rather than the old one.
   const raw = readFileSync(join(root, "monitoring/prometheus.yml"), "utf8");
-  assert.match(
+
+  const jobs = raw.match(/^\s*- job_name:/gm) ?? [];
+  const secretRefs = raw.match(/^\s*- "\/run\/secrets\/metrics_token"$/gm) ?? [];
+  assert.ok(jobs.length > 0, "no scrape jobs in prometheus.yml");
+  assert.equal(
+    secretRefs.length,
+    jobs.length,
+    `${jobs.length} scrape jobs but ${secretRefs.length} secret-file references — a job whose ` +
+      "token does not come from /run/secrets/metrics_token is either unauthenticated or inlined",
+  );
+
+  // The two ways a value could come back: the old placeholder, or Prometheus's inline `values:`
+  // form for http_headers. Neither may appear.
+  assert.doesNotMatch(
     raw,
     /REPLACE_WITH_METRICS_TOKEN/,
-    "the placeholder is gone — if a real token was committed, rotate it",
+    "the placeholder is back — the token must come from the secret file, not this file",
+  );
+  assert.doesNotMatch(
+    raw,
+    /x-metrics-token:\s*\n\s*values:/,
+    "a scrape job inlines its metrics token instead of reading the Compose secret file",
   );
 });
