@@ -271,6 +271,35 @@ Ordered by value. **REPORTED** items need confirmation before work starts.
     the contract could assert that subset honestly. It moves the count 3 → 2, flips no gate, and is
     still a contract decision this repository deliberately deferred.
 
+12. **VERIFIED** **The cutover readiness tool measures the backend that is not being built.**
+    `scripts/cutover-readiness.mjs:215` computes `traffic-share` from
+    `read("services/node-api/server.mjs")`. ADR-0044 (Accepted, 2026-08-12) froze that service:
+    `server/` on PR #388 is the Node backend being built, and it already contains node-api's routes
+    plus `jobs/`, `storage/`, `realtime/`, `inference/`.
+
+    So the headline cutover number — *"Node serves 0 of 42 routes by default (37 portable)"* —
+    describes a service that has been retired in place. Worse, it is **pinned at zero by
+    construction**: `tests/contract/node-api-frozen.test.mjs` asserts `portableKeys: 37` and fails
+    any addition with *"growth is not"* — so the one gate standing between this repository and
+    deleting a backend can never move, no matter how much porting is done, because the porting is
+    supposed to happen in a tree this tool does not read.
+
+    Found the hard way, which is why it is VERIFIED: I ported
+    `GET /v1/recitation-sessions/{id}/tajweed-findings` into `services/node-api` — handler, route
+    registration, `PORTABLE` entry, 156/156 on `tests/node-api` — and `verify.sh` refused it on the
+    freeze guard. The guard worked exactly as designed. The reverted change is not the finding; the
+    finding is that `cutover-readiness.mjs` still points at the frozen tree and reports its
+    permanent zero as though it were progress waiting to be made.
+
+    Related to item 11 in kind: both are gates that read as actionable and are not. This one is the
+    more misleading of the two, because a deadlocked gate at least stops you, whereas this one
+    invites the work and then rejects it at the guard.
+
+    Fixing it is mechanical *if* ADR-0044's direction stands: point `checkTrafficShare` at
+    `server/src/main.mjs`. That cannot be done from `main` — `server/` exists only on PR #388 — so
+    the tool cannot become accurate until that branch lands. Recorded rather than patched, because
+    a check reading a path that does not exist on its own branch is not an improvement.
+
 ---
 
 ## How to use this document
