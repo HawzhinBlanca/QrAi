@@ -241,6 +241,36 @@ Ordered by value. **REPORTED** items need confirmation before work starts.
     used in anger. A smoke invocation of each `main()` — even one that exits early on a missing
     prerequisite — would close it.
 
+11. **VERIFIED** **The cutover gate `response-schemas-validated` cannot be satisfied by engineering
+    work.** `scripts/cutover-readiness.mjs:117` flips it only at `unvalidated === 0`. The three
+    operations still marked `x-unvalidated` are the ML/ASR proxies, and
+    `specs/flutter-client/openapi.yaml:22-26` states — correctly — that they are *"NOT going to zero
+    without giving those routes a real contract, which is a product change."*
+
+    Verified rather than taken on the comment's word: `proxy_asr_transcribe` and
+    `proxy_asr_force_align` (`services/platform-api/src/handlers/ml_proxy.rs:561,580`) take
+    `JsonBody<serde_json::Value>` and return `Json<serde_json::Value>`. platform-api never reads a
+    field, so pinning a response shape would fabricate a contract it neither owns nor enforces.
+    Marking them is the right call.
+
+    So two carefully-reasoned documents here deadlock each other: one requires zero, the other
+    explains why zero is unreachable without a product decision nobody has scheduled. Anyone working
+    the cutover checklist top-to-bottom spends the effort before discovering it. The gate is not
+    wrong to want validated schemas — it is wrong to treat "correctly marked as unvalidatable" and
+    "not yet validated" as the same state.
+
+    Resolving it is a **product decision, not a fix**: either give the ML/ASR proxies a real
+    contract, or let the check distinguish the two states and record which routes are permanently
+    exempt and why. Neither belongs to a script, or to an agent.
+
+    One separable sub-finding: `POST /v1/ml/tajweed-findings:predict` is arguably **mis-marked**. It
+    stopped being a passthrough when `persist_tajweed_findings` began reading it by field name
+    (ADR-0027 item 4) — a `wordId` → `word_id` rename in `services/ml-inference/tajweed.js` persists
+    nothing, silently, forever, with every suite on both sides still green.
+    `tests/contract/ml-findings-shape.test.mjs` already pins the fields platform-api depends on, so
+    the contract could assert that subset honestly. It moves the count 3 → 2, flips no gate, and is
+    still a contract decision this repository deliberately deferred.
+
 ---
 
 ## How to use this document
