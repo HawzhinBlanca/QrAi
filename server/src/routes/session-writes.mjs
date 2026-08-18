@@ -722,6 +722,14 @@ export async function prepareSessionFinalization({
         WHERE id = ${sessionId} AND tenant_id = ${actor.tenantId}`;
 
       return { response: {
+        // recitation.rs:1600. What the aligner OFFERED, so `persisted: 0` reads as "all rejected"
+        // rather than "nothing was recited" — the two the old response could not distinguish. The
+        // Node port omitted the field entirely, so a client through the shell lost that distinction.
+        //
+        // First in the literal because key ORDER is wire contract here: serde_json is BTreeMap-backed
+        // so the Rust body is alphabetical, and the parity harness compares the order separately from
+        // the values.
+        alignmentsOffered: alignments.length,
         auditEventId: persisted.auditEventId,
         chunkCount: Number.isInteger(transcript.chunkCount) ? transcript.chunkCount : 0,
         finalized: true,

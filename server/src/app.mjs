@@ -218,8 +218,16 @@ export function createApplication(config) {
     if (!rateLimiter) return;
     const decision = rateLimiter.consume(req.ip);
     if (!decision.allowed) {
-      reply.header("retry-after", String(Math.max(1, Math.ceil(decision.retryAfterMs / 1_000))));
-      return reply.code(429).send({ error: "rate limit exceeded" });
+      // Byte-identical to tower_governor's refusal, observed from the running Rust service. A nicer
+      // JSON error here would be a divergence on EVERY throttled request, and the seconds are
+      // floored rather than raised to a minimum of 1 for the same reason: the bucket replenishes a
+      // token every 50ms, so tower_governor reports 0 and a port that reported 1 would be telling
+      // callers to wait twenty times longer than the limiter actually requires.
+      const waitSeconds = Math.floor(decision.retryAfterMs / 1_000);
+      reply.header("retry-after", String(waitSeconds));
+      reply.header("x-ratelimit-after", String(waitSeconds));
+      return reply.code(429).type("text/plain; charset=utf-8")
+        .send(`Too Many Requests! Wait for ${waitSeconds}s`);
     }
   });
 
