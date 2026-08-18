@@ -302,6 +302,65 @@ Ordered by value. **REPORTED** items need confirmation before work starts.
 
 ---
 
+## Part 8 — Why finished engineering does not close rows
+
+Written 2026-08-18, after re-reading the live ledger row by row rather than from memory, in answer
+to "what's next." The honest finding: **there usually isn't a next unclaimed row**, and the reason
+is structural, not a missing task.
+
+### 8.1 VERIFIED — closure requires a retained artifact and an independent verifier, which nothing has ever produced
+
+`specs/readiness-recovery-10-10/tasks.md:5` states its own rule: a row stays `[ ]` until its
+acceptance test, `verify.sh --release`, required CI, **a retained candidate-bound artifact, and an
+independent verifier** are recorded below it. `scripts/update-ledger.sh` enforces the same rule at
+the write path (P450 hardened it further). Passing tests are not on that list.
+
+So a row can have complete engineering and stay open forever, because nothing in this repository has
+ever produced the one thing every row's closure ultimately depends on: **a real, retained, signed,
+independently-challenged release candidate.** Checked at `release-challenge.yml:16-19` — that
+workflow's own header: *"the runs do not exist, because no release candidate exists."*
+
+Two rows checked against this directly:
+
+- **P2.2** — `tests/i18n/locale-parity.test.mjs` covers every named requirement: capability manifest
+  membership, reviewer/expiry per locale, no-fallback for a `complete` claim, and key-parity by
+  identity rather than count. The row stays `[ ]` because passing tests were never the bar.
+- **P4.4** — `verify.sh` runs a named `guard: dependency licences (P4.4)` and a named
+  `guard: SPDX SBOM (P4.4)`, both green. **Not fully verified as complete**: no equivalently named
+  gate for image, provenance, TLS, CSP or CORS was found in `verify.sh` under this pass, so the row
+  may still have real open work beyond the closure rule — recorded as REPORTED, not VERIFIED, unlike
+  P2.2 above.
+
+### 8.2 REPORTED — the artifact bottleneck is environmental, not a task
+
+`docs/readiness/SIGNOFF_REGISTER.md` and this document's own Part 5 already name Docker registry
+egress as denied in the agent environment. What Part 8.1 adds: that denial is not one line item
+(P0.4, P0.7) — it is the reason the *entire ledger* cannot self-close regardless of how much
+engineering lands, because every row's closure path runs through one candidate that has never
+existed and cannot be produced from here.
+
+### 8.3 REPORTED — classification of the 31 open rows by what actually blocks them
+
+Not re-verified row by row here; built from Part 3's engineering list, Part 4's role table, and
+Part 6's critical path, reconciled against the live ledger on 2026-08-18.
+
+| blocked by | rows | who moves it |
+|---|---|---|
+| no candidate has ever existed (8.1/8.2) | P0.4, P0.7, P7.4, P7.5 | Docker-capable environment + P0.1's release authority + signing key |
+| a named human approval/signature, by construction | P0.2, P1.7, P4.1, P4.5, P4.6, P5.1, P5.7, P6.5, P7.1, P7.6 | the named role — see Part 4 |
+| a product/scholarly decision already identified elsewhere in this doc | P2.3, P3.4, P3.6 | owner / scholar |
+| a schema decision with no engineering shape yet (P3.2's "expired" case, Part 1 item 2.2) | P3.2 | owner — "expired" has no column to test |
+| content delivery, not code | P2.4 (0 of 389 strings reviewed) | Sorani + Arabic reviewers |
+| device/pilot execution that cannot run in this environment | P6.2 (5 of 7 dimensions), P6.3, P6.4, P7.2, P7.3 | physical devices + participants, Part 5 |
+| P0.1 itself | P0.1 | the release authority — no dependency |
+
+Every row resolves to one of: **P0.1**, a named human, physical hardware, or the Docker gap. None
+resolves to "more agent engineering," which is the actual answer to "what's next": there is no next
+engineering row until one of those four unblocks.
+
+---
+
+
 ## How to use this document
 
 Start at Part 3. Everything there can be built now, by anyone, without waiting for a signature —
