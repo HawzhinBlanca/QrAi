@@ -162,3 +162,75 @@ tree has no subject. This is ADR-0044 completing, not a guard being dropped.
 - The four files in §4 have no proposed resolution, only hazards to check.
 - Whether #388's `server/` reaches parity on the routes `main`'s contract carries is **out of scope
   here** and unverified by this document.
+
+---
+
+## 7. Addendum — #388 cannot pass its own gate on its own head
+
+Added 2026-08-18, after a session attempted this merge end to end. It resolved all twelve conflicts,
+fixed three merge-caused defects and closed the §0 trap, then stopped: **the merged tree cannot go
+green by merging well, because #388's own gate does not pass on #388's own head.** That work was
+never pushed and is presumed lost with its container; this section is what survived it.
+
+### 7.1 VERIFIED — #388's `verify.sh` names files that do not exist in #388's tree
+
+Re-checked here against `codex/lean-flutter-node-consolidation` @ `aee5927`, independently of the
+session that first reported it. Of the 208 script/test paths its `verify.sh` references:
+
+```
+MISSING  scripts/migrate.mjs                     (#388 has it at server/scripts/migrate.mjs)
+MISSING  scripts/provision-role.mjs              (#388 has it at server/scripts/provision-role.mjs)
+MISSING  services/node-api/routes/ml-proxy.mjs   (#388 deletes services/node-api entirely)
+```
+
+and three suites it runs import a module #388 deleted:
+
+```
+tests/node-api/superuser-role.test.mjs          -> services/node-api/lib/db.mjs
+tests/security/definer-bypass-coverage.test.mjs -> services/node-api/lib/db.mjs
+tests/security/rls-policy-coverage.test.mjs     -> services/node-api/lib/db.mjs
+```
+
+Six concrete instances, and that is a **floor**: the scan only follows relative `../` imports of
+`services/` and `scripts/` paths from files `verify.sh` names directly. Transitive imports and
+non-matching path shapes are not covered.
+
+These three test names are exactly the ones the earlier session listed independently, which is why
+this is recorded as verified rather than as a lead.
+
+**What it means.** PR #388's body states *"Canonical gate: `bash scripts/verify.sh` — passed locally
+with live PostgreSQL."* That claim is not reproducible on the branch as it stands. The gate cannot
+have run these suites successfully, because the files they need are not there. This is not an
+argument against the work in #388 — it is a statement that its self-reported green must be
+re-established before the merge can be judged on its own merits, and that **merging correctly is not
+sufficient to reach a green tree.**
+
+The mechanical half is unambiguous: these are moved files, and a test pointing at a moved file has
+exactly one correct new target (`server/src/lib/db.mjs`, `server/scripts/*`). Retargeting them is
+safe. It is the rest of §7.2 that is not.
+
+### 7.2 REPORTED — six further defects and two product decisions
+
+From the same session's final summary, **not independently verified here**. Treat as leads:
+
+- **six further defects** in the merged tree, unenumerated in anything that outlived the container.
+- **two product decisions** it would not take alone, correctly:
+  - ship without the **tajweed registry**, or rework scope?
+  - ship without **Flutter CI coverage**, or rework scope?
+- two **security declarations** it was explicitly instructed NOT to write, because they are #388's
+  design and its author's to declare: `token-revocability` and `erasure-coverage` for
+  `device_sessions` and `device_enrollment_invitations`. An agent authoring text asserting how token
+  columns are checked, in order to turn a gate green, is evidence written to satisfy a check rather
+  than to describe a system. Whoever finishes this merge should decline it too.
+
+### 7.3 Consequence for sequencing
+
+The plan above assumed the merge was the work and a green gate the outcome. That is wrong. Order is:
+
+1. **#388's author repairs #388's own gate** on its own branch — the six references in §7.1, plus
+   whatever else `verify.sh` cannot currently run — and re-establishes the green it claims.
+2. Only then does the merge in §1-§5 become judgeable, because only then does a red result mean
+   something the merge caused.
+
+Attempting them in the other order means every failure is ambiguous: nobody can tell whether the
+merge broke it or whether it was already broken. That ambiguity cost one full session.
