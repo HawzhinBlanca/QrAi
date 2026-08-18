@@ -234,3 +234,26 @@ The plan above assumed the merge was the work and a green gate the outcome. That
 
 Attempting them in the other order means every failure is ambiguous: nobody can tell whether the
 merge broke it or whether it was already broken. That ambiguity cost one full session.
+
+---
+
+## 8. Re-checked 2026-08-18 against current `main`
+
+`main` is 16 commits ahead of #388's head (up from 13 the day this plan was written), via
+`git merge-tree --write-tree origin/main <388-head>`.
+
+**The conflict set shrank, not grew: 10 files, down from 12.** `scripts/verify.sh` and
+`scripts/update-ledger.sh` now auto-merge — both were touched again on `main` since this plan was
+written, and the auto-merge happened to land cleanly. No new conflicts appeared. The eight
+still-conflicting files are unchanged from §1-§4 above.
+
+**Auto-merging is not evidence of correctness, and `verify.sh` is the proof.** Extracted the
+git-computed merge tree's `scripts/verify.sh` directly (no manual resolution involved) and confirmed
+it still contains all three §7.1 references to files absent from #388's tree
+(`scripts/migrate.mjs`, `scripts/provision-role.mjs`, `services/node-api/routes/ml-proxy.mjs`). A
+clean three-way merge inherits whichever side touched a line last; it has no way to know that side's
+content is unreachable in the other tree. **§7's finding is not a merge-conflict problem and git's
+merge resolver cannot see it, resolved or not.**
+
+Net effect on §5's order of operations: unchanged. Step 1 (repair #388's own gate) still gates
+everything after it.
