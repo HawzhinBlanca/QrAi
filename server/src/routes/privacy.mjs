@@ -84,6 +84,48 @@ async function capturePrivacyManifest(ctx, tenantId, learnerId, kind) {
         (SELECT COUNT(*)::integer FROM device_enrollment_invitations
           WHERE tenant_id = ${tenantId} AND user_id = ${learnerId}) AS invitation_count`;
 
+    // ADR-0044 parity. The Rust port has enumerated these since the manifest was widened: a learner
+    // asking "what do you hold about me", or a regulator asking "what did you delete", was
+    // otherwise told about the recitation but not about the assessments made of it, the word-level
+    // record, or the consent they had given. The Node port omitted all of them, so an export served
+    // through the shell under-reported the subject's data.
+    //
+    // These are IDENTIFIERS, never content, so nothing here crosses the ADR-0028 learner gate.
+    // Scoped through `recitation_sessions` by learner, exactly as the deletes are, so the receipt
+    // and the cascade cannot describe different sets.
+    const sessionOwned = [];
+    for (const [table, prefix] of [
+      ["word_alignments", "word_alignment"],
+      ["audio_chunks", "audio_chunk"],
+      ["alignment_runs", "alignment_run"],
+    ]) {
+      const rows = await tx`
+        SELECT t.id FROM ${tx(table)} t
+        JOIN recitation_sessions rs ON rs.id = t.session_id
+        WHERE t.tenant_id = ${tenantId} AND rs.tenant_id = ${tenantId}
+          AND rs.learner_id = ${learnerId}
+        ORDER BY t.id`;
+      sessionOwned.push(...rows.map((r) => `${prefix}:${r.id ?? ""}`));
+    }
+
+    // Findings hang off an alignment rather than a session, so they need the extra hop.
+    const findings = await tx`
+      SELECT tf.id FROM tajweed_findings tf
+      JOIN word_alignments wa ON wa.id = tf.alignment_id
+      JOIN recitation_sessions rs ON rs.id = wa.session_id
+      WHERE tf.tenant_id = ${tenantId} AND rs.tenant_id = ${tenantId}
+        AND rs.learner_id = ${learnerId}
+      ORDER BY tf.id`;
+    sessionOwned.push(...findings.map((r) => `tajweed_finding:${r.id ?? ""}`));
+
+    // NOTE the column: consent_records keys on user_id, not learner_id.
+    const consents = await tx`
+      SELECT id FROM consent_records
+      WHERE tenant_id = ${tenantId} AND user_id = ${learnerId} ORDER BY id`;
+    const tickets = await tx`
+      SELECT id FROM realtime_session_tickets
+      WHERE tenant_id = ${tenantId} AND learner_id = ${learnerId} ORDER BY id`;
+
     const deviceRecords = [];
     if (deviceIdentity.session_count > 0) {
       deviceRecords.push(`device_session_count:${deviceIdentity.session_count}`);
@@ -98,6 +140,9 @@ async function capturePrivacyManifest(ctx, tenantId, learnerId, kind) {
       ...agentRuns.map((r) => `agent_run:${r.id ?? ""}`),
       ...pilotSessions.map((r) => `pilot_session:${r.id ?? ""}`),
       ...pilotInvitations.map((r) => `pilot_invitation:${r.id ?? ""}`),
+      ...sessionOwned,
+      ...consents.map((r) => `consent_record:${r.id ?? ""}`),
+      ...tickets.map((r) => `realtime_session_ticket:${r.id ?? ""}`),
       ...deviceRecords,
     ];
   });
