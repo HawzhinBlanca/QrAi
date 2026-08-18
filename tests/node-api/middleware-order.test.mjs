@@ -45,7 +45,11 @@ test("CORS preflight is outermost and spends no maintenance or rate-limit capaci
 
   const limited = await app.inject({ method: "GET", url: "/health", headers: corsHeaders });
   assert.equal(limited.statusCode, 429);
-  assert.deepEqual(limited.json(), { error: "rate limit exceeded" });
+  // Plain text, not JSON: the 429 body is byte-identical to tower_governor's, because a nicer JSON
+  // error in the port would be a divergence on every throttled request
+  // (tests/api-parity/rate-limit-parity.test.mjs asserts the exact bytes). This case is about
+  // ORDER, so it only needs to recognise the refusal.
+  assert.match(limited.body, /^Too Many Requests! Wait for \d+s$/);
   assert.equal(limited.headers["access-control-allow-origin"], ORIGIN);
 });
 
@@ -81,7 +85,7 @@ test("rate admission precedes authorization", async (t) => {
 
   const limited = await app.inject({ method: "GET", url: "/v1/learner/progress" });
   assert.equal(limited.statusCode, 429, "authorization ran before exhausted admission control");
-  assert.deepEqual(limited.json(), { error: "rate limit exceeded" });
+  assert.match(limited.body, /^Too Many Requests! Wait for \d+s$/);
 });
 
 test("metrics observe a maintenance response while the three operational probes stay exempt", async (t) => {
