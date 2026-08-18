@@ -346,7 +346,6 @@ test("GET /v1/recitation-sessions matches the contract, for a session the API cr
       learnerId: "learner-1",
       quranRef: { surahNumber: 1, ayahStart: 1, ayahEnd: 7, display: "Al-Fatihah 1:1-7" },
       sourceChecksum: `contract-list-${uniqueSuffix()}`,
-      modelVersion: "model-v0.3",
       language: "ar",
       mode: "guided-recite",
       consent: {

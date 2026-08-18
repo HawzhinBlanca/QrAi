@@ -309,7 +309,14 @@ test("every object the erasure deleted is on the record a restore reads", async 
   // future format, a stray artefact. The erasure's own classifier has a bucket for this.
   const strayName = "chunk-residue.wav";
   const { writeFileSync } = await import("node:fs");
-  writeFileSync(join(storageDir, TENANT, learner, strayName), Buffer.from([9, 9, 9, 9]));
+  // ADR-0044 versioned the object layout: keys are `audio/v1/{tenant}/{learner}/{session}/…`, and
+  // `deriveAudioLearnerPrefix` sweeps `audio/v1/{tenant}/{learner}/`. Planted at the old flat path
+  // the stray sat OUTSIDE the prefix the erasure walks, so the fixture proved nothing — it has to
+  // sit where the erasure will actually find it. `audioFilesFor` already reads the versioned root.
+  writeFileSync(
+    join(storageDir, "audio", "v1", TENANT, learner, strayName),
+    Buffer.from([9, 9, 9, 9]),
+  );
 
   const before = audioFilesFor(learner);
   assert.ok(
@@ -335,13 +342,33 @@ test("every object the erasure deleted is on the record a restore reads", async 
   );
   assert.ok(job, "the erasure wrote no privacy_jobs row");
   const recorded = job.keys ?? [];
+
+  // ADR-0044 made the object model explicit: a stored object is ONE key (`….pcm`), and its
+  // `….pcm.meta.json` sidecar is an attribute of that object — the store's own listing records it
+  // as `metadataPresent` on the object rather than as a second entry. So the receipt records two
+  // keys for three files here, and comparing raw file counts would report a phantom gap.
+  //
+  // The guarantee this test exists for is untouched: a file that is NOT a sidecar of a recorded
+  // object — the stray `.wav`, the future format, the partial write — must still appear on the
+  // receipt, because `scripts/restore-audio.sh` reads that column to decide what a volume restore
+  // withholds. Sidecars are attributed to their object; nothing else is excused.
+  const objects = before.filter((name) => !name.endsWith(".meta.json"));
+  const orphanedSidecars = before.filter(
+    (name) => name.endsWith(".meta.json") && !objects.includes(name.slice(0, -".meta.json".length)),
+  );
+  assert.deepEqual(
+    orphanedSidecars,
+    [],
+    "a .meta.json was deleted whose object was not, so it is nobody's attribute and needs its own " +
+      `receipt entry: ${JSON.stringify(orphanedSidecars)}`,
+  );
   assert.ok(
-    recorded.length >= 3,
-    `only ${recorded.length} key(s) recorded for an erasure that removed ${before.length} files ` +
-      `(${JSON.stringify(before)}); recorded: ${JSON.stringify(recorded)}`,
+    recorded.length >= objects.length && objects.length >= 2,
+    `only ${recorded.length} key(s) recorded for an erasure that removed ${objects.length} ` +
+      `object(s) (${JSON.stringify(objects)}); recorded: ${JSON.stringify(recorded)}`,
   );
 
-  const missing = before.filter(
+  const missing = objects.filter(
     (name) => !recorded.some((key) => key.endsWith(`/${name}`)),
   );
   assert.deepEqual(

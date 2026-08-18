@@ -1,7 +1,13 @@
 import assert from "node:assert/strict";
 import { after, before, test } from "node:test";
 
-import { TENANT, queryJson, request, startApi } from "../api-parity/lib/harness.mjs";
+import {
+  TENANT,
+  insertDeclaredTestAcousticFinding,
+  queryJson,
+  request,
+  startApi,
+} from "../api-parity/lib/harness.mjs";
 
 /**
  * @journey: finding-approval
@@ -109,15 +115,22 @@ async function seedUnreviewedFinding(label) {
      VALUES ($1, $2, $3, $4, 'x', 0, 100, 0.9, 'matched', $5, $6, 'client-reported')`,
     [ids.alignment, TENANT, ids.session, word.id, model.id, ids.audit],
   );
-  await queryJson(
-    `INSERT INTO tajweed_findings
-       (id, tenant_id, alignment_id, rule, severity, confidence, explanation, review_status,
-        source_refs, model_version_id, audit_event_id, analysis_basis)
-     VALUES ($1, $2, $3, 'ghunnah', 'practice', 0.95, $4, 'teacher-review-required',
-             '[{"id":"src-journey","title":"Tajweed reference","citation":"Rule 1"}]'::jsonb,
-             $5, $6, 'canonical-text')`,
-    [ids.finding, TENANT, ids.alignment, EXPLANATION, model.id, ids.audit],
-  );
+  // 0030 reclassified 'canonical-text' and narrowed the CHECK to ('text-rule','acoustic'), and a
+  // trigger requires an acoustic finding to reference release-eligible evaluation evidence. This
+  // journey is about a TEACHER REVIEWING a performance claim — 0030's review index is
+  // `where analysis_basis = 'acoustic'` — so it seeds the declared evidence through the shared
+  // helper rather than hand-rolling the seven provenance columns.
+  await insertDeclaredTestAcousticFinding({
+    id: ids.finding,
+    alignmentId: ids.alignment,
+    rule: "ghunnah",
+    severity: "practice",
+    confidence: 0.95,
+    explanation: EXPLANATION,
+    reviewStatus: "teacher-review-required",
+    sources: [{ id: "src-journey", title: "Tajweed reference", citation: "Rule 1" }],
+    auditEventId: ids.audit,
+  });
 
   seeded.push(ids);
   return { ...ids, learnerId: learner.id };
@@ -159,7 +172,27 @@ test("before any human looks at it, the learner is told a note exists and nothin
   assert.deepEqual(mine.sources ?? [], [], "a withheld finding must not carry its sources");
 });
 
-test("after a teacher accepts it, the same learner sees the note itself", async () => {
+test("a teacher's acceptance is recorded, and the learner still waits on calibrated evidence", async () => {
+  // ── This test asserted the opposite until ADR-0044, and the change is product-visible ─────────
+  //
+  // It required that a teacher's acceptance makes the note visible to the learner, naming the
+  // failure "sev-2 — a teacher's decision that changes nothing". Under #388 that is now the
+  // designed behaviour, in BOTH ports and deliberately:
+  //
+  //   server/src/routes/review.mjs      calibrationStatus is the literal "uncalibrated"
+  //   services/platform-api/.../review.rs  evaluationEvidenceStatus can only be
+  //                                     "fixture" | "stale" | "unverified"
+  //
+  // and `clearsLearnerFeedbackGate` demands "calibrated" AND "release-trusted". Both files say why
+  // in the same words: production trust is intentionally empty, and T10's calibrator/evidence
+  // registry is the only component allowed to promote a row. Until it exists, NO stored finding can
+  // reach a learner, whatever a teacher decides.
+  //
+  // So this asserts the real guarantee — the decision is recorded, the content is still withheld,
+  // and the reason is the evidence gate rather than an unrelated redaction — plus a tripwire below
+  // that turns it back into the original assertion the moment the gate becomes satisfiable. Left as
+  // a bare "still withheld" it would go on passing after T10 shipped, with learners seeing nothing
+  // and nobody finding out from this file.
   const ids = await seedUnreviewedFinding("accepted");
 
   const before = await learnerViewOf(ids.session, ids.learnerId);
@@ -180,17 +213,53 @@ test("after a teacher accepts it, the same learner sees the note itself", async 
   });
   assert.equal(review.status, 200, `the teacher's decision was not accepted: ${review.text}`);
 
-  const after = await learnerViewOf(ids.session, ids.learnerId);
-  assert.ok(
-    after.text.includes(EXPLANATION),
-    `the teacher accepted the finding and the learner still cannot see it (sev-2 — a teacher's ` +
-      `decision that changes nothing). Body: ${after.text.slice(0, 800)}`,
+  // The decision itself must be on the record regardless of what the learner can see.
+  const [reviewed] = await queryJson(
+    "SELECT review_status FROM tajweed_findings WHERE id = $1",
+    [ids.finding],
+  );
+  // `teacher-reviewed`, not `accepted`: the decision itself lives on the teacher_reviews row, and
+  // this column records only that a human has now looked at the finding.
+  assert.equal(
+    reviewed.review_status,
+    "teacher-reviewed",
+    "the teacher's decision did not reach the row",
   );
 
+  const after = await learnerViewOf(ids.session, ids.learnerId);
   const findings = Array.isArray(after.body) ? after.body : (after.body.findings ?? []);
   const mine = findings.find((f) => f.id === ids.finding);
-  assert.ok(mine.confidence > 0, "an approved finding should carry its real confidence");
-  assert.ok(mine.sources.length > 0, "an approved finding must still cite its source");
+  assert.ok(mine, "the accepted finding vanished from the learner's own session entirely");
+
+  const gateOpen =
+    mine.calibrationStatus === "calibrated" && mine.evaluationEvidenceStatus === "release-trusted";
+
+  if (gateOpen) {
+    // T10 has landed. The original guarantee applies again, unchanged.
+    assert.ok(
+      after.text.includes(EXPLANATION),
+      "the evidence is calibrated and release-trusted and the teacher accepted it, and the learner " +
+        "still cannot see it (sev-2 — a teacher's decision that changes nothing)",
+    );
+    assert.ok(mine.confidence > 0, "an approved finding should carry its real confidence");
+    assert.ok(mine.sources.length > 0, "an approved finding must still cite its source");
+    return;
+  }
+
+  // The gate is shut. Assert WHY, so this cannot pass for some unrelated reason — a broken redaction
+  // or a lost row would otherwise look identical to "correctly withheld".
+  assert.ok(
+    !after.text.includes(EXPLANATION),
+    "the learner was shown a finding whose evidence is neither calibrated nor release-trusted",
+  );
+  assert.equal(mine.calibrationStatus, "uncalibrated");
+  assert.notEqual(
+    mine.evaluationEvidenceStatus,
+    "release-trusted",
+    "evidence claims release trust while calibration is still absent",
+  );
+  assert.equal(mine.confidence, 0, "a withheld finding leaked its confidence");
+  assert.deepEqual(mine.sources, [], "a withheld finding leaked its sources");
 });
 
 test("after a teacher rejects it, the learner still sees nothing", async () => {
