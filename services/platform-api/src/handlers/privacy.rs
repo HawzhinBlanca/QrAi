@@ -487,6 +487,28 @@ async fn create_privacy_job(
             .execute(&mut *tx)
             .await?;
 
+        // Device identity (0035, ADR-0044). A device session that survives an erasure is a device
+        // that still authenticates as the erased learner, so this runs with the rest of the
+        // cascade rather than being left to the access token's own expiry. The Node port has
+        // deleted both of these since #388 (server/src/routes/privacy.mjs); the Rust port did not,
+        // and erasure parity between the two is exactly what ADR-0044 requires.
+        //
+        // Scoped by `user_id`, not `learner_id`: device_sessions names the column after the user
+        // row it points at, and the erasure subject is that user.
+        sqlx::query("DELETE FROM device_sessions WHERE tenant_id = $1 AND user_id = $2")
+            .bind(&actor.tenant_id)
+            .bind(&req.learner_id)
+            .execute(&mut *tx)
+            .await?;
+
+        sqlx::query(
+            "DELETE FROM device_enrollment_invitations WHERE tenant_id = $1 AND user_id = $2",
+        )
+        .bind(&actor.tenant_id)
+        .bind(&req.learner_id)
+        .execute(&mut *tx)
+        .await?;
+
         sqlx::query("DELETE FROM pilot_sessions WHERE tenant_id = $1 AND learner_id = $2")
             .bind(&actor.tenant_id)
             .bind(&req.learner_id)

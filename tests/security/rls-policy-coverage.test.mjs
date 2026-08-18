@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test, { after, before } from "node:test";
 
-import { createDb } from "../../services/node-api/lib/db.mjs";
+import { createDb } from "../../server/src/lib/db.mjs";
 
 /**
  * Every tenant-scoped table carries a FORCED row-level-security policy, and the policy is the one

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test, { after, before } from "node:test";
 
-import { createDb } from "../../services/node-api/lib/db.mjs";
+import { createDb } from "../../server/src/lib/db.mjs";
 
 /**
  * Every `SECURITY DEFINER` function is an unconditional hole through tenant isolation, so the set of
@@ -91,6 +91,30 @@ const DECLARED = {
       "same order of operations for invitation redemption: the invitation token arrives from a " +
       "person with no session and therefore no tenant. It marks the invitation consumed in the " +
       "same statement that reads it, so widening its visibility does not widen what it can do.",
+  },
+  // ADR-0044 (#388) added device identity in 0035. Same order-of-operations argument as the pilot
+  // pair above, and verified against the function bodies rather than assumed: each one RETURNS
+  // `tenant_id`, which is the proof it cannot already have known it.
+  "app.get_device_session_by_access_hash": {
+    why:
+      "resolves an access token hash to the device session that issued it. It RETURNS tenant_id — " +
+      "that is the proof it cannot already be scoped by tenant: the token is the only thing the " +
+      "request carries, and the row it finds is what supplies the tenant for the rest of the " +
+      "request. Under RLS it could never find that row.",
+  },
+  "app.get_device_session_by_refresh_hash": {
+    why:
+      "the refresh half of the same lookup, and for the same reason: the refresh token arrives " +
+      "with no tenant context and the row it finds is what establishes one. It takes `for update` " +
+      "on the session row so rotation and reuse-detection are decided under a lock rather than " +
+      "read, judged and written in three racing statements.",
+  },
+  "app.consume_device_enrollment_invitation_by_hash": {
+    why:
+      "enrollment redemption: the invitation token is presented by a device that has no session " +
+      "and therefore no tenant. Like the pilot invitation above it marks the row consumed in the " +
+      "same UPDATE that reads it, so the wider visibility buys a one-shot redemption and nothing " +
+      "else — it cannot enumerate, only consume a hash the caller already held.",
   },
 };
 

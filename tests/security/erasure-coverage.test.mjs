@@ -79,6 +79,26 @@ const DECLARED = {
       "reproduced against a live erasure. Whether 'delete my data' means 'delete my account' is a " +
       "DPO/product ruling, not an engineering default: ADR-0061.",
   },
+  // ADR-0044 (#388): device identity (0035) and the durable job outbox (0034).
+  "device_enrollment_invitations.created_by": {
+    disposition: "staff",
+    why:
+      "holds the staff member who issued the invitation, not its subject. The row is deleted " +
+      "anyway when the subject is erased (see user_id above), so this column needs no separate " +
+      "position — but erasing a LEARNER must never be read as withdrawing a staff member's " +
+      "identity from invitations they issued to other people.",
+  },
+  "background_jobs.actor_id": {
+    disposition: "retained",
+    why:
+      "the erasure runs AS one of these rows — `privacy.delete` is a durable job, and deleting " +
+      "the row mid-cascade would destroy the job executing the erasure along with its retry and " +
+      "idempotency record. Same argument as privacy_jobs.learner_id above. Named residual, not a " +
+      "clean answer: completed job rows are never pruned, so a learner's OTHER finished jobs also " +
+      "survive carrying this id. Payloads hold control metadata and never audio (0034), which " +
+      "bounds what is left, but whether a verified erasure should sweep them is the same open " +
+      "question ADR-0040 holds for audit_events.",
+  },
 };
 
 /** List A — every FK into `users`, from the live schema, plus the identity table itself. */

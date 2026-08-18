@@ -8,6 +8,7 @@ import { fileURLToPath } from "node:url";
 
 import {
   TENANT,
+  insertDeclaredTestAcousticFinding,
   queryJson,
   request,
   reservePort,
@@ -41,7 +42,10 @@ import {
  */
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
-const ML_ENTRY = join(root, "services/ml-inference/server.mjs");
+// ADR-0044 retired `services/ml-inference` into `server/`. The compatibility-ingress harness is
+// what that entrypoint became: same ML_INFERENCE_PORT / ML_API_KEY / AUDIO_STORAGE_DIR contract,
+// same two prediction endpoints, plus /health and /ready.
+const ML_ENTRY = join(root, "tests/inference/lib/worker-compatibility-harness.mjs");
 const ML_KEY = "teacher-journey-ml-key";
 
 /** Distinctive bytes: a 200 carrying somebody else's audio must not be able to pass. */
@@ -193,16 +197,22 @@ async function seedReviewable({ label, retention = "teacher-review", withAudio =
      VALUES ($1, $2, $3, $4, 'x', 600, 1400, 0.9, 'needs-review', $5, $6, 'client-reported')`,
     [ids.alignment, TENANT, ids.session, word.id, model.id, ids.audit],
   );
-  await queryJson(
-    `INSERT INTO tajweed_findings
-       (id, tenant_id, alignment_id, rule, severity, confidence, explanation, review_status,
-        source_refs, model_version_id, audit_event_id, analysis_basis)
-     VALUES ($1, $2, $3, 'ghunnah', 'warning', 0.88, 'Hold the nasalization.',
-             'teacher-review-required',
-             '[{"id":"src-t","title":"Tajweed reference","citation":"Rule 1"}]'::jsonb,
-             $4, $5, 'canonical-text')`,
-    [ids.finding, TENANT, ids.alignment, model.id, ids.audit],
-  );
+  // 0030 narrowed analysis_basis to ('text-rule','acoustic') and a trigger requires an acoustic
+  // finding to reference release-eligible evaluation evidence. A teacher-review journey needs a
+  // reviewable PERFORMANCE finding — 0030's review index is `where analysis_basis = 'acoustic'` —
+  // so this seeds the declared evidence through the shared harness helper rather than hand-rolling
+  // the seven provenance columns the trigger checks.
+  await insertDeclaredTestAcousticFinding({
+    id: ids.finding,
+    alignmentId: ids.alignment,
+    rule: "ghunnah",
+    severity: "warning",
+    confidence: 0.88,
+    explanation: "Hold the nasalization.",
+    reviewStatus: "teacher-review-required",
+    sources: [{ id: "src-t", title: "Tajweed reference", citation: "Rule 1" }],
+    auditEventId: ids.audit,
+  });
 
   let objectKey = null;
   if (withAudio) {

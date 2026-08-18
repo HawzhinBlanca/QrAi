@@ -8,6 +8,7 @@ import { fileURLToPath } from "node:url";
 
 import {
   TENANT,
+  insertDeclaredTestAcousticFinding,
   queryJson,
   request,
   reservePort,
@@ -46,7 +47,10 @@ import {
  */
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
-const ML_ENTRY = join(root, "services/ml-inference/server.mjs");
+// ADR-0044 retired `services/ml-inference` into `server/`. The compatibility-ingress harness is
+// what that entrypoint became: same ML_INFERENCE_PORT / ML_API_KEY / AUDIO_STORAGE_DIR contract,
+// same two prediction endpoints, plus /health and /ready.
+const ML_ENTRY = join(root, "tests/inference/lib/worker-compatibility-harness.mjs");
 const ML_KEY = "erasure-receipt-key";
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -167,14 +171,20 @@ async function seedOneOfEach() {
      VALUES ($1, $2, $3, $4, 'x', 0, 100, 0.9, 'matched', $5, $6, 'client-reported')`,
     [row.alignment, TENANT, row.session, word.id, model.id, row.audit],
   );
-  await queryJson(
-    `INSERT INTO tajweed_findings
-       (id, tenant_id, alignment_id, rule, severity, confidence, explanation, review_status,
-        source_refs, model_version_id, audit_event_id, analysis_basis)
-     VALUES ($1, $2, $3, 'ghunnah', 'warning', 0.9, 'e', 'teacher-review-required', '[]'::jsonb,
-             $4, $5, 'canonical-text')`,
-    [row.finding, TENANT, row.alignment, model.id, row.audit],
-  );
+  // 0030 narrowed analysis_basis to ('text-rule','acoustic') and a trigger requires an acoustic
+  // finding to reference release-eligible evaluation evidence, so this can no longer be a bare
+  // INSERT. The harness helper seeds the declared evidence and the finding together, which is what
+  // every other acoustic fixture in the suite already uses.
+  await insertDeclaredTestAcousticFinding({
+    id: row.finding,
+    alignmentId: row.alignment,
+    rule: "ghunnah",
+    severity: "warning",
+    confidence: 0.9,
+    explanation: "e",
+    reviewStatus: "teacher-review-required",
+    auditEventId: row.audit,
+  });
 
   return { learnerId: learner, ids: row };
 }

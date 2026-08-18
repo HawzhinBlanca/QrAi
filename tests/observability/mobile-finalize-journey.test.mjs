@@ -53,7 +53,10 @@ import {
  */
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
-const ML_ENTRY = join(root, "services/ml-inference/server.mjs");
+// ADR-0044 retired `services/ml-inference` into `server/`. The compatibility-ingress harness is
+// what that entrypoint became: same ML_INFERENCE_PORT / ML_API_KEY / AUDIO_STORAGE_DIR contract,
+// same two prediction endpoints, plus /health and /ready.
+const ML_ENTRY = join(root, "tests/inference/lib/worker-compatibility-harness.mjs");
 const ML_KEY = "mobile-finalize-ml-key";
 
 /** Al-Fatihah 1:1, the words `canonical_words` holds for ayah 1:1. */
@@ -70,22 +73,79 @@ let rustUrl;
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 before(async () => {
-  // A stub ASR: ml-inference POSTs ASR_SERVICE_URL/v1/transcribe and reads `words[].word`.
-  // The timings are the entire subject of this journey, so they are reported per word.
+  // A stub ASR. ADR-0044 made this a TWO-endpoint contract and the shapes differ, so one catch-all
+  // reply no longer works:
+  //
+  //   /v1/transcribe   words[] = { word, start, end (SECONDS), probability }
+  //   /v1/force-align  words[] = { word, start, end (SECONDS), score } + a forced-aligner
+  //                    modelAttribution, without which finalization refuses the session
+  //
+  // Reading the wrong confidence field yields undefined, which the span validator rejects — so
+  // getting this wrong refuses every session rather than corrupting one, which is why the old
+  // `startMs/endMs/confidence` stub surfaced as `asr-unavailable` rather than as bad spans.
+  //
+  // Spans are sized to the audio this test actually streams: 3 chunks x 500 ms = 1500 ms, divided
+  // evenly across the recited words. The timings are the entire subject of this journey.
   const asrPort = await reservePort();
+  const SPAN_SECONDS = 1.5 / RECITED.length;
+  const asrWords = (confidenceField) =>
+    RECITED.map((word, i) => ({
+      word,
+      start: Number((i * SPAN_SECONDS).toFixed(3)),
+      end: Number(((i + 1) * SPAN_SECONDS).toFixed(3)),
+      [confidenceField]: 0.92,
+    }));
   asr = createServer((req, res) => {
+    const path = new URL(req.url ?? "/", "http://127.0.0.1").pathname;
     req.resume();
     req.on("end", () => {
       res.writeHead(200, { "content-type": "application/json" });
+      if (path === "/v1/force-align") {
+        res.end(
+          JSON.stringify({
+            words: asrWords("score"),
+            modelVersion: "declared-forced-aligner-fixture",
+            modelAttribution: {
+              schemaVersion: 1,
+              primaryComponent: "forced-aligner",
+              components: [
+                {
+                  component: "forced-aligner",
+                  status: "active",
+                  implementationId: "declared-forced-aligner-fixture",
+                  artifactDigest: `sha256:${"b".repeat(64)}`,
+                  datasetVersion: "declared-fixture",
+                  analysisBasis: "acoustic",
+                  calibratorId: null,
+                },
+              ],
+            },
+          }),
+        );
+        return;
+      }
+      // Both endpoints must carry a valid modelAttribution: an internal response is not trusted
+      // provenance, so an omitted one is a 502 and surfaces as `asr-unavailable`.
       res.end(
         JSON.stringify({
           text: RECITED.join(" "),
-          words: RECITED.map((word, i) => ({
-            word,
-            startMs: i * 500,
-            endMs: (i + 1) * 500,
-            confidence: 0.92,
-          })),
+          words: asrWords("probability"),
+          modelVersion: "declared-asr-fixture",
+          modelAttribution: {
+            schemaVersion: 1,
+            primaryComponent: "asr",
+            components: [
+              {
+                component: "asr",
+                status: "active",
+                implementationId: "declared-asr-fixture",
+                artifactDigest: `sha256:${"a".repeat(64)}`,
+                datasetVersion: "declared-fixture",
+                analysisBasis: "acoustic",
+                calibratorId: null,
+              },
+            ],
+          },
         }),
       );
     });
@@ -168,7 +228,6 @@ async function createSessionFor(learnerId) {
       learnerId,
       quranRef: { surahNumber: 1, ayahStart: 1, ayahEnd: 7, display: "Al-Fatihah 1:1-7" },
       sourceChecksum: "fnv1a32:mobilefinalize",
-      modelVersion: "model-v0.3",
       language: "ckb",
       mode: "guided-recite",
       practicePlanId: "fatihah-mastery-v1",
@@ -201,7 +260,11 @@ async function streamChunk(learnerId, sessionId, index) {
       endMs: (index + 1) * 500,
       sampleRate: 16000,
       audioRetention: "teacher-review",
-      audioBase64: Buffer.from(new Array(64).fill(index + 1)).toString("base64"),
+      // 500 ms of PCM16 at 16 kHz = 8000 frames = 16000 bytes. ADR-0044 fail-closes when a chunk's
+      // byte length contradicts the timing it declares (`byteLengthsMatchRoundedTimings`), because
+      // audio that is truncated, padded, or described with the wrong rate must not be aligned as if
+      // it were whole. The old 64-byte stub declared 500 ms and carried 2 ms.
+      audioBase64: Buffer.alloc(16000, (index % 255) + 1).toString("base64"),
     }),
   });
   assert.equal(res.status, 200, `storing chunk ${index} failed: ${await res.text()}`);
@@ -255,16 +318,36 @@ test("a session recited on the phone reaches a teacher's queue", async () => {
   });
   assert.equal(analysed.status, 200, `analyse failed: ${analysed.text}`);
 
+  // This used to require rows in `tajweed_findings`. ADR-0044 drew the instruction/performance
+  // boundary migration 0030 enforces: the deterministic analyser reads the canonical passage, not
+  // the learner's audio, so what it produces is instruction that is TRUE OF THE TEXT for every
+  // reciter — it returns `annotations` (analysisBasis "text-rule") and an empty `findings`, and
+  // only acoustic output backed by a released evaluation may be stored.
+  //
+  // What makes this session reachable by a teacher is therefore the stored ALIGNMENTS asserted
+  // above, not stored findings. Both halves are checked so neither can quietly become false.
+  assert.deepEqual(
+    analysed.body.findings ?? [],
+    [],
+    "the deterministic analyser produced learner findings; a canonical rule cannot support a claim " +
+      "about how THIS learner recited (0030)",
+  );
+  assert.ok(
+    (analysed.body.annotations ?? []).length > 0,
+    "the analysis produced neither findings nor instructional annotations",
+  );
+
   const stored = await queryJson(
     `SELECT count(*)::int AS n FROM tajweed_findings f
        JOIN word_alignments w ON w.id = f.alignment_id
       WHERE w.session_id = $1`,
     [session],
   );
-  assert.ok(
-    stored[0].n > 0,
-    `the analysis returned findings and stored ${stored[0].n}. A learner recited, the model had ` +
-      `something to say, and no teacher will ever see it.`,
+  assert.equal(
+    stored[0].n,
+    0,
+    `a text-rule analysis wrote ${stored[0].n} row(s) into tajweed_findings — the pre-0030 defect ` +
+      "returning, where instruction was recorded as a judgement about a child's recitation",
   );
 });
 
@@ -285,13 +368,34 @@ test("a word that was never heard gets no span, and is not stored as one that wa
   });
   assert.equal(finalized.status, 200, `finalize failed: ${finalized.text}`);
 
-  const offered = Number(finalized.body.alignmentsOffered ?? 0);
   const persisted = Number(finalized.body.persisted ?? 0);
-  assert.ok(
-    offered > persisted,
-    `the aligner offered ${offered} and ${persisted} were stored. The stub recites ` +
-      `${RECITED.length} of the passage's words, so the unrecited ones must be offered and ` +
-      `refused — if every offered alignment persists, missed words are being given a span.`,
+
+  // This used to assert `alignmentsOffered > persisted` — the aligner offers a row for every word in
+  // the passage and `usable_span` refuses the ones with no measured audio behind them. ADR-0044
+  // moved the refusal earlier: a word with no measured span is never offered at all, so the two
+  // counts are now equal and the old proxy can no longer distinguish "refused correctly" from
+  // "stored everything".
+  //
+  // So this asserts the SUBJECT instead of the proxy, which is what the test was always about: the
+  // words the learner never recited did not acquire spans. Not offering them is a stronger form of
+  // the same guarantee than offering and refusing them.
+  const passageWords = Number(
+    (
+      await queryJson(
+        `SELECT count(*)::int AS n
+           FROM canonical_words w
+           JOIN canonical_ayahs a ON a.id = w.ayah_id
+          WHERE a.surah_number = 1 AND a.ayah_number BETWEEN 1 AND 7`,
+      )
+    )[0].n,
+  );
+  assert.ok(passageWords > RECITED.length, `the passage has ${passageWords} words — fixture drift`);
+  assert.equal(
+    persisted,
+    RECITED.length,
+    `the stub recited ${RECITED.length} of the passage's ${passageWords} words and ${persisted} ` +
+      "alignments were stored. A missed word acquiring a span points a later finding at audio the " +
+      "learner never recited there.",
   );
 
   // Every stored row identifies real audio. This is the property `usable_span` exists for, asserted

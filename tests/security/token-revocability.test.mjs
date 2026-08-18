@@ -79,6 +79,42 @@ const DECLARED = {
       "the choice between a gateway database dependency, a Redis revocation set, a shorter TTL, " +
       "and a deferred re-erase.",
   },
+  // ADR-0044 (#388) added device identity in 0035. All three are STATEFUL: each is resolved through
+  // a SECURITY DEFINER lookup (declared in definer-bypass-coverage) on every presentation, and the
+  // session row carries `status`, which `device-sessions.mjs` requires to be 'active'.
+  "device_sessions.access_token_hash": {
+    kind: "stateful",
+    lookup: {
+      file: "server/src/identity/device-sessions.mjs",
+      marker: "app.get_device_session_by_access_hash(",
+    },
+    why:
+      "the device access token. Every authenticated request re-reads the session row and refuses " +
+      "it unless `status = 'active'`, so revoking the session, or letting the idle or absolute " +
+      "window lapse, takes effect on the very next request rather than at the token's expiry.",
+  },
+  "device_sessions.refresh_token_hash": {
+    kind: "stateful",
+    lookup: {
+      file: "server/src/identity/device-sessions.mjs",
+      marker: "app.get_device_session_by_refresh_hash(",
+    },
+    why:
+      "the rotation half of the same session row, read under `for update` so a replayed refresh " +
+      "is decided against the committed generation rather than a stale read. Revoking the session " +
+      "revokes this with it — the same row carries both hashes and one `status`.",
+  },
+  "device_enrollment_invitations.token_hash": {
+    kind: "stateful",
+    lookup: {
+      file: "server/src/identity/device-sessions.mjs",
+      marker: "app.consume_device_enrollment_invitation_by_hash(",
+    },
+    why:
+      "single-use, the same shape as the pilot invitation above: the consuming function stamps " +
+      "`consumed_at` in the same UPDATE that reads the row, so a replayed enrollment token finds " +
+      "nothing and deleting the row revokes the invitation outright.",
+  },
 };
 
 /** List A — every token/secret-bearing column, from the live schema. */

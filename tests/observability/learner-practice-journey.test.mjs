@@ -41,7 +41,10 @@ import {
  */
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
-const ML_ENTRY = join(root, "services/ml-inference/server.mjs");
+// ADR-0044 retired `services/ml-inference` into `server/`. The compatibility-ingress harness is
+// what that entrypoint became: same ML_INFERENCE_PORT / ML_API_KEY / AUDIO_STORAGE_DIR contract,
+// same two prediction endpoints, plus /health and /ready.
+const ML_ENTRY = join(root, "tests/inference/lib/worker-compatibility-harness.mjs");
 const ML_KEY = "learner-journey-ml-key";
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -158,7 +161,6 @@ async function createSession(learner) {
       learnerId: learner,
       quranRef: { surahNumber: 1, ayahStart: 1, ayahEnd: 7, display: "Al-Fatihah 1:1-7" },
       sourceChecksum: "fnv1a32:learnerjourney",
-      modelVersion: "model-v0.3",
       language: "ckb",
       mode: "guided-recite",
       practicePlanId: "fatihah-mastery-v1",
@@ -227,7 +229,7 @@ test("the session starts with the learner's consent recorded against it", async 
   assert.equal(row.guardian_approved, true);
 });
 
-test("the analysis is persisted, not just returned", async () => {
+test("the analysis is recorded as instruction, and never as a learner finding", async () => {
   const res = await request(baseUrl, "/v1/ml/tajweed-findings:predict", {
     method: "POST",
     role: "learner",
@@ -241,13 +243,42 @@ test("the analysis is persisted, not just returned", async () => {
   });
   assert.equal(res.status, 200, `the analysis failed: ${res.status} ${res.text}`);
 
+  // ── What this test used to assert, and why it now asserts the opposite ────────────────────────
+  //
+  // It used to require that findings reach `tajweed_findings`: "a response is not a record", and a
+  // finding that lives only for the length of one HTTP response can never be reviewed. That was
+  // right about the deterministic analyser of the time, which wrote every rule it matched as
+  // `analysis_basis = 'canonical-text'`.
+  //
+  // ADR-0044 (#388) drew the instruction/performance boundary that migration 0030 enforces: a rule
+  // that applies at a position in the passage is TRUE OF THE TEXT and identical for every learner
+  // who ever recites it. Calling that a finding about this child's recitation was the defect. So
+  // the deterministic analyser now returns `annotations` (analysisBasis "text-rule",
+  // instructional), `findings` is empty, and only acoustic output backed by a released evaluation
+  // may be stored — 0030's CHECK does not even admit any other basis.
+  //
+  // The original subject survives, inverted: a response is still not a record, so this asserts that
+  // the thing which IS the record — the alignment — was written, and that nothing talked its way
+  // into the performance table on the strength of a text rule.
   const returned = res.body.findings ?? [];
-  assert.ok(
-    Array.isArray(returned),
-    `the analysis returned no findings array: ${res.text.slice(0, 400)}`,
+  assert.deepEqual(
+    returned,
+    [],
+    `the deterministic analyser returned ${returned.length} learner finding(s); canonical rules are ` +
+      "instruction and cannot support a claim about how THIS learner recited (0030)",
   );
 
-  // The half that was missing. A response is not a record.
+  const annotations = res.body.annotations ?? [];
+  assert.ok(
+    annotations.length > 0,
+    `the analysis returned neither findings nor annotations: ${res.text.slice(0, 400)}`,
+  );
+  for (const a of annotations) {
+    assert.equal(a.analysisBasis, "text-rule", `an annotation claimed basis ${JSON.stringify(a.analysisBasis)}`);
+    assert.equal(a.instructional, true, "an annotation was not marked instructional");
+  }
+
+  // The boundary, checked where it actually matters: in the table, not in the payload.
   const stored = await queryJson(
     `SELECT tf.id, tf.review_status, tf.analysis_basis
        FROM tajweed_findings tf
@@ -255,52 +286,31 @@ test("the analysis is persisted, not just returned", async () => {
       WHERE wa.session_id = $1`,
     [sessionId],
   );
-  // NOT `stored.length === returned.length`, for two reasons found by writing it that way first.
-  //
-  // 1. `persist_tajweed_findings` skips a finding whose word has no alignment row to anchor it to —
-  //    correct, because a finding pointing at no evidence is not reviewable. This session aligns
-  //    four words of 1:1, so only findings about those words can be stored. The all-38 version was
-  //    measuring the fixture, not the behavior.
-  // 2. The response cannot be used as the oracle at all here. The caller is a LEARNER, so the
-  //    findings that come back are redacted — and the redaction blanks `wordId` too
-  //    (ml_proxy.rs:65), because which word a learner got wrong IS the judgement. That is a
-  //    stronger redaction than expected and worth stating: a learner cannot even infer the flagged
-  //    word. It also means the anchorable set has to come from the database.
-  const stored2 = await queryJson(
-    `SELECT wa.word_id
-       FROM tajweed_findings tf
-       JOIN word_alignments wa ON wa.id = tf.alignment_id
-      WHERE wa.session_id = $1`,
+  assert.deepEqual(
+    stored.map((f) => f.analysis_basis),
+    [],
+    "a text-rule analysis wrote rows into tajweed_findings — that is the pre-0030 defect returning",
+  );
+
+  // "A response is not a record" — anchored on the row that IS the record for this journey. Without
+  // this the test would pass just as well if the session had stored nothing at all.
+  const alignedWords = await queryJson(
+    "SELECT word_id FROM word_alignments WHERE session_id = $1",
     [sessionId],
   );
-  const alignedWords = new Set(
-    (
-      await queryJson("SELECT word_id FROM word_alignments WHERE session_id = $1", [sessionId])
-    ).map((r) => r.word_id),
-  );
   assert.ok(
-    stored.length > 0,
-    `ml-inference returned ${returned.length} finding(s) for a session with ` +
-      `${alignedWords.size} aligned word(s) and NOTHING was written down. Findings that exist ` +
-      `only for the length of one HTTP response can never be reviewed — that is the defect this ` +
-      `journey exists for.`,
+    alignedWords.length > 0,
+    "the session produced no stored alignments, so there is nothing for a teacher to review and " +
+      "nothing a later acoustic finding could anchor to",
   );
-  for (const row of stored2) {
-    assert.ok(
-      alignedWords.has(row.word_id),
-      `a finding was anchored to "${row.word_id}", which this session has no alignment for`,
-    );
-  }
 
-  if (stored.length > 0) {
-    // Fresh model output is unreviewed BY CONSTRUCTION — no human has seen it. A stored finding
-    // claiming otherwise would clear the learner gate on its own say-so.
-    for (const f of stored) {
-      assert.ok(
-        f.review_status === "ai-suggested" || f.review_status === "teacher-review-required",
-        `a freshly analysed finding was stored as "${f.review_status}" — no human has looked at it`,
-      );
-    }
+  // Any row that does appear here later (a real acoustic model) is unreviewed BY CONSTRUCTION — no
+  // human has seen it. Kept so the guarantee is already in place when findings start being written.
+  for (const f of stored) {
+    assert.ok(
+      f.review_status === "ai-suggested" || f.review_status === "teacher-review-required",
+      `a freshly analysed finding was stored as "${f.review_status}" — no human has looked at it`,
+    );
   }
 });
 

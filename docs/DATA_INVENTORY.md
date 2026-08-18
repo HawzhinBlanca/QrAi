@@ -66,9 +66,12 @@
   bounded server-derived record/object manifest. It then deletes the learner's objects through the
   injected private store, verifies that the learner prefix is empty, and runs the fenced
   tenant-scoped database transaction that records the privacy receipt, completes the job, and cascades
-  teacher_reviews → tajweed_findings → word_alignments → audio_chunks/alignment_runs → tickets →
-  sessions (which cascade replay and realtime-delivery diagnostics) → consent records → device sessions/invitations → pilot sessions/invitations →
-  structured learner-linked `agent_runs`.
+  `teacher_reviews` → `tajweed_findings` → `word_alignments` → `audio_chunks`/`alignment_runs` →
+  `realtime_session_tickets` → `recitation_sessions` (which cascade replay and realtime-delivery
+  diagnostics) → `consent_records` → `device_sessions`/`device_enrollment_invitations` →
+  `pilot_sessions`/`pilot_invitations` → structured learner-linked `agent_runs`.
+  Named table by table on purpose: this list is checked against the DELETEs the handler actually
+  runs (`tests/security/erasure-coverage.test.mjs`), and prose like "tickets" matches nothing.
   A storage failure leaves a retryable intent and no completed cascade—no "success while audio
   survives". A crash after storage deletion repeats the idempotent erase and commits the captured
   receipt on retry. The Rust
